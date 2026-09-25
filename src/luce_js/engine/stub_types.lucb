@@ -74,9 +74,6 @@ struct LabelSlot:
 struct MapIteratorData:
     var unported: i32
 
-struct MemoryUsageHelper:
-    var unported: i32
-
 struct ObjectList:
     var unported: i32
 

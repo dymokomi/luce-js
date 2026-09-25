@@ -11,8 +11,6 @@
 #
 #==============================================================================================
 
-import os
-
 # mark: Standard classes ========================================================================
 
 ## A class of the standard table: its name, finalizer and marking function

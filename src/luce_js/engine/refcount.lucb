@@ -50,3 +50,8 @@ pub func js_set_property(ctx: Context*, this_obj: Value, prop: Atom, val: Value)
 ## A C function object (JS_NewCFunction).
 pub func js_new_c_function(ctx: Context*, func_: CFunction, name: const u8*, length: i32) -> Value!:
     return try js_new_c_function2(ctx, func_, name, length, CFunctionEnum.generic, 0)
+
+## A string value from NUL-terminated UTF-8 text (JS_NewString).
+pub func js_new_string(ctx: Context*, text: const u8*) -> Value!:
+    return try js_new_string_len(ctx, text, cutils.strlen(text))
+

@@ -21,8 +21,11 @@ ropes.lucb
 shapes.lucb
 objects.lucb
 object_free.lucb
-stub_r06_gc.lucb
-stub_r07_exceptions.lucb
+gc.lucb
+memory_usage.lucb
+exceptions.lucb
+throw_errors.lucb
+prototype.lucb
 stub_r08_property_get.lucb
 stub_r09_property_set.lucb
 stub_r10_define_property.lucb
@@ -45,6 +48,7 @@ stub_r26_proxy_symbol_map.lucb
 stub_r27_promise_date.lucb
 stub_r28_typed_arrays.lucb
 stub_r29_atomics_weakref.lucb
+tests_gc_exceptions.lucb
 tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb

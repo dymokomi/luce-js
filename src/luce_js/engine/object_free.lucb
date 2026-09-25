@@ -267,12 +267,11 @@ func free_object(rt: Runtime*, p: Object*):
         if p.weakref_count == 0:
             js_free_rt(rt, p)
         else:
-            let rc = js_rc(p)
-            rc.gc_bits = rc.gc_bits & 0x7f   # reset the mark so that the weakref can be freed
+            js_rc(p).set_mark(0)   # reset the mark so that the weakref can be freed
 
 ## Free a GC object by its type (the gc_obj_type of its block header).
 func free_gc_object(rt: Runtime*, gp: GCObjectHeader*):
-    match (GCObjectType)(js_rc(gp).gc_bits & 0x7f):
+    match js_rc(gp).gc_obj_type():
         .js_object:
             free_object(rt, (Object*)gp)
         .function_bytecode:
@@ -317,8 +316,7 @@ pub func js_free_value_rt_raw(rt: Runtime*, v: Value):
             if rt.gc_phase != GCPhase.remove_cycles:
                 cutils.list_del(&p.link)
                 cutils.list_add(&p.link, &rt.gc_zero_ref_count_list)
-                let rc = js_rc(p)
-                rc.gc_bits = rc.gc_bits | 0x80   # indicate that the object is about to be freed
+                js_rc(p).set_mark(1)   # indicate that the object is about to be freed
                 if rt.gc_phase == GCPhase.none_:
                     free_zero_refcount(rt)
         .big_int:

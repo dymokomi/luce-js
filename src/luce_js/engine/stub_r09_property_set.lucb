@@ -90,7 +90,7 @@ func js_create_property(ctx: Context*, p: Object*, prop: Atom, val: Value, gette
 func check_define_prop_flags(prop_flags: i32, flags: i32) -> bool:
     trap("unported: check_define_prop_flags")
 ## Ported from quickjs.c:10302 js_shape_prepare_update.
-func js_shape_prepare_update(ctx: Context*, p: Object*, pprs: ShapeProperty**) -> i32!:
+func js_shape_prepare_update(ctx: Context*, p: Object*, pprs: ShapeProperty**?) -> i32!:
     trap("unported: js_shape_prepare_update")
 ## Ported from quickjs.c:10329 js_update_property_flags.
 func js_update_property_flags(ctx: Context*, p: Object*, pprs: ShapeProperty**, flags: i32) -> i32!:

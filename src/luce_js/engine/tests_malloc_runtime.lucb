@@ -108,8 +108,8 @@ test "realloc keeps the data and the GC header":
         p[i] = (u8)i
     let h = js_rc(p)
     h.ref_count = 7
-    block_set_gc_obj_type(h, GCObjectType.shape)
-    block_set_mark(h, true)
+    h.set_gc_obj_type(GCObjectType.shape)
+    h.set_mark(1)
     # growing within the block keeps it in place
     assert(js_realloc_raw(&s, p, 14) == (void*)p)
     # growing past it moves to a larger class, then to a large block
@@ -140,20 +140,6 @@ test "the host memory limit refuses an allocation":
     js_free_raw(&s, small)
 
 # mark: Header bits and helpers =================================================================
-
-test "the GC type and mark share one byte":
-    var h = MallocBlockHeader(block_idx = 0, block_size_idx = 0, gc_bits = 0, ref_count = 1)
-    block_set_gc_obj_type(&h, GCObjectType.module)
-    assert(block_gc_obj_type(&h) == GCObjectType.module)
-    assert(not block_mark(&h))
-    block_set_mark(&h, true)
-    assert(block_mark(&h))
-    assert(block_gc_obj_type(&h) == GCObjectType.module)
-    block_set_gc_obj_type(&h, GCObjectType.js_object)
-    assert(block_mark(&h))
-    assert(h.gc_bits == 0x80)
-    block_set_mark(&h, false)
-    assert(h.gc_bits == 0)
 
 test "free atom slots encode the next free index":
     let slot = atom_set_free(12345)

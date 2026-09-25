@@ -76,22 +76,6 @@ func block_user_data(b: MallocBlockHeader*) -> void*:
 func js_rc(ptr: const void*) -> MallocBlockHeader*:
     return (MallocBlockHeader*)((const u8*)ptr - sizeof(MallocBlockHeader))
 
-## The GC object type of a block (the gc_obj_type bit-field: the low 7 bits of gc_bits).
-func block_gc_obj_type(b: const MallocBlockHeader*) -> GCObjectType:
-    return (GCObjectType)(b.gc_bits & 0x7f)
-
-## Set the GC object type of a block, keeping its mark.
-func block_set_gc_obj_type(b: MallocBlockHeader*, gc_obj_type: GCObjectType):
-    b.gc_bits = (b.gc_bits & 0x80) | ((u8)gc_obj_type & 0x7f)
-
-## The GC mark of a block (the mark bit-field: bit 7 of gc_bits).
-func block_mark(b: const MallocBlockHeader*) -> bool:
-    return (b.gc_bits & 0x80) != 0
-
-## Set or clear the GC mark of a block, keeping its GC object type.
-func block_set_mark(b: MallocBlockHeader*, mark: bool):
-    b.gc_bits = (b.gc_bits & 0x7f) | ((u8)mark << 7)
-
 func js_malloc_init(s: MallocContext*):
     discard(cutils.memset(s, 0, sizeof(MallocContext)))
     get_zero_size_block(s).block_idx = free_nil
