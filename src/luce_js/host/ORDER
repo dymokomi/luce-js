@@ -3,6 +3,7 @@ libc.lucb
 libc_process.lucb
 printf.lucb
 loader.lucb
+native_modules.lucb
 std_file.lucb
 url_get.lucb
 std_module.lucb
