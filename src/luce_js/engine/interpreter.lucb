@@ -59,8 +59,6 @@
 #       - C allocates the frame with alloca. Base has no alloca: a frame that fits
 #         `frame_space` (js_call_inline_frame_values values) lives in js_call_internal's
 #         frame, a larger one is js_malloc'ed and released when the call returns.
-#       - rt.current_stack_frame is set through js_push_stack_frame (workaround:
-#         compiler-issues/local_address_store).
 #
 #==============================================================================================
 

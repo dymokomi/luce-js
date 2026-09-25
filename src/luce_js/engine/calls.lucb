@@ -20,12 +20,6 @@ let call_flag_generator: i32 = 1 << 2
 
 # mark: C functions =============================================================================
 
-## Make `sf` the runtime's current frame. The frame is a local of the caller, which unlinks
-## it before returning.
-# workaround: compiler-issues/local_address_store
-func js_push_stack_frame(rt: Runtime*, sf: StackFrame*):
-    rt.current_stack_frame = sf
-
 ## The call handler of ClassId.c_function: call a C function with at least as many
 ## readable arguments as its length (js_call_c_function).
 func js_call_c_function(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
@@ -38,11 +32,11 @@ func js_call_c_function(ctx: Context*, func_obj: Value, this_obj: Value, argc: i
         try js_throw_stack_overflow(ctx)
 
     if argc < arg_count:
-        return try js_call_c_function_padded(rt, func_obj, this_obj, argc, argv, flags)
-    return try js_call_c_function_frame(rt, func_obj, this_obj, argc, argv, argc, flags)
+        return try js_call_c_function_padded(ctx, func_obj, this_obj, argc, argv, flags)
+    return try js_call_c_function_frame(ctx, func_obj, this_obj, argc, argv, argc, flags)
 
 ## js_call_c_function when fewer arguments than the function's length are given.
-noinline func js_call_c_function_padded(rt: Runtime*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+noinline func js_call_c_function_padded(caller_ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
     let arg_count = (i32)func_obj.u.obj.u.cfunc.length
     # ensure that at least argc_count arguments are readable
     var arg_buf: Value[255] = ---
@@ -50,17 +44,18 @@ noinline func js_call_c_function_padded(rt: Runtime*, func_obj: Value, this_obj:
         arg_buf[i] = argv[i]
     for i in (usize)argc..<(usize)arg_count:
         arg_buf[i] = js_undefined()
-    return try js_call_c_function_frame(rt, func_obj, this_obj, argc, &arg_buf[0], arg_count, flags)
+    return try js_call_c_function_frame(caller_ctx, func_obj, this_obj, argc, &arg_buf[0], arg_count, flags)
 
 ## Push the C function's frame, call it in its realm, and pop the frame. `arg_buf` holds
 ## `sf_arg_count` readable arguments, of which `argc` were given.
-func js_call_c_function_frame(rt: Runtime*, func_obj: Value, this_obj: Value, argc: i32, arg_buf: Value*, sf_arg_count: i32, flags: i32) -> Value!:
+func js_call_c_function_frame(caller_ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, arg_buf: Value*, sf_arg_count: i32, flags: i32) -> Value!:
+    let rt = caller_ctx.rt
     let p = func_obj.u.obj
     var sf_s: StackFrame = ---
     let sf = &sf_s
     let prev_sf = rt.current_stack_frame
     sf.prev_frame = prev_sf
-    js_push_stack_frame(rt, sf)
+    rt.current_stack_frame = sf
     let ctx = p.u.cfunc.realm   # change the current realm
     sf.js_mode = 0
     sf.cur_func = func_obj

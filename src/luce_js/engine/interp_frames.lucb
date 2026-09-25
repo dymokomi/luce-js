@@ -125,8 +125,7 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
         st.sf.cur_sp = none # cur_sp is NULL if the function is running
         st.pc = st.sf.cur_pc else trap("generator frame without pc")
         st.sf.prev_frame = st.rt.current_stack_frame
-        # workaround: compiler-issues/local_address_store
-        js_push_stack_frame(st.rt, st.sf)
+        st.rt.current_stack_frame = st.sf
         if s.throw_flag:
             return InterpEntry.throwing
     else:
@@ -182,8 +181,7 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
         st.sp = st.stack_buf
         st.pc = st.b.byte_code_buf
         st.sf.prev_frame = st.rt.current_stack_frame
-        # workaround: compiler-issues/local_address_store
-        js_push_stack_frame(st.rt, st.sf)
+        st.rt.current_stack_frame = st.sf
         st.ctx = st.b.realm # set the current realm
 
     return InterpEntry.run
