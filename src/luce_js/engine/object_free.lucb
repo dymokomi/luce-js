@@ -297,7 +297,7 @@ func free_zero_refcount(rt: Runtime*):
 
 # called with the ref_count of 'v' reaches zero.
 ## Free a value whose reference count reached zero (__JS_FreeValueRT).
-pub func js_free_value_rt_raw(rt: Runtime*, v: Value):
+pub noinline func js_free_value_rt_raw(rt: Runtime*, v: Value):
     match v.tag:
         .string:
             let p = v.u.string
@@ -327,5 +327,5 @@ pub func js_free_value_rt_raw(rt: Runtime*, v: Value):
             trap("js_free_value_rt_raw: value without a reference count")
 
 ## Free a value whose reference count reached zero (__JS_FreeValue).
-pub func js_free_value_raw(ctx: Context*, v: Value):
+pub noinline func js_free_value_raw(ctx: Context*, v: Value):
     js_free_value_rt_raw(ctx.rt, v)

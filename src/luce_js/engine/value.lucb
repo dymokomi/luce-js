@@ -57,42 +57,61 @@ pub struct Value:
 
 # mark: Making values ===========================================================================
 
-## A value with an integer payload (JS_MKVAL); the payload is zero-extended from 32 bits.
-func js_mkval(tag: Tag, val: i32) -> Value:
-    var u: ValueUnion = ---
-    u.uint64 = (u64)(u32)val
-    return Value(u = u, tag = tag)
+# The constructors below build the value field by field in the returned local rather
+# than through `Value(u = u, tag = tag)` or a shared JS_MKVAL: that keeps each body within
+# the native inliner's size for a function expanded at every call (24 IR instructions),
+# so the hot paths of the interpreter carry no call for a value. JS_MKVAL's payload is
+# zero-extended from 32 bits, which each spells out.
 
 ## A value with a pointer payload (JS_MKPTR).
 func js_mkptr(tag: Tag, p: void*) -> Value:
-    var u: ValueUnion = ---
-    u.ptr = p
-    return Value(u = u, tag = tag)
+    var v: Value = ---
+    v.u.ptr = p
+    v.tag = tag
+    return v
 
 ## JS_NULL.
 pub func js_null() -> Value:
-    return js_mkval(Tag.null, 0)
+    var v: Value = ---
+    v.u.uint64 = 0
+    v.tag = Tag.null
+    return v
 
 ## JS_UNDEFINED.
 pub func js_undefined() -> Value:
-    return js_mkval(Tag.undefined, 0)
+    var v: Value = ---
+    v.u.uint64 = 0
+    v.tag = Tag.undefined
+    return v
 
 ## JS_FALSE.
 pub func js_false() -> Value:
-    return js_mkval(Tag.boolean, 0)
+    var v: Value = ---
+    v.u.uint64 = 0
+    v.tag = Tag.boolean
+    return v
 
 ## JS_TRUE.
 pub func js_true() -> Value:
-    return js_mkval(Tag.boolean, 1)
+    var v: Value = ---
+    v.u.uint64 = 1
+    v.tag = Tag.boolean
+    return v
 
 ## JS_EXCEPTION: the marker QuickJS returns with a pending exception. The port reports
 ## exceptions as failures instead; the value survives where QuickJS stores it.
 pub func js_exception() -> Value:
-    return js_mkval(Tag.exception, 0)
+    var v: Value = ---
+    v.u.uint64 = 0
+    v.tag = Tag.exception
+    return v
 
 ## JS_UNINITIALIZED: the value of a lexical binding before its declaration runs.
 pub func js_uninitialized() -> Value:
-    return js_mkval(Tag.uninitialized, 0)
+    var v: Value = ---
+    v.u.uint64 = 0
+    v.tag = Tag.uninitialized
+    return v
 
 ## JS_NAN.
 pub func js_nan() -> Value:
@@ -100,9 +119,10 @@ pub func js_nan() -> Value:
 
 ## A float value without normalising to an integer (__JS_NewFloat64).
 pub func js_new_float64_raw(d: f64) -> Value:
-    var u: ValueUnion = ---
-    u.float64 = d
-    return Value(u = u, tag = Tag.float64)
+    var v: Value = ---
+    v.u.float64 = d
+    v.tag = Tag.float64
+    return v
 
 ## A short big integer (__JS_NewShortBigInt).
 func js_new_short_big_int_raw(d: i32) -> Value:
@@ -113,15 +133,24 @@ func js_new_short_big_int_raw(d: i32) -> Value:
 
 ## A boolean value (JS_NewBool).
 pub func js_new_bool(val: bool) -> Value:
-    return js_mkval(Tag.boolean, (i32)val)
+    var v: Value = ---
+    v.u.uint64 = (u64)val
+    v.tag = Tag.boolean
+    return v
 
 ## An integer value (JS_NewInt32).
 pub func js_new_int32(val: i32) -> Value:
-    return js_mkval(Tag.int, val)
+    var v: Value = ---
+    v.u.uint64 = (u64)(u32)val
+    v.tag = Tag.int
+    return v
 
 ## A catch offset pushed on the interpreter stack (JS_NewCatchOffset).
 func js_new_catch_offset(val: i32) -> Value:
-    return js_mkval(Tag.catch_offset, val)
+    var v: Value = ---
+    v.u.uint64 = (u64)(u32)val
+    v.tag = Tag.catch_offset
+    return v
 
 ## An integer value when it fits 32 bits, else a float (JS_NewInt64).
 pub func js_new_int64(val: i64) -> Value:
@@ -199,7 +228,8 @@ func js_value_is_both_float(v1: Value, v2: Value) -> bool:
 
 ## Whether the value holds a reference-counted pointer (JS_VALUE_HAS_REF_COUNT).
 func js_value_has_ref_count(v: Value) -> bool:
-    return (u32)(i32)(i64)v.tag >= (u32)(i32)tag_first
+    # tag_first spelled as its value: a top-level `let` is read from memory at each use
+    return (u32)(i32)(i64)v.tag >= (u32)(i32)-9
 
 ## JS_IsNumber.
 pub func js_is_number(v: Value) -> bool:

@@ -9,34 +9,45 @@
 #
 #==============================================================================================
 
+# These four run on every stack operation of the interpreter, and each is written so that
+# its lowered body stays within the size the native inliner expands at every call (24
+# instructions); the plain spelling, `js_value_has_ref_count(v)` and `js_rc(v.u.ptr)`,
+# lowers to about forty. So:
+# - `(i64)v.tag < 0` is JS_VALUE_HAS_REF_COUNT: every tag from tag_first (-9) up is
+#   below zero or one of the non-negative tags, which carry no count;
+# - the count is the i32 4 bytes below the payload pointer (the last field of js_rc's
+#   header), addressed by integer arithmetic, which lowers to one subtraction where
+#   pointer arithmetic lowers to a multiplication and a subtraction;
+# - it wraps as C's int does, and is read again rather than kept in a local.
+# The helpers they stand for are the value tests and js_rc; the slow path is a call.
+
+## The reference count is the last 4 bytes of a block's header (MallocBlockHeader).
+assert(sizeof(MallocBlockHeader) - offsetof(MallocBlockHeader, ref_count) == 4)
+
 ## A new reference to `v` (JS_DupValue).
 pub func js_dup_value(ctx: Context*, v: Value) -> Value:
-    if js_value_has_ref_count(v):
-        let p = js_rc(v.u.ptr)
-        p.ref_count += 1
+    if (i64)v.tag < 0:
+        *(i32*)((usize)v.u.ptr -% 4) +%= 1
     return v
 
 ## A new reference to `v` without a context (JS_DupValueRT).
 pub func js_dup_value_rt(rt: Runtime*, v: Value) -> Value:
-    if js_value_has_ref_count(v):
-        let p = js_rc(v.u.ptr)
-        p.ref_count += 1
+    if (i64)v.tag < 0:
+        *(i32*)((usize)v.u.ptr -% 4) +%= 1
     return v
 
 ## Release a reference to `v`; the last one frees it (JS_FreeValue).
 pub func js_free_value(ctx: Context*, v: Value):
-    if js_value_has_ref_count(v):
-        let p = js_rc(v.u.ptr)
-        p.ref_count -= 1
-        if p.ref_count <= 0:
+    if (i64)v.tag < 0:
+        *(i32*)((usize)v.u.ptr -% 4) -%= 1
+        if *(i32*)((usize)v.u.ptr -% 4) <= 0:
             js_free_value_raw(ctx, v)
 
 ## Release a reference to `v` without a context (JS_FreeValueRT).
 pub func js_free_value_rt(rt: Runtime*, v: Value):
-    if js_value_has_ref_count(v):
-        let p = js_rc(v.u.ptr)
-        p.ref_count -= 1
-        if p.ref_count <= 0:
+    if (i64)v.tag < 0:
+        *(i32*)((usize)v.u.ptr -% 4) -%= 1
+        if *(i32*)((usize)v.u.ptr -% 4) <= 0:
             js_free_value_rt_raw(rt, v)
 
 ## The property `prop` of `this_obj` (JS_GetProperty).

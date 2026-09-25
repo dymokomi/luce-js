@@ -212,44 +212,55 @@ pub func ctz64(a: u64) -> i32:
 
 # mark: Unaligned access ========================================================================
 
-# The C code reads through packed structs; `memory.read`/`memory.write` make no alignment
-# assumption. Byte order is the host's, as in C.
+# Read and written through packed structs, as the C code does: a packed struct's field has
+# alignment one, so the access is defined at any address, and it lowers to one load or
+# store (memory.read/memory.write copy through memcpy, a call on the interpreter's every
+# operand). Byte order is the host's, as in C.
+
+packed struct PackedU64:
+    var v: u64
+
+packed struct PackedU32:
+    var v: u32
+
+packed struct PackedU16:
+    var v: u16
 
 ## Read a host-order `u64` at `tab`, which may be unaligned.
 pub func get_u64(tab: const u8*) -> u64:
-    return memory.read[u64](tab)
+    return ((const PackedU64*)tab).v
 
 ## Read a host-order `i64` at `tab`, which may be unaligned.
 pub func get_i64(tab: const u8*) -> i64:
-    return (i64)memory.read[u64](tab)
+    return (i64)((const PackedU64*)tab).v
 
 ## Write a host-order `u64` at `tab`, which may be unaligned.
 pub func put_u64(tab: u8*, val: u64):
-    memory.write[u64](tab, val)
+    ((PackedU64*)tab).v = val
 
 ## Read a host-order `u32` at `tab`, which may be unaligned.
 pub func get_u32(tab: const u8*) -> u32:
-    return memory.read[u32](tab)
+    return ((const PackedU32*)tab).v
 
 ## Read a host-order `i32` at `tab`, which may be unaligned.
 pub func get_i32(tab: const u8*) -> i32:
-    return (i32)memory.read[u32](tab)
+    return (i32)((const PackedU32*)tab).v
 
 ## Write a host-order `u32` at `tab`, which may be unaligned.
 pub func put_u32(tab: u8*, val: u32):
-    memory.write[u32](tab, val)
+    ((PackedU32*)tab).v = val
 
 ## Read a host-order `u16` at `tab`, which may be unaligned, widened to `u32`.
 pub func get_u16(tab: const u8*) -> u32:
-    return memory.read[u16](tab)
+    return ((const PackedU16*)tab).v
 
 ## Read a host-order `i16` at `tab`, which may be unaligned, sign-extended to `i32`.
 pub func get_i16(tab: const u8*) -> i32:
-    return (i16)memory.read[u16](tab)
+    return (i16)((const PackedU16*)tab).v
 
 ## Write a host-order `u16` at `tab`, which may be unaligned.
 pub func put_u16(tab: u8*, val: u16):
-    memory.write[u16](tab, val)
+    ((PackedU16*)tab).v = val
 
 ## Read the byte at `tab`, widened to `u32`.
 pub func get_u8(tab: const u8*) -> u32:
