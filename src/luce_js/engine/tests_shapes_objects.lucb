@@ -1,0 +1,153 @@
+#==============================================================================================
+#
+#   tests_shapes_objects - Unit tests of the shape and object helpers
+#
+#   DESCRIPTION:
+#       Tests of the parts of quickjs.c lines 5119-6508 that work on plain data without a
+#       runtime: the shape layout and hash functions, the own property lookup over a
+#       shape built by hand in a buffer, the auto-init packing and the flexible members
+#       of the C function data record and bound functions. Expected hashes were computed
+#       with the C expressions (32-bit wrapping arithmetic).
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## Lay out an empty unhashed shape with a hash table of `hash_size` entries in `buf`.
+func test_shape_in(buf: u64*, hash_size: u32, prop_size: i32) -> Shape*:
+    let sh = (Shape*)buf
+    sh.is_hashed = 0
+    sh.hash = 0
+    sh.prop_hash_mask = hash_size - 1
+    sh.prop_size = prop_size
+    sh.prop_count = 0
+    sh.deleted_prop_count = 0
+    sh.shape_hash_next = none
+    sh.proto = none
+    discard(cutils.memset(get_shape_hash_table(sh), 0, sizeof(u32) * (usize)hash_size))
+    return sh
+
+## Append (`atom`, `flags`) to `sh` the way add_shape_property does, without the atom
+## reference count.
+func test_shape_add(sh: Shape*, atom: Atom, flags: u8):
+    let pr = get_shape_prop(sh) + (usize)sh.prop_count
+    sh.prop_count += 1
+    pr.atom = atom
+    pr.flags = flags
+    let h = (usize)(atom & sh.prop_hash_mask)
+    let hash_table = get_shape_hash_table(sh)
+    pr.hash_next = hash_table[h]
+    hash_table[h] = (u32)sh.prop_count
+
+# mark: Tests ===================================================================================
+
+test "shape layout: the hash table and the properties follow the header":
+    var buf: u64[32] = ---
+    let sh = test_shape_in(&buf[0], 4, 2)
+    assert((usize)get_shape_hash_table(sh) - (usize)sh == sizeof(Shape))
+    assert((usize)get_shape_prop(sh) - (usize)sh == sizeof(Shape) + 4 * sizeof(u32))
+    assert(get_shape_size(4, 2) == sizeof(Shape) + 16 + 2 * sizeof(ShapeProperty))
+    assert(sizeof(ShapeProperty) == 12)
+
+test "shape hash: the kernel multiplier, truncated to the table bits":
+    assert(shape_hash(1, 0) == 0x9e370001)
+    assert(shape_hash(0x12345678, 0x42) == 0x802a56ba)
+    assert(shape_hash(0xffffffff, 1) == 0)
+    assert(get_shape_hash(0x9e370001, 4) == 0x9)
+    assert(get_shape_hash(0x9e370001, 8) == 0x9e)
+    # the empty shape of a null prototype hashes the address 0 twice on 64-bit targets
+    if sizeof(usize) > 4:
+        assert(shape_initial_hash(none) == 0x3c6e0001)
+    else:
+        assert(shape_initial_hash(none) == 0x9e370001)
+
+test "own property lookup follows the hash chains":
+    var shape_buf: u64[32] = ---
+    let sh = test_shape_in(&shape_buf[0], 4, 4)
+    # 50, 54 and 58 share bucket 2; 61 is alone in bucket 1
+    test_shape_add(sh, 50, 3)
+    test_shape_add(sh, 54, 1)
+    test_shape_add(sh, 61, 7)
+    test_shape_add(sh, 58, 0)
+    assert(get_shape_hash_table(sh)[2] == 4)
+    assert(get_shape_hash_table(sh)[1] == 3)
+
+    var prop_buf: Property[4] = ---
+    var object_buf: u64[16] = ---
+    let p = (Object*)&object_buf[0]
+    p.shape = sh
+    p.prop = &prop_buf[0]
+
+    let prop = get_shape_prop(sh)
+    assert(find_own_property1(p, 50) == prop)
+    assert(find_own_property1(p, 54) == prop + 1)
+    assert(find_own_property1(p, 61) == prop + 2)
+    assert(find_own_property1(p, 58) == prop + 3)
+    assert(find_own_property1(p, 62) == none)
+
+    var pr: Property*? = none
+    assert(find_own_property(&pr, p, 54) == prop + 1)
+    assert(pr == &prop_buf[1])
+    assert(find_own_property(&pr, p, 46) == none)
+    assert(pr == none)
+
+test "rehashing the properties into a larger table":
+    var shape_buf: u64[32] = ---
+    let sh = test_shape_in(&shape_buf[0], 4, 4)
+    test_shape_add(sh, 50, 3)
+    test_shape_add(sh, 54, 1)
+    test_shape_add(sh, no_atom, 0)   # a deleted property is not rehashed
+    test_shape_add(sh, 58, 0)
+    # grow the table to 8 buckets in place: the properties move behind it
+    discard(cutils.memmove((u8*)get_shape_prop(sh) + 4 * sizeof(u32), get_shape_prop(sh),
+        4 * sizeof(ShapeProperty)))
+    sh.prop_hash_mask = 7
+    discard(cutils.memset(get_shape_hash_table(sh), 0, 8 * sizeof(u32)))
+    rehash_shape_props(sh, 7, 4)
+    let hash_table = get_shape_hash_table(sh)
+    # 50 and 58 share bucket 2 (58 first), 54 is in bucket 6
+    assert(hash_table[2] == 4)
+    assert(get_shape_prop(sh)[3].hash_next == 1)
+    assert(get_shape_prop(sh)[0].hash_next == 0)
+    assert(hash_table[6] == 2)
+    assert(hash_table[0] == 0)
+
+    var object_buf: u64[16] = ---
+    var prop_buf: Property[4] = ---
+    let p = (Object*)&object_buf[0]
+    p.shape = sh
+    p.prop = &prop_buf[0]
+    assert(find_own_property1(p, 58) == get_shape_prop(sh) + 3)
+    assert(find_own_property1(p, 50) == get_shape_prop(sh))
+    assert(find_own_property1(p, no_atom) == none)
+
+test "auto-init properties pack the realm and the kind in one word":
+    var context_buf: u64[8] = ---
+    var pr: Property = ---
+    pr.u.init.realm_and_id = (usize)&context_buf[0] | (usize)AutoInitId.prop
+    pr.u.init.opaque = none
+    assert((usize)js_autoinit_get_realm(&pr) == (usize)&context_buf[0])
+    assert(js_autoinit_get_id(&pr) == AutoInitId.prop)
+    pr.u.init.realm_and_id = (usize)&context_buf[0] | (usize)AutoInitId.module_ns
+    assert(js_autoinit_get_id(&pr) == AutoInitId.module_ns)
+
+test "classes with bytecode":
+    assert(js_class_has_bytecode((u32)ClassId.bytecode_function))
+    assert(js_class_has_bytecode((u32)ClassId.generator_function))
+    assert(js_class_has_bytecode((u32)ClassId.async_function))
+    assert(js_class_has_bytecode((u32)ClassId.async_generator_function))
+    assert(not js_class_has_bytecode((u32)ClassId.c_function))
+    assert(not js_class_has_bytecode((u32)ClassId.bound_function))
+    assert(get_proto_obj(js_null()) == none)
+    assert(js_get_function_bytecode(js_undefined()) == none)
+
+test "flexible members follow their records":
+    var buf: u64[8] = ---
+    let s = (CFunctionDataRecord*)&buf[0]
+    assert((usize)c_function_data_record_data(s) - (usize)s == sizeof(CFunctionDataRecord))
+    let bf = (BoundFunction*)&buf[0]
+    assert((usize)bound_function_argv(bf) - (usize)bf == sizeof(BoundFunction))
+    # the C layouts: data[] after 16 bytes, argv[] after 40 bytes on 64-bit targets
+    if sizeof(usize) == 8:
+        assert(sizeof(CFunctionDataRecord) == 16)
+        assert(sizeof(BoundFunction) == 40)

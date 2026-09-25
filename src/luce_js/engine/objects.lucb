@@ -1,0 +1,341 @@
+#==============================================================================================
+#
+#   objects - Creating objects, arrays and function objects
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 5610-6074: JS_NewObjectFromShape and the constructors
+#       built on it (by prototype and class, by class, plain objects and arrays), the
+#       object data of primitive wrappers, function names and home objects, and the C
+#       function objects (JS_NewCFunction3/2, JS_NewCFunctionData and its record).
+#       JS_GetObjectData is under `#if 0` upstream and is not ported.
+#
+#==============================================================================================
+
+## An empty NUL-terminated C string.
+let empty_c_string: u8[1] = [0]
+
+# mark: Objects from shapes =====================================================================
+
+## Free what JS_NewObjectFromShape owns when it fails: the initial property values (if
+## any) and the reference to the shape.
+func free_object_from_shape_inputs(rt: Runtime*, sh: Shape*, props: Property*?):
+    if let pr = props:
+        let prs = get_shape_prop(sh)
+        for i in 0..<(usize)sh.prop_count:
+            free_property(rt, pr + i, (i32)prs[i].flags)
+    js_free_shape(rt, sh)
+
+# 'props[]' is used to initialized the object properties. The number
+# of elements depends on the shape.
+## Takes the reference to `sh` and the values of `props`, also on failure.
+func js_new_object_from_shape(ctx: Context*, sh: Shape*, class_id: u32, props: Property*?) -> Value!:
+    errdefer free_object_from_shape_inputs(ctx.rt, sh, props)
+
+    js_trigger_gc(ctx.rt, sizeof(Object))
+    let p = (Object*)(try js_malloc(ctx, sizeof(Object)))
+    p.class_id = (ClassId)(u16)class_id
+    p.is_std_array_prototype = false
+    p.extensible = true
+    p.free_mark = false
+    p.is_exotic = false
+    p.fast_array = false
+    p.is_constructor = false
+    p.has_immutable_prototype = false
+    p.tmp_mark = false
+    p.is_htmldda = false
+    p.weakref_count = 0
+    p.u.opaque = none
+    p.shape = sh
+    let prop = js_malloc(ctx, sizeof(Property) * (usize)sh.prop_size) catch failure:
+        js_free(ctx, p)
+        error(failure.code, failure.message)
+    p.prop = (Property*)prop
+
+    match p.class_id:
+        .object:
+            discard(0)
+        .array:
+            p.is_exotic = true
+            p.fast_array = true
+            p.u.array.u.ptr = none
+            p.u.array.count = 0
+            p.u.array.u1.size = 0
+            if props == none:
+                # XXX: remove
+                # the length property is always the first one
+                var pr = p.prop
+                if ctx.array_shape != sh:
+                    # only used for the first array
+                    # cannot fail
+                    pr = add_property(ctx, p, atom_length, prop_writable | prop_length) else trap("add_property cannot fail on a new array")
+                pr.u.value = js_new_int32(0)
+        .c_function:
+            p.prop[0].u.value = js_undefined()
+        .arguments, .mapped_arguments, .uint8c_array, .int8_array, .uint8_array, .int16_array, .uint16_array, .int32_array, .uint32_array, .big_int64_array, .big_uint64_array, .float16_array, .float32_array, .float64_array:
+            p.is_exotic = true
+            p.fast_array = true
+            p.u.array.u.ptr = none
+            p.u.array.count = 0
+        .dataview:
+            p.u.array.u.ptr = none
+            p.u.array.count = 0
+        .number, .string, .boolean, .symbol, .date, .big_int:
+            p.u.object_data = js_undefined()
+            set_exotic_from_class(ctx, p, class_id)
+        .regexp:
+            # pattern = NULL, bytecode = NULL: the fields are never null once the regexp
+            # is built, so they are cleared as bytes.
+            discard(cutils.memset(&p.u.regexp, 0, sizeof(RegExp)))
+        .global_object:
+            p.u.global_object.uninitialized_vars = js_undefined()
+        _:
+            set_exotic_from_class(ctx, p, class_id)
+    js_rc(p).ref_count = 1
+    add_gc_object(ctx.rt, &p.header, GCObjectType.js_object)
+    if let pr = props:
+        for i in 0..<(usize)sh.prop_count:
+            p.prop[i] = pr[i]
+    return js_mkptr(Tag.object, p)
+
+## Mark `p` exotic when its class has exotic methods (the set_exotic label of
+## JS_NewObjectFromShape).
+func set_exotic_from_class(ctx: Context*, p: Object*, class_id: u32):
+    let class_array = ctx.rt.class_array else trap("the class array is not allocated")
+    if class_array[(usize)class_id].exotic != none:
+        p.is_exotic = true
+
+## The object of `proto_val`, or none when it is not an object (null).
+func get_proto_obj(proto_val: Value) -> Object*?:
+    if proto_val.tag != Tag.object:
+        return none
+    else:
+        return proto_val.u.obj
+
+# WARNING: proto must be an object or JS_NULL
+## A new object of class `class_id` with prototype `proto_val` (JS_NewObjectProtoClass).
+pub func js_new_object_proto_class(ctx: Context*, proto_val: Value, class_id: u32) -> Value!:
+    let proto = get_proto_obj(proto_val)
+    var sh: Shape* = ---
+    if let found = find_hashed_shape_proto(ctx.rt, proto):
+        sh = js_dup_shape(found)
+    else:
+        sh = try js_new_shape(ctx, proto)
+    return try js_new_object_from_shape(ctx, sh, class_id, none)
+
+# WARNING: the shape is not hashed. It is used for objects where
+# factorizing the shape is not relevant (prototypes, constructors)
+func js_new_object_proto_class_alloc(ctx: Context*, proto_val: Value, class_id: u32, n_alloc_props: i32) -> Value!:
+    var n_props = n_alloc_props
+    var hash_size: i32 = 0
+    if n_props <= js_prop_initial_size:
+        n_props = js_prop_initial_size
+        hash_size = js_prop_initial_hash_size
+    else:
+        let hash_bits = 32 - cutils.clz32((u32)(n_props - 1))   # ceil(log2(radix))
+        hash_size = 1 << hash_bits
+    let proto = get_proto_obj(proto_val)
+    let sh = try js_new_shape_nohash(ctx, proto, hash_size, n_props)
+    return try js_new_object_from_shape(ctx, sh, class_id, none)
+
+## Set the primitive value of a Number, String, Boolean, Symbol, Date or BigInt object,
+## taking ownership of `val`. For ClassId.string, `val` must be a flat string (not a rope).
+func js_set_object_data(ctx: Context*, obj: Value, val: Value) -> !:
+    if obj.tag == Tag.object:
+        let p = obj.u.obj
+        match p.class_id:
+            .number, .string, .boolean, .symbol, .date, .big_int:
+                js_free_value(ctx, p.u.object_data)
+                p.u.object_data = val
+                return
+            _:
+                discard(0)
+    js_free_value(ctx, val)
+    if not js_is_exception(obj):
+        try js_throw_type_error(ctx, "invalid object type")
+    error(exception, "")
+
+## A new object of class `class_id` with the class's prototype (JS_NewObjectClass).
+pub func js_new_object_class(ctx: Context*, class_id: i32) -> Value!:
+    let class_proto = ctx.class_proto else trap("the class prototypes are not allocated")
+    return try js_new_object_proto_class(ctx, class_proto[(usize)class_id], (u32)class_id)
+
+## A new plain object with prototype `proto` (JS_NewObjectProto).
+pub func js_new_object_proto(ctx: Context*, proto: Value) -> Value!:
+    return try js_new_object_proto_class(ctx, proto, (u32)ClassId.object)
+
+## A new empty array (JS_NewArray).
+pub func js_new_array(ctx: Context*) -> Value!:
+    let array_shape = ctx.array_shape else trap("the array shape is not allocated")
+    return try js_new_object_from_shape(ctx, js_dup_shape(array_shape), (u32)ClassId.array, none)
+
+## A new plain object (JS_NewObject).
+pub func js_new_object(ctx: Context*) -> Value!:
+    # inline JS_NewObjectClass(ctx, JS_CLASS_OBJECT);
+    let class_proto = ctx.class_proto else trap("the class prototypes are not allocated")
+    return try js_new_object_proto_class(ctx, class_proto[(usize)ClassId.object], (u32)ClassId.object)
+
+# mark: Function properties =====================================================================
+
+## Define a function's `length` and `name`. As in QuickJS, failures are not reported (an
+## exception may be left pending); a name that cannot be made is not defined.
+func js_function_set_properties(ctx: Context*, func_obj: Value, name: Atom, len: i32):
+    # ES6 feature non compatible with ES5.1: length is configurable
+    discard(js_define_property_value(ctx, func_obj, atom_length, js_new_int32(len),
+        prop_configurable) else false)
+    let name_str = js_atom_to_string(ctx, name) else return
+    discard(js_define_property_value(ctx, func_obj, atom_name, name_str, prop_configurable) else false)
+
+## Whether objects of `class_id` are closures over bytecode (u.func_).
+func js_class_has_bytecode(class_id: u32) -> bool:
+    return (class_id == (u32)ClassId.bytecode_function or
+        class_id == (u32)ClassId.generator_function or
+        class_id == (u32)ClassId.async_function or
+        class_id == (u32)ClassId.async_generator_function)
+
+# return NULL without exception if not a function or no bytecode
+func js_get_function_bytecode(val: Value) -> FunctionBytecode*?:
+    if val.tag != Tag.object:
+        return none
+    let p = val.u.obj
+    if not js_class_has_bytecode((u32)p.class_id):
+        return none
+    return p.u.func_.function_bytecode
+
+## Set the home object of a method that needs one (for `super`).
+func js_method_set_home_object(ctx: Context*, func_obj: Value, home_obj: Value):
+    if func_obj.tag != Tag.object:
+        return
+    let p = func_obj.u.obj
+    if not js_class_has_bytecode((u32)p.class_id):
+        return
+    let b = p.u.func_.function_bytecode
+    if b.need_home_object:
+        var p1 = p.u.func_.home_object
+        if let old = p1:
+            js_free_value(ctx, js_mkptr(Tag.object, old))
+        if home_obj.tag == Tag.object:
+            p1 = js_dup_value(ctx, home_obj).u.obj
+        else:
+            p1 = none
+        p.u.func_.home_object = p1
+
+## The name of a function defined with key `name`: the string, or "[description]" for a
+## symbol with a description.
+func js_get_function_name(ctx: Context*, name: Atom) -> Value!:
+    var name_str = try js_atom_to_string(ctx, name)
+    if js_atom_symbol_has_description(ctx, name):
+        name_str = try js_concat_string3(ctx, "[".bytes.data, name_str, "]".bytes.data)
+    return name_str
+
+# Modify the name of a method according to the atom and
+# 'flags'. 'flags' is a bitmask of JS_PROP_HAS_GET and
+# JS_PROP_HAS_SET. Also set the home object of the method.
+func js_method_set_properties(ctx: Context*, func_obj: Value, name: Atom, flags: i32, home_obj: Value) -> !:
+    var name_str = try js_get_function_name(ctx, name)
+    if (flags & prop_has_get) != 0:
+        name_str = try js_concat_string3(ctx, "get ".bytes.data, name_str, &empty_c_string[0])
+    elif (flags & prop_has_set) != 0:
+        name_str = try js_concat_string3(ctx, "set ".bytes.data, name_str, &empty_c_string[0])
+    discard(try js_define_property_value(ctx, func_obj, atom_name, name_str, prop_configurable))
+    js_method_set_home_object(ctx, func_obj, home_obj)
+
+# mark: C functions =============================================================================
+
+# Note: at least 'length' arguments will be readable in 'argv'
+## A C function object with prototype `proto_val`; `n_fields` > 0 preallocates that many
+## properties in an unhashed shape. A none `name` is the empty name.
+func js_new_c_function3(ctx: Context*, func_: CFunction, name: const u8*?, length: i32, cproto: CFunctionEnum, magic: i32, proto_val: Value, n_fields: i32) -> Value!:
+    var func_obj = js_undefined()
+    if n_fields > 0:
+        func_obj = try js_new_object_proto_class_alloc(ctx, proto_val, (u32)ClassId.c_function, n_fields)
+    else:
+        func_obj = try js_new_object_proto_class(ctx, proto_val, (u32)ClassId.c_function)
+    let p = func_obj.u.obj
+    p.u.cfunc.realm = js_dup_context(ctx)
+    p.u.cfunc.c_function.generic = func_
+    p.u.cfunc.length = (u8)length
+    p.u.cfunc.cproto = cproto
+    p.u.cfunc.magic = (i16)magic
+    p.is_constructor = (cproto == CFunctionEnum.constructor or
+        cproto == CFunctionEnum.constructor_magic or
+        cproto == CFunctionEnum.constructor_or_func or
+        cproto == CFunctionEnum.constructor_or_func_magic)
+    let name_text = name else &empty_c_string[0]
+    let name_atom = js_new_atom_len(ctx, name_text, cutils.strlen(name_text)) catch failure:
+        js_free_value(ctx, func_obj)
+        error(failure.code, failure.message)
+    js_function_set_properties(ctx, func_obj, name_atom, length)
+    js_free_atom(ctx, name_atom)
+    return func_obj
+
+# Note: at least 'length' arguments will be readable in 'argv'
+## A C function object of calling shape `cproto` (JS_NewCFunction2).
+pub func js_new_c_function2(ctx: Context*, func_: CFunction, name: const u8*?, length: i32, cproto: CFunctionEnum, magic: i32) -> Value!:
+    return try js_new_c_function3(ctx, func_, name, length, cproto, magic, ctx.function_proto, 0)
+
+## The data of a C function with data (JSCFunctionDataRecord); `data_len` values follow it
+## (see `c_function_data_record_data`).
+struct CFunctionDataRecord:
+    var func_: CFunctionData
+    var length: u8
+    var data_len: u8
+    var magic: u16
+
+## The values bound to a C function with data (the C flexible member `data`).
+func c_function_data_record_data(s: CFunctionDataRecord*) -> Value*:
+    return (Value*)((u8*)s + sizeof(CFunctionDataRecord))
+
+## Finalizer of ClassId.c_function_data.
+func js_c_function_data_finalizer(rt: Runtime*, val: Value):
+    if let raw = js_get_opaque(val, (u32)ClassId.c_function_data):
+        let s = (CFunctionDataRecord*)raw
+        let data = c_function_data_record_data(s)
+        for i in 0..<(usize)s.data_len:
+            js_free_value_rt(rt, data[i])
+        js_free_rt(rt, s)
+
+## Marking function of ClassId.c_function_data.
+func js_c_function_data_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    if let raw = js_get_opaque(val, (u32)ClassId.c_function_data):
+        let s = (CFunctionDataRecord*)raw
+        let data = c_function_data_record_data(s)
+        for i in 0..<(usize)s.data_len:
+            js_mark_value(rt, data[i], mark_func)
+
+## Call behaviour of ClassId.c_function_data: pads the arguments with undefined up to the
+## function's length.
+func js_c_function_data_call(ctx: Context*, func_obj: Value, this_val: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let raw = js_get_opaque(func_obj, (u32)ClassId.c_function_data) else trap("not a C function with data")
+    let s = (CFunctionDataRecord*)raw
+    var arg_buf = argv
+    # alloca(sizeof(arg_buf[0]) * s->length): the length is a u8.
+    var padded: Value[256] = ---
+
+    # XXX: could add the function on the stack for debug
+    if argc < (i32)s.length:
+        for i in 0..<(usize)argc:
+            padded[i] = argv[i]
+        for i in (usize)argc..<(usize)s.length:
+            padded[i] = js_undefined()
+        arg_buf = &padded[0]
+
+    let f = s.func_
+    return try f(ctx, this_val, argc, arg_buf, (i32)s.magic, c_function_data_record_data(s))
+
+## A C function object that receives `magic` and a copy of the `data_len` values of
+## `data` on every call (JS_NewCFunctionData).
+pub func js_new_c_function_data(ctx: Context*, func_: CFunctionData, length: i32, magic: i32, data_len: i32, data: Value*) -> Value!:
+    let func_obj = try js_new_object_proto_class(ctx, ctx.function_proto, (u32)ClassId.c_function_data)
+    errdefer js_free_value(ctx, func_obj)
+    let raw = try js_malloc(ctx, sizeof(CFunctionDataRecord) + (usize)data_len * sizeof(Value))
+    let s = (CFunctionDataRecord*)raw
+    s.func_ = func_
+    s.length = (u8)length
+    s.data_len = (u8)data_len
+    s.magic = (u16)magic
+    let s_data = c_function_data_record_data(s)
+    for i in 0..<(usize)data_len:
+        s_data[i] = js_dup_value(ctx, data[i])
+    js_set_opaque(func_obj, s)
+    js_function_set_properties(ctx, func_obj, atom_empty_string, length)
+    return func_obj

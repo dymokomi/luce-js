@@ -26,9 +26,6 @@ struct BCWriterState:
 struct BlockEnv:
     var unported: i32
 
-struct CFunctionDataRecord:
-    var unported: i32
-
 struct ClassFieldsDef:
     var unported: i32
 

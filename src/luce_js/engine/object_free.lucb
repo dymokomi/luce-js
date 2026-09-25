@@ -1,0 +1,333 @@
+#==============================================================================================
+#
+#   object_free - Own property lookup, class finalizers and marks, and freeing values
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 6076-6508: auto-initialized properties, free_property,
+#       the own property lookup through the shape's hash table, closure variable
+#       references, the finalizers and marking functions of the arrays, primitive
+#       wrappers, C functions, bytecode functions, bound functions and for-in iterators,
+#       and freeing objects, GC objects and values whose reference count reached zero
+#       (__JS_FreeValueRT).
+#
+#==============================================================================================
+
+# mark: Auto-initialized properties =============================================================
+
+## The realm of an auto-initialized property (the pointer part of realm_and_id).
+func js_autoinit_get_realm(pr: Property*) -> Context*:
+    return (Context*?)(pr.u.init.realm_and_id & ~(usize)3) else trap("autoinit property without a realm")
+
+## The kind of an auto-initialized property (the 2 low bits of realm_and_id).
+func js_autoinit_get_id(pr: Property*) -> AutoInitId:
+    return (AutoInitId)(i32)(pr.u.init.realm_and_id & 3)
+
+## Release an auto-initialized property's reference to its realm.
+func js_autoinit_free(rt: Runtime*, pr: Property*):
+    js_free_context(js_autoinit_get_realm(pr))
+
+## Mark an auto-initialized property's realm.
+func js_autoinit_mark(rt: Runtime*, pr: Property*, mark_func: MarkFunc):
+    mark_func(rt, &js_autoinit_get_realm(pr).header)
+
+## Release what the property `pr` of kind `prop_flags & prop_tmask` holds.
+func free_property(rt: Runtime*, pr: Property*, prop_flags: i32):
+    if (prop_flags & prop_tmask) != 0:
+        if (prop_flags & prop_tmask) == prop_getset:
+            if let getter = pr.u.getset.getter:
+                js_free_value_rt(rt, js_mkptr(Tag.object, getter))
+            if let setter = pr.u.getset.setter:
+                js_free_value_rt(rt, js_mkptr(Tag.object, setter))
+        elif (prop_flags & prop_tmask) == prop_varref:
+            free_var_ref(rt, pr.u.var_ref)
+        elif (prop_flags & prop_tmask) == prop_autoinit:
+            js_autoinit_free(rt, pr)
+    else:
+        js_free_value_rt(rt, pr.u.value)
+
+# mark: Own property lookup =====================================================================
+
+## The shape property of `p`'s own property `atom`, or none.
+func find_own_property1(p: Object*, atom: Atom) -> ShapeProperty*?:
+    let sh = p.shape
+    var h = get_shape_hash_table(sh)[(usize)(atom & sh.prop_hash_mask)]
+    let prop = get_shape_prop(sh)
+    while h != 0:
+        let pr = prop + (usize)(h - 1)
+        if pr.atom == atom:
+            return pr
+        h = pr.hash_next
+    return none
+
+## The shape property of `p`'s own property `atom`, or none; `*ppr` receives its storage
+## (none when not found).
+func find_own_property(ppr: Property*?*, p: Object*, atom: Atom) -> ShapeProperty*?:
+    let sh = p.shape
+    var h = get_shape_hash_table(sh)[(usize)(atom & sh.prop_hash_mask)]
+    let prop = get_shape_prop(sh)
+    while h != 0:
+        let pr = prop + (usize)(h - 1)
+        if pr.atom == atom:
+            *ppr = p.prop + (usize)(h - 1)
+            # the compiler should be able to assume that pr != NULL here
+            return pr
+        h = pr.hash_next
+    *ppr = none
+    return none
+
+# indicate that the object may be part of a function prototype cycle
+func set_cycle_flag(ctx: Context*, obj: Value):
+    return
+
+## Release a reference to a closure variable; the last one detaches it from its frame
+## and frees it.
+func free_var_ref(rt: Runtime*, var_ref: VarRef*?):
+    if let vr = var_ref:
+        let rc = js_rc(vr)
+        assert(rc.ref_count > 0)
+        rc.ref_count -= 1
+        if rc.ref_count == 0:
+            if vr.is_detached != 0:
+                js_free_value_rt(rt, vr.u.value)
+            else:
+                let sf = vr.u.frame.stack_frame
+                let var_refs = sf.var_refs else trap("attached variable reference without a frame slot")
+                let idx = (usize)vr.u.frame.var_ref_idx
+                assert(var_refs[idx] == vr)
+                var_refs[idx] = none
+                if (sf.js_mode & js_mode_async) != 0:
+                    let async_func = (AsyncFunctionState*)((u8*)sf - offsetof(AsyncFunctionState, frame))
+                    async_func_free(rt, async_func)
+            remove_gc_object(&vr.header)
+            js_free_rt(rt, vr)
+
+# mark: Class finalizers and marks ==============================================================
+
+## Finalizer of the fast array classes (arrays and arguments).
+func js_array_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+
+    for i in 0..<p.u.array.count:
+        js_free_value_rt(rt, p.u.array.u.values[i])
+    if let values = p.u.array.u.ptr:
+        js_free_rt(rt, values)
+
+## Marking function of the fast array classes.
+func js_array_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+
+    for i in 0..<p.u.array.count:
+        js_mark_value(rt, p.u.array.u.values[i], mark_func)
+
+## Finalizer of the primitive wrapper classes (u.object_data).
+func js_object_data_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    js_free_value_rt(rt, p.u.object_data)
+    p.u.object_data = js_undefined()
+
+## Marking function of the primitive wrapper classes.
+func js_object_data_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    js_mark_value(rt, p.u.object_data, mark_func)
+
+# The realm of a C function and the bytecode of a closure are the first word of the
+# object's union; QuickJS tests them for NULL (an object not yet initialized), which the
+# port reads through the nullable `opaque` member at the same place.
+
+## Finalizer of ClassId.c_function.
+func js_c_function_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+
+    if let realm = p.u.opaque:
+        js_free_context((Context*)realm)
+
+## Marking function of ClassId.c_function.
+func js_c_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+
+    if let realm = p.u.opaque:
+        mark_func(rt, &((Context*)realm).header)
+
+## Finalizer of the bytecode function classes.
+func js_bytecode_function_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+
+    if let p1 = p.u.func_.home_object:
+        js_free_value_rt(rt, js_mkptr(Tag.object, p1))
+    if let braw = p.u.opaque:
+        let b = (FunctionBytecode*)braw
+        if let var_refs = p.u.func_.var_refs:
+            for i in 0..<(usize)b.closure_var_count:
+                free_var_ref(rt, var_refs[i])
+            js_free_rt(rt, var_refs)
+        js_free_value_rt(rt, js_mkptr(Tag.function_bytecode, b))
+
+## Marking function of the bytecode function classes.
+func js_bytecode_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+
+    if let home_object = p.u.func_.home_object:
+        js_mark_value(rt, js_mkptr(Tag.object, home_object), mark_func)
+    if let braw = p.u.opaque:
+        let b = (FunctionBytecode*)braw
+        if let var_refs = p.u.func_.var_refs:
+            for i in 0..<(usize)b.closure_var_count:
+                if let var_ref = var_refs[i]:
+                    mark_func(rt, &var_ref.header)
+        # must mark the function bytecode because template objects may be
+        # part of a cycle
+        js_mark_value(rt, js_mkptr(Tag.function_bytecode, b), mark_func)
+
+## The bound arguments of a bound function (the C flexible member `argv`).
+func bound_function_argv(bf: BoundFunction*) -> Value*:
+    return (Value*)((u8*)bf + sizeof(BoundFunction))
+
+## Finalizer of ClassId.bound_function.
+func js_bound_function_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    let bf = p.u.bound_function
+    let argv = bound_function_argv(bf)
+
+    js_free_value_rt(rt, bf.func_obj)
+    js_free_value_rt(rt, bf.this_val)
+    for i in 0..<(usize)bf.argc:
+        js_free_value_rt(rt, argv[i])
+    js_free_rt(rt, bf)
+
+## Marking function of ClassId.bound_function.
+func js_bound_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    let bf = p.u.bound_function
+    let argv = bound_function_argv(bf)
+
+    js_mark_value(rt, bf.func_obj, mark_func)
+    js_mark_value(rt, bf.this_val, mark_func)
+    for i in 0..<(usize)bf.argc:
+        js_mark_value(rt, argv[i], mark_func)
+
+## Finalizer of ClassId.for_in_iterator.
+func js_for_in_iterator_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    let it = p.u.for_in_iterator
+
+    js_free_value_rt(rt, it.obj)
+    if it.is_array == 0:
+        if let tab_atom = it.tab_atom:
+            for i in 0..<it.atom_count:
+                js_free_atom_rt(rt, tab_atom[i].atom)
+            js_free_rt(rt, tab_atom)
+    js_free_rt(rt, it)
+
+## Marking function of ClassId.for_in_iterator.
+func js_for_in_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    let it = p.u.for_in_iterator
+    js_mark_value(rt, it.obj, mark_func)
+
+# mark: Freeing objects and values ==============================================================
+
+## Free an object: its properties, its shape and its class data. The structure itself is
+## kept while weak references (or, during cycle removal, references) point at it.
+func free_object(rt: Runtime*, p: Object*):
+    p.free_mark = true   # used to tell the object is invalid when
+                         # freeing cycles
+    # free all the fields
+    let sh = p.shape
+    let pr = get_shape_prop(sh)
+    for i in 0..<(usize)sh.prop_count:
+        free_property(rt, p.prop + i, (i32)pr[i].flags)
+    js_free_rt(rt, p.prop)
+    # as an optimization we destroy the shape immediately without
+    # putting it in gc_zero_ref_count_list
+    js_free_shape(rt, sh)
+
+    # fail safe: QuickJS also clears p->shape and p->prop here; both are never-null by
+    # type in the port, so they keep their (dangling) values.
+
+    let class_array = rt.class_array else trap("the class array is not allocated")
+    if let finalizer = class_array[(usize)p.class_id].finalizer:
+        finalizer(rt, js_mkptr(Tag.object, p))
+
+    # fail safe
+    p.class_id = (ClassId)(u16)0
+    p.u.opaque = none
+    p.u.func_.var_refs = none
+    p.u.func_.home_object = none
+
+    remove_gc_object(&p.header)
+    if rt.gc_phase == GCPhase.remove_cycles:
+        if js_rc(p).ref_count == 0 and p.weakref_count == 0:
+            js_free_rt(rt, p)
+        else:
+            # keep the object structure because there are may be
+            # references to it
+            cutils.list_add_tail(&p.header.link, &rt.gc_zero_ref_count_list)
+    else:
+        # keep the object structure in case there are weak references to it
+        if p.weakref_count == 0:
+            js_free_rt(rt, p)
+        else:
+            let rc = js_rc(p)
+            rc.gc_bits = rc.gc_bits & 0x7f   # reset the mark so that the weakref can be freed
+
+## Free a GC object by its type (the gc_obj_type of its block header).
+func free_gc_object(rt: Runtime*, gp: GCObjectHeader*):
+    match (GCObjectType)(js_rc(gp).gc_bits & 0x7f):
+        .js_object:
+            free_object(rt, (Object*)gp)
+        .function_bytecode:
+            free_function_bytecode(rt, (FunctionBytecode*)gp)
+        .async_function:
+            async_func_free_raw(rt, (AsyncFunctionState*)gp)
+        .module:
+            js_free_module_def(rt, (ModuleDef*)gp)
+        _:
+            trap("free_gc_object: unexpected GC object type")
+
+## Free every GC object on the zero reference count list.
+func free_zero_refcount(rt: Runtime*):
+    rt.gc_phase = GCPhase.decref
+    while true:
+        let el = rt.gc_zero_ref_count_list.next else trap("unlinked list")
+        if el == &rt.gc_zero_ref_count_list:
+            break
+        let p = (GCObjectHeader*)((u8*)el - offsetof(GCObjectHeader, link))
+        assert(js_rc(p).ref_count == 0)
+        free_gc_object(rt, p)
+    rt.gc_phase = GCPhase.none_
+
+# called with the ref_count of 'v' reaches zero.
+## Free a value whose reference count reached zero (__JS_FreeValueRT).
+pub func js_free_value_rt_raw(rt: Runtime*, v: Value):
+    match v.tag:
+        .string:
+            let p = v.u.string
+            if p.atom_type != 0:
+                js_free_atom_struct(rt, p)
+            else:
+                js_free_rt(rt, p)
+        .string_rope:
+            # Note: recursion is acceptable because the rope depth is bounded
+            let p = v.u.rope
+            js_free_value_rt(rt, p.left)
+            js_free_value_rt(rt, p.right)
+            js_free_rt(rt, p)
+        .object, .function_bytecode, .module:
+            let p = (GCObjectHeader*)v.u.ptr
+            if rt.gc_phase != GCPhase.remove_cycles:
+                cutils.list_del(&p.link)
+                cutils.list_add(&p.link, &rt.gc_zero_ref_count_list)
+                let rc = js_rc(p)
+                rc.gc_bits = rc.gc_bits | 0x80   # indicate that the object is about to be freed
+                if rt.gc_phase == GCPhase.none_:
+                    free_zero_refcount(rt)
+        .big_int:
+            js_free_rt(rt, v.u.ptr)
+        .symbol:
+            js_free_atom_struct(rt, (AtomStruct*)v.u.ptr)
+        _:
+            trap("js_free_value_rt_raw: value without a reference count")
+
+## Free a value whose reference count reached zero (__JS_FreeValue).
+pub func js_free_value_raw(ctx: Context*, v: Value):
+    js_free_value_rt_raw(ctx.rt, v)
