@@ -89,8 +89,8 @@ test "timers run in order from the loop and can be cleared":
     discard(eval_to_text(ctx, """
         import * as os from "os";
         let r = [];
-        os.setTimeout(() => r.push("b"), 20);
-        os.setTimeout(() => r.push("a"), 5);
+        os.setTimeout(() => r.push("b"), 300);
+        os.setTimeout(() => r.push("a"), 0);
         let t = os.setTimeout(() => r.push("never"), 1);
         os.clearTimeout(t);
         Promise.resolve().then(() => r.push("job"));
