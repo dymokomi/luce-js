@@ -94,7 +94,13 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
     # the frame when it fits; C allocates it with alloca
     var frame_space: Value[js_call_inline_frame_values] = ---
     st.sf = &sf_s
-    let entry = interp_enter(&st, caller_ctx, func_obj, this_obj, new_target, argc, argv, flags, &frame_space[0])
+    st.caller_ctx = caller_ctx
+    st.func_obj = func_obj
+    st.this_obj = this_obj
+    st.new_target = new_target
+    st.argc = argc
+    st.argv = argv
+    let entry = interp_enter(&st, flags, &frame_space[0])
     if entry == InterpEntry.returned:
         return st.ret_val
     if entry == InterpEntry.failed:
@@ -108,7 +114,8 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
     let ctx = st.ctx
     let var_buf = st.var_buf
     let arg_buf = st.arg_buf
-    let var_refs = st.var_refs
+    # the closure variables, read as C reads them (see var_ref_at)
+    let var_refs = *(VarRef***)&st.var_refs
     # one address for the countdown of js_poll_interrupts, which the jumps take
     let interrupt_counter = &ctx.interrupt_counter
     # the `this` and new.target of plain calls: one slot rather than one per argument
@@ -412,21 +419,21 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                 free_counted(ctx, old_tag, old_bits)
                         continue dispatch
                     .get_var_ref0, .get_var_ref1, .get_var_ref2, .get_var_ref3:
-                        *sp = *var_ref_at(var_refs, (usize)((u8)op - (u8)Op.get_var_ref0)).pvalue
+                        *sp = *var_refs[(usize)((u8)op - (u8)Op.get_var_ref0)].pvalue
                         if (i64)sp.tag < 0:
                             *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
                         sp += 1
                         continue dispatch
                     # end SHORT_OPCODES
                     .get_var_ref:
-                        *sp = *var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        *sp = *var_refs[(usize)((const Operand16*)pc).v].pvalue
                         if (i64)sp.tag < 0:
                             *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
                         sp += 1
                         pc += 2
                         continue dispatch
                     .put_var_ref:
-                        let pv = var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        let pv = var_refs[(usize)((const Operand16*)pc).v].pvalue
                         pc += 2
                         let old_tag = pv.tag
                         let old_bits = pv.u.uint64
@@ -439,7 +446,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                         continue dispatch
                     .get_var_ref_check:
                         # an uninitialized variable: the outlined body throws
-                        let pv = var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        let pv = var_refs[(usize)((const Operand16*)pc).v].pvalue
                         if pv.tag != Tag.uninitialized:
                             *sp = *pv
                             if (i64)sp.tag < 0:
@@ -460,7 +467,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                     # write one that is not const; the rest (the global object's
                     # properties, the errors) is the outlined body's.
                     .get_var_undef, .get_var:
-                        let pv = var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        let pv = var_refs[(usize)((const Operand16*)pc).v].pvalue
                         if pv.tag != Tag.uninitialized:
                             *sp = *pv
                             if (i64)sp.tag < 0:
@@ -469,7 +476,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             pc += 2
                             continue dispatch
                     .put_var, .put_var_init:
-                        let var_ref = var_ref_at(var_refs, (usize)((const Operand16*)pc).v)
+                        let var_ref = var_refs[(usize)((const Operand16*)pc).v]
                         let pv = var_ref.pvalue
                         if pv.tag != Tag.uninitialized and var_ref.is_const == 0:
                             pc += 2
@@ -693,45 +700,92 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             sp -= 1
                             continue dispatch
 
-                    # Named properties: their bodies directly, without the outlined match
-                    # (C's GET_FIELD_INLINE and OP_put_field are shape searches that call out
-                    # anyway).
-                    .get_field:
-                        st.pc = pc
-                        st.sp = sp
-                        st.opcode = op
-                        if not interp_get_field(&st):
-                            break dispatch
-                        pc = st.pc
-                        sp = st.sp
-                        continue dispatch
-                    .get_field2:
-                        st.pc = pc
-                        st.sp = sp
-                        st.opcode = op
-                        if not interp_get_field2(&st):
-                            break dispatch
-                        pc = st.pc
-                        sp = st.sp
-                        continue dispatch
-                    .get_length:
-                        st.pc = pc
-                        st.sp = sp
-                        st.opcode = op
-                        if not interp_get_length(&st):
-                            break dispatch
-                        pc = st.pc
-                        sp = st.sp
-                        continue dispatch
+                    # Named properties (GET_FIELD_INLINE, OP_put_field): a data property of a
+                    # plain object, own or (for reads) inherited, found by find_own_property's
+                    # hash-chain walk (shape_find_own) written out here as C inlines it. An
+                    # accessor, an exotic object on the way, a read-only or missing property
+                    # (for writes) and a primitive fall through to the outlined body.
+                    .get_field, .get_field2, .get_length:
+                        if sp[-1].tag == Tag.object:
+                            let atom = atom_length if op == Op.get_length else ((const Operand32*)pc).v
+                            var p = sp[-1].u.obj
+                            search: while true:
+                                let sh = p.shape
+                                let hash_table = (usize)sh +% sizeof(Shape)
+                                var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
+                                let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
+                                while h != 0:
+                                    let prs = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
+                                    if prs.atom == atom:
+                                        if ((i32)prs.flags & prop_tmask) != 0:
+                                            break search
+                                        let pv = &(p.prop + (usize)(h -% 1)).u.value
+                                        if op == Op.get_field2:
+                                            *sp = *pv
+                                            if (i64)sp.tag < 0:
+                                                *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                                            sp += 1
+                                        else:
+                                            let obj_bits = sp[-1].u.uint64
+                                            sp[-1] = *pv
+                                            if (i64)sp[-1].tag < 0:
+                                                *(i32*)((usize)sp[-1].u.uint64 -% 4) +%= 1
+                                            *(i32*)((usize)obj_bits -% 4) -%= 1
+                                            if *(i32*)((usize)obj_bits -% 4) <= 0:
+                                                free_counted(ctx, Tag.object, obj_bits)
+                                        if op != Op.get_length:
+                                            pc += 4
+                                        continue dispatch
+                                    h = prs.hash_next
+                                if p.is_exotic:
+                                    break search
+                                if let proto = sh.proto:
+                                    p = proto
+                                else:
+                                    if op == Op.get_field2:
+                                        sp.u.uint64 = 0
+                                        sp.tag = Tag.undefined
+                                        sp += 1
+                                    else:
+                                        let obj_bits = sp[-1].u.uint64
+                                        sp[-1].u.uint64 = 0
+                                        sp[-1].tag = Tag.undefined
+                                        *(i32*)((usize)obj_bits -% 4) -%= 1
+                                        if *(i32*)((usize)obj_bits -% 4) <= 0:
+                                            free_counted(ctx, Tag.object, obj_bits)
+                                    if op != Op.get_length:
+                                        pc += 4
+                                    continue dispatch
                     .put_field:
-                        st.pc = pc
-                        st.sp = sp
-                        st.opcode = op
-                        if not interp_put_field(&st):
-                            break dispatch
-                        pc = st.pc
-                        sp = st.sp
-                        continue dispatch
+                        if sp[-2].tag == Tag.object:
+                            let atom = ((const Operand32*)pc).v
+                            let p = sp[-2].u.obj
+                            let sh = p.shape
+                            let hash_table = (usize)sh +% sizeof(Shape)
+                            var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
+                            let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
+                            while h != 0:
+                                let prs = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
+                                if prs.atom == atom:
+                                    if ((i32)prs.flags & (prop_tmask | prop_writable | prop_length)) == prop_writable:
+                                        # set_value, then the object's release
+                                        let pv = &(p.prop + (usize)(h -% 1)).u.value
+                                        let old_tag = pv.tag
+                                        let old_bits = pv.u.uint64
+                                        *pv = sp[-1]
+                                        if (i64)old_tag < 0:
+                                            *(i32*)((usize)old_bits -% 4) -%= 1
+                                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                                free_counted(ctx, old_tag, old_bits)
+                                        *(i32*)((usize)sp[-2].u.uint64 -% 4) -%= 1
+                                        if *(i32*)((usize)sp[-2].u.uint64 -% 4) <= 0:
+                                            free_counted(ctx, Tag.object, sp[-2].u.uint64)
+                                        sp -= 2
+                                        pc += 4
+                                        continue dispatch
+                                    h = 0
+                                else:
+                                    h = prs.hash_next
 
                     # Elements of fast arrays at an int index inside them
                     # (GET_ARRAY_EL_INLINE, OP_put_array_el).
