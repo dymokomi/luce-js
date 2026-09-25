@@ -1,0 +1,103 @@
+#==============================================================================================
+#
+#   typed_arrays_intrinsic - JS_AddIntrinsicTypedArrays: the binary data constructors
+#
+#   DESCRIPTION:
+#       Port of quickjs.c JS_AddIntrinsicTypedArrays (lines 61031-61132): ArrayBuffer,
+#       SharedArrayBuffer, the abstract TypedArray, the eleven typed array constructors,
+#       DataView and Atomics. The function tables it installs are declared with the
+#       typed arrays.
+#
+#==============================================================================================
+
+# JS_NewCConstructor where C may pass a NULL constructor table: none stands for no table
+# (an empty span).
+func js_new_c_constructor_tables(ctx: Context*, class_id: i32, name: str, func_: CFunction,
+                                 length: i32, cproto: CFunctionEnum, magic: i32, parent_ctor: Value,
+                                 ctor_fields: const CFunctionListEntry[]?,
+                                 proto_fields: const CFunctionListEntry[], flags: i32) -> Value!:
+    let ctor_tab = ctor_fields else proto_fields[0..<0]
+    return try js_new_c_constructor(ctx, class_id, name, func_, length, cproto, magic, parent_ctor,
+                                    ctor_tab, proto_fields, flags)
+
+## Add ArrayBuffer, SharedArrayBuffer, the typed arrays, DataView and Atomics to the
+## global object (JS_AddIntrinsicTypedArrays).
+pub func js_add_intrinsic_typed_arrays(ctx: Context*) -> !:
+    var obj = try js_new_c_constructor_tables(ctx, (i32)ClassId.array_buffer, "ArrayBuffer",
+                                              js_array_buffer_constructor, 1, CFunctionEnum.constructor, 0,
+                                              js_undefined(),
+                                              js_array_buffer_funcs,
+                                              js_array_buffer_proto_funcs,
+                                              0)
+    js_free_value(ctx, obj)
+
+    obj = try js_new_c_constructor_tables(ctx, (i32)ClassId.shared_array_buffer, "SharedArrayBuffer",
+                                          js_shared_array_buffer_constructor, 1, CFunctionEnum.constructor, 0,
+                                          js_undefined(),
+                                          js_shared_array_buffer_funcs,
+                                          js_shared_array_buffer_proto_funcs,
+                                          0)
+    js_free_value(ctx, obj)
+
+    let typed_array_base_func = try js_new_c_constructor_tables(ctx, -1, "TypedArray",
+                                                                js_typed_array_base_constructor, 0,
+                                                                CFunctionEnum.constructor_or_func, 0,
+                                                                js_undefined(),
+                                                                js_typed_array_base_funcs,
+                                                                js_typed_array_base_proto_funcs,
+                                                                js_new_ctor_no_global)
+    defer js_free_value(ctx, typed_array_base_func)
+
+    # TypedArray.prototype.toString must be the same object as Array.prototype.toString
+    let class_proto = ctx.class_proto else trap("context without class prototypes")
+    obj = try js_get_property(ctx, class_proto[(usize)ClassId.array], atom_toString)
+    # XXX: should use alias method in JSCFunctionListEntry
+    # (C leaks 'obj' when the prototype cannot be read; it is freed here.)
+    let typed_array_base_proto = js_get_property(ctx, typed_array_base_func, atom_prototype) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    let ret = js_define_property_value(ctx, typed_array_base_proto, atom_toString, obj,
+                                       prop_writable | prop_configurable) catch failure:
+        js_free_value(ctx, typed_array_base_proto)
+        error(failure.code, failure.message)
+    discard(ret)
+    js_free_value(ctx, typed_array_base_proto)
+
+    # The typed array constructors are magic constructors; JS_NewCConstructor takes them
+    # as the generic member of the function union.
+    var ft: CFunctionType = ---
+    ft.generic_magic = js_typed_array_constructor
+    let first = (i32)ClassId.uint8c_array
+    for i in first..<first + (i32)js_typed_array_count:
+        var buf: u8[atom_get_str_buf_size] = ---
+        let name = js_atom_get_str(ctx, buf, atom_Uint8ClampedArray + (Atom)(i - first))
+        if i == (i32)ClassId.uint8_array:
+            obj = try js_new_c_constructor_tables(ctx, i, name,
+                                                  ft.generic, 3, CFunctionEnum.constructor_magic, i,
+                                                  typed_array_base_func,
+                                                  js_uint8array_funcs,
+                                                  js_uint8array_proto_funcs,
+                                                  0)
+        else:
+            # BYTES_PER_ELEMENT, on the constructor and on the prototype
+            let size_log2 = (usize)typed_array_size_log2((ClassId)(u16)i)
+            let bpe = js_typed_array_funcs[size_log2..<size_log2 + 1]
+            obj = try js_new_c_constructor_tables(ctx, i, name,
+                                                  ft.generic, 3, CFunctionEnum.constructor_magic, i,
+                                                  typed_array_base_func,
+                                                  bpe,
+                                                  bpe,
+                                                  0)
+        js_free_value(ctx, obj)
+
+    # DataView
+    obj = try js_new_c_constructor_tables(ctx, (i32)ClassId.dataview, "DataView",
+                                          js_dataview_constructor, 1, CFunctionEnum.constructor, 0,
+                                          js_undefined(),
+                                          none,
+                                          js_dataview_proto_funcs,
+                                          0)
+    js_free_value(ctx, obj)
+
+    # Atomics
+    try js_add_intrinsic_atomics(ctx)

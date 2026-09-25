@@ -1,0 +1,241 @@
+#==============================================================================================
+#
+#   atomics_wait - Atomics.pause, Atomics.wait and Atomics.notify, and the Atomics object
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Atomics" from the waiter list on (lines 60806-61028): the
+#       process-wide list of threads blocked in Atomics.wait, guarded by one mutex, the
+#       CPU spin hint of Atomics.pause, the Atomics function table and
+#       JS_AddIntrinsicAtomics (CONFIG_ATOMICS is on). The read-modify-write operations
+#       and js_atomics_get_buf come before, with the typed arrays.
+#
+#       pthread_mutex_t and pthread_cond_t are luce-base's `sync.Mutex` and
+#       `sync.Condition`. `sync.Condition` has no timed wait, so a wait with a timeout
+#       polls its waiter every millisecond (`thread.sleep`) until it is notified or the
+#       deadline of the monotonic clock passes (the C code's XXX asks for a monotonic
+#       clock). Both kinds of wait loop until notified, so a spurious wake-up of the
+#       condition is not reported as "ok" (pthread_cond_wait may wake spuriously).
+#
+#==============================================================================================
+
+import thread
+import time as clock
+
+# mark: The waiter list =========================================================================
+
+# The waited-on cell, read atomically: another thread may be storing into it with
+# Atomics.store (C reads it with a plain load under the mutex).
+type AtomicsWaitCell32 = (@i32)*
+type AtomicsWaitCell64 = (@i64)*
+
+## A thread blocked in Atomics.wait (JSAtomicsWaiter).
+struct AtomicsWaiter:
+    var link: cutils.ListHead
+    ## False once Atomics.notify took the waiter off the list.
+    var linked: bool
+    var cond: sync.Condition
+    ## The address waited on.
+    var ptr: void*
+
+# The mutex guarding js_atomics_waiter_list and every waiter's `linked`; zero is unlocked.
+var js_atomics_mutex: sync.Mutex
+# The waiters of every runtime of the process. C initializes it statically
+# (LIST_HEAD_INIT); a global cannot hold its own address, so it is made an empty list on
+# first use, with the mutex held (see atomics_waiter_list).
+var js_atomics_waiter_list: cutils.ListHead
+
+# The waiter list, made an empty list on first use; js_atomics_mutex must be held.
+func atomics_waiter_list() -> cutils.ListHead*:
+    if js_atomics_waiter_list.next == none:
+        cutils.init_list_head(&js_atomics_waiter_list)
+    return &js_atomics_waiter_list
+
+# mark: Atomics.pause ===========================================================================
+
+# The CPU's spin-loop hint: `yield` on aarch64, `pause` on x86, nothing elsewhere.
+func cpu_pause():
+    thread.pause()
+
+# no-op: Atomics.pause() is not allowed to block or yield to another
+# thread, only to hint the CPU that it should back off for a bit;
+# the amount of work we do here is a good enough substitute
+func js_atomics_pause(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    if argc > 0:
+        let tag = argv[0].tag
+        if tag == Tag.float64:
+            # accepted if and only if fraction == 0.0
+            let d = js_value_get_float64(argv[0])
+            if not (math.is_finite(d) and math.trunc(d) == d):
+                try js_throw_type_error(ctx, "not an integral number")
+        elif tag != Tag.undefined and tag != Tag.int:
+            try js_throw_type_error(ctx, "not an integral number")
+    cpu_pause()
+    return js_undefined()
+
+# mark: Atomics.wait ============================================================================
+
+# The timeout in milliseconds of Atomics.wait from its argument `d`; i64 max waits forever.
+func atomics_wait_timeout(d: f64) -> i64:
+    # must use INT64_MAX + 1 because INT64_MAX cannot be exactly represented as a double
+    if d != d or d >= 9223372036854775808.0:
+        return 9223372036854775807
+    elif d < 0.0:
+        return 0
+    else:
+        return (i64)d
+
+# The monotonic-clock deadline `timeout` milliseconds from `now` nanoseconds; u64 max
+# when it is too far to represent.
+func atomics_wait_deadline(now: u64, timeout: i64) -> u64:
+    let span = (u64)timeout *? 1000000 else return 0xffffffffffffffff
+    return now +? span else 0xffffffffffffffff
+
+# Block until the `size_log2`-sized value at `ptr` is notified or `timeout` milliseconds
+# pass (i64 max: forever); answers atom_not_equal at once if the value is not `v`, else
+# atom_ok or atom_timed_out. The blocking half of js_atomics_wait.
+func atomics_wait_raw(ptr: void*, size_log2: i32, v: i64, timeout: i64) -> Atom:
+    # XXX: inefficient if large number of waiters, should hash on
+    # 'ptr' value
+    # XXX: use Linux futexes when available ?
+    js_atomics_mutex.lock()
+    var res = false
+    if size_log2 == 3:
+        res = ((AtomicsWaitCell64)ptr).load() != v
+    else:
+        res = (i64)((AtomicsWaitCell32)ptr).load() != v
+    if res:
+        js_atomics_mutex.unlock()
+        return atom_not_equal
+
+    var waiter_s: AtomicsWaiter = ---
+    let waiter = &waiter_s
+    waiter.ptr = ptr
+    waiter.cond = sync.Condition()
+    waiter.linked = true
+    cutils.list_add_tail(&waiter.link, atomics_waiter_list())
+
+    var timed_out = false
+    if timeout == 9223372036854775807:
+        while waiter.linked:
+            waiter.cond.wait(&js_atomics_mutex)
+    else:
+        let deadline = atomics_wait_deadline(clock.now(), timeout)
+        while waiter.linked:
+            if clock.now() >= deadline:
+                timed_out = true
+                break
+            js_atomics_mutex.unlock()
+            thread.sleep(1)
+            js_atomics_mutex.lock()
+    if waiter.linked:
+        cutils.list_del(&waiter.link)
+    js_atomics_mutex.unlock()
+    if timed_out:
+        return atom_timed_out
+    else:
+        return atom_ok
+
+## Atomics.wait(typedArray, index, value, timeout): block the thread until notified.
+func js_atomics_wait(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    var idx: u64 = 0
+    var v: i64 = 0
+
+    let p = try js_atomics_get_buf(ctx, argv[0], argv[1], &idx, 2)
+    let size_log2 = typed_array_size_log2(p.class_id)
+    let ptr = (void*)(p.u.array.u.uint8_ptr + ((usize)idx << (usize)size_log2))
+
+    # 'argv[0]' is a SharedArrayBuffer so it cannot be detached nor reduced
+    if size_log2 == 3:
+        try js_to_bigint64(ctx, &v, argv[2])
+    else:
+        var v32: i32 = 0
+        try js_to_int32(ctx, &v32, argv[2])
+        v = v32
+    var d: f64 = 0.0
+    try js_to_float64(ctx, &d, argv[3])
+    let timeout = atomics_wait_timeout(d)
+    if not ctx.rt.can_block:
+        try js_throw_type_error(ctx, "cannot block in this thread")
+
+    return try js_atom_to_string(ctx, atomics_wait_raw(ptr, size_log2, v, timeout))
+
+# mark: Atomics.notify ==========================================================================
+
+# Wake at most `count` of the waiters on `ptr`, oldest first; answers how many were woken.
+# The locked half of js_atomics_notify.
+func atomics_notify_raw(ptr: void*, count: i32) -> i32:
+    var n: i32 = 0
+    var waiter_list: cutils.ListHead = ---
+    js_atomics_mutex.lock()
+    cutils.init_list_head(&waiter_list)
+    let head = atomics_waiter_list()
+    var el = head.next else trap("atomics_notify: unlinked list")
+    while el != head:
+        let el1 = el.next else trap("atomics_notify: unlinked list")
+        let waiter = (AtomicsWaiter*)((u8*)el - offsetof(AtomicsWaiter, link))
+        if waiter.ptr == ptr:
+            cutils.list_del(&waiter.link)
+            waiter.linked = false
+            cutils.list_add_tail(&waiter.link, &waiter_list)
+            n += 1
+            if n >= count:
+                break
+        el = el1
+    el = waiter_list.next else trap("atomics_notify: unlinked list")
+    while el != &waiter_list:
+        let waiter = (AtomicsWaiter*)((u8*)el - offsetof(AtomicsWaiter, link))
+        waiter.cond.signal()
+        el = el.next else trap("atomics_notify: unlinked list")
+    js_atomics_mutex.unlock()
+    return n
+
+## Atomics.notify(typedArray, index, count): wake threads blocked in Atomics.wait.
+func js_atomics_notify(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    var idx: u64 = 0
+    var count: i32 = 0
+
+    let p = try js_atomics_get_buf(ctx, argv[0], argv[1], &idx, 1)
+    let size_log2 = typed_array_size_log2(p.class_id)
+
+    if js_is_undefined(argv[2]):
+        count = 2147483647
+    else:
+        try js_to_int32_clamp(ctx, &count, argv[2], 0, 2147483647, 0)
+
+    var n: i32 = 0
+    let abuf = p.u.typed_array.buffer.u.array_buffer
+    if abuf.shared != 0 and count > 0:
+        # 'argv[0]' is a SharedArrayBuffer so it cannot be detached nor reduced
+        let ptr = (void*)(p.u.array.u.uint8_ptr + ((usize)idx << (usize)size_log2))
+        n = atomics_notify_raw(ptr, count)
+    return js_new_int32(n)
+
+# mark: The Atomics object ======================================================================
+
+# The magic numbers of js_atomics_op are AtomicsOpEnum's (declared with js_atomics_op):
+# ATOMICS_OP_ADD 0, AND 1, OR 2, SUB 3, XOR 4, EXCHANGE 5, COMPARE_EXCHANGE 6, LOAD 7.
+let js_atomics_funcs = [
+    CFunctionListEntry(name = "add", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 0),
+    CFunctionListEntry(name = "and", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 1),
+    CFunctionListEntry(name = "or", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 2),
+    CFunctionListEntry(name = "sub", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 3),
+    CFunctionListEntry(name = "xor", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 4),
+    CFunctionListEntry(name = "exchange", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 5),
+    CFunctionListEntry(name = "compareExchange", def_type = def_cfunc, length = 4, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 6),
+    CFunctionListEntry(name = "load", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 7),
+    CFunctionListEntry(name = "store", def_type = def_cfunc, length = 3, generic = js_atomics_store),
+    CFunctionListEntry(name = "isLockFree", def_type = def_cfunc, length = 1, generic = js_atomics_is_lock_free),
+    CFunctionListEntry(name = "pause", def_type = def_cfunc, length = 0, generic = js_atomics_pause),
+    CFunctionListEntry(name = "wait", def_type = def_cfunc, length = 4, generic = js_atomics_wait),
+    CFunctionListEntry(name = "notify", def_type = def_cfunc, length = 3, generic = js_atomics_notify),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = 1, def_type = def_prop_string, string_value = "Atomics"),
+]
+
+# prop_flags 3: JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE.
+let js_atomics_obj = [
+    CFunctionListEntry(name = "Atomics", prop_flags = 3, def_type = def_object, prop_list = js_atomics_funcs),
+]
+
+# add Atomics as autoinit object
+func js_add_intrinsic_atomics(ctx: Context*) -> !:
+    try js_set_property_function_list(ctx, ctx.global_obj, js_atomics_obj)

@@ -154,9 +154,9 @@ func js_add_standard_intrinsics(ctx: Context*) -> !:
     if js_add_intrinsic_json(ctx) != 0: error(exception, "")
     if try js_add_intrinsic_proxy(ctx) != 0: error(exception, "")
     if try js_add_intrinsic_map_set(ctx) != 0: error(exception, "")
-    if try js_add_intrinsic_typed_arrays(ctx) != 0: error(exception, "")
+    try js_add_intrinsic_typed_arrays(ctx)
     if try js_add_intrinsic_promise(ctx) != 0: error(exception, "")
-    if try js_add_intrinsic_weak_ref(ctx) != 0: error(exception, "")
+    try js_add_intrinsic_weak_ref(ctx)
 
 ## A context with all the standard intrinsics; none if they cannot be created
 ## (JS_NewContext).
