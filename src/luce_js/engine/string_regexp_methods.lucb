@@ -1,0 +1,298 @@
+#==============================================================================================
+#
+#   string_regexp_methods - The String methods that defer to a RegExp: match, matchAll,
+#                           search, replace, replaceAll and split
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 45807-46208: each method first looks for the matching
+#       Symbol method (Symbol.match, Symbol.replace, ...) of its argument and calls it;
+#       otherwise match and search build a RegExp, while replace and split work on
+#       strings. GetSubstitution expands the `$` patterns of a replacement string; the
+#       RegExp methods of the r25 region call it too.
+#
+#==============================================================================================
+
+# mark: match, matchAll and search ==============================================================
+
+# Fail with a TypeError when `regexp_` is a RegExp whose flags lack 'g' (for matchAll and
+# replaceAll).
+func check_regexp_g_flag(ctx: Context*, regexp_: Value) -> !:
+    if try js_is_regexp(ctx, regexp_):
+        var flags = try js_get_property(ctx, regexp_, atom_flags)
+        if js_is_undefined(flags) or js_is_null(flags):
+            try js_throw_type_error(ctx, "cannot convert to object")
+        flags = try js_to_string_free(ctx, flags)
+        let ret = string_indexof_char(flags.u.string, (i32)'g', 0)
+        js_free_value(ctx, flags)
+        if ret < 0:
+            try js_throw_type_error(ctx, "regexp must have the 'g' flag")
+
+# match(rx), search(rx), matchAll(rx)
+# atom (the magic) is atom_Symbol_match, atom_Symbol_search, or atom_Symbol_matchAll
+func js_string_match(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let atom = (Atom)magic
+    var o = this_val
+    let regexp_ = argv[0]
+    var args: Value[2] = ---
+
+    if js_is_undefined(o) or js_is_null(o):
+        try js_throw_type_error(ctx, "cannot convert to object")
+
+    if js_is_object(regexp_):
+        let matcher = try js_get_property(ctx, regexp_, atom)
+        if atom == atom_Symbol_matchAll:
+            check_regexp_g_flag(ctx, regexp_) catch failure:
+                js_free_value(ctx, matcher)
+                error(failure.code, failure.message)
+        if not js_is_undefined(matcher) and not js_is_null(matcher):
+            return try js_call_free(ctx, matcher, regexp_, 1, &o)
+    var s = try js_to_string(ctx, o)
+    defer js_free_value(ctx, s)
+    var args_len: usize = 1
+    args[0] = regexp_
+    var flags_str = js_undefined()
+    if atom == atom_Symbol_matchAll:
+        flags_str = try js_new_string8(ctx, "g".bytes.data)
+        args[args_len] = flags_str
+        args_len += 1
+    let rx = js_call_constructor(ctx, ctx.regexp_ctor, (i32)args_len, &args[0]) catch failure:
+        js_free_value(ctx, flags_str)
+        error(failure.code, failure.message)
+    js_free_value(ctx, flags_str)
+    return try js_invoke_free(ctx, rx, atom, 1, &s)
+
+# mark: GetSubstitution =========================================================================
+
+## Append to `b` the replacement string `rep` with its `$` patterns expanded, for the match
+## `matched` at `position` of `sp` (GetSubstitution). If captures != none, captures_val and
+## matched are ignored and the captures are the regexp's pointers into `sp` (2 per group).
+## Otherwise, captures_len is ignored and the captures are the array-like captures_val.
+func js_string_get_substitution(ctx: Context*, b: StringBuffer*, matched: Value, sp: const String*,
+                                position: u32, captures_val: Value, named_captures: Value,
+                                rep: Value, captures: u8*?*?, captures_len_arg: u32) -> !:
+    var captures_len = captures_len_arg
+    if rep.tag != Tag.string:
+        try js_throw_type_error(ctx, "not a string")
+    let shift = (u32)sp.is_wide_char
+    let rp = rep.u.string
+
+    var matched_len: u32 = 0
+    if let caps = captures:
+        let m0 = caps[0] else trap("js_string_GetSubstitution: no match start")
+        let m1 = caps[1] else trap("js_string_GetSubstitution: no match end")
+        matched_len = (u32)(m1 - m0) >> shift
+    else:
+        captures_len = 0
+        if not js_is_undefined(captures_val):
+            try js_get_length32(ctx, &captures_len, captures_val)
+        try js_get_length32(ctx, &matched_len, matched)
+
+    let len = (i32)rp.len
+    var i: i32 = 0
+    while true:
+        var j = string_indexof_char(rp, (i32)'$', i)
+        if j < 0 or j + 1 >= len:
+            break
+        # as upstream, a failed append is reported by string_buffer_end
+        string_buffer_concat(b, rp, (u32)i, (u32)j) catch: recover ()
+        let j0 = j
+        j += 1
+        let c = string_get(rp, j)
+        j += 1
+        # set when the pattern is not a substitution and is copied as it is
+        var norep = false
+        if c == (i32)'$':
+            string_buffer_putc8(b, (u32)'$') catch: recover ()
+        elif c == (i32)'&':
+            if captures != none:
+                string_buffer_concat(b, sp, position, position +% matched_len) catch: recover ()
+            else:
+                try string_buffer_concat_value(b, matched)
+        elif c == (i32)'`':
+            string_buffer_concat(b, sp, 0, position) catch: recover ()
+        elif c == (i32)'\'':
+            string_buffer_concat(b, sp, position +% matched_len, sp.len) catch: recover ()
+        elif c >= (i32)'0' and c <= (i32)'9':
+            var k = c - (i32)'0'
+            if j < len:
+                let c1 = string_get(rp, j)
+                if c1 >= (i32)'0' and c1 <= (i32)'9':
+                    # This behavior is specified in ES6 and refined in ECMA 2019
+                    # ECMA 2019 does not have the extra test, but
+                    # Test262 S15.5.4.11_A3_T1..3 require this behavior
+                    let k1 = k * 10 + c1 - (i32)'0'
+                    if k1 >= 1 and (u32)k1 < captures_len:
+                        k = k1
+                        j += 1
+            if k >= 1 and (u32)k < captures_len:
+                if let caps = captures:
+                    if let cap_start = caps[2 * k]:
+                        if let cap_end = caps[2 * k + 1]:
+                            let start = (u32)(cap_start - str8(sp)) >> shift
+                            let end = (u32)(cap_end - str8(sp)) >> shift
+                            string_buffer_concat(b, sp, start, end) catch: recover ()
+                else:
+                    let s = try js_get_property_int64(ctx, captures_val, (i64)k)
+                    if not js_is_undefined(s):
+                        try string_buffer_concat_value_free(b, s)
+            else:
+                norep = true
+        elif c == (i32)'<' and not js_is_undefined(named_captures):
+            let k = string_indexof_char(rp, (i32)'>', j)
+            if k < 0:
+                norep = true
+            else:
+                let name = try js_sub_string(ctx, rp, j, k)
+                let capture = try js_get_property_value(ctx, named_captures, name)
+                if not js_is_undefined(capture):
+                    try string_buffer_concat_value_free(b, capture)
+                j = k + 1
+        else:
+            norep = true
+        if norep:
+            string_buffer_concat(b, rp, (u32)j0, (u32)j) catch: recover ()
+        i = j
+    string_buffer_concat(b, rp, (u32)i, rp.len) catch: recover ()
+
+# mark: replace and replaceAll ==================================================================
+
+# replace (is_replace_all 0) and replaceAll (is_replace_all 1).
+func js_string_replace(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_replace_all: i32) -> Value!:
+    # replace(rx, rep)
+    let o = this_val
+    let search_value = argv[0]
+    let replace_value = argv[1]
+    var args: Value[3] = ---
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    if js_is_undefined(o) or js_is_null(o):
+        try js_throw_type_error(ctx, "cannot convert to object")
+
+    if js_is_object(search_value):
+        if is_replace_all != 0:
+            try check_regexp_g_flag(ctx, search_value)
+        let replacer = try js_get_property(ctx, search_value, atom_Symbol_replace)
+        if not js_is_undefined(replacer) and not js_is_null(replacer):
+            args[0] = o
+            args[1] = replace_value
+            return try js_call_free(ctx, replacer, search_value, 2, &args[0])
+    string_buffer_init(ctx, b, 0) catch: recover ()
+    errdefer string_buffer_free(b)
+
+    let text = try js_to_string(ctx, o)
+    defer js_free_value(ctx, text)
+    let search_str = try js_to_string(ctx, search_value)
+    defer js_free_value(ctx, search_str)
+    let functional_replace = js_is_function(ctx, replace_value)
+    var replace_value_str = js_undefined()
+    if not functional_replace:
+        replace_value_str = try js_to_string(ctx, replace_value)
+    defer js_free_value(ctx, replace_value_str)
+
+    let sp = text.u.string
+    let searchp = search_str.u.string
+    var end_of_last_match: i32 = 0
+    var is_first = true
+    while true:
+        var pos: i32 = 0
+        if searchp.len == 0:
+            if is_first:
+                pos = 0
+            elif end_of_last_match >= (i32)sp.len:
+                pos = -1
+            else:
+                pos = end_of_last_match + 1
+        else:
+            pos = string_indexof(sp, searchp, end_of_last_match)
+        if pos < 0:
+            if is_first:
+                string_buffer_free(b)
+                return js_dup_value(ctx, text)
+            else:
+                break
+
+        string_buffer_concat(b, sp, (u32)end_of_last_match, (u32)pos) catch: recover ()
+
+        if functional_replace:
+            args[0] = search_str
+            args[1] = js_new_int32(pos)
+            args[2] = text
+            let repl_str = try js_to_string_free(ctx, js_call(ctx, replace_value, js_undefined(), 3, &args[0]))
+            string_buffer_concat_value_free(b, repl_str) catch: recover ()
+        else:
+            try js_string_get_substitution(ctx, b, search_str, sp, (u32)pos, js_undefined(),
+                                           js_undefined(), replace_value_str, none, 0)
+
+        end_of_last_match = pos + (i32)searchp.len
+        is_first = false
+        if is_replace_all == 0:
+            break
+    string_buffer_concat(b, sp, (u32)end_of_last_match, sp.len) catch: recover ()
+    return try string_buffer_end(b)
+
+# mark: split ===================================================================================
+
+func js_string_split(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # split(sep, limit)
+    let o = this_val
+    let separator = argv[0]
+    let limit = argv[1]
+    var args: Value[2] = ---
+
+    if js_is_undefined(o) or js_is_null(o):
+        try js_throw_type_error(ctx, "cannot convert to object")
+
+    if js_is_object(separator):
+        let splitter = try js_get_property(ctx, separator, atom_Symbol_split)
+        if not js_is_undefined(splitter) and not js_is_null(splitter):
+            args[0] = o
+            args[1] = limit
+            return try js_call_free(ctx, splitter, separator, 2, &args[0])
+    let s_val = try js_to_string(ctx, o)
+    defer js_free_value(ctx, s_val)
+    let a = try js_new_array(ctx)
+    errdefer js_free_value(ctx, a)
+    var length_a: u32 = 0
+    var lim: u32 = 0
+    if js_is_undefined(limit):
+        lim = 0xffffffff
+    else:
+        # JS_ToUint32
+        try js_to_int32(ctx, (i32*)&lim, limit)
+    let sp = s_val.u.string
+    let s = (i64)sp.len
+    let r_val = try js_to_string(ctx, separator)
+    defer js_free_value(ctx, r_val)
+    let rp = r_val.u.string
+    let r = (i64)rp.len
+    var p: i64 = 0
+    if lim == 0:
+        return a
+    if not js_is_undefined(separator):
+        if s == 0:
+            if r == 0:
+                return a
+        else:
+            # C: for (q = p; (q += !r) <= s - r - !r; q = p = e + r)
+            let not_r = (i64)(r == 0)
+            var q = p
+            while true:
+                q += not_r
+                if q > s - r - not_r:
+                    break
+                let e = (i64)string_indexof(sp, rp, (i32)q)
+                if e < 0:
+                    break
+                let t = try js_sub_string(ctx, sp, (i32)p, (i32)e)
+                discard(try js_create_data_property_uint32(ctx, a, (i64)length_a, t, 0))
+                length_a += 1
+                if length_a == lim:
+                    return a
+                p = e + r
+                q = p
+    # add_tail:
+    let t = try js_sub_string(ctx, sp, (i32)p, (i32)s)
+    discard(try js_create_data_property_uint32(ctx, a, (i64)length_a, t, 0))
+    length_a += 1
+    return a

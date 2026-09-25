@@ -8,8 +8,12 @@
 #
 #==============================================================================================
 
+# r24 (the String iterator) reads the fields of JSArrayIteratorData (quickjs.c:43565),
+# which the r23 region declares: this placeholder carries them until then.
 struct ArrayIteratorData:
-    var unported: i32
+    var obj: Value
+    var kind: IteratorKind
+    var idx: u32
 
 struct AsyncFromSyncIteratorData:
     var unported: i32
@@ -57,9 +61,6 @@ struct PromiseReactionData:
     var unported: i32
 
 struct RegExpStringIteratorData:
-    var unported: i32
-
-struct SumPreciseState:
     var unported: i32
 
 struct ValueBuffer:

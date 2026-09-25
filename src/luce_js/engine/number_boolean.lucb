@@ -1,0 +1,189 @@
+#==============================================================================================
+#
+#   number_boolean - Number's static table and prototype methods, parseInt, parseFloat
+#                    and Boolean
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 44909-45172: the Number constructor's properties
+#       (js_number_funcs), Number.prototype's toString with a radix, toFixed,
+#       toExponential and toPrecision (formatted by luce_js.dtoa through js_dtoa2), the
+#       global parseInt and parseFloat, and the Boolean constructor and prototype.
+#
+#==============================================================================================
+
+# mark: Number ==================================================================================
+
+let js_number_funcs: CFunctionListEntry[14] = [
+    # global ParseInt and parseFloat should be defined already or delayed
+    CFunctionListEntry(name = "parseInt", def_type = def_alias, alias_name = "parseInt", alias_base = 0),
+    CFunctionListEntry(name = "parseFloat", def_type = def_alias, alias_name = "parseFloat", alias_base = 0),
+    CFunctionListEntry(name = "isNaN", def_type = def_cfunc, length = 1, generic = js_number_is_na_n),
+    CFunctionListEntry(name = "isFinite", def_type = def_cfunc, length = 1, generic = js_number_is_finite),
+    CFunctionListEntry(name = "isInteger", def_type = def_cfunc, length = 1, generic = js_number_is_integer_builtin),
+    CFunctionListEntry(name = "isSafeInteger", def_type = def_cfunc, length = 1, generic = js_number_is_safe_integer),
+    CFunctionListEntry(name = "MAX_VALUE", prop_flags = 0, def_type = def_prop_double, f64_value = 1.7976931348623157e+308),
+    CFunctionListEntry(name = "MIN_VALUE", prop_flags = 0, def_type = def_prop_double, f64_value = 5e-324),
+    CFunctionListEntry(name = "NaN", prop_flags = 0, def_type = def_prop_double, f64_value = math.nan),
+    CFunctionListEntry(name = "NEGATIVE_INFINITY", prop_flags = 0, def_type = def_prop_double, f64_value = -math.infinity),
+    CFunctionListEntry(name = "POSITIVE_INFINITY", prop_flags = 0, def_type = def_prop_double, f64_value = math.infinity),
+    # ES6
+    CFunctionListEntry(name = "EPSILON", prop_flags = 0, def_type = def_prop_double, f64_value = 2.220446049250313e-16),
+    CFunctionListEntry(name = "MAX_SAFE_INTEGER", prop_flags = 0, def_type = def_prop_double, f64_value = 9007199254740991.0),
+    CFunctionListEntry(name = "MIN_SAFE_INTEGER", prop_flags = 0, def_type = def_prop_double, f64_value = -9007199254740991.0),
+    # JS_CFUNC_DEF("__toInteger", 1, js_number___toInteger ),
+    # JS_CFUNC_DEF("__toLength", 1, js_number___toLength ),
+]
+
+# The number of `this_val` (thisNumberValue): a number, or the data of a Number object.
+func js_this_number_value(ctx: Context*, this_val: Value) -> Value!:
+    if js_is_number(this_val):
+        return js_dup_value(ctx, this_val)
+
+    if this_val.tag == Tag.object:
+        let p = this_val.u.obj
+        if p.class_id == ClassId.number:
+            if js_is_number(p.u.object_data):
+                return js_dup_value(ctx, p.u.object_data)
+    try js_throw_type_error(ctx, "not a number")
+
+func js_number_value_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_this_number_value(ctx, this_val)
+
+# The radix argument of toString: an integer from 2 to 36, else a RangeError.
+func js_get_radix(ctx: Context*, val: Value) -> i32!:
+    var radix: i32 = 0
+    try js_to_int32_sat(ctx, &radix, val)
+    if radix < 2 or radix > 36:
+        try js_throw_range_error(ctx, "radix must be between 2 and 36")
+    return radix
+
+# toString (magic 0) and toLocaleString (magic 1, always base 10).
+func js_number_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let val = try js_this_number_value(ctx, this_val)
+    var base: i32 = 10
+    if magic == 0 and not js_is_undefined(argv[0]):
+        base = js_get_radix(ctx, argv[0]) catch failure:
+            js_free_value(ctx, val)
+            error(failure.code, failure.message)
+    if val.tag == Tag.int:
+        var buf1: u8[70] = ---
+        let len = dtoa.i64toa_radix(&buf1[0], (i64)js_value_get_int(val), (u32)base)
+        return try js_new_string8_len(ctx, &buf1[0], (i32)len)
+    var d: f64 = 0.0
+    try js_to_float64_free(ctx, &d, val)
+    var flags = dtoa.dtoa_format_free
+    if base != 10:
+        flags |= dtoa.dtoa_exp_disabled
+    return try js_dtoa2(ctx, d, base, 0, flags)
+
+func js_number_to_fixed(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_this_number_value(ctx, this_val)
+    var d: f64 = 0.0
+    try js_to_float64_free(ctx, &d, val)
+    var f: i32 = 0
+    try js_to_int32_sat(ctx, &f, argv[0])
+    if f < 0 or f > 100:
+        try js_throw_range_error(ctx, "invalid number of digits")
+    var flags = dtoa.dtoa_format_frac
+    if math.abs(d) >= 1e21:
+        flags = dtoa.dtoa_format_free
+    return try js_dtoa2(ctx, d, 10, f, flags)
+
+func js_number_to_exponential(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_this_number_value(ctx, this_val)
+    var d: f64 = 0.0
+    try js_to_float64_free(ctx, &d, val)
+    var f: i32 = 0
+    try js_to_int32_sat(ctx, &f, argv[0])
+    if not math.is_finite(d):
+        return try js_to_string_free(ctx, js_new_float64_raw(d))
+    var flags: i32 = 0
+    if js_is_undefined(argv[0]):
+        flags = dtoa.dtoa_format_free
+        f = 0
+    else:
+        if f < 0 or f > 100:
+            try js_throw_range_error(ctx, "invalid number of digits")
+        f += 1
+        flags = dtoa.dtoa_format_fixed
+    return try js_dtoa2(ctx, d, 10, f, flags | dtoa.dtoa_exp_enabled)
+
+func js_number_to_precision(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_this_number_value(ctx, this_val)
+    var d: f64 = 0.0
+    try js_to_float64_free(ctx, &d, val)
+    # an undefined precision, or a value that is not finite, is converted as by ToString
+    if js_is_undefined(argv[0]):
+        return try js_to_string_free(ctx, js_new_float64_raw(d))
+    var p: i32 = 0
+    try js_to_int32_sat(ctx, &p, argv[0])
+    if not math.is_finite(d):
+        return try js_to_string_free(ctx, js_new_float64_raw(d))
+    if p < 1 or p > 100:
+        try js_throw_range_error(ctx, "invalid number of digits")
+    return try js_dtoa2(ctx, d, 10, p, dtoa.dtoa_format_fixed)
+
+let js_number_proto_funcs: CFunctionListEntry[6] = [
+    CFunctionListEntry(name = "toExponential", def_type = def_cfunc, length = 1, generic = js_number_to_exponential),
+    CFunctionListEntry(name = "toFixed", def_type = def_cfunc, length = 1, generic = js_number_to_fixed),
+    CFunctionListEntry(name = "toPrecision", def_type = def_cfunc, length = 1, generic = js_number_to_precision),
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_number_to_string, magic = 0),
+    CFunctionListEntry(name = "toLocaleString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_number_to_string, magic = 1),
+    CFunctionListEntry(name = "valueOf", def_type = def_cfunc, length = 0, generic = js_number_value_of),
+]
+
+# mark: parseInt and parseFloat =================================================================
+
+func js_parse_int(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_c_string(ctx, argv[0])
+    defer js_free_c_string(ctx, text)
+    var radix: i32 = 0
+    try js_to_int32(ctx, &radix, argv[1])
+    if radix != 0 and (radix < 2 or radix > 36):
+        return js_nan()
+    let p = text + skip_spaces(text)
+    let flags = atod_int_only | atod_accept_prefix_after_sign
+    return try js_atof(ctx, p, none, radix, flags)
+
+func js_parse_float(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_c_string(ctx, argv[0])
+    defer js_free_c_string(ctx, text)
+    let p = text + skip_spaces(text)
+    return try js_atof(ctx, p, none, 10, 0)
+
+# mark: Boolean =================================================================================
+
+func js_boolean_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    let val = js_new_bool(try js_to_bool(ctx, argv[0]))
+    if not js_is_undefined(new_target):
+        let obj = try js_create_from_ctor(ctx, new_target, (u32)ClassId.boolean)
+        # as upstream, a failure to store the data is not reported
+        js_set_object_data(ctx, obj, val) catch: recover ()
+        return obj
+    return val
+
+# The boolean of `this_val` (thisBooleanValue): a boolean, or the data of a Boolean object.
+func js_this_boolean_value(ctx: Context*, this_val: Value) -> Value!:
+    if this_val.tag == Tag.boolean:
+        return js_dup_value(ctx, this_val)
+
+    if this_val.tag == Tag.object:
+        let p = this_val.u.obj
+        if p.class_id == ClassId.boolean:
+            if p.u.object_data.tag == Tag.boolean:
+                return p.u.object_data
+    try js_throw_type_error(ctx, "not a boolean")
+
+func js_boolean_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_this_boolean_value(ctx, this_val)
+    return try js_atom_to_string(ctx, atom_true if js_value_get_bool(val) else atom_false)
+
+func js_boolean_value_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_this_boolean_value(ctx, this_val)
+
+let js_boolean_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_boolean_to_string),
+    CFunctionListEntry(name = "valueOf", def_type = def_cfunc, length = 0, generic = js_boolean_value_of),
+]

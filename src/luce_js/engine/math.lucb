@@ -1,0 +1,258 @@
+#==============================================================================================
+#
+#   math - The Math object: min/max, rounding, the float helpers, random and the tables
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 46925-47100 and 47360-47448: Math.min and Math.max with
+#       IEEE zero signs, Math.sign, Math.round, Math.hypot, Math.f16round, Math.fround,
+#       Math.imul, Math.clz32, Math.random with its xorshift64* state, and the Math
+#       function table. The float functions are luce-std's math module; those it lacks
+#       (asinh, acosh, atanh) are bound from the C library here. Math.sumPrecise is in
+#       math_sum_precise.
+#
+#==============================================================================================
+
+extern func c_asinh as "asinh"(x: f64) -> f64
+extern func c_acosh as "acosh"(x: f64) -> f64
+extern func c_atanh as "atanh"(x: f64) -> f64
+
+# mark: min and max =============================================================================
+
+# precondition: a and b are not NaN
+func js_fmin(a: f64, b: f64) -> f64:
+    if a == 0.0 and b == 0.0:
+        # -0 if either is -0
+        return f64.bits(a.bits() | b.bits())
+    return a if a < b else b
+
+# precondition: a and b are not NaN
+func js_fmax(a: f64, b: f64) -> f64:
+    if a == 0.0 and b == 0.0:
+        # +0 if either is +0
+        return f64.bits(a.bits() & b.bits())
+    return a if a > b else b
+
+# Math.min (magic 0) and Math.max (magic 1).
+func js_math_min_max(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let is_max = magic != 0
+
+    if argc == 0:
+        return js_new_float64_raw(-math.infinity if is_max else math.infinity)
+
+    var r: f64 = 0.0
+    var i: i32 = 1
+    if argv[0].tag == Tag.int:
+        var r1 = js_value_get_int(argv[0])
+        # the integer fast path, left for the generic case at the first other value
+        var all_int = true
+        while i < argc:
+            if argv[i].tag != Tag.int:
+                r = f64(r1)
+                all_int = false
+                break
+            let a1 = js_value_get_int(argv[i])
+            if is_max:
+                r1 = cutils.max_int(r1, a1)
+            else:
+                r1 = cutils.min_int(r1, a1)
+            i += 1
+        if all_int:
+            return js_new_int32(r1)
+    else:
+        try js_to_float64(ctx, &r, argv[0])
+        i = 1
+    # generic case
+    while i < argc:
+        var a: f64 = 0.0
+        try js_to_float64(ctx, &a, argv[i])
+        if not math.is_nan(r):
+            if math.is_nan(a):
+                r = a
+            else:
+                if is_max:
+                    r = js_fmax(r, a)
+                else:
+                    r = js_fmin(r, a)
+        i += 1
+    return js_new_float64(r)
+
+# mark: Float functions =========================================================================
+
+func js_math_sign(a: f64) -> f64:
+    if math.is_nan(a) or a == 0.0:
+        return a
+    if a < 0.0:
+        return -1.0
+    return 1.0
+
+# Round half up, keeping the sign of zero, on the float's bits.
+func js_math_round(a: f64) -> f64:
+    var u = a.bits()
+    let e = (u32)((u >> 52) & 0x7ff)
+    if e < 1023:
+        # abs(a) < 1
+        if e == (1023 - 1) and u != 0xbfe0000000000000:
+            # abs(a) > 0.5 or a = 0.5: return +/-1.0
+            u = (u & ((u64)1 << 63)) | ((u64)1023 << 52)
+        else:
+            # return +/-0.0
+            u &= (u64)1 << 63
+    elif e < (1023 + 52):
+        let s = u >> 63
+        let one = (u64)1 << (52 - (e - 1023))
+        let frac_mask = one - 1
+        u = u +% ((one >> 1) - s)
+        u &= ~frac_mask # truncate to an integer
+    # otherwise: abs(a) >= 2^52, or NaN, +/-Infinity: no change
+    return f64.bits(u)
+
+func js_math_hypot(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var r: f64 = 0.0
+    if argc > 0:
+        try js_to_float64(ctx, &r, argv[0])
+        if argc == 1:
+            r = math.abs(r)
+        else:
+            # use the built-in function to minimize precision loss
+            for i: i32 in 1..<argc:
+                var a: f64 = 0.0
+                try js_to_float64(ctx, &a, argv[i])
+                r = math.hypot(r, a)
+    return js_new_float64(r)
+
+func js_math_f16round(a: f64) -> f64:
+    return cutils.fromfp16(cutils.tofp16(a))
+
+func js_math_fround(a: f64) -> f64:
+    return (f64)(f32)a
+
+# workaround: compiler-issues/extern-function-address-not-constant
+# The C library's inverse hyperbolic functions, as functions of the module (the address of
+# an extern function is not a constant for the table).
+func js_math_acosh(a: f64) -> f64:
+    return c_acosh(a)
+
+func js_math_asinh(a: f64) -> f64:
+    return c_asinh(a)
+
+func js_math_atanh(a: f64) -> f64:
+    return c_atanh(a)
+
+# mark: Integer functions =======================================================================
+
+func js_math_imul(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var a: u32 = 0
+    var b: u32 = 0
+
+    # JS_ToUint32
+    try js_to_int32(ctx, (i32*)&a, argv[0])
+    try js_to_int32(ctx, (i32*)&b, argv[1])
+    let c = a *% b
+    let d = (i32)c
+    return js_new_int32(d)
+
+func js_math_clz32(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var a: u32 = 0
+    # JS_ToUint32
+    try js_to_int32(ctx, (i32*)&a, argv[0])
+    var r: i32 = 32
+    if a != 0:
+        r = cutils.clz32(a)
+    return js_new_int32(r)
+
+# mark: Random ==================================================================================
+
+# The C library's `struct timespec` read by clock_gettime. `tv_nsec` is a C long: 8 bytes on
+# macOS and Linux, 4 on Windows followed by padding; every supported target is little
+# endian, so its low 4 bytes hold the value (below 10^9) either way.
+extern struct TimeSpec:
+    tv_sec: i64
+    tv_nsec: i32
+    tv_nsec_high: i32
+
+extern func c_clock_gettime as "clock_gettime"(clock: i32, tp: TimeSpec*) -> i32
+
+## CLOCK_REALTIME, the same on the supported targets.
+let clock_realtime: i32 = 0
+
+# xorshift* random number generator by Marsaglia
+func xorshift64star(pstate: u64*) -> u64:
+    var x = *pstate
+    x ^= x >> 12
+    x ^= x << 25
+    x ^= x >> 27
+    *pstate = x
+    return x *% 0x2545F4914F6CDD1D
+
+# Seed the context's generator from the wall clock in microseconds (C uses gettimeofday).
+func js_random_init(ctx: Context*):
+    var tv = TimeSpec(tv_sec = 0, tv_nsec = 0, tv_nsec_high = 0)
+    discard(c_clock_gettime(clock_realtime, &tv))
+    ctx.random_state = (u64)((tv.tv_sec * 1000000) + (i64)(tv.tv_nsec // 1000))
+    # the state must be non zero
+    if ctx.random_state == 0:
+        ctx.random_state = 1
+
+func js_math_random(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let v = xorshift64star(&ctx.random_state)
+    # 1.0 <= u.d < 2
+    let bits = ((u64)0x3ff << 52) | (v >> 12)
+    return js_new_float64_raw(f64.bits(bits) - 1.0)
+
+# mark: Tables ==================================================================================
+
+let js_math_funcs: CFunctionListEntry[46] = [
+    CFunctionListEntry(name = "min", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_math_min_max, magic = 0),
+    CFunctionListEntry(name = "max", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_math_min_max, magic = 1),
+    CFunctionListEntry(name = "abs", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.abs),
+    CFunctionListEntry(name = "floor", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.floor),
+    CFunctionListEntry(name = "ceil", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.ceil),
+    CFunctionListEntry(name = "round", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_round),
+    CFunctionListEntry(name = "sqrt", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.sqrt),
+
+    CFunctionListEntry(name = "acos", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.acos),
+    CFunctionListEntry(name = "asin", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.asin),
+    CFunctionListEntry(name = "atan", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.atan),
+    CFunctionListEntry(name = "atan2", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.f_f_f, f_f_f = math.atan2),
+    CFunctionListEntry(name = "cos", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.cos),
+    CFunctionListEntry(name = "exp", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.exp),
+    CFunctionListEntry(name = "log", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.log),
+    CFunctionListEntry(name = "pow", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.f_f_f, f_f_f = js_pow),
+    CFunctionListEntry(name = "sin", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.sin),
+    CFunctionListEntry(name = "tan", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.tan),
+    # ES6
+    CFunctionListEntry(name = "trunc", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.trunc),
+    CFunctionListEntry(name = "sign", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_sign),
+    CFunctionListEntry(name = "cosh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.cosh),
+    CFunctionListEntry(name = "sinh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.sinh),
+    CFunctionListEntry(name = "tanh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.tanh),
+    CFunctionListEntry(name = "acosh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_acosh),
+    CFunctionListEntry(name = "asinh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_asinh),
+    CFunctionListEntry(name = "atanh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_atanh),
+    CFunctionListEntry(name = "expm1", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.expm1),
+    CFunctionListEntry(name = "log1p", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.log1p),
+    CFunctionListEntry(name = "log2", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.log2),
+    CFunctionListEntry(name = "log10", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.log10),
+    CFunctionListEntry(name = "cbrt", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.cbrt),
+    CFunctionListEntry(name = "hypot", def_type = def_cfunc, length = 2, generic = js_math_hypot),
+    CFunctionListEntry(name = "random", def_type = def_cfunc, length = 0, generic = js_math_random),
+    CFunctionListEntry(name = "f16round", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_f16round),
+    CFunctionListEntry(name = "fround", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_fround),
+    CFunctionListEntry(name = "imul", def_type = def_cfunc, length = 2, generic = js_math_imul),
+    CFunctionListEntry(name = "clz32", def_type = def_cfunc, length = 1, generic = js_math_clz32),
+    CFunctionListEntry(name = "sumPrecise", def_type = def_cfunc, length = 1, generic = js_math_sum_precise),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string, string_value = "Math"),
+    CFunctionListEntry(name = "E", prop_flags = 0, def_type = def_prop_double, f64_value = 2.718281828459045),
+    CFunctionListEntry(name = "LN10", prop_flags = 0, def_type = def_prop_double, f64_value = 2.302585092994046),
+    CFunctionListEntry(name = "LN2", prop_flags = 0, def_type = def_prop_double, f64_value = 0.6931471805599453),
+    CFunctionListEntry(name = "LOG2E", prop_flags = 0, def_type = def_prop_double, f64_value = 1.4426950408889634),
+    CFunctionListEntry(name = "LOG10E", prop_flags = 0, def_type = def_prop_double, f64_value = 0.4342944819032518),
+    CFunctionListEntry(name = "PI", prop_flags = 0, def_type = def_prop_double, f64_value = 3.141592653589793),
+    CFunctionListEntry(name = "SQRT1_2", prop_flags = 0, def_type = def_prop_double, f64_value = 0.7071067811865476),
+    CFunctionListEntry(name = "SQRT2", prop_flags = 0, def_type = def_prop_double, f64_value = 1.4142135623730951),
+]
+
+let js_math_obj: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "Math", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_object,
+                       prop_list = js_math_funcs),
+]

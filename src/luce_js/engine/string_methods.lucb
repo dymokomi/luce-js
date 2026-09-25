@@ -1,0 +1,220 @@
+#==============================================================================================
+#
+#   string_methods - Substrings, padding, repetition, trimming and case conversion
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 46210-46531: String.prototype's substring, substr,
+#       slice, padStart/padEnd, repeat, trim/trimStart/trimEnd, and toLowerCase/
+#       toUpperCase with the final sigma rule (the case tables are luce_js.unicode's
+#       lre_case_conv).
+#
+#==============================================================================================
+
+# mark: Substrings ==============================================================================
+
+func js_string_substring(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    let p = text.u.string
+    var a: i32 = 0
+    try js_to_int32_clamp(ctx, &a, argv[0], 0, (i32)p.len, 0)
+    var b = (i32)p.len
+    if not js_is_undefined(argv[1]):
+        try js_to_int32_clamp(ctx, &b, argv[1], 0, (i32)p.len, 0)
+    var start = b
+    var end = a
+    if a < b:
+        start = a
+        end = b
+    return try js_sub_string(ctx, p, start, end)
+
+func js_string_substr(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    let p = text.u.string
+    let len = (i32)p.len
+    var a: i32 = 0
+    try js_to_int32_clamp(ctx, &a, argv[0], 0, len, len)
+    var n = len - a
+    if not js_is_undefined(argv[1]):
+        try js_to_int32_clamp(ctx, &n, argv[1], 0, len - a, 0)
+    return try js_sub_string(ctx, p, a, a + n)
+
+func js_string_slice(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    let p = text.u.string
+    let len = (i32)p.len
+    var start: i32 = 0
+    try js_to_int32_clamp(ctx, &start, argv[0], 0, len, len)
+    var end = len
+    if not js_is_undefined(argv[1]):
+        try js_to_int32_clamp(ctx, &end, argv[1], 0, len, len)
+    return try js_sub_string(ctx, p, start, cutils.max_int(end, start))
+
+# mark: Padding and repetition ==================================================================
+
+# padStart (pad_end 0) and padEnd (pad_end 1).
+func js_string_pad(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pad_end: i32) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+    var c: i32 = (i32)' '
+
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    var n: i32 = 0
+    try js_to_int32_sat(ctx, &n, argv[0])
+    let p = text.u.string
+    let len = (i32)p.len
+    if len >= n:
+        return js_dup_value(ctx, text)
+    var v = js_undefined()
+    # the filler string, none when it is the single character `c`
+    var p1: String*? = none
+    if argc > 1 and not js_is_undefined(argv[1]):
+        v = try js_to_string(ctx, argv[1])
+        let filler = v.u.string
+        if filler.len == 0:
+            js_free_value(ctx, v)
+            return js_dup_value(ctx, text)
+        if filler.len == 1:
+            c = string_get(filler, 0)
+        else:
+            p1 = filler
+    defer js_free_value(ctx, v)
+    if n > js_string_len_max:
+        try js_throw_range_error(ctx, "invalid string length")
+    try string_buffer_init(ctx, b, n)
+    errdefer string_buffer_free(b)
+    n -= len
+    if pad_end != 0:
+        try string_buffer_concat(b, p, 0, (u32)len)
+    if let filler = p1:
+        while n > 0:
+            let chunk = cutils.min_int(n, (i32)filler.len)
+            try string_buffer_concat(b, filler, 0, (u32)chunk)
+            n -= chunk
+    else:
+        try string_buffer_fill(b, c, n)
+    if pad_end == 0:
+        try string_buffer_concat(b, p, 0, (u32)len)
+    return try string_buffer_end(b)
+
+func js_string_repeat(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    var val: i64 = 0
+    try js_to_int64_sat(ctx, &val, argv[0])
+    if val < 0 or val > 2147483647:
+        try js_throw_range_error(ctx, "invalid repeat count")
+    var n = (i32)val
+    let p = text.u.string
+    let len = (i32)p.len
+    if len == 0 or n == 1:
+        return js_dup_value(ctx, text)
+    # XXX: potential arithmetic overflow
+    if val * (i64)len > (i64)js_string_len_max:
+        try js_throw_range_error(ctx, "invalid string length")
+    try string_buffer_init2(ctx, b, n * len, p.is_wide_char)
+    if len == 1:
+        string_buffer_fill(b, string_get(p, 0), n) catch: recover ()
+    else:
+        while n > 0:
+            n -= 1
+            string_buffer_concat(b, p, 0, (u32)len) catch: recover ()
+    return try string_buffer_end(b)
+
+# mark: Trimming ================================================================================
+
+# trimStart (magic 1), trimEnd (magic 2) and trim (magic 3).
+func js_string_trim(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    let p = text.u.string
+    let len = (i32)p.len
+    var a: i32 = 0
+    var b = len
+    if (magic & 1) != 0:
+        while a < len and unicode.lre_is_space((u32)string_get(p, a)):
+            a += 1
+    if (magic & 2) != 0:
+        while b > a and unicode.lre_is_space((u32)string_get(p, b - 1)):
+            b -= 1
+    return try js_sub_string(ctx, p, a, b)
+
+# mark: Case conversion =========================================================================
+
+# The character before `*pidx` (a whole surrogate pair when there is one), moving `*pidx`
+# back to it. return 0 if before the first char
+func string_prevc(p: const String*, pidx: i32*) -> i32:
+    var idx = *pidx
+    if idx <= 0:
+        return 0
+    idx -= 1
+    var c: i32 = 0
+    if p.is_wide_char:
+        let s16 = str16(p)
+        c = (i32)s16[idx]
+        if cutils.is_lo_surrogate((u32)c) and idx > 0:
+            let c1 = (i32)s16[idx - 1]
+            if cutils.is_hi_surrogate((u32)c1):
+                c = (i32)cutils.from_surrogate((u32)c1, (u32)c)
+                idx -= 1
+    else:
+        c = (i32)str8(p)[idx]
+    *pidx = idx
+    return c
+
+# Whether the capital sigma at `sigma_pos` ends a word, so it lowers to the final sigma.
+func test_final_sigma(p: const String*, sigma_pos: i32) -> bool:
+    # before C: skip case ignorable chars and check there is
+    # a cased letter
+    var k = sigma_pos
+    var c1: i32 = 0
+    while true:
+        c1 = string_prevc(p, &k)
+        if not unicode.lre_is_case_ignorable((u32)c1):
+            break
+    if not unicode.lre_is_cased((u32)c1):
+        return false
+
+    # after C: skip case ignorable chars and check there is
+    # no cased letter
+    k = sigma_pos + 1
+    while true:
+        if k >= (i32)p.len:
+            return true
+        c1 = string_getc(p, &k)
+        if not unicode.lre_is_case_ignorable((u32)c1):
+            break
+    return not unicode.lre_is_cased((u32)c1)
+
+# toLowerCase and toLocaleLowerCase (to_lower 1), toUpperCase and toLocaleUpperCase
+# (to_lower 0).
+func js_string_to_lower_case(ctx: Context*, this_val: Value, argc: i32, argv: Value*, to_lower: i32) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+    var res: u32[3] = ---
+
+    let val = try js_to_string_check_object(ctx, this_val)
+    let p = val.u.string
+    if p.len == 0:
+        return val
+    defer js_free_value(ctx, val)
+    try string_buffer_init(ctx, b, (i32)p.len)
+    errdefer string_buffer_free(b)
+    var i: i32 = 0
+    while i < (i32)p.len:
+        let c = string_getc(p, &i)
+        var l: i32 = 0
+        if c == 0x3a3 and to_lower != 0 and test_final_sigma(p, i - 1):
+            res[0] = 0x3c2 # final sigma
+            l = 1
+        else:
+            l = unicode.lre_case_conv(res, (u32)c, to_lower)
+        for j: i32 in 0..<l:
+            try string_buffer_putc(b, res[(usize)j])
+    return try string_buffer_end(b)
