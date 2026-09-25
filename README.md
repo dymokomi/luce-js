@@ -48,7 +48,14 @@ conf, errors and patch files are copied from QuickJS, MIT). Result:
 split over processes so that a trap in one test cannot hide the others; `--direct` (or
 runner options after `--`) runs one threaded runner exactly as `make test2` does.
 
-`tests/ljs.lucb` is a small `qjs`: `luce-base build tests/ljs.lucb -o build/ljs`, then
-`build/ljs [--std] [-m] file.js [args]` or `build/ljs -e EXPR`.
+`tests/ljs.lucb` is `qjs`: `luce-base build tests/ljs.lucb -o build/ljs`, then
+`build/ljs [options] file.js [args]`, `build/ljs -e EXPR`, or `build/ljs` for QuickJS's
+REPL; every qjs option is there (`ljs -h`; `ljs -qd` is `make stats`, `ljs --std
+tests/microbench.js` is `make microbench`). `tests/ljsc/` is `qjsc`: `luce-base build
+tests/ljsc -o build/ljsc`, then `build/ljsc -o prog file.js` compiles a script or a module
+(and the modules it imports) to bytecode and builds a program running it; `-e` writes that
+program as a Luce file, `-c` only the bytecode as Luce byte arrays (`ljsc -h`).
+`python3 tests/test262.py --suite es5` runs the old ES5 test262 as `make test2o` does
+(2/11261 errors, the same as QuickJS).
 
 Licensed under the MIT license, as QuickJS is; see `LICENSE`.
