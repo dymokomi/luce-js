@@ -26,7 +26,9 @@ memory_usage.lucb
 exceptions.lucb
 throw_errors.lucb
 prototype.lucb
-stub_r08_property_get.lucb
+property_get.lucb
+private_fields.lucb
+own_properties.lucb
 stub_r09_property_set.lucb
 stub_r10_define_property.lucb
 bigint_limbs.lucb
@@ -60,3 +62,4 @@ tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
+tests_r08.lucb

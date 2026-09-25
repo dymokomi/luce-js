@@ -183,7 +183,7 @@ func js_closure_global_var(ctx: Context*, cv: ClosureVar*) -> VarRef*?:
 func js_closure2(ctx: Context*, func_obj: Value, b: FunctionBytecode*, cur_var_refs: VarRef**, sf: StackFrame*, is_eval: bool, m: ModuleDef*) -> Value!:
     trap("unported: js_closure2")
 ## Ported from quickjs.c:17341 js_instantiate_prototype.
-func js_instantiate_prototype(ctx: Context*, p: Object*, atom: Atom, opaque: void*) -> Value!:
+func js_instantiate_prototype(ctx: Context*, p: Object*, atom: Atom, opaque: void*?) -> Value!:
     trap("unported: js_instantiate_prototype")
 ## Ported from quickjs.c:17369 js_closure.
 func js_closure(ctx: Context*, bfunc: Value, cur_var_refs: VarRef**, sf: StackFrame*, is_eval: bool) -> Value!:

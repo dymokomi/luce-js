@@ -1,0 +1,128 @@
+#==============================================================================================
+#
+#   private_fields - Private class fields and private brands
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 8366-8550: defining, reading and writing private class
+#       fields (keyed by private symbols), and the private brand that the private methods
+#       of a class check on their receiver (JS_AddBrand, JS_CheckBrand).
+#
+#==============================================================================================
+
+# mark: Private fields ==========================================================================
+
+## Throw "private class field '...' does not exist" (JS_ThrowTypeErrorPrivateNotFound).
+func js_throw_type_error_private_not_found(ctx: Context*, atom: Atom) -> never!:
+    var buf: u8[atom_get_str_buf_size] = ---
+    try js_throw_type_error(ctx, f"private class field '{js_atom_get_str(ctx, buf, atom)}' does not exist")
+
+# Private fields can be added even on non extensible objects or
+# Proxies
+## Define the private field `name` (a private symbol) of `obj` to `val`, taking `val`
+## also on failure (JS_DefinePrivateField).
+func js_define_private_field(ctx: Context*, obj: Value, name: Value, val: Value) -> !:
+    errdefer js_free_value(ctx, val)
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    # safety check
+    if name.tag != Tag.symbol:
+        try js_throw_type_error_not_a_symbol(ctx)
+    let prop = js_symbol_to_atom(ctx, name)
+    let p = obj.u.obj
+    var pr: Property*? = none
+    if find_own_property(&pr, p, prop) != none:
+        var buf: u8[atom_get_str_buf_size] = ---
+        try js_throw_type_error(ctx, f"private class field '{js_atom_get_str(ctx, buf, prop)}' already exists")
+    let new_pr = try add_property(ctx, p, prop, prop_c_w_e)
+    new_pr.u.value = val
+
+## The private field `name` of `obj` (JS_GetPrivateField).
+func js_get_private_field(ctx: Context*, obj: Value, name: Value) -> Value!:
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    # safety check
+    if name.tag != Tag.symbol:
+        try js_throw_type_error_not_a_symbol(ctx)
+    let prop = js_symbol_to_atom(ctx, name)
+    let p = obj.u.obj
+    var pr: Property*? = none
+    if find_own_property(&pr, p, prop) == none:
+        try js_throw_type_error_private_not_found(ctx, prop)
+    return js_dup_value(ctx, own_property_storage(pr).u.value)
+
+## Set the existing private field `name` of `obj` to `val`, taking `val` also on failure
+## (JS_SetPrivateField).
+func js_set_private_field(ctx: Context*, obj: Value, name: Value, val: Value) -> !:
+    errdefer js_free_value(ctx, val)
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    # safety check
+    if name.tag != Tag.symbol:
+        try js_throw_type_error_not_a_symbol(ctx)
+    let prop = js_symbol_to_atom(ctx, name)
+    let p = obj.u.obj
+    var pr: Property*? = none
+    if find_own_property(&pr, p, prop) == none:
+        try js_throw_type_error_private_not_found(ctx, prop)
+    set_value(ctx, &own_property_storage(pr).u.value, val)
+
+# mark: Private brands ==========================================================================
+
+# add a private brand field to 'home_obj' if not already present and
+# if obj is != null add a private brand to it
+## (JS_AddBrand.)
+func js_add_brand(ctx: Context*, obj: Value, home_obj: Value) -> !:
+    if home_obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    let p = home_obj.u.obj
+    var pr: Property*? = none
+    var brand = js_undefined()
+    if find_own_property(&pr, p, atom_Private_brand) == none:
+        # if the brand is not present, add it
+        brand = try js_new_symbol_from_atom(ctx, atom_brand, js_atom_type_private)
+        let brand_pr = add_property(ctx, p, atom_Private_brand, prop_c_w_e) catch failure:
+            js_free_value(ctx, brand)
+            error(failure.code, failure.message)
+        brand_pr.u.value = js_dup_value(ctx, brand)
+    else:
+        brand = js_dup_value(ctx, own_property_storage(pr).u.value)
+    # the reference to 'brand' is now the reference to 'brand_atom'
+    let brand_atom = js_symbol_to_atom(ctx, brand)
+
+    if js_is_object(obj):
+        let p1 = obj.u.obj
+        if find_own_property(&pr, p1, brand_atom) != none:
+            js_free_atom(ctx, brand_atom)
+            try js_throw_type_error(ctx, "private method is already present")
+        let obj_pr = add_property(ctx, p1, brand_atom, prop_c_w_e) catch failure:
+            js_free_atom(ctx, brand_atom)
+            error(failure.code, failure.message)
+        js_free_atom(ctx, brand_atom)
+        obj_pr.u.value = js_undefined()
+    else:
+        js_free_atom(ctx, brand_atom)
+
+# return a boolean telling if the brand of the home object of 'func'
+# is present on 'obj' or -1 in case of exception
+## (JS_CheckBrand.)
+func js_check_brand(ctx: Context*, obj: Value, func_: Value) -> bool!:
+    # get the home object of 'func'
+    if func_.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    let p1 = func_.u.obj
+    if not js_class_has_bytecode((u32)(u16)p1.class_id):
+        try js_throw_type_error_not_an_object(ctx)
+    let home_obj = p1.u.func_.home_object else try js_throw_type_error_not_an_object(ctx)
+    var pr: Property*? = none
+    if find_own_property(&pr, home_obj, atom_Private_brand) == none:
+        try js_throw_type_error(ctx, "expecting <brand> private field")
+    let brand = own_property_storage(pr).u.value
+    # safety check
+    if brand.tag != Tag.symbol:
+        try js_throw_type_error_not_an_object(ctx)
+
+    # get the brand array of 'obj'
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    let p = obj.u.obj
+    return find_own_property(&pr, p, js_symbol_to_atom(ctx, brand)) != none
