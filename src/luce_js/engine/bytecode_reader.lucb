@@ -425,7 +425,7 @@ func js_read_module(s: BCReaderState*) -> Value!:
     try bc_get_atom(s, &module_name)
     let m = try js_new_module_def(ctx, module_name)
     errdefer js_free_value(ctx, js_mkptr(Tag.module, m))
-    let obj = try js_new_module_value(ctx, m)
+    let obj = js_new_module_value(ctx, m)
     try bc_get_leb128_int(s, &m.req_module_entries_count)
     if m.req_module_entries_count != 0:
         m.req_module_entries_size = m.req_module_entries_count

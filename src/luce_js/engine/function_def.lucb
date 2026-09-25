@@ -1,0 +1,30 @@
+#==============================================================================================
+#
+#   function_def - Releasing the atoms of bytecode being compiled
+#
+#   DESCRIPTION:
+#       Port of quickjs.c free_bytecode_atoms (lines 32127-32160), which js_free_function_def
+#       uses to release the atoms a function's bytecode holds. js_new_function_def and
+#       js_free_function_def (lines 32062-32221) are ported in module_parse.lucb. The DUMP_BYTECODE dump (dump_byte_code)
+#       is not ported.
+#
+#==============================================================================================
+
+# Release every atom operand of the `bc_len` bytes of bytecode at `bc_buf`. Before the last
+# pass (`use_short_opcodes` false) the bytes may hold the compiler's temporary opcodes.
+# QuickJS may pass a NULL buffer with a zero length; the caller skips that call here.
+func free_bytecode_atoms(rt: Runtime*, bc_buf: const u8*, bc_len: i32, use_short_opcodes: bool):
+    var pos: i32 = 0
+    while pos < bc_len:
+        let op = bc_buf[(usize)pos]
+        let oi = op_info(op, not use_short_opcodes)
+
+        let len = (i32)oi.size
+        match oi.fmt:
+            .atom, .atom_u8, .atom_u16, .atom_label_u8, .atom_label_u16:
+                # may happen if there is not enough memory when emiting bytecode
+                if (pos + 1 + 4) <= bc_len:
+                    let atom = cutils.get_u32(bc_buf + (usize)pos + 1)
+                    js_free_atom_rt(rt, atom)
+            _: discard(0)
+        pos += len

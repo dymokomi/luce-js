@@ -36,10 +36,10 @@ func js_parse_function_check_names(s: ParseState*, fd: FunctionDef*, func_name: 
 func js_parse_function_class_fields_init(s: ParseState*) -> FunctionDef*?:
     trap("unported: js_parse_function_class_fields_init")
 ## Ported from quickjs.c:36500 js_parse_function_decl2.
-func js_parse_function_decl2(s: ParseState*, func_type: ParseFunctionKind, func_kind: u8, func_name: Atom, ptr: const u8*, export_flag: ParseExportKind, pfd: FunctionDef**) -> i32:
+func js_parse_function_decl2(s: ParseState*, func_type: ParseFunctionKind, func_kind: u8, func_name: Atom, ptr: const u8*, export_flag: ParseExportKind, pfd: FunctionDef*?*?) -> !:
     trap("unported: js_parse_function_decl2")
 ## Ported from quickjs.c:37068 js_parse_function_decl.
-func js_parse_function_decl(s: ParseState*, func_type: ParseFunctionKind, func_kind: u8, func_name: Atom, ptr: const u8*) -> i32:
+func js_parse_function_decl(s: ParseState*, func_type: ParseFunctionKind, func_kind: u8, func_name: Atom, ptr: const u8*) -> !:
     trap("unported: js_parse_function_decl")
 ## Ported from quickjs.c:37078 js_parse_program.
 func js_parse_program(s: ParseState*) -> i32:

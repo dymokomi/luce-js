@@ -23,13 +23,7 @@ struct ClassFieldsDef:
 struct CodeContext:
     var unported: i32
 
-struct ExecModuleList:
-    var unported: i32
-
 struct GeneratorData:
-    var unported: i32
-
-struct GetExportNamesState:
     var unported: i32
 
 struct IteratorConcatData:
@@ -74,9 +68,6 @@ struct PromiseReactionData:
 struct RegExpStringIteratorData:
     var unported: i32
 
-struct ResolveState:
-    var unported: i32
-
 struct StackSizeState:
     var unported: i32
 
@@ -89,8 +80,13 @@ struct ValueBuffer:
 enum PutLValueKind as i32:
     unported = 0
 
-enum ResolveResult as i32:
-    unported = 0
-
+## The kinds of variable definition (JSVarDefEnum, quickjs.c:24293). Declared here with
+## its real cases because module_parse (r18) uses them; region 17 moves it to its fragment.
 enum VarDefKind as i32:
-    unported = 0
+    with_ = 0
+    let_ = 1
+    const_ = 2
+    function_decl = 3 # function declaration
+    new_function_decl = 4 # async/generator function declaration
+    catch_ = 5
+    var_ = 6

@@ -1,0 +1,23 @@
+# A cast to `const (T*)*` does not parse.
+#
+# The language (base.md §5.3) spells C's `T *const *` as `const (T*)*`, and §7.5 says a
+# parenthesised type ending in `*` is a cast. The type is accepted in an annotation, but
+# the cast is not:
+#
+#   expected: compiles; `first_n` reads the Node* that `p` points at and the test passes.
+#   actual:   const-pointer-pointer-cast.lucb:17:31: expected an expression
+#
+# Found in luce_js.engine module_eval.lucb (exec_module_list_cmp, a qsort comparator), which
+# casts to `ModuleDef**` as the C does (`*(JSModuleDef **)p1`), so it needs no workaround.
+
+struct Node:
+    var n: i32
+
+func first_n(p: const void*) -> i32:
+    let pp: const (Node*)* = (const (Node*)*)p
+    return (*pp).n
+
+test "cast to a pointer to a read-only pointer":
+    var a = Node(n = 7)
+    var tab: Node*[1] = [&a]
+    assert(first_n(&tab[0]) == 7)

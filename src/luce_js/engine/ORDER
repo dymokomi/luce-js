@@ -67,7 +67,13 @@ tokenizer_next.lucb
 tokenizer_json.lucb
 emitter.lucb
 stub_r17_parser.lucb
-stub_r18_modules.lucb
+modules.lucb
+module_resolve.lucb
+module_link.lucb
+module_load.lucb
+module_eval.lucb
+function_def.lucb
+module_parse.lucb
 stub_r19_resolve.lucb
 stub_r20_function_eval.lucb
 bytecode_writer.lucb
@@ -97,3 +103,4 @@ tests_tokenizer.lucb
 tests_r12.lucb
 tests_r13.lucb
 tests_bytecode_io.lucb
+tests_modules.lucb
