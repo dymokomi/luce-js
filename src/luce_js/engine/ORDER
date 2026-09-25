@@ -56,7 +56,12 @@ stub_r18_modules.lucb
 stub_r19_resolve.lucb
 stub_r20_function_eval.lucb
 stub_r21_bytecode_io.lucb
-stub_r22_object_function_error.lucb
+function_lists.lucb
+object_descriptors.lucb
+object_builtins.lucb
+function_builtins.lucb
+error_builtins.lucb
+copy_sub_array.lucb
 stub_r23_array_iterator.lucb
 stub_r24_number_string_math.lucb
 stub_r25_regexp_json_reflect.lucb
@@ -74,3 +79,4 @@ tests_shapes_objects.lucb
 tests_r08.lucb
 tests_r10.lucb
 tests_r09.lucb
+tests_r22.lucb

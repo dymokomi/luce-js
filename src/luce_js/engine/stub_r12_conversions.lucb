@@ -24,7 +24,7 @@ func js_to_float64_free_raw(ctx: Context*, pres: f64*, val: Value) -> i32!:
 func js_to_float64_free(ctx: Context*, pres: f64*, val: Value) -> i32!:
     trap("unported: JS_ToFloat64Free")
 ## Ported from quickjs.c:13078 JS_ToFloat64.
-func js_to_float64(ctx: Context*, pres: f64*, val: Value) -> i32:
+func js_to_float64(ctx: Context*, pres: f64*, val: Value) -> i32!:
     trap("unported: JS_ToFloat64")
 ## Ported from quickjs.c:13083 JS_ToNumber.
 func js_to_number(ctx: Context*, val: Value) -> Value!:
@@ -66,7 +66,7 @@ func js_to_int32_free(ctx: Context*, pres: i32*, val: Value) -> i32!:
 func js_to_int32(ctx: Context*, pres: i32*, val: Value) -> i32!:
     trap("unported: JS_ToInt32")
 ## Ported from quickjs.c:13376 JS_ToUint32Free.
-func js_to_uint32_free(ctx: Context*, pres: u32*, val: Value) -> i32:
+func js_to_uint32_free(ctx: Context*, pres: u32*, val: Value) -> i32!:
     trap("unported: JS_ToUint32Free")
 ## Ported from quickjs.c:13381 JS_ToUint8ClampFree.
 func js_to_uint8_clamp_free(ctx: Context*, pres: i32*, val: Value) -> i32!:
@@ -81,7 +81,7 @@ func is_safe_integer(d: f64) -> bool:
 func js_to_index(ctx: Context*, plen: u64*, val: Value) -> i32!:
     trap("unported: JS_ToIndex")
 ## Ported from quickjs.c:13509 JS_ToLengthFree.
-func js_to_length_free(ctx: Context*, plen: i64*, val: Value) -> i32:
+func js_to_length_free(ctx: Context*, plen: i64*, val: Value) -> i32!:
     trap("unported: JS_ToLengthFree")
 ## Ported from quickjs.c:13518 JS_NumberIsInteger.
 func js_number_is_integer(ctx: Context*, val: Value) -> i32!:

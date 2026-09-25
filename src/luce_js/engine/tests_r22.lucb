@@ -1,0 +1,71 @@
+#==============================================================================================
+#
+#   tests_r22 - Tests of the Object, Function and Error builtins region
+#
+#   DESCRIPTION:
+#       Unit tests of the pieces of quickjs.c lines 39700-41600 that run without a
+#       runtime: float truncation for Function.prototype.bind, the builtin tables, and
+#       the function pointers read from table entries.
+#
+#==============================================================================================
+
+test "float64_trunc rounds toward zero and keeps the sign of zero":
+    assert(float64_trunc(2.75) == 2.0)
+    assert(float64_trunc(-2.75) == -2.0)
+    assert(float64_trunc(0.5).bits() == 0)
+    assert(float64_trunc(-0.5).bits() == (-0.0).bits())
+    assert(float64_trunc(4503599627370497.0) == 4503599627370497.0)
+    let inf = f64.bits(0x7ff0000000000000)
+    assert(float64_trunc(inf) == inf)
+    assert(float64_trunc(-1e300) == -1e300)
+
+test "the Function constructor kinds map to their classes":
+    assert(js_function_kind_class_id(js_func_normal) == ClassId.bytecode_function)
+    assert(js_function_kind_class_id(js_func_generator) == ClassId.generator_function)
+    assert(js_function_kind_class_id(js_func_async) == ClassId.async_function)
+    assert(js_function_kind_class_id(js_func_async_generator) == ClassId.async_generator_function)
+
+test "a table entry answers the function of its calling shape":
+    let create = &js_object_funcs[0]
+    assert(create.name == "create" and create.cproto == CFunctionEnum.generic)
+    assert((void*)c_function_list_entry_cfunc(create) == (void*)js_object_create)
+    let freeze = &js_object_funcs[18]
+    assert(freeze.name == "freeze" and freeze.cproto == CFunctionEnum.generic_magic and freeze.magic == 1)
+    assert((void*)c_function_list_entry_cfunc(freeze) == (void*)js_object_seal)
+
+test "c_function_from_magic keeps the function pointer":
+    var u: CFunctionType = ---
+    u.generic = c_function_from_magic(js_function_apply)
+    assert((void*)u.generic_magic == (void*)js_function_apply)
+
+test "the Object tables follow quickjs.c":
+    let names: str[23] = ["create", "getPrototypeOf", "setPrototypeOf", "defineProperty",
+                          "defineProperties", "getOwnPropertyNames", "getOwnPropertySymbols",
+                          "groupBy", "keys", "values", "entries", "isExtensible",
+                          "preventExtensions", "getOwnPropertyDescriptor",
+                          "getOwnPropertyDescriptors", "is", "assign", "seal", "freeze",
+                          "isSealed", "isFrozen", "fromEntries", "hasOwn"]
+    for i in 0..<names.length:
+        assert(js_object_funcs[i].name == names[i])
+        assert(js_object_funcs[i].def_type == def_cfunc and js_object_funcs[i].prop_flags == 3)
+    assert(js_object_funcs[10].magic == (i16)IteratorKind.key_and_value)
+    let proto = &js_object_proto_funcs[6]
+    assert(proto.name == "__proto__" and proto.def_type == def_cgetset and proto.prop_flags == 1)
+    assert(proto.getter != none and proto.setter != none)
+
+test "the native error prototypes name each error in ErrorKind order":
+    assert(js_native_error_proto_funcs.length == 2 * js_native_error_count)
+    for k in 0..<js_native_error_count:
+        let name = &js_native_error_proto_funcs[2 * k]
+        let message = &js_native_error_proto_funcs[2 * k + 1]
+        assert(name.name == "name" and name.def_type == def_prop_atom)
+        assert((u32)name.i32_value == atom_EvalError + (u32)k)
+        assert(message.name == "message" and message.def_type == def_prop_string)
+        assert(message.string_value == "")
+    assert(js_native_error_proto_funcs[2 * (usize)ErrorKind.aggregate_error].i32_value == (i32)atom_AggregateError)
+
+test "Function.prototype's table":
+    assert(js_function_proto_funcs[4].name == "[Symbol.hasInstance]")
+    assert(js_function_proto_funcs[6].def_type == def_cgetset_magic and js_function_proto_funcs[6].magic == 0)
+    assert(js_function_proto_funcs[7].name == "columnNumber" and js_function_proto_funcs[7].magic == 1)
+    assert(js_error_proto_funcs[1].string_value == "Error")

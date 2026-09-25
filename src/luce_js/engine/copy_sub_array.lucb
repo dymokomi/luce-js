@@ -1,0 +1,63 @@
+#==============================================================================================
+#
+#   copy_sub_array - Moving a run of array elements (JS_CopySubArray)
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 41598-41667, the first function of the "Array" section:
+#       copy `count` elements of an array-like object from `from_pos` to `to_pos`, in
+#       increasing (`dir` > 0) or decreasing (`dir` < 0) order, with a fast path over the
+#       values of a fast array. Used by Array.prototype.shift, unshift, splice and
+#       copyWithin.
+#
+#==============================================================================================
+
+## Copy the `count` elements of `obj` at `from_pos` to `to_pos`; an absent source element
+## deletes its destination. `dir` < 0 copies from the last element down, for overlapping
+## runs moving up (JS_CopySubArray).
+func js_copy_sub_array(ctx: Context*, obj: Value, to_pos: i64, from_pos: i64, count: i64, dir: i32) -> !:
+    var fast: Object*? = none
+    if obj.tag == Tag.object:
+        let p = obj.u.obj
+        if p.class_id == ClassId.array and p.fast_array:
+            fast = p
+
+    var i: i64 = 0
+    while i < count:
+        var from_: i64 = 0
+        var to: i64 = 0
+        if dir < 0:
+            from_ = from_pos + count - i - 1
+            to = to_pos + count - i - 1
+        else:
+            from_ = from_pos + i
+            to = to_pos + i
+        var done_fast = false
+        if let p = fast:
+            if (p.fast_array and from_ >= 0 and from_ < (i64)p.u.array.count and
+                    to >= 0 and to < (i64)p.u.array.count):
+                let len = (i64)p.u.array.count
+                # Fast path for fast arrays. Since we don't look at the
+                # prototype chain, we can optimize only the cases where
+                # all the elements are present in the array.
+                var l = count - i
+                if dir < 0:
+                    l = cutils.min_int64(l, from_ + 1)
+                    l = cutils.min_int64(l, to + 1)
+                    for j in 0..<l:
+                        set_value(ctx, p.u.array.u.values + (usize)(to - j),
+                                  js_dup_value(ctx, p.u.array.u.values[(usize)(from_ - j)]))
+                else:
+                    l = cutils.min_int64(l, len - from_)
+                    l = cutils.min_int64(l, len - to)
+                    for j in 0..<l:
+                        set_value(ctx, p.u.array.u.values + (usize)(to + j),
+                                  js_dup_value(ctx, p.u.array.u.values[(usize)(from_ + j)]))
+                i += l
+                done_fast = true
+        if not done_fast:
+            var val = js_undefined()
+            if try js_try_get_property_int64(ctx, obj, from_, &val):
+                discard(try js_set_property_int64(ctx, obj, to, val))
+            else:
+                discard(try js_delete_property_int64(ctx, obj, to, prop_throw))
+            i += 1

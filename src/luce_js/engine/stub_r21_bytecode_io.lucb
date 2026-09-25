@@ -180,10 +180,10 @@ func check_function(ctx: Context*, obj: Value) -> i32!:
 func check_exception_free(ctx: Context*, obj: Value) -> i32:
     trap("unported: check_exception_free")
 ## Ported from quickjs.c:39532 find_atom.
-func find_atom(ctx: Context*, name: const u8*) -> Atom:
+func find_atom(ctx: Context*, name: str) -> Atom!:
     trap("unported: find_atom")
 ## Ported from quickjs.c:39555 JS_NewObjectProtoList.
-func js_new_object_proto_list(ctx: Context*, proto: Value, fields: const CFunctionListEntry*, n_fields: i32) -> Value!:
+func js_new_object_proto_list(ctx: Context*, proto: Value, fields: const CFunctionListEntry[]) -> Value!:
     trap("unported: JS_NewObjectProtoList")
 ## Ported from quickjs.c:39569 JS_InstantiateFunctionListItem2.
 func js_instantiate_function_list_item2(ctx: Context*, p: Object*, atom: Atom, opaque: void*?) -> Value!:

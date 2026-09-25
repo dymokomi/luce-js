@@ -1,0 +1,377 @@
+#==============================================================================================
+#
+#   object_builtins - The rest of the Object functions, Object.prototype and their tables
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 40474-41045: Object.isExtensible, preventExtensions,
+#       hasOwn, assign, seal/freeze, isSealed/isFrozen, fromEntries and is,
+#       JS_SpeciesConstructor, the Object.prototype methods (hasOwnProperty, valueOf,
+#       toString, toLocaleString, __proto__, isPrototypeOf, propertyIsEnumerable,
+#       __lookupGetter__/__lookupSetter__), and the tables js_object_funcs and
+#       js_object_proto_funcs.
+#
+#==============================================================================================
+
+# mark: Extensibility ===========================================================================
+
+## Object.isExtensible(obj), and Reflect.isExtensible when `reflect` is 1.
+func js_object_is_extensible(ctx: Context*, this_val: Value, argc: i32, argv: Value*, reflect: i32) -> Value!:
+    let obj = argv[0]
+    if obj.tag != Tag.object:
+        if reflect != 0:
+            try js_throw_type_error_not_an_object(ctx)
+        else:
+            return js_false()
+    let ret = try js_is_extensible(ctx, obj)
+    return js_new_bool(ret)
+
+## Object.preventExtensions(obj), and Reflect.preventExtensions when `reflect` is 1.
+func js_object_prevent_extensions(ctx: Context*, this_val: Value, argc: i32, argv: Value*, reflect: i32) -> Value!:
+    let obj = argv[0]
+    if obj.tag != Tag.object:
+        if reflect != 0:
+            try js_throw_type_error_not_an_object(ctx)
+        else:
+            return js_dup_value(ctx, obj)
+    let ret = try js_prevent_extensions(ctx, obj)
+    if reflect != 0:
+        return js_new_bool(ret)
+    else:
+        if not ret:
+            try js_throw_type_error(ctx, "proxy preventExtensions handler returned false")
+        return js_dup_value(ctx, obj)
+
+# mark: Own properties ==========================================================================
+
+## Object.prototype.hasOwnProperty(prop).
+func js_object_has_own_property(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let atom = try js_value_to_atom(ctx, argv[0]) # must be done first
+    defer js_free_atom(ctx, atom)
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    let p = obj.u.obj
+    let ret = try js_get_own_property_internal(ctx, none, p, atom)
+    return js_new_bool(ret)
+
+## Object.hasOwn(obj, prop).
+func js_object_has_own(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, argv[0])
+    defer js_free_value(ctx, obj)
+    let atom = try js_value_to_atom(ctx, argv[1])
+    defer js_free_atom(ctx, atom)
+    let p = obj.u.obj
+    let ret = try js_get_own_property_internal(ctx, none, p, atom)
+    return js_new_bool(ret)
+
+## Object.prototype.valueOf().
+func js_object_value_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_to_object(ctx, this_val)
+
+## The class tag of Object.prototype.toString for the object `obj`, before its
+## Symbol.toStringTag is read.
+func js_object_to_string_class_atom(ctx: Context*, obj: Value) -> Atom!:
+    if try js_is_array(ctx, obj) != 0:
+        return atom_Array
+    elif js_is_function(ctx, obj):
+        return atom_Function
+    let p = obj.u.obj
+    match p.class_id:
+        .string, .arguments, .mapped_arguments, .error_, .boolean, .number, .date, .regexp:
+            let class_array = ctx.rt.class_array else trap("runtime without classes")
+            return class_array[(usize)(u16)p.class_id].class_name
+        _:
+            return atom_Object
+
+## Object.prototype.toString(): "[object Tag]".
+func js_object_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var tag = js_undefined()
+    if js_is_null(this_val):
+        tag = try js_new_string8(ctx, "Null".bytes.data)
+    elif js_is_undefined(this_val):
+        tag = try js_new_string8(ctx, "Undefined".bytes.data)
+    else:
+        let obj = try js_to_object(ctx, this_val)
+        let atom = js_object_to_string_class_atom(ctx, obj) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        tag = js_get_property(ctx, obj, atom_Symbol_toStringTag) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        js_free_value(ctx, obj)
+        if not js_is_string(tag):
+            js_free_value(ctx, tag)
+            tag = try js_atom_to_string(ctx, atom)
+    return try js_concat_string3(ctx, "[object ".bytes.data, tag, "]".bytes.data)
+
+## Object.prototype.toLocaleString(): this.toString().
+func js_object_to_locale_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var no_arg = js_undefined()
+    return try js_invoke(ctx, this_val, atom_toString, 0, &no_arg)
+
+# mark: Copying and freezing ====================================================================
+
+## Object.assign(target, ...sources).
+func js_object_assign(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # Object.assign(obj, source1)
+    let obj = try js_to_object(ctx, argv[0])
+    errdefer js_free_value(ctx, obj)
+    for i in 1..<(usize)argc:
+        if not js_is_null(argv[i]) and not js_is_undefined(argv[i]):
+            let s = try js_to_object(ctx, argv[i])
+            defer js_free_value(ctx, s)
+            discard(try js_copy_data_properties(ctx, obj, s, js_undefined(), true))
+    return obj
+
+## Object.seal(obj), and Object.freeze when `freeze_flag` is 1.
+func js_object_seal(ctx: Context*, this_val: Value, argc: i32, argv: Value*, freeze_flag: i32) -> Value!:
+    let obj = argv[0]
+    if not js_is_object(obj):
+        return js_dup_value(ctx, obj)
+
+    if not try js_prevent_extensions(ctx, obj):
+        try js_throw_type_error(ctx, "proxy preventExtensions handler returned false")
+
+    let p = obj.u.obj
+    let flags = gpn_string_mask | gpn_symbol_mask
+    var props: PropertyEnum*? = none
+    var len: u32 = 0
+    try js_get_own_property_names_internal(ctx, &props, &len, p, flags)
+    defer js_free_property_enum(ctx, props, len)
+    let tab = props else trap("JS_GetOwnPropertyNamesInternal without a table")
+
+    for i in 0..<(usize)len:
+        let prop = tab[i].atom
+
+        var desc_flags = prop_throw | prop_has_configurable
+        if freeze_flag != 0:
+            var desc: PropertyDescriptor = ---
+            if try js_get_own_property_internal(ctx, &desc, p, prop):
+                if (desc.flags & prop_writable) != 0:
+                    desc_flags |= prop_has_writable
+                js_free_desc(ctx, &desc)
+        discard(try js_define_property(ctx, obj, prop, js_undefined(),
+                                       js_undefined(), js_undefined(), desc_flags))
+    return js_dup_value(ctx, obj)
+
+## Object.isSealed(obj), and Object.isFrozen when `is_frozen` is 1.
+func js_object_is_sealed(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_frozen: i32) -> Value!:
+    let obj = argv[0]
+    if not js_is_object(obj):
+        return js_true()
+
+    let p = obj.u.obj
+    let flags = gpn_string_mask | gpn_symbol_mask
+    var props: PropertyEnum*? = none
+    var len: u32 = 0
+    try js_get_own_property_names_internal(ctx, &props, &len, p, flags)
+    defer js_free_property_enum(ctx, props, len)
+    let tab = props else trap("JS_GetOwnPropertyNamesInternal without a table")
+
+    for i in 0..<(usize)len:
+        let prop = tab[i].atom
+        var desc: PropertyDescriptor = ---
+        if try js_get_own_property_internal(ctx, &desc, p, prop):
+            js_free_desc(ctx, &desc)
+            if ((desc.flags & prop_configurable) != 0 or
+                    (is_frozen != 0 and (desc.flags & prop_writable) != 0)):
+                return js_false()
+    let res = try js_is_extensible(ctx, obj)
+    return js_new_bool(not res)
+
+## Close `iter` on the failure path of a loop over it, keeping the pending exception
+## (the `JS_IteratorClose(ctx, iter, TRUE)` of the fail labels).
+func js_iterator_close_on_failure(ctx: Context*, iter: Value):
+    if js_is_object(iter):
+        discard(js_iterator_close(ctx, iter, true) catch: recover 0)
+
+## Object.fromEntries(iterable).
+func js_object_from_entries(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # RequireObjectCoercible() not necessary because it is tested in
+    # JS_GetIterator() by JS_GetProperty()
+    let iterable = argv[0]
+
+    let obj = try js_new_object(ctx)
+    errdefer js_free_value(ctx, obj)
+
+    let iter = try js_get_iterator(ctx, iterable, false)
+    defer js_free_value(ctx, iter)
+    # close the iterator object, preserving pending exception
+    errdefer js_iterator_close_on_failure(ctx, iter)
+    let next_method = try js_get_property(ctx, iter, atom_next)
+    defer js_free_value(ctx, next_method)
+
+    var no_arg = js_undefined()
+    while true:
+        var done = false
+        let item = try js_iterator_next(ctx, iter, next_method, 0, &no_arg, &done)
+        if done:
+            break
+        defer js_free_value(ctx, item)
+
+        if not js_is_object(item):
+            try js_throw_type_error_not_an_object(ctx)
+        let key = try js_get_property_uint32(ctx, item, 0)
+        let value = js_get_property_uint32(ctx, item, 1) catch failure:
+            js_free_value(ctx, key)
+            error(failure.code, failure.message)
+        discard(try js_define_property_value_value(ctx, obj, key, value, prop_c_w_e | prop_throw))
+    return obj
+
+## Object.is(a, b): SameValue.
+func js_object_is(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return js_new_bool(js_same_value(ctx, argv[0], argv[1]))
+
+## SpeciesConstructor: `obj.constructor[Symbol.species]`, or `default_constructor` when
+## it is absent (JS_SpeciesConstructor).
+func js_species_constructor(ctx: Context*, obj: Value, default_constructor: Value) -> Value!:
+    if not js_is_object(obj):
+        try js_throw_type_error_not_an_object(ctx)
+    let ctor = try js_get_property(ctx, obj, atom_constructor)
+    if js_is_undefined(ctor):
+        return js_dup_value(ctx, default_constructor)
+    if not js_is_object(ctor):
+        js_free_value(ctx, ctor)
+        try js_throw_type_error_not_an_object(ctx)
+    let s = js_get_property(ctx, ctor, atom_Symbol_species) catch failure:
+        js_free_value(ctx, ctor)
+        error(failure.code, failure.message)
+    js_free_value(ctx, ctor)
+    if js_is_undefined(s) or js_is_null(s):
+        return js_dup_value(ctx, default_constructor)
+    if not js_is_constructor(ctx, s):
+        defer js_free_value(ctx, s)
+        try js_throw_type_error_not_a_constructor(ctx, s)
+    return s
+
+# mark: Object.prototype ========================================================================
+
+## The getter of Object.prototype.__proto__.
+func js_object_get__proto_(ctx: Context*, this_val: Value) -> Value!:
+    let val = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, val)
+    return try js_get_prototype(ctx, val)
+
+## The setter of Object.prototype.__proto__.
+func js_object_set__proto_(ctx: Context*, this_val: Value, proto: Value) -> Value!:
+    if js_is_undefined(this_val) or js_is_null(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    if not js_is_object(proto) and not js_is_null(proto):
+        return js_undefined()
+    discard(try js_set_prototype_internal(ctx, this_val, proto, true))
+    return js_undefined()
+
+## Object.prototype.isPrototypeOf(v).
+func js_object_is_prototype_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let v = argv[0]
+    if not js_is_object(v):
+        return js_false()
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var v1 = js_dup_value(ctx, v)
+    var res = false
+    while true:
+        # js_get_prototype_free releases v1, also on failure
+        v1 = try js_get_prototype_free(ctx, v1)
+        if js_is_null(v1):
+            res = false
+            break
+        if obj.u.obj == v1.u.obj:
+            res = true
+            break
+        # avoid infinite loop (possible with proxies)
+        js_poll_interrupts(ctx) catch failure:
+            js_free_value(ctx, v1)
+            error(failure.code, failure.message)
+    js_free_value(ctx, v1)
+    return js_new_bool(res)
+
+## Object.prototype.propertyIsEnumerable(prop).
+func js_object_property_is_enumerable(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let prop = try js_value_to_atom(ctx, argv[0])
+    defer js_free_atom(ctx, prop)
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+
+    var desc: PropertyDescriptor = ---
+    if try js_get_own_property_internal(ctx, &desc, obj.u.obj, prop):
+        let res = js_new_bool((desc.flags & prop_enumerable) != 0)
+        js_free_desc(ctx, &desc)
+        return res
+    return js_false()
+
+## Object.prototype.__lookupGetter__(prop), and __lookupSetter__ when `setter` is 1.
+func js_object__lookup_getter_(ctx: Context*, this_val: Value, argc: i32, argv: Value*, setter: i32) -> Value!:
+    var obj = try js_to_object(ctx, this_val)
+    let prop = js_value_to_atom(ctx, argv[0]) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    defer js_free_atom(ctx, prop)
+
+    var res = js_undefined()
+    while true:
+        var desc: PropertyDescriptor = ---
+        let has_prop = js_get_own_property_internal(ctx, &desc, obj.u.obj, prop) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        if has_prop:
+            if (desc.flags & prop_getset) != 0:
+                res = js_dup_value(ctx, desc.setter if setter != 0 else desc.getter)
+            else:
+                res = js_undefined()
+            js_free_desc(ctx, &desc)
+            break
+        # js_get_prototype_free releases obj, also on failure
+        obj = try js_get_prototype_free(ctx, obj)
+        if js_is_null(obj):
+            res = js_undefined()
+            break
+        # avoid infinite loop (possible with proxies)
+        js_poll_interrupts(ctx) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+    js_free_value(ctx, obj)
+    return res
+
+# mark: Tables ==================================================================================
+
+## The functions of the Object constructor.
+let js_object_funcs: CFunctionListEntry[23] = [
+    CFunctionListEntry(name = "create", def_type = def_cfunc, length = 2, generic = js_object_create),
+    CFunctionListEntry(name = "getPrototypeOf", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_get_prototype_of, magic = 0),
+    CFunctionListEntry(name = "setPrototypeOf", def_type = def_cfunc, length = 2, generic = js_object_set_prototype_of),
+    CFunctionListEntry(name = "defineProperty", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_define_property, magic = 0),
+    CFunctionListEntry(name = "defineProperties", def_type = def_cfunc, length = 2, generic = js_object_define_properties_builtin),
+    CFunctionListEntry(name = "getOwnPropertyNames", def_type = def_cfunc, length = 1, generic = js_object_get_own_property_names),
+    CFunctionListEntry(name = "getOwnPropertySymbols", def_type = def_cfunc, length = 1, generic = js_object_get_own_property_symbols),
+    CFunctionListEntry(name = "groupBy", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_group_by, magic = 0),
+    CFunctionListEntry(name = "keys", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_keys, magic = (i16)IteratorKind.key),
+    CFunctionListEntry(name = "values", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_keys, magic = (i16)IteratorKind.value),
+    CFunctionListEntry(name = "entries", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_keys, magic = (i16)IteratorKind.key_and_value),
+    CFunctionListEntry(name = "isExtensible", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_is_extensible, magic = 0),
+    CFunctionListEntry(name = "preventExtensions", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_prevent_extensions, magic = 0),
+    CFunctionListEntry(name = "getOwnPropertyDescriptor", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_get_own_property_descriptor, magic = 0),
+    CFunctionListEntry(name = "getOwnPropertyDescriptors", def_type = def_cfunc, length = 1, generic = js_object_get_own_property_descriptors),
+    CFunctionListEntry(name = "is", def_type = def_cfunc, length = 2, generic = js_object_is),
+    CFunctionListEntry(name = "assign", def_type = def_cfunc, length = 2, generic = js_object_assign),
+    CFunctionListEntry(name = "seal", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_seal, magic = 0),
+    CFunctionListEntry(name = "freeze", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_seal, magic = 1),
+    CFunctionListEntry(name = "isSealed", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_is_sealed, magic = 0),
+    CFunctionListEntry(name = "isFrozen", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object_is_sealed, magic = 1),
+    CFunctionListEntry(name = "fromEntries", def_type = def_cfunc, length = 1, generic = js_object_from_entries),
+    CFunctionListEntry(name = "hasOwn", def_type = def_cfunc, length = 2, generic = js_object_has_own),
+]
+
+## The methods of Object.prototype.
+let js_object_proto_funcs: CFunctionListEntry[11] = [
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_object_to_string),
+    CFunctionListEntry(name = "toLocaleString", def_type = def_cfunc, length = 0, generic = js_object_to_locale_string),
+    CFunctionListEntry(name = "valueOf", def_type = def_cfunc, length = 0, generic = js_object_value_of),
+    CFunctionListEntry(name = "hasOwnProperty", def_type = def_cfunc, length = 1, generic = js_object_has_own_property),
+    CFunctionListEntry(name = "isPrototypeOf", def_type = def_cfunc, length = 1, generic = js_object_is_prototype_of),
+    CFunctionListEntry(name = "propertyIsEnumerable", def_type = def_cfunc, length = 1, generic = js_object_property_is_enumerable),
+    CFunctionListEntry(name = "__proto__", prop_flags = (u8)prop_configurable, def_type = def_cgetset, getter = js_object_get__proto_, setter = js_object_set__proto_),
+    CFunctionListEntry(name = "__defineGetter__", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_object__define_getter_, magic = 0),
+    CFunctionListEntry(name = "__defineSetter__", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_object__define_getter_, magic = 1),
+    CFunctionListEntry(name = "__lookupGetter__", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object__lookup_getter_, magic = 0),
+    CFunctionListEntry(name = "__lookupSetter__", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_object__lookup_getter_, magic = 1),
+]
