@@ -63,8 +63,8 @@ struct ParsePos:
     var unported: i32
 
 # quickjs.c:53334-53356 (region r26): the promise records. Region r27 (Promise and
-# Date) needs their fields, so they are declared here in full; region r26 moves them into
-# its own fragment.
+# Date) needs their fields, so they are declared here in full, field for field as region
+# r26 declares them in promise_reactions.lucb. Delete this block when r26 is merged.
 
 ## A promise's state and reactions (JSPromiseData).
 struct PromiseData:

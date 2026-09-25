@@ -121,7 +121,8 @@ func js_promise_resolve_function_call(ctx: Context*, func_obj: Value, this_val: 
 
 # mark: The Promise class =======================================================================
 
-## The reaction whose `link` is `el` (list_entry(el, JSPromiseReactionData, link)).
+## The reaction whose `link` is `el` (list_entry(el, JSPromiseReactionData, link)). Region
+## r26 has the same helper as `promise_reaction_of`; this one can go once both are merged.
 func promise_reaction_of_link(el: cutils.ListHead*) -> PromiseReactionData*:
     return (PromiseReactionData*)((u8*)el - offsetof(PromiseReactionData, link))
 
