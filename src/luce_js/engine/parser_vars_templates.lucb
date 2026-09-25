@@ -1,0 +1,234 @@
+#==============================================================================================
+#
+#   parser_vars_templates - Variable definitions of the parser and template literals
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 24293-24607: JSVarDefEnum (VarDefKind), define_var and
+#       add_private_class_field, which declare the variables a declaration or a class
+#       creates in the function being compiled, and js_parse_template with its helper
+#       seal_template_obj, which compile a template literal or a tagged template.
+#
+#       A parser function that answers -1 on an exception is fallible here (`-> !`, or
+#       `-> T!` when it answers a value); its caller writes `try`.
+#
+#==============================================================================================
+
+# mark: Defining variables ======================================================================
+
+## What a declaration defines (JSVarDefEnum).
+enum VarDefKind as i32:
+    with_ = 0
+    let_ = 1
+    const_ = 2
+    ## Function declaration.
+    function_decl = 3
+    ## Async/generator function declaration.
+    new_function_decl = 4
+    catch_ = 5
+    var_ = 6
+
+# Free the atom at `p` (JS_FreeAtom; nothing for no_atom) and clear it: the cleanup of
+# a parser function's owned atoms, registered with `errdefer` or `defer`.
+func free_atom_at(ctx: Context*, p: Atom*):
+    js_free_atom(ctx, *p)
+    *p = no_atom
+
+# Define `name` in `fd` as `var_def_type` asks, after checking the redefinition rules;
+# answers its index in fd.vars, or global_var_offset for a global variable of global or
+# module code.
+func define_var(s: ParseState*, fd: FunctionDef*, name: Atom, var_def_type: VarDefKind) -> i32!:
+    let ctx = s.ctx
+    var idx: i32 = -1
+
+    match var_def_type:
+        .with_:
+            idx = try add_scope_var(ctx, fd, name, VarKind.normal)
+
+        .let_, .const_, .function_decl, .new_function_decl:
+            idx = find_lexical_decl(ctx, fd, name, fd.scope_first, true)
+            if idx >= 0:
+                if idx < global_var_offset:
+                    let vd = fd_var(fd, idx)
+                    if vd.scope_level == fd.scope_level:
+                        # same scope: in non strict mode, functions can be redefined
+                        # (annex B.3.3.4).
+                        if not (((i32)fd.js_mode & js_mode_strict) == 0 and
+                                var_def_type == VarDefKind.function_decl and
+                                vd.var_kind == VarKind.function_decl):
+                            # redefining a scoped var in the same scope: error
+                            try js_parse_error(s, "invalid redefinition of lexical identifier")
+                    elif vd.var_kind == VarKind.catch_ and (vd.scope_level + 2) == fd.scope_level:
+                        try js_parse_error(s, "invalid redefinition of lexical identifier")
+                else:
+                    if fd.scope_level == fd.body_scope:
+                        # redefining a scoped var in the same scope: error
+                        try js_parse_error(s, "invalid redefinition of lexical identifier")
+            if (var_def_type != VarDefKind.function_decl and
+                var_def_type != VarDefKind.new_function_decl and
+                fd.scope_level == fd.body_scope and
+                find_arg(ctx, fd, name) >= 0):
+                # lexical variable redefines a parameter name
+                try js_parse_error(s, "invalid redefinition of parameter name")
+
+            if find_var_in_child_scope(ctx, fd, name, fd.scope_level) >= 0:
+                try js_parse_error(s, "invalid redefinition of a variable")
+
+            if fd.is_global_var:
+                if let hf = find_global_var(fd, name):
+                    if is_child_scope(ctx, fd, hf.scope_level, fd.scope_level):
+                        try js_parse_error(s, "invalid redefinition of global identifier")
+
+            if (fd.is_eval and
+                (fd.eval_type == eval_type_global or fd.eval_type == eval_type_module) and
+                fd.scope_level == fd.body_scope):
+                let hf = try add_global_var(s.ctx, fd, name)
+                hf.is_lexical = true
+                hf.is_const = var_def_type == VarDefKind.const_
+                idx = global_var_offset
+            else:
+                var var_kind = VarKind.normal
+                if var_def_type == VarDefKind.function_decl:
+                    var_kind = VarKind.function_decl
+                elif var_def_type == VarDefKind.new_function_decl:
+                    var_kind = VarKind.new_function_decl
+                idx = try add_scope_var(ctx, fd, name, var_kind)
+                let vd = fd_var(fd, idx)
+                vd.is_lexical = true
+                vd.is_const = var_def_type == VarDefKind.const_
+
+        .catch_:
+            idx = try add_scope_var(ctx, fd, name, VarKind.catch_)
+
+        .var_:
+            if find_lexical_decl(ctx, fd, name, fd.scope_first, false) >= 0:
+                # error to redefine a var that inside a lexical scope
+                try js_parse_error(s, "invalid redefinition of lexical identifier")
+            if fd.is_global_var:
+                if let hf = find_global_var(fd, name):
+                    if (hf.is_lexical and hf.scope_level == fd.scope_level and
+                        fd.eval_type == eval_type_module):
+                        try js_parse_error(s, "invalid redefinition of lexical identifier")
+                discard(try add_global_var(s.ctx, fd, name))
+                idx = global_var_offset
+            else:
+                # if the variable already exists, don't add it again
+                idx = find_var(ctx, fd, name)
+                if idx < 0:
+                    idx = try add_var(ctx, fd, name)
+                    if name == atom_arguments and fd.has_arguments_binding:
+                        fd.arguments_var_idx = idx
+                    fd_var(fd, idx).scope_next = fd.scope_level
+
+        _:
+            trap("define_var: invalid definition kind")
+    return idx
+
+# add a private field variable in the current scope
+func add_private_class_field(s: ParseState*, fd: FunctionDef*, name: Atom, var_kind: VarKind,
+                             is_static: bool) -> i32!:
+    let ctx = s.ctx
+    let idx = try add_scope_var(ctx, fd, name, var_kind)
+    let vd = fd_var(fd, idx)
+    vd.is_lexical = true
+    vd.is_const = true
+    vd.is_static_private = is_static
+    return idx
+
+# mark: Template literals =======================================================================
+
+# Note: all the fields are already sealed except length
+func seal_template_obj(ctx: Context*, obj: Value) -> !:
+    let p = obj.u.obj
+    if let prs0 = find_own_property1(p, atom_length):
+        var prs = prs0
+        try js_update_property_flags(ctx, p, &prs,
+                                     (i32)prs.flags & ~(prop_configurable | prop_writable))
+    p.extensible = false
+
+# Compile the template literal at the current token. With `call`, it is the argument
+# list of a tagged template: push the template object and the substitutions and store
+# their count in `*argc`. Otherwise compile the concatenation of the parts.
+func js_parse_template(s: ParseState*, call: bool, argc: i32*?) -> !:
+    let ctx = s.ctx
+    var raw_array = js_undefined()
+    var template_object = js_undefined()
+    if call:
+        # Create a template object: an array of cooked strings
+        # Create an array of raw strings and store it to the raw property
+        template_object = try js_new_array(ctx)
+        emit_push_const(s, template_object, false) catch failure:
+            js_free_value(ctx, template_object)
+            error(failure.code, failure.message)
+        # the constant pool keeps the template object alive
+        js_free_value(ctx, template_object)
+        raw_array = try js_new_array(ctx)
+        discard(try js_define_property_value(ctx, template_object, atom_raw, raw_array, prop_throw))
+
+    var depth: i32 = 0
+    var done = false
+    while s.token.val == TokenType.template:
+        var p = s.token.ptr + 1
+        var cooked = s.token
+        if call:
+            discard(try js_define_property_value_uint32(ctx, raw_array, (u32)depth,
+                                                        js_dup_value(ctx, s.token.u.str_.str),
+                                                        prop_enumerable | prop_throw))
+            # re-parse the string with escape sequences but do not throw a syntax error
+            # if it contains invalid sequences
+            js_parse_string(s, (i32)'`', false, p, &cooked, &p) catch failure:
+                cooked.u.str_.str = js_undefined()
+                recover ()
+            discard(try js_define_property_value_uint32(ctx, template_object, (u32)depth,
+                                                        cooked.u.str_.str,
+                                                        prop_enumerable | prop_throw))
+        else:
+            # re-parse the string with escape sequences and throw a syntax error if it
+            # contains invalid sequences
+            js_free_value(ctx, s.token.u.str_.str)
+            s.token.u.str_.str = js_undefined()
+            try js_parse_string(s, (i32)'`', true, p, &cooked, &p)
+            let text = cooked.u.str_.str.u.string
+            if text.len != 0 or depth == 0:
+                emit_push_const(s, cooked.u.str_.str, true) catch failure:
+                    js_free_value(s.ctx, cooked.u.str_.str)
+                    error(failure.code, failure.message)
+                js_free_value(s.ctx, cooked.u.str_.str)
+                if depth == 0:
+                    if s.token.u.str_.sep == (i32)'`':
+                        # done1: a template without substitutions is its string
+                        try next_token(s)
+                        return
+                    emit_op(s, (u8)Op.get_field2)
+                    emit_atom(s, atom_concat)
+                depth += 1
+            else:
+                js_free_value(s.ctx, cooked.u.str_.str)
+        if s.token.u.str_.sep == (i32)'`':
+            done = true
+            break
+        try next_token(s)
+        try js_parse_expr(s)
+        depth += 1
+        if s.token.val != TokenType.rbrace:
+            try js_parse_error(s, "expected '}' after template expression")
+        # XXX: should convert to string at this stage?
+        free_token(s, &s.token)
+        # Resume TOK_TEMPLATE parsing (s->token.line_num and s->token.ptr are OK)
+        s.got_lf = false
+        try js_parse_template_part(s, s.buf_ptr)
+    if not done:
+        try js_parse_expect(s, TokenType.template)
+        return
+
+    # done:
+    if call:
+        # Seal the objects (their failures are ignored, as in QuickJS)
+        seal_template_obj(ctx, raw_array) catch: recover ()
+        seal_template_obj(ctx, template_object) catch: recover ()
+        if let n = argc:
+            *n = depth + 1
+    else:
+        emit_op(s, (u8)Op.call_method)
+        emit_u16(s, (u16)(depth - 1))
+    # done1:
+    try next_token(s)

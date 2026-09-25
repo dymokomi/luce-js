@@ -1,0 +1,504 @@
+#==============================================================================================
+#
+#   parser_destructuring - Destructuring patterns and the optional chain test
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 26314-26831: js_parse_destructuring_var,
+#       js_parse_destructuring_element (object and array patterns, in declarations,
+#       parameters and assignments) and optional_chain_test.
+#
+#       js_parse_destructuring_element is split along its C structure: the object
+#       pattern, one of its properties (up to the store at `set_val:`), the array
+#       pattern and one of its plain elements. The `goto lvalueN` jumps become a
+#       `need_lvalue` flag, and the `prop_error:`/`var_error:` cleanups become `errdefer`
+#       frees of the atoms a property owns: an atom is cleared when its reference moves
+#       into the bytecode (emit_u32 of an atom, put_lvalue), so exactly the atoms C
+#       frees are freed.
+#
+#       `tok` is the declaration (TOK_VAR, TOK_LET, TOK_CONST, or TOK_CATCH ...), or
+#       `(TokenType)0` for an assignment pattern, as the C `int tok = 0`.
+#
+#==============================================================================================
+
+# mark: Declared names ==========================================================================
+
+# The name a destructuring pattern declares at the current token, which is consumed.
+func js_parse_destructuring_var(s: ParseState*, tok: TokenType, is_arg: bool) -> Atom!:
+    if (not (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved) or
+        (((i32)s.fd().js_mode & js_mode_strict) != 0 and
+         (s.token.u.ident.atom == atom_eval or s.token.u.ident.atom == atom_arguments))):
+        try js_parse_error(s, "invalid destructuring target")
+    var name = js_dup_atom(s.ctx, s.token.u.ident.atom)
+    errdefer free_atom_at(s.ctx, &name)
+    if is_arg:
+        try js_parse_check_duplicate_parameter(s, name)
+    try next_token(s)
+    return name
+
+# Whether `tok` declares a lexical binding: the target is initialized, not assigned.
+func destructuring_is_let(tok: TokenType) -> bool:
+    return tok == TokenType.const_ or tok == TokenType.let_
+
+# The token js_parse_skip_parens_token answers, or -1 when it fails: the exception is
+# then pending and the parse goes on, as in QuickJS.
+func destructuring_skip_parens(s: ParseState*, pbits: i32*) -> TokenType:
+    return js_parse_skip_parens_token(s, pbits, false) catch failure: recover (TokenType)(-1)
+
+# handle optional default value
+func js_parse_destructuring_default(s: ParseState*, opcode: i32, var_name: Atom) -> !:
+    emit_op(s, (u8)Op.dup)
+    emit_op(s, (u8)Op.undefined)
+    emit_op(s, (u8)Op.strict_eq)
+    let label_hasval = emit_goto(s, (i32)Op.if_false, -1)
+    try next_token(s)
+    emit_op(s, (u8)Op.drop)
+    try js_parse_assign_expr(s)
+    if opcode == (i32)TempOp.scope_get_var or opcode == (i32)Op.get_ref_value:
+        set_object_name(s, var_name)
+    discard(emit_label(s, label_hasval))
+
+# mark: Object patterns =========================================================================
+
+# lvalue1: the target of an object pattern property, after its reference was emitted:
+# get_lvalue, then move the target below the source object (and the computed key).
+func destructuring_property_lvalue(s: ParseState*, computed: bool, popcode: i32*, pscope: i32*,
+                                   pvar_name: Atom*, plabel: i32*, pdepth: i32*) -> !:
+    try get_lvalue(s, popcode, pscope, pvar_name, plabel, pdepth, false, TokenType.lbrace)
+    # swap ref and lvalue object if any
+    if computed:
+        match *pdepth:
+            0:
+                discard(0)
+            1:
+                # source prop x -> x source prop
+                emit_op(s, (u8)Op.rot3r)
+            2:
+                # source prop x y -> x y source prop
+                # t p2 s p1
+                emit_op(s, (u8)Op.swap2)
+            3:
+                # source prop x y z -> x y z source prop
+                emit_op(s, (u8)Op.rot5l)
+                emit_op(s, (u8)Op.rot5l)
+            _:
+                trap("destructuring: invalid lvalue depth")
+    else:
+        match *pdepth:
+            0:
+                discard(0)
+            1:
+                # source x -> x source
+                emit_op(s, (u8)Op.swap)
+            2:
+                # source x y -> x y source
+                emit_op(s, (u8)Op.rot3l)
+            3:
+                # source x y z -> x y z source
+                emit_op(s, (u8)Op.rot4l)
+            _:
+                trap("destructuring: invalid lvalue depth")
+
+# Define the property `prop_name` in the excludeList below the source object (named).
+func destructuring_exclude_named(s: ParseState*, prop_name: Atom):
+    # TOS: src excludeList
+    emit_op(s, (u8)Op.swap)
+    # TOS: src excludeList null
+    emit_op(s, (u8)Op.null)
+    # TOS: src excludeList
+    emit_op(s, (u8)Op.define_field)
+    emit_atom(s, prop_name)
+    # TOS: excludeList src
+    emit_op(s, (u8)Op.swap)
+
+# One property of an object pattern, up to the store into its target (or a nested
+# pattern). The source object is on the stack, the excludeList below it when
+# `has_ellipsis`.
+func js_parse_destructuring_property(s: ParseState*, tok: TokenType, is_arg: bool,
+                                     has_ellipsis: bool, export_flag: bool) -> !:
+    let ctx = s.ctx
+    let has_tok = (i32)tok != 0
+    # the atoms owned until their reference moves into the bytecode
+    var prop_name = no_atom
+    var var_name = no_atom
+    errdefer free_atom_at(ctx, &var_name)
+    errdefer free_atom_at(ctx, &prop_name)
+    var opcode: i32 = 0
+    var scope: i32 = 0
+    var label_lvalue: i32 = -1
+    var depth_lvalue: i32 = 0
+
+    if s.token.val == TokenType.ellipsis:
+        if not has_ellipsis:
+            try js_throw_internal_error(ctx, "unexpected ellipsis token")
+        try next_token(s)
+        var need_lvalue = true
+        if has_tok:
+            var_name = try js_parse_destructuring_var(s, tok, is_arg)
+            if need_var_reference(s, tok):
+                # Must make a reference for proper `with` semantics
+                emit_op(s, (u8)TempOp.scope_get_var)
+                emit_atom(s, var_name)
+                emit_u16(s, (u16)s.fd().scope_level)
+                free_atom_at(ctx, &var_name)
+            else:
+                opcode = (i32)TempOp.scope_get_var
+                scope = s.fd().scope_level
+                label_lvalue = -1
+                depth_lvalue = 0
+                need_lvalue = false
+        else:
+            try js_parse_left_hand_side_expr(s)
+        if need_lvalue:
+            # lvalue0:
+            try get_lvalue(s, &opcode, &scope, &var_name, &label_lvalue, &depth_lvalue, false,
+                           TokenType.lbrace)
+        if s.token.val != TokenType.rbrace:
+            try js_parse_error(s, "assignment rest property must be last")
+        # target
+        emit_op(s, (u8)Op.object)
+        emit_op(s, (u8)Op.copy_data_properties)
+        emit_u8(s, (u8)(0 | ((depth_lvalue + 1) << 2) | ((depth_lvalue + 2) << 5)))
+        # goto set_val
+    else:
+        let prop_type = try js_parse_property_name(s, &prop_name, false, true, false)
+        if prop_type == prop_type_ident:
+            try next_token(s)
+            var skip_bits: i32 = 0
+            if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
+                let tok1 = destructuring_skip_parens(s, &skip_bits)
+                if tok1 == TokenType.comma or tok1 == TokenType.assign or tok1 == TokenType.rbrace:
+                    if prop_name == no_atom:
+                        # computed property name on stack
+                        if has_ellipsis:
+                            # define the property in excludeList
+                            # avoid calling ToString twice
+                            emit_op(s, (u8)Op.to_propkey)
+                            # TOS: src excludeList prop
+                            emit_op(s, (u8)Op.perm3)
+                            # TOS: src excludeList prop null
+                            emit_op(s, (u8)Op.null)
+                            # TOS: src excludeList prop
+                            emit_op(s, (u8)Op.define_array_el)
+                            # TOS: excludeList src prop
+                            emit_op(s, (u8)Op.perm3)
+                        # get the computed property from the source object
+                        emit_op(s, (u8)Op.get_array_el2)
+                    else:
+                        # named property
+                        if has_ellipsis:
+                            # define the property in excludeList
+                            destructuring_exclude_named(s, prop_name)
+                        # get the named property from the source object
+                        emit_op(s, (u8)Op.get_field2)
+                        emit_u32(s, prop_name)
+                        prop_name = no_atom
+                    discard(try js_parse_destructuring_element(s, tok, is_arg, true, -1, true,
+                                                               export_flag))
+                    return
+            if prop_name == no_atom:
+                emit_op(s, (u8)Op.to_propkey)
+                if has_ellipsis:
+                    # define the property in excludeList
+                    emit_op(s, (u8)Op.perm3)
+                    emit_op(s, (u8)Op.null)
+                    emit_op(s, (u8)Op.define_array_el)
+                    emit_op(s, (u8)Op.perm3)
+                # source prop -- source source prop
+                emit_op(s, (u8)Op.dup1)
+            else:
+                if has_ellipsis:
+                    # define the property in excludeList
+                    destructuring_exclude_named(s, prop_name)
+                # source -- source source
+                emit_op(s, (u8)Op.dup)
+            var need_lvalue = true
+            if has_tok:
+                var_name = try js_parse_destructuring_var(s, tok, is_arg)
+                if need_var_reference(s, tok):
+                    # Must make a reference for proper `with` semantics
+                    emit_op(s, (u8)TempOp.scope_get_var)
+                    emit_atom(s, var_name)
+                    emit_u16(s, (u16)s.fd().scope_level)
+                    free_atom_at(ctx, &var_name)
+                else:
+                    # no need to make a reference for let/const
+                    opcode = (i32)TempOp.scope_get_var
+                    scope = s.fd().scope_level
+                    label_lvalue = -1
+                    depth_lvalue = 0
+                    need_lvalue = false
+            else:
+                try js_parse_left_hand_side_expr(s)
+            if need_lvalue:
+                # lvalue1:
+                try destructuring_property_lvalue(s, prop_name == no_atom, &opcode, &scope,
+                                                  &var_name, &label_lvalue, &depth_lvalue)
+            if prop_name == no_atom:
+                # computed property name on stack
+                # XXX: should have OP_get_array_el2x with depth
+                # source prop -- val
+                emit_op(s, (u8)Op.get_array_el)
+            else:
+                # named property
+                # XXX: should have OP_get_field2x with depth
+                # source -- val
+                emit_op(s, (u8)Op.get_field)
+                emit_u32(s, prop_name)
+                prop_name = no_atom
+        else:
+            # prop_type = PROP_TYPE_VAR, cannot be a computed property
+            if is_arg:
+                try js_parse_check_duplicate_parameter(s, prop_name)
+            if (((i32)s.fd().js_mode & js_mode_strict) != 0 and
+                (prop_name == atom_eval or prop_name == atom_arguments)):
+                try js_parse_error(s, "invalid destructuring target")
+            if has_ellipsis:
+                # define the property in excludeList
+                destructuring_exclude_named(s, prop_name)
+            if not has_tok or need_var_reference(s, tok):
+                # generate reference
+                # source -- source source
+                emit_op(s, (u8)Op.dup)
+                emit_op(s, (u8)TempOp.scope_get_var)
+                emit_atom(s, prop_name)
+                emit_u16(s, (u16)s.fd().scope_level)
+                # goto lvalue1
+                try destructuring_property_lvalue(s, false, &opcode, &scope, &var_name,
+                                                  &label_lvalue, &depth_lvalue)
+                # named property
+                # source -- val
+                emit_op(s, (u8)Op.get_field)
+                emit_u32(s, prop_name)
+                prop_name = no_atom
+            else:
+                # no need to make a reference for let/const
+                var_name = js_dup_atom(ctx, prop_name)
+                opcode = (i32)TempOp.scope_get_var
+                scope = s.fd().scope_level
+                label_lvalue = -1
+                depth_lvalue = 0
+
+                # source -- source val
+                emit_op(s, (u8)Op.get_field2)
+                emit_u32(s, prop_name)
+                prop_name = no_atom
+    # set_val:
+    if has_tok:
+        try js_define_var(s, var_name, tok)
+        if export_flag:
+            let m = s.fd().module else trap("destructuring: export outside a module")
+            discard(try add_export_entry(s, m, var_name, var_name, ExportType.local_))
+        # XXX: check
+        scope = s.fd().scope_level
+    if s.token.val == TokenType.assign:
+        try js_parse_destructuring_default(s, opcode, var_name)
+    # store value into lvalue object
+    put_lvalue(s, opcode, scope, var_name, label_lvalue, PutLValueKind.nokeep_depth,
+               destructuring_is_let(tok))
+    var_name = no_atom
+
+# The object pattern at the current '{'.
+func js_parse_destructuring_object(s: ParseState*, tok: TokenType, is_arg: bool,
+                                   has_ellipsis: bool, export_flag: bool) -> !:
+    try next_token(s)
+    # throw an exception if the value cannot be converted to an object
+    emit_op(s, (u8)Op.to_object)
+    if has_ellipsis:
+        # add excludeList on stack just below src object
+        emit_op(s, (u8)Op.object)
+        emit_op(s, (u8)Op.swap)
+    while s.token.val != TokenType.rbrace:
+        try js_parse_destructuring_property(s, tok, is_arg, has_ellipsis, export_flag)
+        if s.token.val == TokenType.rbrace:
+            break
+        # accept a trailing comma before the '}'
+        try js_parse_expect(s, TokenType.comma)
+    # drop the source object
+    emit_op(s, (u8)Op.drop)
+    if has_ellipsis:
+        # pop excludeList
+        emit_op(s, (u8)Op.drop)
+    try next_token(s)
+
+# mark: Array patterns ==========================================================================
+
+# One element of an array pattern that is not a nested pattern: its target, the next
+# value of the iteration (or the rest, with `has_spread`) and its default value.
+func js_parse_destructuring_array_element(s: ParseState*, tok: TokenType, is_arg: bool,
+                                          has_spread: bool) -> !:
+    let ctx = s.ctx
+    var var_name = no_atom
+    errdefer free_atom_at(ctx, &var_name)
+    var opcode: i32 = 0
+    var scope: i32 = 0
+    var label_lvalue: i32 = -1
+    var enum_depth: i32 = 0
+    var need_lvalue = true
+    if (i32)tok != 0:
+        var_name = try js_parse_destructuring_var(s, tok, is_arg)
+        try js_define_var(s, var_name, tok)
+        if need_var_reference(s, tok):
+            # Must make a reference for proper `with` semantics
+            emit_op(s, (u8)TempOp.scope_get_var)
+            emit_atom(s, var_name)
+            emit_u16(s, (u16)s.fd().scope_level)
+            free_atom_at(ctx, &var_name)
+        else:
+            # no need to make a reference for let/const
+            opcode = (i32)TempOp.scope_get_var
+            scope = s.fd().scope_level
+            label_lvalue = -1
+            enum_depth = 0
+            need_lvalue = false
+    else:
+        try js_parse_left_hand_side_expr(s)
+    if need_lvalue:
+        # lvalue2:
+        try get_lvalue(s, &opcode, &scope, &var_name, &label_lvalue, &enum_depth, false,
+                       TokenType.lbracket)
+    if has_spread:
+        js_emit_spread_code(s, enum_depth)
+    else:
+        emit_op(s, (u8)Op.for_of_next)
+        emit_u8(s, (u8)enum_depth)
+        emit_op(s, (u8)Op.drop)
+    if s.token.val == TokenType.assign and not has_spread:
+        try js_parse_destructuring_default(s, opcode, var_name)
+    # store value into lvalue object
+    put_lvalue(s, opcode, scope, var_name, label_lvalue, PutLValueKind.nokeep_depth,
+               destructuring_is_let(tok))
+    var_name = no_atom
+
+# The array pattern at the current '['.
+func js_parse_destructuring_array(s: ParseState*, tok: TokenType, is_arg: bool,
+                                  export_flag: bool) -> !:
+    try next_token(s)
+    # the block environment is only needed in generators in case 'yield' triggers a
+    # 'return'
+    var block_env: BlockEnv
+    push_break_entry(s.fd(), &block_env, no_atom, -1, -1, 2)
+    block_env.has_iterator = true
+    emit_op(s, (u8)Op.for_of_start)
+    var has_spread = false
+    while s.token.val != TokenType.rbracket:
+        # get the next value
+        if s.token.val == TokenType.ellipsis:
+            try next_token(s)
+            if s.token.val == TokenType.comma or s.token.val == TokenType.rbracket:
+                try js_parse_error(s, "missing binding pattern...")
+            has_spread = true
+        var nested = false
+        var tok1 = TokenType.eof
+        var skip_bits: i32 = 0
+        if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
+            tok1 = destructuring_skip_parens(s, &skip_bits)
+            nested = (tok1 == TokenType.comma or tok1 == TokenType.assign or
+                      tok1 == TokenType.rbracket)
+        if s.token.val == TokenType.comma:
+            # do nothing, skip the value, has_spread is false
+            emit_op(s, (u8)Op.for_of_next)
+            emit_u8(s, 0)
+            emit_op(s, (u8)Op.drop)
+            emit_op(s, (u8)Op.drop)
+        elif nested:
+            if has_spread:
+                if tok1 == TokenType.assign:
+                    try js_parse_error(s, "rest element cannot have a default value")
+                js_emit_spread_code(s, 0)
+            else:
+                emit_op(s, (u8)Op.for_of_next)
+                emit_u8(s, 0)
+                emit_op(s, (u8)Op.drop)
+            discard(try js_parse_destructuring_element(s, tok, is_arg, true,
+                                                       skip_bits & skip_has_ellipsis, true,
+                                                       export_flag))
+        else:
+            try js_parse_destructuring_array_element(s, tok, is_arg, has_spread)
+        if s.token.val == TokenType.rbracket:
+            break
+        if has_spread:
+            try js_parse_error(s, "rest element must be the last one")
+        # accept a trailing comma before the ']'
+        try js_parse_expect(s, TokenType.comma)
+    # close iterator object: if completed, enum_obj has been replaced by undefined
+    emit_op(s, (u8)Op.iterator_close)
+    pop_break_entry(s.fd())
+    try next_token(s)
+
+# mark: Destructuring elements ==================================================================
+
+# Compile the destructuring pattern at the current '{' or '['. With `hasval`, the value
+# is on the stack; otherwise the pattern must have an initializer ('=' is then allowed
+# by `allow_initializer`). `has_ellipsis` says whether an object pattern has a rest
+# property; -1 finds out. Answers whether an initializer is present at the top level.
+func js_parse_destructuring_element(s: ParseState*, tok: TokenType, is_arg: bool, hasval: bool,
+                                    has_ellipsis0: i32, allow_initializer: bool,
+                                    export_flag: bool) -> bool!:
+    var has_ellipsis = has_ellipsis0
+    if has_ellipsis < 0:
+        # pre-parse destructuration target for spread detection
+        var skip_bits: i32 = 0
+        discard(destructuring_skip_parens(s, &skip_bits))
+        has_ellipsis = skip_bits & skip_has_ellipsis
+
+    let label_parse = new_label(s)
+    let label_assign = new_label(s)
+
+    let start_addr = s.fd().byte_code.size
+    if hasval:
+        # consume value from the stack
+        emit_op(s, (u8)Op.dup)
+        emit_op(s, (u8)Op.undefined)
+        emit_op(s, (u8)Op.strict_eq)
+        discard(emit_goto(s, (i32)Op.if_true, label_parse))
+        discard(emit_label(s, label_assign))
+    else:
+        discard(emit_goto(s, (i32)Op.goto_, label_parse))
+        discard(emit_label(s, label_assign))
+        # leave value on the stack
+        emit_op(s, (u8)Op.dup)
+    let assign_addr = s.fd().byte_code.size
+    if s.token.val == TokenType.lbrace:
+        try js_parse_destructuring_object(s, tok, is_arg, has_ellipsis != 0, export_flag)
+    elif s.token.val == TokenType.lbracket:
+        try js_parse_destructuring_array(s, tok, is_arg, export_flag)
+    else:
+        try js_parse_error(s, "invalid assignment syntax")
+    if s.token.val == TokenType.assign and allow_initializer:
+        let label_done = emit_goto(s, (i32)Op.goto_, -1)
+        try next_token(s)
+        discard(emit_label(s, label_parse))
+        if hasval:
+            emit_op(s, (u8)Op.drop)
+        try js_parse_assign_expr(s)
+        discard(emit_goto(s, (i32)Op.goto_, label_assign))
+        discard(emit_label(s, label_done))
+        return true
+    # normally hasval is true except if js_parse_skip_parens_token() was wrong in the
+    # parsing
+    if not hasval:
+        try js_parse_error(s, "too complicated destructuring expression")
+    # remove test and decrement label ref count
+    let fd = s.fd()
+    let buf = fd.byte_code.buf else trap("destructuring: no bytecode")
+    discard(cutils.memset(buf + start_addr, (i32)Op.nop, assign_addr - start_addr))
+    fd_label(fd, label_parse).ref_count -= 1
+    return false
+
+# mark: Optional chains =========================================================================
+
+# Emit the test of an optional chain ('?.'): if the value is undefined or null, drop
+# `drop_count` values and jump to the end of the chain (`*poptional_chaining_label`,
+# created if negative) with undefined.
+func optional_chain_test(s: ParseState*, poptional_chaining_label: i32*, drop_count: i32):
+    if *poptional_chaining_label < 0:
+        *poptional_chaining_label = new_label(s)
+    # XXX: could be more efficient with a specific opcode
+    emit_op(s, (u8)Op.dup)
+    emit_op(s, (u8)Op.is_undefined_or_null)
+    let label_next = emit_goto(s, (i32)Op.if_false, -1)
+    for i in 0..<drop_count:
+        emit_op(s, (u8)Op.drop)
+    emit_op(s, (u8)Op.undefined)
+    discard(emit_goto(s, (i32)Op.goto_, *poptional_chaining_label))
+    discard(emit_label(s, label_next))
