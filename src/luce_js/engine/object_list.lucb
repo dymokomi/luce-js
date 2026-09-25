@@ -1,0 +1,112 @@
+#==============================================================================================
+#
+#   object_list - A set of objects with their insertion index, and the host byte order
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "object list" (lines 37375-37478): JSObjectList, a hash table
+#       from objects to their index in insertion order, used by the bytecode writer to
+#       find objects it already wrote. Also is_be (line 37551), the byte order test of
+#       the bytecode writer and reader. The writer's own declarations (BCTagEnum,
+#       BCWriterState) belong to the bytecode I/O region.
+#
+#==============================================================================================
+
+# mark: Object list =============================================================================
+
+## An object of an ObjectList (JSObjectListEntry).
+struct ObjectListEntry:
+    var obj: Object*
+    ## -1 if no next entry.
+    var hash_next: u32
+
+# XXX: reuse it to optimize weak references
+## A set of objects that remembers their insertion order (JSObjectList).
+struct ObjectList:
+    var object_tab: ObjectListEntry*?
+    var object_count: i32
+    var object_size: i32
+    ## The index of the first entry of each hash chain, -1 if none.
+    var hash_table: u32*?
+    var hash_size: u32
+
+## Make `s` the empty list.
+func js_object_list_init(s: ObjectList*):
+    discard(cutils.memset(s, 0, sizeof(ObjectList)))
+
+## The hash chain of `p` in a table of `hash_size` (a power of two) chains.
+func js_object_list_get_hash(p: Object*, hash_size: u32) -> u32:
+    return (u32)(((usize)p *% 3163) & (usize)(hash_size -% 1))
+
+# Replace the hash table of `s` by one of `new_hash_size` chains holding every entry.
+func js_object_list_resize_hash(ctx: Context*, s: ObjectList*, new_hash_size: u32) -> !:
+    let new_hash_table = (u32*)try js_malloc(ctx, sizeof(u32) * (usize)new_hash_size)
+    if let old = s.hash_table:
+        js_free(ctx, old)
+    s.hash_table = new_hash_table
+    s.hash_size = new_hash_size
+
+    for i in 0..<s.hash_size:
+        new_hash_table[i] = 0xffffffff
+    for i in 0..<s.object_count:
+        let tab = s.object_tab else trap("js_object_list_resize_hash: no objects")
+        let e = tab + (isize)i
+        let h = js_object_list_get_hash(e.obj, s.hash_size)
+        e.hash_next = new_hash_table[h]
+        new_hash_table[h] = (u32)i
+
+# the reference count of 'obj' is not modified. Return 0 if OK, -1 if
+# memory error
+## Add `obj` to `s` (it must not be there yet); its index is the count before.
+func js_object_list_add(ctx: Context*, s: ObjectList*, obj: Object*) -> !:
+    try js_resize_array(ctx, (void*?*)&s.object_tab, (i32)sizeof(ObjectListEntry),
+                        &s.object_size, s.object_count + 1)
+    if (u32)(s.object_count + 1) >= s.hash_size:
+        var new_hash_size = cutils.max_uint32(s.hash_size, 4)
+        while new_hash_size <= (u32)s.object_count:
+            new_hash_size *= 2
+        try js_object_list_resize_hash(ctx, s, new_hash_size)
+    let tab = s.object_tab else trap("js_object_list_add: no objects")
+    let hash_table = s.hash_table else trap("js_object_list_add: no hash table")
+    let e = tab + (isize)s.object_count
+    s.object_count += 1
+    let h = js_object_list_get_hash(obj, s.hash_size)
+    e.obj = obj
+    e.hash_next = hash_table[h]
+    hash_table[h] = (u32)(s.object_count - 1)
+
+# return -1 if not present or the object index
+## The index of `obj` in `s`, or -1 if it is not there.
+func js_object_list_find(ctx: Context*, s: ObjectList*, obj: Object*) -> i32:
+    # must test empty size because there is no hash table
+    if s.object_count == 0:
+        return -1
+    let tab = s.object_tab else trap("js_object_list_find: no objects")
+    let hash_table = s.hash_table else trap("js_object_list_find: no hash table")
+    let h = js_object_list_get_hash(obj, s.hash_size)
+    var p = hash_table[h]
+    while p != 0xffffffff:
+        let e = tab + (usize)p
+        if e.obj == obj:
+            return (i32)p
+        p = e.hash_next
+    return -1
+
+## Free the tables of `s` (not the objects).
+func js_object_list_end(ctx: Context*, s: ObjectList*):
+    if let tab = s.object_tab:
+        js_free(ctx, tab)
+    if let hash_table = s.hash_table:
+        js_free(ctx, hash_table)
+
+# mark: Byte order ==============================================================================
+
+# The two views of is_be's probe.
+union EndianProbe:
+    a: u16
+    b: u8
+
+## Whether the host is big-endian.
+func is_be() -> bool:
+    var u: EndianProbe
+    u.a = 0x100
+    return u.b != 0

@@ -1,0 +1,200 @@
+#==============================================================================================
+#
+#   stack_size - The maximum interpreter stack size a function's bytecode needs
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "compute the maximum stack size needed by the function"
+#       (lines 35699-35952): StackSizeState, ss_check and compute_stack_size. The final
+#       bytecode (short opcodes included, no temporary opcodes) is explored breadth
+#       first from pc 0; every reachable pc records its stack level and the pc of the
+#       innermost catch, and must be reached with the same ones on every path.
+#
+#       The two per-pc tables are spans over their js_malloc'ed blocks, so a bad pc
+#       traps instead of reading outside them; ss_check tests the bound first, as C.
+#
+#==============================================================================================
+
+# mark: State ===================================================================================
+
+## The state of compute_stack_size (StackSizeState).
+struct StackSizeState:
+    var bc_len: i32
+    var stack_len_max: i32
+    ## The stack level at each pc, 0xffff if not explored yet.
+    var stack_level_tab: u16[]
+    ## The pc of the innermost catch (or for_of_start) at each pc, -1 if none.
+    var catch_pos_tab: i32[]
+    ## The pcs left to explore.
+    var pc_stack: i32*?
+    var pc_stack_len: i32
+    var pc_stack_size: i32
+
+# Release the pc stack (the one table compute_stack_size does not free by itself).
+func ss_free_pc_stack(ctx: Context*, s: StackSizeState*):
+    if let pc_stack = s.pc_stack:
+        js_free(ctx, pc_stack)
+    s.pc_stack = none
+
+# mark: Exploring ===============================================================================
+
+# 'op' is only used for error indication
+# Reach `pos` with `stack_len` values on the stack and the catch `catch_pos`: record it
+# and queue it the first time, check it is consistent the next ones.
+func ss_check(ctx: Context*, s: StackSizeState*, pos: i32, op: i32, stack_len: i32, catch_pos: i32) -> !:
+    if (u32)pos >= (u32)s.bc_len:
+        try js_throw_internal_error(ctx, f"bytecode buffer overflow (op={op}, pc={pos})")
+    if stack_len > s.stack_len_max:
+        s.stack_len_max = stack_len
+        if s.stack_len_max > js_stack_size_max:
+            try js_throw_internal_error(ctx, f"stack overflow (op={op}, pc={pos})")
+    let level = s.stack_level_tab[(usize)pos]
+    if level != 0xffff:
+        # already explored: check that the stack size is consistent
+        if (i32)level != stack_len:
+            try js_throw_internal_error(ctx, f"inconsistent stack size: {level} {stack_len} (pc={pos})")
+        elif s.catch_pos_tab[(usize)pos] != catch_pos:
+            let previous = s.catch_pos_tab[(usize)pos]
+            try js_throw_internal_error(ctx, f"inconsistent catch position: {previous} {catch_pos} (pc={pos})")
+        else:
+            return
+
+    # mark as explored and store the stack size
+    s.stack_level_tab[(usize)pos] = (u16)stack_len
+    s.catch_pos_tab[(usize)pos] = catch_pos
+
+    # queue the new PC to explore
+    try js_resize_array(ctx, (void*?*)&s.pc_stack, (i32)sizeof(i32), &s.pc_stack_size,
+                        s.pc_stack_len + 1)
+    let pc_stack = s.pc_stack else trap("ss_check: no pc stack")
+    pc_stack[(isize)s.pc_stack_len] = pos
+    s.pc_stack_len += 1
+
+# The catch position after an opcode that may remove the catch offset entry when the
+# stack level before it is `catch_level` (the check_catch label of compute_stack_size).
+func ss_check_catch(s: StackSizeState*, bc_buf: const u8*, catch_pos: i32, catch_level: i32) -> i32:
+    # Note: for for_of_start/for_await_of_start we consider
+    # the catch offset is on the first stack entry instead of
+    # the thirst
+    if catch_pos >= 0:
+        var level = (i32)s.stack_level_tab[(usize)catch_pos]
+        if bc_buf[(isize)catch_pos] != (u8)Op.catch_:
+            level += 1   # for_of_start, for_wait_of_start
+        # catch_level = stack_level before op_catch is executed ?
+        if catch_level == level:
+            return s.catch_pos_tab[(usize)catch_pos]
+    return catch_pos
+
+# The signed 32-bit jump offset stored at `p`.
+func ss_get_diff32(p: const u8*) -> i32:
+    return (i32)cutils.get_u32(p)
+
+# mark: compute_stack_size ======================================================================
+
+## The maximum stack size the final bytecode of `fd` needs; throws an InternalError when
+## the bytecode is inconsistent.
+func compute_stack_size(ctx: Context*, fd: FunctionDef*) -> i32!:
+    # bc_len > 0
+    let bc_buf: const u8* = fd.byte_code.buf else trap("compute_stack_size: empty bytecode")
+    let bc_len = (i32)fd.byte_code.size
+    let level_tab = (u16*)try js_malloc(ctx, sizeof(u16) * (usize)bc_len)
+    defer js_free(ctx, level_tab)
+    for i in 0..<(usize)bc_len:
+        level_tab[i] = 0xffff
+    let catch_tab = (i32*)try js_malloc(ctx, sizeof(i32) * (usize)bc_len)
+    defer js_free(ctx, catch_tab)
+
+    var s = StackSizeState(bc_len = bc_len, stack_len_max = 0,
+                           stack_level_tab = u16[](level_tab, (usize)bc_len),
+                           catch_pos_tab = i32[](catch_tab, (usize)bc_len),
+                           pc_stack = none, pc_stack_len = 0, pc_stack_size = 0)
+    defer ss_free_pc_stack(ctx, &s)
+
+    # breadth-first graph exploration
+    try ss_check(ctx, &s, 0, (i32)Op.invalid, 0, -1)
+
+    while s.pc_stack_len > 0:
+        let pc_stack = s.pc_stack else trap("compute_stack_size: no pc stack")
+        s.pc_stack_len -= 1
+        let pos = pc_stack[(isize)s.pc_stack_len]
+        var stack_len = (i32)s.stack_level_tab[(usize)pos]
+        var catch_pos = s.catch_pos_tab[(usize)pos]
+        let op = (i32)bc_buf[(isize)pos]
+        if op == 0 or (u32)op >= op_count:
+            try js_throw_internal_error(ctx, f"invalid opcode (op={op}, pc={pos})")
+        let oi = op_info((u8)op, false)
+        var pos_next = pos + (i32)oi.size
+        if pos_next > s.bc_len:
+            try js_throw_internal_error(ctx, f"bytecode buffer overflow (op={op}, pc={pos})")
+        var n_pop = (i32)oi.n_pop
+        # call pops a variable number of arguments
+        if oi.fmt == OpFormat.npop or oi.fmt == OpFormat.npop_u16:
+            n_pop += (i32)cutils.get_u16(bc_buf + (isize)(pos + 1))
+        elif oi.fmt == OpFormat.npopx:
+            n_pop += op - (i32)Op.call0
+
+        if stack_len < n_pop:
+            try js_throw_internal_error(ctx, f"stack underflow (op={op}, pc={pos})")
+        stack_len += (i32)oi.n_push - n_pop
+        if stack_len > s.stack_len_max:
+            s.stack_len_max = stack_len
+            if s.stack_len_max > js_stack_size_max:
+                try js_throw_internal_error(ctx, f"stack overflow (op={op}, pc={pos})")
+        match (Op)(u8)op:
+            .tail_call, .tail_call_method, .return_, .return_undef, .return_async:
+                # done_insn: no successor
+                continue
+            .throw, .throw_error, .ret:
+                continue
+            .goto_:
+                let diff = ss_get_diff32(bc_buf + (isize)(pos + 1))
+                pos_next = pos + 1 + diff
+            .goto16:
+                let diff = (i32)(i16)cutils.get_u16(bc_buf + (isize)(pos + 1))
+                pos_next = pos + 1 + diff
+            .goto8:
+                let diff = (i32)(i8)bc_buf[(isize)(pos + 1)]
+                pos_next = pos + 1 + diff
+            .if_true8, .if_false8:
+                let diff = (i32)(i8)bc_buf[(isize)(pos + 1)]
+                try ss_check(ctx, &s, pos + 1 + diff, op, stack_len, catch_pos)
+            .if_true, .if_false:
+                let diff = ss_get_diff32(bc_buf + (isize)(pos + 1))
+                try ss_check(ctx, &s, pos + 1 + diff, op, stack_len, catch_pos)
+            .gosub:
+                let diff = ss_get_diff32(bc_buf + (isize)(pos + 1))
+                try ss_check(ctx, &s, pos + 1 + diff, op, stack_len + 1, catch_pos)
+            .with_get_var, .with_delete_var:
+                let diff = ss_get_diff32(bc_buf + (isize)(pos + 5))
+                try ss_check(ctx, &s, pos + 5 + diff, op, stack_len + 1, catch_pos)
+            .with_make_ref, .with_get_ref:
+                let diff = ss_get_diff32(bc_buf + (isize)(pos + 5))
+                try ss_check(ctx, &s, pos + 5 + diff, op, stack_len + 2, catch_pos)
+            .with_put_var:
+                let diff = ss_get_diff32(bc_buf + (isize)(pos + 5))
+                try ss_check(ctx, &s, pos + 5 + diff, op, stack_len - 1, catch_pos)
+            .catch_:
+                let diff = ss_get_diff32(bc_buf + (isize)(pos + 1))
+                try ss_check(ctx, &s, pos + 1 + diff, op, stack_len, catch_pos)
+                catch_pos = pos
+            .for_of_start, .for_await_of_start:
+                catch_pos = pos
+            # we assume the catch offset entry is only removed with
+            # some op codes
+            .drop:
+                catch_pos = ss_check_catch(&s, bc_buf, catch_pos, stack_len)
+            .nip, .nip1:
+                catch_pos = ss_check_catch(&s, bc_buf, catch_pos, stack_len - 1)
+            .iterator_close:
+                catch_pos = ss_check_catch(&s, bc_buf, catch_pos, stack_len + 2)
+            .nip_catch:
+                if catch_pos < 0:
+                    try js_throw_internal_error(ctx, f"nip_catch: no catch op (pc={pos})")
+                stack_len = (i32)s.stack_level_tab[(usize)catch_pos]
+                if bc_buf[(isize)catch_pos] != (u8)Op.catch_:
+                    stack_len += 1   # for_of_start, for_wait_of_start
+                stack_len += 1   # no stack overflow is possible by construction
+                catch_pos = s.catch_pos_tab[(usize)catch_pos]
+            _:
+                discard(0)
+        try ss_check(ctx, &s, pos_next, op, stack_len, catch_pos)
+    return s.stack_len_max

@@ -47,9 +47,6 @@ struct JSONStringifyContext:
 struct MapIteratorData:
     var unported: i32
 
-struct ObjectList:
-    var unported: i32
-
 struct ParsePos:
     var unported: i32
 
@@ -66,9 +63,6 @@ struct PromiseReactionData:
     var unported: i32
 
 struct RegExpStringIteratorData:
-    var unported: i32
-
-struct StackSizeState:
     var unported: i32
 
 struct SumPreciseState:
@@ -105,3 +99,6 @@ let js_uint8array_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unp
 let js_uint8array_proto_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
 let js_typed_array_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
 let js_dataview_proto_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+
+# quickjs.c:24784 (region r17): the bits js_parse_skip_parens_token answers.
+let skip_has_assignment: i32 = 1 << 2

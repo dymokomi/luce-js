@@ -203,12 +203,12 @@ func js_write_object_rec(s: BCWriterState*, obj: Value) -> !:
         .object:
             let p = obj.u.obj
             if s.allow_reference:
-                let idx = try js_object_list_find(s.ctx, &s.object_list, p)
+                let idx = js_object_list_find(s.ctx, &s.object_list, p)
                 if idx >= 0:
                     bc_put_u8(s, (u8)BCTag.object_reference)
                     bc_put_leb128(s, (u32)idx)
                     return
-                discard(try js_object_list_add(s.ctx, &s.object_list, p))
+                try js_object_list_add(s.ctx, &s.object_list, p)
             else:
                 if p.tmp_mark:
                     try js_throw_type_error(s.ctx, "circular reference")

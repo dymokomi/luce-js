@@ -1,0 +1,588 @@
+#==============================================================================================
+#
+#   parse_function_decl - Function declarations and expressions, and the program
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 36498-37128: js_parse_function_decl2 (the name, the
+#       parameters with their defaults, rest and destructuring, arrow and expression
+#       bodies, async and generator functions, and the closure or variable that makes
+#       the function object in the enclosing function), js_parse_function_decl and
+#       js_parse_program.
+#
+#       js_parse_function_decl2's `goto fail` cleanup (the new function is freed and the
+#       parser returns to the enclosing function) is an errdefer registered once the new
+#       FunctionDef exists; the parts of the C function that run before and after are
+#       helpers here, in the C order.
+#
+#==============================================================================================
+
+# mark: The function name =======================================================================
+
+# The name and kind of a statement, var or expression function, read from the tokens
+# 'async', 'function', '*' and the name; `func_name` is kept for the other function
+# types (duplicated, except for arrow functions). The answered name is owned.
+func js_parse_function_name(s: ParseState*, fd: FunctionDef*, func_type: ParseFunctionKind,
+                            func_kind0: u8, func_name0: Atom,
+                            export_flag: ParseExportKind) -> (u8, Atom)!:
+    let ctx = s.ctx
+    var func_kind = func_kind0
+    var func_name = func_name0
+    if (func_type == ParseFunctionKind.statement or
+        func_type == ParseFunctionKind.var_ or
+        func_type == ParseFunctionKind.expr):
+        if (func_kind == js_func_normal and
+            token_is_pseudo_keyword(s, atom_async) and
+            peek_token(s, true) != TokenType.newline):
+            try next_token(s)
+            func_kind = js_func_async
+        try next_token(s)
+        if s.token.val == TokenType.star:
+            try next_token(s)
+            func_kind |= js_func_generator
+
+        if s.token.val == TokenType.ident:
+            let atom = s.token.u.ident.atom
+            if (s.token.u.ident.is_reserved or
+                (atom == atom_yield and
+                 func_type == ParseFunctionKind.expr and
+                 (func_kind & js_func_generator) != 0) or
+                (atom == atom_await and
+                 ((func_type == ParseFunctionKind.expr and
+                   (func_kind & js_func_async) != 0) or
+                  func_type == ParseFunctionKind.class_static_init))):
+                try js_parse_error_reserved_identifier(s)
+        if (s.token.val == TokenType.ident or
+            (((s.token.val == TokenType.yield and ((i32)fd.js_mode & js_mode_strict) == 0) or
+              (s.token.val == TokenType.await and not s.is_module)) and
+             func_type == ParseFunctionKind.expr)):
+            func_name = js_dup_atom(ctx, s.token.u.ident.atom)
+            next_token(s) catch failure:
+                js_free_atom(ctx, func_name)
+                error(failure.code, failure.message)
+        else:
+            if (func_type != ParseFunctionKind.expr and
+                export_flag != ParseExportKind.default):
+                try js_parse_error(s, "function name expected")
+    elif func_type != ParseFunctionKind.arrow:
+        func_name = js_dup_atom(ctx, func_name)
+    return (func_kind, func_name)
+
+# The checks and definitions of the enclosing function `fd` for the name of a statement
+# or var function: answers the index of its lexical variable (-1 if none) and whether a
+# 'var' variable of the name must be created (annex B).
+func js_parse_function_define_name(s: ParseState*, fd: FunctionDef*,
+                                   func_type: ParseFunctionKind, func_kind: u8,
+                                   func_name: Atom) -> (i32, bool)!:
+    let ctx = s.ctx
+    var lexical_func_idx: i32 = -1
+    var create_func_var = false
+
+    if (fd.is_eval and fd.eval_type == eval_type_module and
+        (func_type == ParseFunctionKind.statement or func_type == ParseFunctionKind.var_)):
+        # XXX: should check scope chain
+        if let hf = find_global_var(fd, func_name):
+            if hf.scope_level == fd.scope_level:
+                try js_parse_error(s, "invalid redefinition of global identifier in module code")
+
+    if func_type == ParseFunctionKind.var_:
+        if (((i32)fd.js_mode & js_mode_strict) == 0 and
+            func_kind == js_func_normal and
+            find_lexical_decl(ctx, fd, func_name, fd.scope_first, false) < 0):
+            let func_idx = find_var(ctx, fd, func_name)
+            if (not (func_idx >= 0 and (func_idx & argument_var_offset) != 0) and
+                not (func_name == atom_arguments and fd.has_arguments_binding)):
+                create_func_var = true
+        # Create the lexical name here so that the function closure
+        # contains it
+        if (fd.is_eval and
+            (fd.eval_type == eval_type_global or fd.eval_type == eval_type_module) and
+            fd.scope_level == fd.body_scope):
+            # avoid creating a lexical variable in the global
+            # scope. XXX: check annex B
+            # XXX: should check scope chain
+            if let hf = find_global_var(fd, func_name):
+                if hf.scope_level == fd.scope_level:
+                    try js_parse_error(s, "invalid redefinition of global identifier")
+        else:
+            # Always create a lexical name, fail if at the same scope as
+            # existing name
+            # Lexical variable will be initialized upon entering scope
+            var var_def_type = VarDefKind.function_decl
+            if func_kind != js_func_normal:
+                var_def_type = VarDefKind.new_function_decl
+            lexical_func_idx = try define_var(s, fd, func_name, var_def_type)
+    return (lexical_func_idx, create_func_var)
+
+# Initialize the new function `fd` of type `func_type`: what it has and allows.
+func js_parse_function_init(fd: FunctionDef*, func_type: ParseFunctionKind, func_kind: u8):
+    # XXX: test !fd->is_generator is always false
+    fd.has_prototype = ((func_type == ParseFunctionKind.statement or
+                         func_type == ParseFunctionKind.var_ or
+                         func_type == ParseFunctionKind.expr) and
+                        func_kind == js_func_normal)
+    fd.has_home_object = (func_type == ParseFunctionKind.method or
+                          func_type == ParseFunctionKind.getter or
+                          func_type == ParseFunctionKind.setter or
+                          func_type == ParseFunctionKind.class_constructor or
+                          func_type == ParseFunctionKind.derived_class_constructor)
+    fd.has_arguments_binding = (func_type != ParseFunctionKind.arrow and
+                                func_type != ParseFunctionKind.class_static_init)
+    fd.has_this_binding = fd.has_arguments_binding
+    fd.is_derived_class_constructor = func_type == ParseFunctionKind.derived_class_constructor
+    if func_type == ParseFunctionKind.arrow:
+        let parent = fd.parent else trap("js_parse_function_decl2: arrow function without parent")
+        fd.new_target_allowed = parent.new_target_allowed
+        fd.super_call_allowed = parent.super_call_allowed
+        fd.super_allowed = parent.super_allowed
+        fd.arguments_allowed = parent.arguments_allowed
+    elif func_type == ParseFunctionKind.class_static_init:
+        fd.new_target_allowed = true   # although new.target === undefined
+        fd.super_call_allowed = false
+        fd.super_allowed = true
+        fd.arguments_allowed = false
+    else:
+        fd.new_target_allowed = true
+        fd.super_call_allowed = fd.is_derived_class_constructor
+        fd.super_allowed = fd.has_home_object
+        fd.arguments_allowed = true
+
+    # fd->in_function_body == FALSE prevents yield/await during the parsing
+    # of the arguments in generator/async functions. They are parsed as
+    # regular identifiers for other function kinds.
+    fd.func_kind = func_kind
+    fd.func_type = func_type
+
+# mark: Parameters ==============================================================================
+
+# Emit the store of the value on the stack into the parameter `name` of the argument
+# scope: OP_scope_put_var_init name, scope_level.
+func js_parse_function_put_var_init(s: ParseState*, fd: FunctionDef*, name: Atom):
+    emit_op(s, (u8)TempOp.scope_put_var_init)
+    emit_atom(s, name)
+    emit_u16(s, (u16)fd.scope_level)
+
+# Parse the parameter list of the function `fd` being parsed, from its '(' (or the
+# single parameter of an arrow function) to its ')'.
+func js_parse_function_params(s: ParseState*, fd: FunctionDef*, func_type: ParseFunctionKind) -> !:
+    let ctx = s.ctx
+    fd.has_simple_parameter_list = true
+    fd.has_parameter_expressions = false
+    var has_opt_arg = false
+    if func_type == ParseFunctionKind.arrow and s.token.val == TokenType.ident:
+        if s.token.u.ident.is_reserved:
+            try js_parse_error_reserved_identifier(s)
+        let name = s.token.u.ident.atom
+        try add_arg(ctx, fd, name)
+        fd.defined_arg_count = 1
+    elif func_type != ParseFunctionKind.class_static_init:
+        if s.token.val == TokenType.lparen:
+            var skip_bits: i32 = 0
+            # if there is an '=' inside the parameter list, we
+            # consider there is a parameter expression inside
+            # (C ignores a failure of this look-ahead; it can only fail when reading the
+            # '(' again, which next_token below does too)
+            discard(try js_parse_skip_parens_token(s, &skip_bits, false))
+            if (skip_bits & skip_has_assignment) != 0:
+                fd.has_parameter_expressions = true
+            try next_token(s)
+        else:
+            try js_parse_expect(s, TokenType.lparen)
+
+        if fd.has_parameter_expressions:
+            fd.scope_level = -1   # force no parent scope
+            # (C returns here without its fail cleanup; the cleanup is harmless)
+            try push_scope(s)
+
+        while s.token.val != TokenType.rparen:
+            var rest = false
+
+            if s.token.val == TokenType.ellipsis:
+                if func_type == ParseFunctionKind.setter:
+                    try js_parse_function_accessor_error(s)
+                fd.has_simple_parameter_list = false
+                rest = true
+                try next_token(s)
+            if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
+                fd.has_simple_parameter_list = false
+                if rest:
+                    emit_op(s, (u8)Op.rest)
+                    emit_u16(s, (u16)fd.arg_count)
+                else:
+                    # unnamed arg for destructuring
+                    # (C ignores a failure to add it, which leaves the exception pending)
+                    let idx = add_arg(ctx, fd, no_atom) catch failure:
+                        recover -1
+                    emit_op(s, (u8)Op.get_arg)
+                    emit_u16(s, (u16)idx)
+                var tok = TokenType.var_
+                if fd.has_parameter_expressions:
+                    tok = TokenType.let_
+                let has_initializer = try js_parse_destructuring_element(s, (i32)tok, 1, 1, -1, true, false)
+                if has_initializer != 0:
+                    has_opt_arg = true
+                if not has_opt_arg:
+                    fd.defined_arg_count += 1
+            elif s.token.val == TokenType.ident:
+                if s.token.u.ident.is_reserved:
+                    try js_parse_error_reserved_identifier(s)
+                let name = s.token.u.ident.atom
+                if name == atom_yield and fd.func_kind == js_func_generator:
+                    try js_parse_error_reserved_identifier(s)
+                if fd.has_parameter_expressions:
+                    try js_parse_check_duplicate_parameter(s, name)
+                    try define_var(s, fd, name, VarDefKind.let_)
+                # XXX: could avoid allocating an argument if rest is true
+                let idx = try add_arg(ctx, fd, name)
+                try next_token(s)
+                if rest:
+                    emit_op(s, (u8)Op.rest)
+                    emit_u16(s, (u16)idx)
+                    if fd.has_parameter_expressions:
+                        emit_op(s, (u8)Op.dup)
+                        js_parse_function_put_var_init(s, fd, name)
+                    emit_op(s, (u8)Op.put_arg)
+                    emit_u16(s, (u16)idx)
+                    fd.has_simple_parameter_list = false
+                    has_opt_arg = true
+                elif s.token.val == TokenType.assign:
+                    fd.has_simple_parameter_list = false
+                    has_opt_arg = true
+
+                    try next_token(s)
+
+                    let label = new_label(s)
+                    emit_op(s, (u8)Op.get_arg)
+                    emit_u16(s, (u16)idx)
+                    emit_op(s, (u8)Op.dup)
+                    emit_op(s, (u8)Op.undefined)
+                    emit_op(s, (u8)Op.strict_eq)
+                    discard(emit_goto(s, (i32)Op.if_false, label))
+                    emit_op(s, (u8)Op.drop)
+                    try js_parse_assign_expr(s)
+                    set_object_name(s, name)
+                    emit_op(s, (u8)Op.dup)
+                    emit_op(s, (u8)Op.put_arg)
+                    emit_u16(s, (u16)idx)
+                    discard(emit_label(s, label))
+                    js_parse_function_put_var_init(s, fd, name)
+                else:
+                    if not has_opt_arg:
+                        fd.defined_arg_count += 1
+                    if fd.has_parameter_expressions:
+                        # copy the argument to the argument scope
+                        emit_op(s, (u8)Op.get_arg)
+                        emit_u16(s, (u16)idx)
+                        js_parse_function_put_var_init(s, fd, name)
+            else:
+                try js_parse_error(s, "missing formal parameter")
+            if rest and s.token.val != TokenType.rparen:
+                # the token is not ')': js_parse_expect fails
+                try js_parse_expect(s, TokenType.rparen)
+                trap("js_parse_function_params: expected a failure")
+            if s.token.val == TokenType.rparen:
+                break
+            try js_parse_expect(s, TokenType.comma)
+        if ((func_type == ParseFunctionKind.getter and fd.arg_count != 0) or
+            (func_type == ParseFunctionKind.setter and fd.arg_count != 1)):
+            try js_parse_function_accessor_error(s)
+
+    if fd.has_parameter_expressions:
+        # Copy the variables in the argument scope to the variable
+        # scope (see FunctionDeclarationInstantiation() in spec). The
+        # normal arguments are already present, so no need to copy
+        # them.
+        var idx = fd_scope(fd, fd.scope_level).first
+        while idx >= 0:
+            var vd = fd_var(fd, idx)
+            if vd.scope_level != fd.scope_level:
+                break
+            if find_var(ctx, fd, vd.var_name) < 0:
+                try add_var(ctx, fd, vd.var_name)
+                vd = fd_var(fd, idx)   # fd->vars may have been reallocated
+                emit_op(s, (u8)TempOp.scope_get_var)
+                emit_atom(s, vd.var_name)
+                emit_u16(s, (u16)fd.scope_level)
+                emit_op(s, (u8)TempOp.scope_put_var)
+                emit_atom(s, vd.var_name)
+                emit_u16(s, 0)
+            idx = vd.scope_next
+
+        # the argument scope has no parent, hence we don't use pop_scope(s)
+        emit_op(s, (u8)TempOp.leave_scope)
+        emit_u16(s, (u16)fd.scope_level)
+
+        # set the variable scope as the current scope
+        fd.scope_level = 0
+        fd.scope_first = fd_scope(fd, fd.scope_level).first
+
+# The error for a getter or setter with the wrong number of parameters (the
+# fail_accessor label).
+func js_parse_function_accessor_error(s: ParseState*) -> never!:
+    try js_parse_error(s, "invalid number of arguments for getter or setter")
+
+# mark: The body ================================================================================
+
+# Save the source code of the function `fd`, which starts at `ptr` and ends at `end`.
+func js_parse_function_save_source(ctx: Context*, fd: FunctionDef*, ptr: const u8*, end: const u8*) -> !:
+    fd.source_len = (i32)(end - ptr)
+    fd.source = try js_strndup(ctx, ptr, (usize)fd.source_len)
+
+# Parse the body of the function `fd`, after its parameters: an arrow function's
+# expression, or the statements between braces.
+func js_parse_function_body(s: ParseState*, fd: FunctionDef*, func_type: ParseFunctionKind,
+                            func_kind: u8, func_name: Atom, ptr: const u8*) -> !:
+    try next_token(s)
+
+    # generator function: yield after the parameters are evaluated
+    if func_kind == js_func_generator or func_kind == js_func_async_generator:
+        emit_op(s, (u8)Op.initial_yield)
+
+    # in generators, yield expression is forbidden during the parsing
+    # of the arguments
+    fd.in_function_body = true
+    # enter body scope (C ignores a failure here)
+    discard(push_scope(s) catch failure: recover -1)
+    fd.body_scope = fd.scope_level
+
+    if s.token.val == TokenType.arrow and func_type == ParseFunctionKind.arrow:
+        try next_token(s)
+
+        if s.token.val != TokenType.lbrace:
+            try js_parse_function_check_names(s, fd, func_name)
+
+            try js_parse_assign_expr(s)
+
+            if func_kind != js_func_normal:
+                emit_op(s, (u8)Op.return_async)
+            else:
+                emit_op(s, (u8)Op.return_)
+
+            if not fd.strip_source:
+                # save the function source code
+                # the end of the function source code is after the last
+                # token of the function source stored into s->last_ptr
+                try js_parse_function_save_source(s.ctx, fd, ptr, s.last_ptr)
+            return
+
+    if func_type != ParseFunctionKind.class_static_init:
+        try js_parse_expect(s, TokenType.lbrace)
+
+    try js_parse_directives(s)
+
+    # in strict_mode, check function and argument names
+    try js_parse_function_check_names(s, fd, func_name)
+
+    while s.token.val != TokenType.rbrace:
+        try js_parse_source_element(s)
+    if not fd.strip_source:
+        # save the function source code
+        try js_parse_function_save_source(s.ctx, fd, ptr, s.buf_ptr)
+
+    # consume the '}'
+    try next_token(s)
+
+    # in case there is no return, add one
+    if js_is_live_code(s):
+        emit_return(s, false)
+
+# mark: The function object =====================================================================
+
+# Emit, in the enclosing function (now the current one), the creation of the function
+# object whose bytecode will be the constant `idx`, and bind it as its declaration
+# says.
+func js_parse_function_bind(s: ParseState*, func_type: ParseFunctionKind, func_name: Atom,
+                            is_expr: bool, idx: i32, create_func_var: bool,
+                            lexical_func_idx: i32, export_flag: ParseExportKind) -> !:
+    let ctx = s.ctx
+    let cur = s.fd()
+    if is_expr:
+        # for constructors, no code needs to be generated here
+        if (func_type != ParseFunctionKind.class_constructor and
+            func_type != ParseFunctionKind.derived_class_constructor):
+            # OP_fclosure creates the function object from the bytecode
+            # and adds the scope information
+            emit_op(s, (u8)Op.fclosure)
+            emit_u32(s, (u32)idx)
+            if func_name == no_atom:
+                emit_op(s, (u8)Op.set_name)
+                emit_u32(s, no_atom)
+    elif func_type == ParseFunctionKind.var_:
+        emit_op(s, (u8)Op.fclosure)
+        emit_u32(s, (u32)idx)
+        if create_func_var:
+            if cur.is_global_var:
+                # the global variable must be defined at the start of the
+                # function
+                let hf = try add_global_var(ctx, cur, func_name)
+                # it is considered as defined at the top level
+                # (needed for annex B.3.3.4 and B.3.3.5
+                # checks)
+                hf.scope_level = 0
+                hf.force_init = ((i32)cur.js_mode & js_mode_strict) != 0
+                # store directly into global var, bypass lexical scope
+                emit_op(s, (u8)Op.dup)
+                emit_op(s, (u8)TempOp.scope_put_var)
+                emit_atom(s, func_name)
+                emit_u16(s, 0)
+            else:
+                # do not call define_var to bypass lexical scope check
+                let func_idx = find_var(ctx, cur, func_name)
+                if func_idx < 0:
+                    try add_var(ctx, cur, func_name)
+                # store directly into local var, bypass lexical catch scope
+                emit_op(s, (u8)Op.dup)
+                emit_op(s, (u8)TempOp.scope_put_var)
+                emit_atom(s, func_name)
+                emit_u16(s, 0)
+        if lexical_func_idx >= 0:
+            # lexical variable will be initialized upon entering scope
+            fd_var(cur, lexical_func_idx).func_pool_idx = idx
+            emit_op(s, (u8)Op.drop)
+        else:
+            # store function object into its lexical name
+            # XXX: could use OP_put_loc directly
+            emit_op(s, (u8)TempOp.scope_put_var_init)
+            emit_atom(s, func_name)
+            emit_u16(s, (u16)cur.scope_level)
+    else:
+        if not cur.is_global_var:
+            let var_idx = try define_var(s, cur, func_name, VarDefKind.var_)
+            # the variable will be assigned at the top of the function
+            if (var_idx & argument_var_offset) != 0:
+                fd_arg(cur, var_idx - argument_var_offset).func_pool_idx = idx
+            else:
+                fd_var(cur, var_idx).func_pool_idx = idx
+        else:
+            var func_var_name = func_name
+            if func_name == no_atom:
+                func_var_name = atom__default_   # export default
+            # the variable will be assigned at the top of the function
+            let hf = try add_global_var(ctx, cur, func_var_name)
+            hf.cpool_idx = idx
+            if export_flag != ParseExportKind.none_:
+                let m = cur.module else trap("js_parse_function_decl2: export outside a module")
+                var export_name = atom_default
+                if export_flag == ParseExportKind.named:
+                    export_name = func_var_name
+                try add_export_entry(s, m, func_var_name, export_name, ExportType.local_)
+
+# mark: js_parse_function_decl2 =================================================================
+
+# func_name must be JS_ATOM_NULL for JS_PARSE_FUNC_STATEMENT and
+# JS_PARSE_FUNC_EXPR, JS_PARSE_FUNC_ARROW and JS_PARSE_FUNC_VAR
+## Parse a function of kind `func_type` from the current token, compile it as a child
+## of the current function and emit what makes its object; `ptr` is where its source
+## starts. `*pfd`, if given, is the new FunctionDef (none on failure).
+func js_parse_function_decl2(s: ParseState*, func_type: ParseFunctionKind, func_kind0: u8,
+                             func_name0: Atom, ptr: const u8*, export_flag: ParseExportKind,
+                             pfd: FunctionDef*?*?) -> !:
+    let ctx = s.ctx
+    let parent = s.fd()
+
+    let is_expr = (func_type != ParseFunctionKind.statement and
+                   func_type != ParseFunctionKind.var_)
+
+    let (func_kind, func_name) = try js_parse_function_name(s, parent, func_type, func_kind0,
+                                                            func_name0, export_flag)
+    let (lexical_func_idx, create_func_var) = js_parse_function_define_name(s, parent, func_type, func_kind, func_name) catch failure:
+        js_free_atom(ctx, func_name)
+        error(failure.code, failure.message)
+
+    let fd = js_new_function_def(ctx, parent, false, is_expr, s.filename, ptr,
+                                 &s.get_line_col_cache) catch failure:
+        js_free_atom(ctx, func_name)
+        error(failure.code, failure.message)
+    errdefer js_parse_function_fail(s, fd, pfd)
+    if let p = pfd:
+        *p = fd
+    s.cur_func = fd
+    fd.func_name = func_name
+    js_parse_function_init(fd, func_type, func_kind)
+
+    if (func_type == ParseFunctionKind.class_constructor or
+        func_type == ParseFunctionKind.derived_class_constructor):
+        # error if not invoked as a constructor
+        emit_op(s, (u8)Op.check_ctor)
+
+    if func_type == ParseFunctionKind.class_constructor:
+        emit_class_field_init(s)
+
+    # parse arguments
+    try js_parse_function_params(s, fd, func_type)
+    try js_parse_function_body(s, fd, func_type, func_kind, func_name, ptr)
+
+    # done:
+    s.cur_func = fd.parent
+
+    # Reparse identifiers after the function is terminated so that
+    # the token is parsed in the englobing function. It could be done
+    # by just using next_token() here for normal functions, but it is
+    # necessary for arrow functions with an expression body.
+    reparse_ident_token(s)
+
+    # create the function object
+    # the real object will be set at the end of the compilation
+    # (C ignores a failure of cpool_add: the index is then -1)
+    let idx = cpool_add(s, js_null()) catch failure:
+        recover -1
+    fd.parent_cpool_idx = idx
+
+    try js_parse_function_bind(s, func_type, fd.func_name, is_expr, idx, create_func_var,
+                               lexical_func_idx, export_flag)
+
+# The fail label of js_parse_function_decl2: back to the enclosing function, and the new
+# one `fd` is freed.
+func js_parse_function_fail(s: ParseState*, fd: FunctionDef*, pfd: FunctionDef*?*?):
+    s.cur_func = fd.parent
+    js_free_function_def(s.ctx, fd)
+    if let p = pfd:
+        *p = none
+
+## Parse a function of kind `func_type` (js_parse_function_decl2 without export and
+## without answering the FunctionDef).
+func js_parse_function_decl(s: ParseState*, func_type: ParseFunctionKind, func_kind: u8,
+                            func_name: Atom, ptr: const u8*) -> !:
+    try js_parse_function_decl2(s, func_type, func_kind, func_name, ptr,
+                                ParseExportKind.none_, none)
+
+# mark: The program =============================================================================
+
+## Parse a whole script, eval code or module into the current function, which returns
+## the completion value (scripts and eval code) at the end.
+func js_parse_program(s: ParseState*) -> !:
+    let fd = s.fd()
+
+    try next_token(s)
+
+    try js_parse_directives(s)
+
+    fd.is_global_var = (fd.eval_type == eval_type_global or
+                        fd.eval_type == eval_type_module or
+                        ((i32)fd.js_mode & js_mode_strict) == 0)
+
+    if not s.is_module:
+        # hidden variable for the return value
+        fd.eval_ret_idx = try add_var(s.ctx, fd, atom__ret_)
+
+    while s.token.val != TokenType.eof:
+        try js_parse_source_element(s)
+
+    if not s.is_module:
+        # return the value of the hidden variable eval_ret_idx
+        if fd.func_kind == js_func_async:
+            # wrap the return value in an object so that promises can
+            # be safely returned
+            emit_op(s, (u8)Op.object)
+            emit_op(s, (u8)Op.dup)
+
+            emit_op(s, (u8)Op.get_loc)
+            emit_u16(s, (u16)fd.eval_ret_idx)
+
+            emit_op(s, (u8)Op.put_field)
+            emit_atom(s, atom_value)
+        else:
+            emit_op(s, (u8)Op.get_loc)
+            emit_u16(s, (u16)fd.eval_ret_idx)
+        emit_return(s, true)
+    else:
+        emit_return(s, false)

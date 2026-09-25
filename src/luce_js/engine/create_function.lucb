@@ -1,0 +1,300 @@
+#==============================================================================================
+#
+#   create_function - Turning a compiled FunctionDef into a FunctionBytecode, and freeing it
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 35954-36325: add_global_variables (the closure variables
+#       of eval and module code for their global definitions and local exports),
+#       js_create_function (the child functions first, then the resolve passes, the
+#       stack size, and one block holding the FunctionBytecode, its constant pool,
+#       variable definitions, closure variables and bytecode), and
+#       free_function_bytecode.
+#
+#==============================================================================================
+
+# mark: Global variables ========================================================================
+
+# The closure variable `idx` of fd.closure_var (&fd->closure_var[idx]).
+func create_function_closure_var(fd: FunctionDef*, idx: i32) -> ClosureVar*:
+    let tab = fd.closure_var else trap("FunctionDef: no closure variables")
+    return tab + (isize)idx
+
+# Add the closure variables of the global variables eval or module code defines, and
+# resolve the variables of the module's local exports.
+func add_global_variables(ctx: Context*, fd: FunctionDef*) -> !:
+    # Script: add the defined global variables. In the non strict
+    # direct eval not in global scope, the global variables are
+    # created in the enclosing scope so they are not created as
+    # variable references.
+    #
+    # In modules, the imported global variables were added as closure
+    # global variables in js_parse_import().
+    var need_global_closures = true
+    if fd.eval_type == eval_type_direct and ((i32)fd.js_mode & js_mode_strict) == 0:
+        # XXX: add a flag ?
+        for idx in 0..<fd.closure_var_count:
+            let cv = create_function_closure_var(fd, idx)
+            if cv.var_name == atom__var_ or cv.var_name == atom__arg_var_:
+                need_global_closures = false
+                break
+
+    if need_global_closures:
+        var closure_type = ClosureType.global_decl
+        if fd.module != none:
+            closure_type = ClosureType.module_decl
+        for i in 0..<fd.global_var_count:
+            let hf = fd_global_var(fd, i)
+            var var_kind = VarKind.normal
+            if hf.cpool_idx >= 0 and not hf.is_lexical:
+                var_kind = VarKind.global_function_decl
+            try add_closure_var(ctx, fd, closure_type, i, hf.var_name, hf.is_const,
+                                hf.is_lexical, var_kind)
+
+    if let m = fd.module:
+        # resolve the variable names of the local exports
+        for i in 0..<m.export_entries_count:
+            let entries = m.export_entries else trap("add_global_variables: no export entries")
+            let me = entries + (isize)i
+            if me.export_type == ExportType.local_:
+                let idx = find_closure_var(ctx, fd, me.local_name)
+                if idx < 0:
+                    try js_throw_syntax_error_atom(ctx, "exported variable '%s' does not exist",
+                                                   me.local_name)
+                me.u.local_.var_idx = idx
+
+# mark: Creating the function ===================================================================
+
+# Recompute the scope linkage of the variables of `fd` (the start of js_create_function).
+func create_function_link_scopes(fd: FunctionDef*):
+    for scope in 0..<fd.scope_count:
+        fd_scope(fd, scope).first = -1
+    if fd.has_parameter_expressions:
+        # special end of variable list marker for the argument scope
+        fd_scope(fd, arg_scope_index).first = arg_scope_end
+    for idx in 0..<fd.var_count:
+        let vd = fd_var(fd, idx)
+        vd.scope_next = fd_scope(fd, vd.scope_level).first
+        fd_scope(fd, vd.scope_level).first = idx
+    var scope: i32 = 2
+    while scope < fd.scope_count:
+        let sd = fd_scope(fd, scope)
+        if sd.first < 0:
+            sd.first = fd_scope(fd, sd.parent).first
+        scope += 1
+    for idx in 0..<fd.var_count:
+        let vd = fd_var(fd, idx)
+        if vd.scope_next < 0 and vd.scope_level > 1:
+            let parent = fd_scope(fd, vd.scope_level).parent
+            vd.scope_next = fd_scope(fd, parent).first
+
+# Copy the variable definition `vd` into `vd1`, dropping its name if `strip_var_debug`.
+func create_function_copy_vardef(ctx: Context*, vd1: BytecodeVarDef*, vd: const VarDef*, strip_var_debug: bool):
+    if strip_var_debug:
+        js_free_atom(ctx, vd.var_name)
+        vd1.var_name = no_atom
+    else:
+        vd1.var_name = vd.var_name
+    vd1.has_scope = vd.scope_level != 0
+    vd1.scope_next = vd.scope_next
+    vd1.is_const = vd.is_const
+    vd1.is_lexical = vd.is_lexical
+    vd1.is_captured = vd.is_captured
+    vd1.var_kind = vd.var_kind
+    vd1.var_ref_idx = vd.var_ref_idx
+
+# create a function object from a function definition. The function
+# definition is freed. All the child functions are also created. It
+# must be done this way to resolve all the variables.
+## The bytecode function value compiled from `fd`, which is freed (also on failure).
+func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
+    errdefer js_free_function_def(ctx, fd)
+
+    # recompute scope linkage
+    create_function_link_scopes(fd)
+
+    # if the function contains an eval call, the closure variables
+    # are used to compile the eval and they must be ordered by scope,
+    # so it is necessary to create the closure variables before any
+    # other variable lookup is done.
+    if fd.has_eval_call:
+        add_eval_variables(ctx, fd)
+
+    # add the module global variables in the closure
+    if fd.is_eval:
+        try add_global_variables(ctx, fd)
+
+    # first create all the child functions
+    let head = &fd.child_list
+    var el = head.next else trap("js_create_function: unlinked child list")
+    while el != head:
+        let el1 = el.next else trap("js_create_function: unlinked child list")
+        let fd1 = (FunctionDef*)((u8*)el - offsetof(FunctionDef, link))
+        let cpool_idx = fd1.parent_cpool_idx
+        let func_obj = try js_create_function(ctx, fd1)
+        # save it in the constant pool
+        assert(cpool_idx >= 0)
+        let cpool = fd.cpool else trap("js_create_function: no constant pool")
+        cpool[(isize)cpool_idx] = func_obj
+        el = el1
+
+    try resolve_variables(ctx, fd)
+    try resolve_labels(ctx, fd)
+    let stack_size = try compute_stack_size(ctx, fd)
+
+    var function_size: usize = sizeof(FunctionBytecode)
+    if fd.strip_debug:
+        function_size = offsetof(FunctionBytecode, debug)
+    let cpool_offset = function_size
+    function_size += (usize)fd.cpool_count * sizeof(Value)
+    let vardefs_offset = function_size
+    function_size += (usize)(fd.arg_count + fd.var_count) * sizeof(BytecodeVarDef)
+    let closure_var_offset = function_size
+    function_size += (usize)fd.closure_var_count * sizeof(ClosureVar)
+    let byte_code_offset = function_size
+    function_size += fd.byte_code.size
+
+    let b = (FunctionBytecode*)try js_mallocz(ctx, function_size)
+    js_rc(b).ref_count = 1
+
+    b.byte_code_buf = (u8*)b + byte_code_offset
+    b.byte_code_len = (i32)fd.byte_code.size
+    if let buf = fd.byte_code.buf:
+        discard(cutils.memcpy(b.byte_code_buf, buf, fd.byte_code.size))
+        js_free(ctx, buf)
+    fd.byte_code.buf = none
+
+    let strip_var_debug = fd.strip_debug and not fd.has_eval_call   # XXX: check
+    b.func_name = fd.func_name
+    if fd.arg_count + fd.var_count > 0:
+        let vardefs = (BytecodeVarDef*)((u8*)b + vardefs_offset)
+        b.vardefs = vardefs
+        for i in 0..<fd.arg_count:
+            create_function_copy_vardef(ctx, vardefs + (isize)i, fd_arg(fd, i), strip_var_debug)
+        for i in 0..<fd.var_count:
+            create_function_copy_vardef(ctx, vardefs + (isize)(i + fd.arg_count), fd_var(fd, i),
+                                        strip_var_debug)
+        b.var_count = (u16)fd.var_count
+        b.arg_count = (u16)fd.arg_count
+        b.defined_arg_count = (u16)fd.defined_arg_count
+        b.var_ref_count = (u16)fd.var_ref_count
+        if let args = fd.args:
+            js_free(ctx, args)
+        if let vars = fd.vars:
+            js_free(ctx, vars)
+    b.cpool_count = fd.cpool_count
+    if b.cpool_count != 0:
+        let cpool = (Value*)((u8*)b + cpool_offset)
+        b.cpool = cpool
+        let src = fd.cpool else trap("js_create_function: no constant pool")
+        discard(cutils.memcpy(cpool, src, (usize)b.cpool_count * sizeof(Value)))
+    if let cpool = fd.cpool:
+        js_free(ctx, cpool)
+    fd.cpool = none
+
+    b.stack_size = (u16)stack_size
+
+    if fd.strip_debug:
+        js_free_atom(ctx, fd.filename)
+        cutils.dbuf_free(&fd.pc2line)   # probably useless
+    else:
+        # XXX: source and pc2line info should be packed at the end of the
+        # JSFunctionBytecode structure, avoiding allocation overhead
+        b.has_debug = true
+        b.debug.filename = fd.filename
+
+        # A failed shrink leaves the out of memory exception pending, as in C, and the
+        # buffer as it is.
+        var pc2line_buf: u8*? = none
+        if let buf = fd.pc2line.buf:
+            let p = js_realloc(ctx, buf, fd.pc2line.size) catch failure:
+                recover none
+            if let q = p:
+                pc2line_buf = (u8*)q
+        if pc2line_buf == none:
+            pc2line_buf = fd.pc2line.buf
+        b.debug.pc2line_buf = pc2line_buf
+        b.debug.pc2line_len = (i32)fd.pc2line.size
+        b.debug.source = fd.source
+        b.debug.source_len = fd.source_len
+    if fd.scopes != &fd.def_scope_array[0]:
+        js_free(ctx, fd.scopes)
+
+    b.closure_var_count = fd.closure_var_count
+    if b.closure_var_count != 0:
+        if strip_var_debug:
+            for i in 0..<fd.closure_var_count:
+                let cv = create_function_closure_var(fd, i)
+                if (cv.closure_type != ClosureType.global_ref and
+                    cv.closure_type != ClosureType.global_decl and
+                    cv.closure_type != ClosureType.global and
+                    cv.closure_type != ClosureType.module_decl and
+                    cv.closure_type != ClosureType.module_import):
+                    js_free_atom(ctx, cv.var_name)
+                    cv.var_name = no_atom
+        let closure_var = (ClosureVar*)((u8*)b + closure_var_offset)
+        b.closure_var = closure_var
+        let src = fd.closure_var else trap("js_create_function: no closure variables")
+        discard(cutils.memcpy(closure_var, src, (usize)b.closure_var_count * sizeof(ClosureVar)))
+    if let closure_var = fd.closure_var:
+        js_free(ctx, closure_var)
+    fd.closure_var = none
+
+    b.has_prototype = fd.has_prototype
+    b.has_simple_parameter_list = fd.has_simple_parameter_list
+    b.js_mode = fd.js_mode
+    b.is_derived_class_constructor = fd.is_derived_class_constructor
+    b.func_kind = fd.func_kind
+    b.need_home_object = fd.home_object_var_idx >= 0 or fd.need_home_object
+    b.new_target_allowed = fd.new_target_allowed
+    b.super_call_allowed = fd.super_call_allowed
+    b.super_allowed = fd.super_allowed
+    b.arguments_allowed = fd.arguments_allowed
+    b.is_direct_or_indirect_eval = (fd.eval_type == eval_type_direct or
+                                    fd.eval_type == eval_type_indirect)
+    b.realm = js_dup_context(ctx)
+
+    add_gc_object(ctx.rt, &b.header, GCObjectType.function_bytecode)
+
+    if fd.parent != none:
+        # remove from parent list
+        cutils.list_del(&fd.link)
+
+    js_free(ctx, fd)
+    return js_mkptr(Tag.function_bytecode, b)
+
+# mark: Freeing the function ====================================================================
+
+## Free the bytecode function `b`, whose reference count reached zero, and release
+## everything it references.
+func free_function_bytecode(rt: Runtime*, b: FunctionBytecode*):
+    # The pointers C tests for NULL are never null once js_create_function or the
+    # bytecode reader completed; a zeroed block is tested by address.
+    if (usize)b.byte_code_buf != 0:
+        free_bytecode_atoms(rt, b.byte_code_buf, b.byte_code_len, true)
+
+    if let vardefs = b.vardefs:
+        for i in 0..<(i32)b.arg_count + (i32)b.var_count:
+            js_free_atom_rt(rt, (vardefs + (isize)i).var_name)
+    if let cpool = b.cpool:
+        for i in 0..<b.cpool_count:
+            js_free_value_rt(rt, cpool[(isize)i])
+
+    if let closure_var = b.closure_var:
+        for i in 0..<b.closure_var_count:
+            js_free_atom_rt(rt, (closure_var + (isize)i).var_name)
+    if (usize)b.realm != 0:
+        js_free_context(b.realm)
+
+    js_free_atom_rt(rt, b.func_name)
+    if b.has_debug:
+        js_free_atom_rt(rt, b.debug.filename)
+        if let buf = b.debug.pc2line_buf:
+            js_free_rt(rt, buf)
+        if let source = b.debug.source:
+            js_free_rt(rt, source)
+
+    remove_gc_object(&b.header)
+    if rt.gc_phase == GCPhase.remove_cycles and js_rc(b).ref_count != 0:
+        cutils.list_add_tail(&b.header.link, &rt.gc_zero_ref_count_list)
+    else:
+        js_free_rt(rt, b)

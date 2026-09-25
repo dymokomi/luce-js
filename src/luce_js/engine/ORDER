@@ -77,7 +77,6 @@ module_eval.lucb
 function_def.lucb
 module_parse.lucb
 stub_r19_resolve.lucb
-stub_r20_function_eval.lucb
 bytecode_writer.lucb
 object_writer.lucb
 bytecode_reader.lucb
@@ -89,6 +88,12 @@ object_builtins.lucb
 function_builtins.lucb
 error_builtins.lucb
 copy_sub_array.lucb
+stack_size.lucb
+create_function.lucb
+parse_function.lucb
+parse_function_decl.lucb
+eval.lucb
+object_list.lucb
 stub_r23_array_iterator.lucb
 stub_r24_number_string_math.lucb
 stub_r25_regexp_json_reflect.lucb
@@ -116,3 +121,4 @@ tests_modules.lucb
 tests_r22.lucb
 tests_interpreter.lucb
 tests_r29.lucb
+tests_r20.lucb

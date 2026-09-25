@@ -18,7 +18,7 @@ func js_dump_function_bytecode(ctx: Context*, b: FunctionBytecode*):
 func add_closure_var(ctx: Context*, s: FunctionDef*, closure_type: ClosureType, var_idx: i32, var_name: Atom, is_const: bool, is_lexical: bool, var_kind: VarKind) -> i32!:
     trap("unported: add_closure_var")
 ## Ported from quickjs.c:32722 find_closure_var.
-func find_closure_var(ctx: Context*, s: FunctionDef*, var_name: Atom) -> i32!:
+func find_closure_var(ctx: Context*, s: FunctionDef*, var_name: Atom) -> i32:
     trap("unported: find_closure_var")
 ## Ported from quickjs.c:32736 get_closure_var.
 func get_closure_var(ctx: Context*, s: FunctionDef*, fd: FunctionDef*, closure_type: ClosureType, var_idx: i32, var_name: Atom, is_const: bool, is_lexical: bool, var_kind: VarKind) -> i32!:
