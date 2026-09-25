@@ -1,0 +1,435 @@
+#==============================================================================================
+#
+#   date_parse - Date string parsing: the ISO format, the toString formats and Date.parse
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 55492-55955. Date.parse converts the string to at most
+#       127 bytes ending in a NUL, then tries the toISOString format and the looser
+#       toString / toUTCString format. The scanners walk that byte span with an index,
+#       stopping at the NUL as the C code does, so every read stays inside the buffer.
+#
+#==============================================================================================
+
+# mark: Scanning ================================================================================
+
+# The byte at `p` of `sp`, as an int.
+func date_char_at(sp: const u8[], p: i32) -> i32:
+    return (i32)sp[(usize)p]
+
+func string_skip_char(sp: const u8[], pp: i32*, c: i32) -> bool:
+    if date_char_at(sp, *pp) == c:
+        *pp += 1
+        return true
+    else:
+        return false
+
+# skip spaces, update offset, return next char
+func string_skip_spaces(sp: const u8[], pp: i32*) -> i32:
+    var c = date_char_at(sp, *pp)
+    while c == (i32)' ':
+        *pp += 1
+        c = date_char_at(sp, *pp)
+    return c
+
+# skip dashes dots and commas
+func string_skip_separators(sp: const u8[], pp: i32*) -> i32:
+    var c = date_char_at(sp, *pp)
+    while c == (i32)'-' or c == (i32)'/' or c == (i32)'.' or c == (i32)',':
+        *pp += 1
+        c = date_char_at(sp, *pp)
+    return c
+
+# skip a word, stop on spaces, digits and separators, update offset
+func string_skip_until(sp: const u8[], pp: i32*, stoplist: str) -> i32:
+    var c = date_char_at(sp, *pp)
+    # C's strchr also finds the terminating NUL
+    while c != 0 and not char_in_set(stoplist, c):
+        *pp += 1
+        c = date_char_at(sp, *pp)
+    return c
+
+# parse a numeric field (max_digits = 0 -> no maximum)
+func string_get_digits(sp: const u8[], pp: i32*, pval: i32*, min_digits: i32, max_digits: i32) -> bool:
+    var v: i32 = 0
+    var p = *pp
+    let p_start = p
+
+    while true:
+        let c = date_char_at(sp, p)
+        if c < (i32)'0' or c > (i32)'9':
+            break
+        # arbitrary limit to 9 digits
+        if v >= 100000000:
+            return false
+        v = v * 10 + c - (i32)'0'
+        p += 1
+        if p - p_start == max_digits:
+            break
+    if p - p_start < min_digits:
+        return false
+    *pval = v
+    *pp = p
+    return true
+
+func string_get_milliseconds(sp: const u8[], pp: i32*, pval: i32*) -> bool:
+    # parse optional fractional part as milliseconds and truncate.
+    # spec does not indicate which rounding should be used
+    var mul: i32 = 100
+    var ms: i32 = 0
+    var p = *pp
+
+    let c = date_char_at(sp, p)
+    if c == (i32)'.' or c == (i32)',':
+        p += 1
+        let p_start = p
+        while true:
+            let c1 = date_char_at(sp, p)
+            if c1 < (i32)'0' or c1 > (i32)'9':
+                break
+            ms += (c1 - (i32)'0') * mul
+            mul = mul // 10
+            p += 1
+            if p - p_start == 9:
+                break
+        if p > p_start:
+            # only consume the separator if digits are present
+            *pval = ms
+            *pp = p
+    return true
+
+func upper_ascii(c: u8) -> u8:
+    return c - 'a' + 'A' if c >= 'a' and c <= 'z' else c
+
+func string_get_tzoffset(sp: const u8[], pp: i32*, tzp: i32*, strict: bool) -> bool:
+    var tz: i32 = 0
+    var p = *pp
+
+    let sgn = date_char_at(sp, p)
+    p += 1
+    if sgn == (i32)'+' or sgn == (i32)'-':
+        var hh: i32 = 0
+        var mm: i32 = 0
+        var n = p
+        if not string_get_digits(sp, &p, &hh, 1, 0):
+            return false
+        n = p - n
+        if strict and n != 2 and n != 4:
+            return false
+        while n > 4:
+            n -= 2
+            hh = hh // 100
+        if n > 2:
+            mm = hh % 100
+            hh = hh // 100
+        else:
+            mm = 0
+            if string_skip_char(sp, &p, (i32)':'):
+                # optional separator
+                if not string_get_digits(sp, &p, &mm, 2, 2):
+                    return false
+            else:
+                if strict:
+                    return false # [+-]HH is not accepted in strict mode
+        if hh > 23 or mm > 59:
+            return false
+        tz = hh * 60 + mm
+        if sgn != (i32)'+':
+            tz = -tz
+    elif sgn != (i32)'Z':
+        return false
+    *pp = p
+    *tzp = tz
+    return true
+
+func string_match(sp: const u8[], pp: i32*, s: str) -> bool:
+    var p = *pp
+    for c in s.bytes:
+        if upper_ascii(sp[(usize)p]) != upper_ascii(c):
+            return false
+        p += 1
+    *pp = p
+    return true
+
+func find_abbrev(sp: const u8[], p: i32, list: const u8[], count: i32) -> i32:
+    for n in 0..<count:
+        var i: i32 = 0
+        while true:
+            if upper_ascii(sp[(usize)(p + i)]) != upper_ascii(list[(usize)(n * 3 + i)]):
+                break
+            if i == 2:
+                return n
+            i += 1
+    return -1
+
+func string_get_month(sp: const u8[], pp: i32*, pval: i32*) -> bool:
+    let n = find_abbrev(sp, *pp, month_names, 12)
+    if n < 0:
+        return false
+
+    *pval = n + 1
+    *pp += 3
+    return true
+
+# mark: The ISO format ==========================================================================
+
+# parse toISOString format
+func js_date_parse_isostring(sp: const u8[], fields: i32[], is_local: bool*) -> bool:
+    var p: i32 = 0
+
+    # initialize fields to the beginning of the Epoch
+    for i: usize in 0..<9:
+        fields[i] = (i32)(i == 2)
+    *is_local = false
+
+    # year is either yyyy digits or [+-]yyyyyy
+    let sgn = date_char_at(sp, p)
+    if sgn == (i32)'-' or sgn == (i32)'+':
+        p += 1
+        if not string_get_digits(sp, &p, &fields[0], 6, 6):
+            return false
+        if sgn == (i32)'-':
+            if fields[0] == 0:
+                return false # reject -000000
+            fields[0] = -fields[0]
+    else:
+        if not string_get_digits(sp, &p, &fields[0], 4, 4):
+            return false
+    if string_skip_char(sp, &p, (i32)'-'):
+        if not string_get_digits(sp, &p, &fields[1], 2, 2): # month
+            return false
+        if fields[1] < 1:
+            return false
+        fields[1] -= 1
+        if string_skip_char(sp, &p, (i32)'-'):
+            if not string_get_digits(sp, &p, &fields[2], 2, 2): # day
+                return false
+            if fields[2] < 1:
+                return false
+    if string_skip_char(sp, &p, (i32)'T'):
+        *is_local = true
+        if (not string_get_digits(sp, &p, &fields[3], 2, 2) or # hour
+                not string_skip_char(sp, &p, (i32)':') or
+                not string_get_digits(sp, &p, &fields[4], 2, 2)): # minute
+            fields[3] = 100 # reject unconditionally
+            return true
+        if string_skip_char(sp, &p, (i32)':'):
+            if not string_get_digits(sp, &p, &fields[5], 2, 2): # second
+                return false
+            discard(string_get_milliseconds(sp, &p, &fields[6]))
+    # parse the time zone offset if present: [+-]HH:mm or [+-]HHmm
+    if date_char_at(sp, p) != 0:
+        *is_local = false
+        if not string_get_tzoffset(sp, &p, &fields[8], true):
+            return false
+    # error if extraneous characters
+    return date_char_at(sp, p) == 0
+
+# mark: The other formats =======================================================================
+
+## A time zone abbreviation and its offset in minutes.
+struct TzAbbr:
+    let name: str
+    let offset: i16
+
+let js_tzabbr: TzAbbr[18] = [
+    TzAbbr(name = "GMT", offset = 0),           # Greenwich Mean Time
+    TzAbbr(name = "UTC", offset = 0),           # Coordinated Universal Time
+    TzAbbr(name = "UT", offset = 0),            # Universal Time
+    TzAbbr(name = "Z", offset = 0),             # Zulu Time
+    TzAbbr(name = "EDT", offset = -4 * 60),     # Eastern Daylight Time
+    TzAbbr(name = "EST", offset = -5 * 60),     # Eastern Standard Time
+    TzAbbr(name = "CDT", offset = -5 * 60),     # Central Daylight Time
+    TzAbbr(name = "CST", offset = -6 * 60),     # Central Standard Time
+    TzAbbr(name = "MDT", offset = -6 * 60),     # Mountain Daylight Time
+    TzAbbr(name = "MST", offset = -7 * 60),     # Mountain Standard Time
+    TzAbbr(name = "PDT", offset = -7 * 60),     # Pacific Daylight Time
+    TzAbbr(name = "PST", offset = -8 * 60),     # Pacific Standard Time
+    TzAbbr(name = "WET", offset = 0 * 60),      # Western European Time
+    TzAbbr(name = "WEST", offset = 1 * 60),     # Western European Summer Time
+    TzAbbr(name = "CET", offset = 1 * 60),      # Central European Time
+    TzAbbr(name = "CEST", offset = 2 * 60),     # Central European Summer Time
+    TzAbbr(name = "EET", offset = 2 * 60),      # Eastern European Time
+    TzAbbr(name = "EEST", offset = 3 * 60),     # Eastern European Summer Time
+]
+
+func string_get_tzabbr(sp: const u8[], pp: i32*, offset: i32*) -> bool:
+    for abbr in js_tzabbr:
+        if string_match(sp, pp, abbr.name):
+            *offset = (i32)abbr.offset
+            return true
+    return false
+
+# A two-digit year of the loose formats: 00-49 is 2000-2049, 50-99 is 1950-1999.
+func date_full_year(val: i32) -> i32:
+    return val + (i32)(val < 100) * 1900 + (i32)(val < 50) * 100
+
+# parse toString, toUTCString and other formats
+func js_date_parse_otherstring(sp: const u8[], fields: i32[], is_local: bool*) -> bool:
+    var c: i32 = 0
+    var val: i32 = 0
+    var p: i32 = 0
+    var num: i32[3] = [0, 0, 0]
+    var has_year = false
+    var has_mon = false
+    var has_time = false
+    var num_index: usize = 0
+
+    # initialize fields to the beginning of 2001-01-01
+    fields[0] = 2001
+    fields[1] = 1
+    fields[2] = 1
+    for i: usize in 3..<9:
+        fields[i] = 0
+    *is_local = true
+
+    while string_skip_spaces(sp, &p) != 0:
+        let p_start = p
+        c = date_char_at(sp, p)
+        if c == (i32)'+' or c == (i32)'-':
+            if has_time and string_get_tzoffset(sp, &p, &fields[8], false):
+                *is_local = false
+            else:
+                p += 1
+                if string_get_digits(sp, &p, &val, 1, 0):
+                    if c == (i32)'-':
+                        if val == 0:
+                            return false
+                        val = -val
+                    fields[0] = val
+                    has_year = true
+        elif string_get_digits(sp, &p, &val, 1, 0):
+            if string_skip_char(sp, &p, (i32)':'):
+                # time part
+                fields[3] = val
+                if not string_get_digits(sp, &p, &fields[4], 1, 2):
+                    return false
+                if string_skip_char(sp, &p, (i32)':'):
+                    if not string_get_digits(sp, &p, &fields[5], 1, 2):
+                        return false
+                    discard(string_get_milliseconds(sp, &p, &fields[6]))
+                has_time = true
+                let c1 = date_char_at(sp, p)
+                if ((c1 == (i32)'+' or c1 == (i32)'-') and
+                        string_get_tzoffset(sp, &p, &fields[8], false)):
+                    *is_local = false
+            else:
+                if p - p_start > 2 and not has_year:
+                    fields[0] = val
+                    has_year = true
+                elif (val < 1 or val > 31) and not has_year:
+                    fields[0] = date_full_year(val)
+                    has_year = true
+                else:
+                    if num_index == 3:
+                        return false
+                    num[num_index] = val
+                    num_index += 1
+        elif string_get_month(sp, &p, &fields[1]):
+            has_mon = true
+            discard(string_skip_until(sp, &p, "0123456789 -/("))
+        elif has_time and string_match(sp, &p, "PM"):
+            if fields[3] < 12:
+                fields[3] += 12
+            continue
+        elif has_time and string_match(sp, &p, "AM"):
+            if fields[3] == 12:
+                fields[3] -= 12
+            continue
+        elif string_get_tzabbr(sp, &p, &fields[8]):
+            *is_local = false
+            continue
+        elif c == (i32)'(':
+            # skip parenthesized phrase
+            var level: i32 = 0
+            while true:
+                c = date_char_at(sp, p)
+                if c == 0:
+                    break
+                p += 1
+                level += (i32)(c == (i32)'(')
+                level -= (i32)(c == (i32)')')
+                if level == 0:
+                    break
+            if level > 0:
+                return false
+        elif c == (i32)')':
+            return false
+        else:
+            if has_year or has_mon or has_time or num_index != 0:
+                return false
+            # skip a word
+            discard(string_skip_until(sp, &p, " -/("))
+        discard(string_skip_separators(sp, &p))
+    if num_index + (usize)has_year + (usize)has_mon > 3:
+        return false
+
+    match num_index:
+        0:
+            if not has_year:
+                return false
+        1:
+            if has_mon:
+                fields[2] = num[0]
+            else:
+                fields[1] = num[0]
+        2:
+            if has_year:
+                fields[1] = num[0]
+                fields[2] = num[1]
+            elif has_mon:
+                fields[0] = date_full_year(num[1])
+                fields[2] = num[0]
+            else:
+                fields[1] = num[0]
+                fields[2] = num[1]
+        3:
+            fields[0] = date_full_year(num[2])
+            fields[1] = num[0]
+            fields[2] = num[1]
+        _:
+            return false
+    if fields[1] < 1 or fields[2] < 1:
+        return false
+    fields[1] -= 1
+    return true
+
+# mark: Date.parse ==============================================================================
+
+## Date.parse(string): the time value of a date string, NaN if it is not one.
+func js_date_parse(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var fields: i32[9] = ---
+    var fields1: f64[9] = ---
+    var buf: u8[128]
+    var is_local = false
+
+    var rv = js_nan()
+
+    let s = try js_to_string(ctx, argv[0])
+    defer js_free_value(ctx, s)
+
+    let sp = js_value_get_string(s)
+    # convert the string as a byte array
+    var i: i32 = 0
+    while i < (i32)sp.len and i < 128 - 1:
+        var c = string_get(sp, i)
+        if c > 255:
+            c = (i32)'-' if c == 0x2212 else (i32)'x'
+        buf[(usize)i] = (u8)c
+        i += 1
+    buf[(usize)i] = 0
+    if js_date_parse_isostring(buf, fields, &is_local) or js_date_parse_otherstring(buf, fields, &is_local):
+        let field_max: i32[6] = [0, 11, 31, 24, 59, 59]
+        var valid = true
+        # check field maximum values
+        for k: usize in 1..<6:
+            if fields[k] > field_max[k]:
+                valid = false
+        # special case 24:00:00.000
+        if fields[3] == 24 and (fields[4] | fields[5] | fields[6]) != 0:
+            valid = false
+        if valid:
+            for k: usize in 0..<7:
+                fields1[k] = f64(fields[k])
+            let d = set_date_fields(fields1, is_local) - f64(fields[8]) * 60000.0
+            rv = js_new_float64(d)
+    return rv

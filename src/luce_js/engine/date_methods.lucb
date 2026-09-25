@@ -1,0 +1,261 @@
+#==============================================================================================
+#
+#   date_methods - The other Date methods, the Date tables and intrinsics, and
+#                  JS_ToBigIntCtorFree
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 55957-56230: Date.now, Date.prototype's
+#       Symbol.toPrimitive, getTimezoneOffset, getTime, setTime, setYear and toJSON, the
+#       function lists of Date and Date.prototype, JS_NewDate, JS_AddIntrinsicDate,
+#       JS_AddIntrinsicEval and the conversion the BigInt constructor applies to its
+#       argument.
+#
+#==============================================================================================
+
+# mark: Methods =================================================================================
+
+## Date.now().
+func js_date_now(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # now()
+    return js_new_int64(date_now())
+
+## Date.prototype[Symbol.toPrimitive](hint).
+func js_date_symbol_to_primitive(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # Symbol_toPrimitive(hint)
+    let obj = this_val
+    var hint = no_atom
+    var hint_num: i32 = 0
+
+    if not js_is_object(obj):
+        try js_throw_type_error_not_an_object(ctx)
+
+    if js_is_string(argv[0]):
+        hint = try js_value_to_atom(ctx, argv[0])
+        js_free_atom(ctx, hint)
+    if hint == atom_number or hint == atom_integer:
+        hint_num = hint_number
+    elif hint == atom_string or hint == atom_default:
+        hint_num = hint_string
+    else:
+        try js_throw_type_error(ctx, "invalid hint")
+    return try js_to_primitive(ctx, obj, hint_num | hint_force_ordinary)
+
+## Date.prototype.getTimezoneOffset().
+func js_date_get_timezone_offset(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # getTimezoneOffset()
+    var v: f64 = 0.0
+
+    try js_this_time_value(ctx, &v, this_val)
+    if math.is_nan(v):
+        return js_nan()
+    else:
+        # assuming -8.64e15 <= v <= -8.64e15
+        return js_new_int64((i64)get_timezone_offset((i64)math.trunc(v)))
+
+## Date.prototype.getTime() and valueOf().
+func js_date_get_time(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # getTime()
+    var v: f64 = 0.0
+
+    try js_this_time_value(ctx, &v, this_val)
+    return js_new_float64(v)
+
+## Date.prototype.setTime(v).
+func js_date_set_time(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # setTime(v)
+    var v: f64 = 0.0
+
+    try js_this_time_value(ctx, &v, this_val)
+    try js_to_float64(ctx, &v, argv[0])
+    return try js_set_this_time_value(ctx, this_val, time_clip(v))
+
+## Date.prototype.setYear(y).
+func js_date_set_year(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # setYear(y)
+    var y: f64 = 0.0
+
+    try js_this_time_value(ctx, &y, this_val)
+    try js_to_float64(ctx, &y, argv[0])
+    if math.is_finite(y):
+        y = math.trunc(y)
+        if y >= 0.0 and y < 100.0:
+            y += 1900.0
+    var args: Value[1] = [js_new_float64(y)]
+    return try set_date_field(ctx, this_val, 1, &args[0], 0x011)
+
+## Date.prototype.toJSON(key).
+func js_date_to_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # toJSON(key)
+    var d: f64 = 0.0
+
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    let tv = try js_to_primitive(ctx, obj, hint_number)
+    defer js_free_value(ctx, tv)
+    if js_is_number(tv):
+        try js_to_float64(ctx, &d, tv)
+        if not math.is_finite(d):
+            return js_null()
+    let method = try js_get_property(ctx, obj, atom_toISOString)
+    if not js_is_function(ctx, method):
+        js_throw_type_error(ctx, "object needs toISOString method") catch failure:
+            js_free_value(ctx, method)
+            error(failure.code, failure.message)
+    var no_args = js_undefined()
+    return try js_call_free(ctx, method, obj, 0, &no_args)
+
+# mark: Tables ==================================================================================
+
+let js_date_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "now", def_type = def_cfunc, length = 0, generic = js_date_now),
+    CFunctionListEntry(name = "parse", def_type = def_cfunc, length = 1, generic = js_date_parse),
+    CFunctionListEntry(name = "UTC", def_type = def_cfunc, length = 7, generic = js_date_utc),
+]
+
+let js_date_proto_funcs: CFunctionListEntry[47] = [
+    CFunctionListEntry(name = "valueOf", def_type = def_cfunc, length = 0, generic = js_date_get_time),
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x13),
+    CFunctionListEntry(name = "[Symbol.toPrimitive]", def_type = def_cfunc, length = 1,
+                       generic = js_date_symbol_to_primitive),
+    CFunctionListEntry(name = "toUTCString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x03),
+    CFunctionListEntry(name = "toGMTString", def_type = def_alias, alias_name = "toUTCString"),
+    CFunctionListEntry(name = "toISOString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x23),
+    CFunctionListEntry(name = "toDateString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x11),
+    CFunctionListEntry(name = "toTimeString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x12),
+    CFunctionListEntry(name = "toLocaleString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x33),
+    CFunctionListEntry(name = "toLocaleDateString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x31),
+    CFunctionListEntry(name = "toLocaleTimeString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_string, magic = 0x32),
+    CFunctionListEntry(name = "getTimezoneOffset", def_type = def_cfunc, length = 0,
+                       generic = js_date_get_timezone_offset),
+    CFunctionListEntry(name = "getTime", def_type = def_cfunc, length = 0, generic = js_date_get_time),
+    CFunctionListEntry(name = "getYear", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x101),
+    CFunctionListEntry(name = "getFullYear", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x01),
+    CFunctionListEntry(name = "getUTCFullYear", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x00),
+    CFunctionListEntry(name = "getMonth", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x11),
+    CFunctionListEntry(name = "getUTCMonth", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x10),
+    CFunctionListEntry(name = "getDate", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x21),
+    CFunctionListEntry(name = "getUTCDate", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x20),
+    CFunctionListEntry(name = "getHours", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x31),
+    CFunctionListEntry(name = "getUTCHours", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x30),
+    CFunctionListEntry(name = "getMinutes", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x41),
+    CFunctionListEntry(name = "getUTCMinutes", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x40),
+    CFunctionListEntry(name = "getSeconds", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x51),
+    CFunctionListEntry(name = "getUTCSeconds", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x50),
+    CFunctionListEntry(name = "getMilliseconds", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x61),
+    CFunctionListEntry(name = "getUTCMilliseconds", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x60),
+    CFunctionListEntry(name = "getDay", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x71),
+    CFunctionListEntry(name = "getUTCDay", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = get_date_field, magic = 0x70),
+    CFunctionListEntry(name = "setTime", def_type = def_cfunc, length = 1, generic = js_date_set_time),
+    CFunctionListEntry(name = "setMilliseconds", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x671),
+    CFunctionListEntry(name = "setUTCMilliseconds", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x670),
+    CFunctionListEntry(name = "setSeconds", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x571),
+    CFunctionListEntry(name = "setUTCSeconds", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x570),
+    CFunctionListEntry(name = "setMinutes", def_type = def_cfunc, length = 3,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x471),
+    CFunctionListEntry(name = "setUTCMinutes", def_type = def_cfunc, length = 3,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x470),
+    CFunctionListEntry(name = "setHours", def_type = def_cfunc, length = 4,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x371),
+    CFunctionListEntry(name = "setUTCHours", def_type = def_cfunc, length = 4,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x370),
+    CFunctionListEntry(name = "setDate", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x231),
+    CFunctionListEntry(name = "setUTCDate", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x230),
+    CFunctionListEntry(name = "setMonth", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x131),
+    CFunctionListEntry(name = "setUTCMonth", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x130),
+    CFunctionListEntry(name = "setYear", def_type = def_cfunc, length = 1, generic = js_date_set_year),
+    CFunctionListEntry(name = "setFullYear", def_type = def_cfunc, length = 3,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x031),
+    CFunctionListEntry(name = "setUTCFullYear", def_type = def_cfunc, length = 3,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = set_date_field, magic = 0x030),
+    CFunctionListEntry(name = "toJSON", def_type = def_cfunc, length = 1, generic = js_date_to_json),
+]
+
+# mark: Intrinsics ==============================================================================
+
+## A new Date of the time value `epoch_ms` (JS_NewDate).
+pub func js_new_date(ctx: Context*, epoch_ms: f64) -> Value!:
+    let obj = try js_create_from_ctor(ctx, js_undefined(), (u32)ClassId.date)
+    js_set_object_data(ctx, obj, js_new_float64_raw(time_clip(epoch_ms))) catch: recover ()
+    return obj
+
+## Add Date to the context (JS_AddIntrinsicDate).
+pub func js_add_intrinsic_date(ctx: Context*) -> !:
+    # Date
+    let obj = try js_new_c_constructor(ctx, (i32)(u16)ClassId.date, "Date",
+                                       js_date_constructor, 7, CFunctionEnum.constructor_or_func, 0,
+                                       js_undefined(),
+                                       js_date_funcs,
+                                       js_date_proto_funcs,
+                                       0)
+    js_free_value(ctx, obj)
+
+## Enable eval() in the context (JS_AddIntrinsicEval).
+pub func js_add_intrinsic_eval(ctx: Context*) -> i32:
+    ctx.eval_internal = js_eval_internal_raw
+    return 0
+
+# mark: BigInt ==================================================================================
+
+## ToBigInt as the BigInt constructor applies it: numbers that are integers convert too.
+## Takes ownership of `val` (JS_ToBigIntCtorFree).
+func js_to_bigint_ctor_free(ctx: Context*, val0: Value) -> Value!:
+    var val = val0
+    # redo:
+    while true:
+        match val.tag:
+            .int, .boolean:
+                return try js_new_bigint64(ctx, (i64)js_value_get_int(val))
+            .short_big_int, .big_int:
+                return val
+            .float64:
+                let d = js_value_get_float64(val)
+                var res: i32 = 0
+                # a memory error fails here (C: r is NULL and res is 0)
+                let r = try js_bigint_from_float64(ctx, &res, d)
+                if let big = r:
+                    return js_compact_bigint(ctx, big)
+                elif res == 1:
+                    try js_throw_range_error(ctx, "cannot convert to BigInt: not an integer")
+                else:
+                    try js_throw_range_error(ctx, "cannot convert NaN or Infinity to BigInt")
+            .string, .string_rope:
+                return try js_string_to_bigint_err(ctx, val)
+            .object:
+                val = try js_to_primitive_free(ctx, val, hint_number)
+            _:
+                # null, undefined and the other tags
+                js_free_value(ctx, val)
+                try js_throw_type_error(ctx, "cannot convert to BigInt")

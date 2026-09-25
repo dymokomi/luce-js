@@ -11,9 +11,6 @@
 struct ArrayIteratorData:
     var unported: i32
 
-struct AsyncFromSyncIteratorData:
-    var unported: i32
-
 struct AsyncGeneratorData:
     var unported: i32
 
@@ -65,17 +62,36 @@ struct ObjectList:
 struct ParsePos:
     var unported: i32
 
+# quickjs.c:53334-53356 (region r26): the promise records. Region r27 (Promise and
+# Date) needs their fields, so they are declared here in full; region r26 moves them into
+# its own fragment.
+
+## A promise's state and reactions (JSPromiseData).
 struct PromiseData:
-    var unported: i32
+    var promise_state: PromiseState
+    ## 0=fulfill, 1=reject, list of PromiseReactionData.link.
+    var promise_reactions: cutils.ListHead[2]
+    ## Note: only useful to debug.
+    var is_handled: bool
+    var promise_result: Value
 
-struct PromiseFunctionData:
-    var unported: i32
-
+## The "already resolved" flag the two resolving functions of a promise share
+## (JSPromiseFunctionDataResolved).
 struct PromiseFunctionDataResolved:
-    var unported: i32
+    var ref_count: i32
+    var already_resolved: bool
 
+## The data of a promise resolving function (JSPromiseFunctionData).
+struct PromiseFunctionData:
+    var promise: Value
+    var presolved: PromiseFunctionDataResolved*
+
+## A reaction registered by `then` (JSPromiseReactionData).
 struct PromiseReactionData:
-    var unported: i32
+    ## Not used in promise_reaction_job.
+    var link: cutils.ListHead
+    var resolving_funcs: Value[2]
+    var handler: Value
 
 struct RegExpStringIteratorData:
     var unported: i32
@@ -110,3 +126,14 @@ enum VarDefKind as i32:
 # quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
 let global_var_offset: i32 = 0x40000000
 let argument_var_offset: i32 = 0x20000000
+
+# quickjs.c:21073 (region r15): the magic of the generator and async iterator methods.
+let gen_magic_next: i32 = 0
+let gen_magic_return: i32 = 1
+let gen_magic_throw: i32 = 2
+
+# quickjs.c:39802 (region r22): the flags of js_new_c_constructor.
+## Don't create a global binding (JS_NEW_CTOR_NO_GLOBAL).
+let js_new_ctor_no_global: i32 = 1 << 0
+## Read-only constructor field (JS_NEW_CTOR_READONLY).
+let js_new_ctor_readonly: i32 = 1 << 3

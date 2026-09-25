@@ -147,7 +147,7 @@ pub func js_new_context_raw(rt: Runtime*) -> Context*?:
 ## an exception pending.
 func js_add_standard_intrinsics(ctx: Context*) -> !:
     if try js_add_intrinsic_base_objects(ctx) != 0: error(exception, "")
-    if try js_add_intrinsic_date(ctx) != 0: error(exception, "")
+    try js_add_intrinsic_date(ctx)
     if js_add_intrinsic_eval(ctx) != 0: error(exception, "")
     if js_add_intrinsic_string_normalize(ctx) != 0: error(exception, "")
     if try js_add_intrinsic_reg_exp(ctx) != 0: error(exception, "")
@@ -155,7 +155,7 @@ func js_add_standard_intrinsics(ctx: Context*) -> !:
     if try js_add_intrinsic_proxy(ctx) != 0: error(exception, "")
     if try js_add_intrinsic_map_set(ctx) != 0: error(exception, "")
     if try js_add_intrinsic_typed_arrays(ctx) != 0: error(exception, "")
-    if try js_add_intrinsic_promise(ctx) != 0: error(exception, "")
+    try js_add_intrinsic_promise(ctx)
     if try js_add_intrinsic_weak_ref(ctx) != 0: error(exception, "")
 
 ## A context with all the standard intrinsics; none if they cannot be created

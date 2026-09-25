@@ -1,0 +1,226 @@
+#==============================================================================================
+#
+#   promise_capability - Promise resolving functions, the constructor and capabilities
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 53480-53784: the thenable job, the pair of resolving
+#       functions a promise hands out (they share one "already resolved" flag), the
+#       Promise class's finalizer and marking function, the Promise constructor, and
+#       NewPromiseCapability over any constructor. The promise records themselves
+#       (PromiseData and its kin) are declared by region r26.
+#
+#==============================================================================================
+
+# mark: Resolving functions =====================================================================
+
+## Resolve a promise with a thenable: call `then` on it with fresh resolving functions
+## (the job argv is promise, thenable, then).
+func js_promise_resolve_thenable_job(ctx: Context*, argc: i32, argv: Value*) -> Value!:
+    assert(argc == 3)
+    let promise = argv[0]
+    let thenable = argv[1]
+    let then = argv[2]
+    var args: Value[2] = ---
+    try js_create_resolving_functions(ctx, &args[0], promise)
+    defer js_free_value(ctx, args[0])
+    defer js_free_value(ctx, args[1])
+    let res = js_call(ctx, then, thenable, 2, &args[0]) catch:
+        var err = js_get_exception(ctx)
+        let res2 = js_call(ctx, args[1], js_undefined(), 1, &err) catch failure:
+            js_free_value(ctx, err)
+            error(failure.code, failure.message)
+        js_free_value(ctx, err)
+        recover res2
+    return res
+
+func js_promise_resolve_function_free_resolved(rt: Runtime*, sr: PromiseFunctionDataResolved*):
+    sr.ref_count -= 1
+    if sr.ref_count == 0:
+        js_free_rt(rt, sr)
+
+## Make the resolve and reject functions of `promise` in `resolving_funcs[0]` and
+## `resolving_funcs[1]`.
+func js_create_resolving_functions(ctx: Context*, resolving_funcs: Value*, promise: Value) -> !:
+    let sr = (PromiseFunctionDataResolved*)(try js_malloc(ctx, sizeof(PromiseFunctionDataResolved)))
+    sr.ref_count = 1
+    sr.already_resolved = false # must be shared between the two functions
+    defer js_promise_resolve_function_free_resolved(ctx.rt, sr)
+    for i: usize in 0..<2:
+        let class_id = (u32)ClassId.promise_resolve_function + (u32)i
+        let obj = js_new_object_proto_class(ctx, ctx.function_proto, class_id) catch failure:
+            if i != 0:
+                js_free_value(ctx, resolving_funcs[0])
+            error(failure.code, failure.message)
+        let raw = js_malloc(ctx, sizeof(PromiseFunctionData)) catch failure:
+            js_free_value(ctx, obj)
+            if i != 0:
+                js_free_value(ctx, resolving_funcs[0])
+            error(failure.code, failure.message)
+        let s = (PromiseFunctionData*)raw
+        sr.ref_count += 1
+        s.presolved = sr
+        s.promise = js_dup_value(ctx, promise)
+        js_set_opaque(obj, s)
+        js_function_set_properties(ctx, obj, atom_empty_string, 1)
+        resolving_funcs[i] = obj
+
+## Finalizer of ClassId.promise_resolve_function and ClassId.promise_reject_function.
+func js_promise_resolve_function_finalizer(rt: Runtime*, val: Value):
+    let p = js_value_get_obj(val)
+    if let raw = p.u.opaque:
+        let s = (PromiseFunctionData*)raw
+        js_promise_resolve_function_free_resolved(rt, s.presolved)
+        js_free_value_rt(rt, s.promise)
+        js_free_rt(rt, s)
+
+## Marking function of the promise resolving functions.
+func js_promise_resolve_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = js_value_get_obj(val)
+    if let raw = p.u.opaque:
+        let s = (PromiseFunctionData*)raw
+        js_mark_value(rt, s.promise, mark_func)
+
+# Resolve the promise of `s` with the object `resolution`: a thenable is resolved by a
+# job, anything else fulfills. A failure (self resolution, a throwing 'then' getter)
+# has the exception pending; the caller rejects the promise with it.
+func js_promise_resolve_function_resolve_object(ctx: Context*, s: PromiseFunctionData*, resolution: Value) -> !:
+    if js_same_value(ctx, resolution, s.promise):
+        try js_throw_type_error(ctx, "promise self resolution")
+    let then = try js_get_property(ctx, resolution, atom_then)
+    if not js_is_function(ctx, then):
+        js_free_value(ctx, then)
+        fulfill_or_reject_promise(ctx, s.promise, resolution, false)
+    else:
+        var args: Value[3] = [s.promise, resolution, then]
+        # as upstream, a failure to queue the job is ignored
+        js_enqueue_job(ctx, js_promise_resolve_thenable_job, 3, &args[0]) catch: recover ()
+        js_free_value(ctx, then)
+
+## Call behaviour of the promise resolving functions: the first call settles the promise,
+## later calls do nothing.
+func js_promise_resolve_function_call(ctx: Context*, func_obj: Value, this_val: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let p = js_value_get_obj(func_obj)
+    let raw = p.u.opaque else return js_undefined()
+    let s = (PromiseFunctionData*)raw
+    if s.presolved.already_resolved:
+        return js_undefined()
+    s.presolved.already_resolved = true
+    let is_reject = p.class_id != ClassId.promise_resolve_function
+    let resolution = argv[0] if argc > 0 else js_undefined()
+    if is_reject or not js_is_object(resolution):
+        # done:
+        fulfill_or_reject_promise(ctx, s.promise, resolution, is_reject)
+    else:
+        js_promise_resolve_function_resolve_object(ctx, s, resolution) catch:
+            # fail_reject:
+            let err = js_get_exception(ctx)
+            reject_promise(ctx, s.promise, err)
+            js_free_value(ctx, err)
+            recover ()
+    return js_undefined()
+
+# mark: The Promise class =======================================================================
+
+## The reaction whose `link` is `el` (list_entry(el, JSPromiseReactionData, link)).
+func promise_reaction_of_link(el: cutils.ListHead*) -> PromiseReactionData*:
+    return (PromiseReactionData*)((u8*)el - offsetof(PromiseReactionData, link))
+
+## Finalizer of ClassId.promise.
+func js_promise_finalizer(rt: Runtime*, val: Value):
+    let raw = js_get_opaque(val, (u32)ClassId.promise) else return
+    let s = (PromiseData*)raw
+    for i: usize in 0..<2:
+        let head = &s.promise_reactions[i]
+        var el = head.next else trap("js_promise_finalizer: unlinked list")
+        while el != head:
+            let el1 = el.next else trap("js_promise_finalizer: unlinked list")
+            promise_reaction_data_free(rt, promise_reaction_of_link(el))
+            el = el1
+    js_free_value_rt(rt, s.promise_result)
+    js_free_rt(rt, s)
+
+## Marking function of ClassId.promise.
+func js_promise_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let raw = js_get_opaque(val, (u32)ClassId.promise) else return
+    let s = (PromiseData*)raw
+    for i: usize in 0..<2:
+        let head = &s.promise_reactions[i]
+        var el = head.next else trap("js_promise_mark: unlinked list")
+        while el != head:
+            let rd = promise_reaction_of_link(el)
+            js_mark_value(rt, rd.resolving_funcs[0], mark_func)
+            js_mark_value(rt, rd.resolving_funcs[1], mark_func)
+            js_mark_value(rt, rd.handler, mark_func)
+            el = el.next else trap("js_promise_mark: unlinked list")
+    js_mark_value(rt, s.promise_result, mark_func)
+
+## `new Promise(executor)`.
+func js_promise_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    let executor = argv[0]
+    try check_function(ctx, executor)
+    let obj = try js_create_from_ctor(ctx, new_target, (u32)ClassId.promise)
+    # fail:
+    errdefer js_free_value(ctx, obj)
+    let s = (PromiseData*)(try js_mallocz(ctx, sizeof(PromiseData)))
+    s.promise_state = PromiseState.pending
+    s.is_handled = false
+    for i: usize in 0..<2:
+        cutils.init_list_head(&s.promise_reactions[i])
+    s.promise_result = js_undefined()
+    js_set_opaque(obj, s)
+    var args: Value[2] = ---
+    try js_create_resolving_functions(ctx, &args[0], obj)
+    # fail1:
+    defer js_free_value(ctx, args[0])
+    defer js_free_value(ctx, args[1])
+    let ret = js_call(ctx, executor, js_undefined(), 2, &args[0]) catch:
+        var err = js_get_exception(ctx)
+        let ret2 = js_call(ctx, args[1], js_undefined(), 1, &err) catch failure:
+            js_free_value(ctx, err)
+            error(failure.code, failure.message)
+        js_free_value(ctx, err)
+        js_free_value(ctx, ret2)
+        recover js_undefined()
+    js_free_value(ctx, ret)
+    return obj
+
+# mark: Capabilities ============================================================================
+
+## The executor of a capability: records the resolving functions it receives in its
+## data, once.
+func js_promise_executor(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    for i: usize in 0..<2:
+        if not js_is_undefined(func_data[i]):
+            try js_throw_type_error(ctx, "resolving function already set")
+        func_data[i] = js_dup_value(ctx, argv[i])
+    return js_undefined()
+
+func js_promise_executor_new(ctx: Context*) -> Value!:
+    var func_data: Value[2] = [js_undefined(), js_undefined()]
+    return try js_new_c_function_data(ctx, js_promise_executor, 2, 0, 2, &func_data[0])
+
+## A new promise of the constructor `ctor` (the intrinsic Promise when undefined), its
+## resolving functions in `resolving_funcs[0]` and `resolving_funcs[1]`
+## (NewPromiseCapability).
+func js_new_promise_capability_internal(ctx: Context*, resolving_funcs: Value*, ctor: Value) -> Value!:
+    var executor = try js_promise_executor_new(ctx)
+    defer js_free_value(ctx, executor)
+
+    var result_promise = js_undefined()
+    if js_is_undefined(ctor):
+        result_promise = try js_promise_constructor(ctx, ctor, 1, &executor)
+    else:
+        result_promise = try js_call_constructor(ctx, ctor, 1, &executor)
+    errdefer js_free_value(ctx, result_promise)
+    let raw = js_get_opaque(executor, (u32)ClassId.c_function_data) else trap("capability executor without data")
+    let data = c_function_data_record_data((CFunctionDataRecord*)raw)
+    for i: usize in 0..<2:
+        try check_function(ctx, data[i])
+    for i: usize in 0..<2:
+        resolving_funcs[i] = js_dup_value(ctx, data[i])
+    return result_promise
+
+## A new pending promise, its resolve and reject functions in `resolving_funcs[0]` and
+## `resolving_funcs[1]` (JS_NewPromiseCapability).
+pub func js_new_promise_capability(ctx: Context*, resolving_funcs: Value*) -> Value!:
+    return try js_new_promise_capability_internal(ctx, resolving_funcs, js_undefined())
