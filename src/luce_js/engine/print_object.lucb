@@ -1,0 +1,460 @@
+#==============================================================================================
+#
+#   print_object - Printing objects and values, JS_PrintValue and the debug dumps
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 14028-14553: js_print_object (arrays, typed arrays,
+#       functions, Map and Set, RegExp, Date, Error and plain objects with their
+#       properties), js_print_value (the dispatch on the tag, with cycle detection and a
+#       depth limit), the public JS_PrintValue entry points, and the debug dumps to
+#       standard output (JS_DumpValue, JS_DumpObject, JS_DumpGCObject, ...).
+#
+#==============================================================================================
+
+# mark: Objects =================================================================================
+
+# The class name of `p` as the runtime registered it.
+func js_print_class_name(s: PrintValueState*, p: Object*) -> Atom:
+    let class_array = s.rt.class_array else trap("the class array is not allocated")
+    return class_array[(usize)p.class_id].class_name
+
+# The elements of the typed array `p`, the " [ ... ]" part of js_print_object.
+func js_print_typed_array(s: PrintValueState*, p: Object*, pcomma_state: i32*):
+    let size = (u32)1 << (u32)typed_array_size_log2(p.class_id)
+    js_print_atom(s, js_print_class_name(s, p))
+    js_printf(s, f"({p.u.array.count}) [ ")
+
+    let len1 = cutils.min_uint32(p.u.array.count, s.options.max_item_count)
+    for i: u32 in 0..<len1:
+        let ptr: const u8* = p.u.array.u.uint8_ptr + (usize)i * (usize)size
+        js_print_comma(s, pcomma_state)
+        match p.class_id:
+            .uint8c_array, .uint8_array:
+                js_printf(s, f"{*ptr}")
+            .int8_array:
+                js_printf(s, f"{*(const i8*)ptr}")
+            .int16_array:
+                js_printf(s, f"{*(const i16*)ptr}")
+            .uint16_array:
+                js_printf(s, f"{*(const u16*)ptr}")
+            .int32_array:
+                js_printf(s, f"{*(const i32*)ptr}")
+            .uint32_array:
+                js_printf(s, f"{*(const u32*)ptr}")
+            .big_int64_array:
+                js_printf(s, f"{*(const i64*)ptr}")
+            .big_uint64_array:
+                js_printf(s, f"{*(const u64*)ptr}")
+            .float16_array:
+                js_print_float64(s, cutils.fromfp16(*(const u16*)ptr))
+            .float32_array:
+                js_print_float64(s, (f64)*(const f32*)ptr)
+            .float64_array:
+                js_print_float64(s, *(const f64*)ptr)
+            _:
+                discard(0)
+    if len1 < p.u.array.count:
+        js_print_more_items(s, pcomma_state, p.u.array.count - len1)
+
+# The records of the Map or Set `p` with its state `ms`, the "(n) { ... }" part of
+# js_print_object.
+func js_print_map(s: PrintValueState*, p: Object*, ms: MapState*, pcomma_state: i32*):
+    js_print_atom(s, js_print_class_name(s, p))
+    js_printf(s, f"({ms.record_count}) {{ ")
+    var i: u32 = 0
+    let head = &ms.records
+    var el = head.next else trap("unlinked list")
+    while el != head:
+        let mr = (MapRecord*)((u8*)el - offsetof(MapRecord, link))
+        el = el.next else trap("unlinked list")
+        js_print_comma(s, pcomma_state)
+        if mr.empty:
+            continue
+        js_print_value_rec(s, mr.key)
+        if p.class_id == ClassId.map:
+            js_printf(s, " => ")
+            js_print_value_rec(s, mr.value)
+        i += 1
+        if i >= s.options.max_item_count:
+            break
+    if i < ms.record_count:
+        js_print_more_items(s, pcomma_state, ms.record_count - i)
+
+# One property of an object: its value, or what its kind of storage stands for.
+func js_print_property(s: PrintValueState*, prs: ShapeProperty*, pr: Property*):
+    # XXX: autoinit property
+    let kind = (i32)prs.flags & prop_tmask
+    if kind == prop_getset:
+        if s.options.raw_dump:
+            js_printf(s, "[Getter ")
+            js_print_ptr(s, js_print_object_addr(pr.u.getset.getter))
+            js_printf(s, " Setter ")
+            js_print_ptr(s, js_print_object_addr(pr.u.getset.setter))
+            js_printf(s, "]")
+        else:
+            if pr.u.getset.getter != none and pr.u.getset.setter != none:
+                js_printf(s, "[Getter/Setter]")
+            elif pr.u.getset.setter != none:
+                js_printf(s, "[Setter]")
+            else:
+                js_printf(s, "[Getter]")
+    elif kind == prop_varref:
+        if s.options.raw_dump:
+            js_printf(s, "[varref ")
+            js_print_ptr(s, (usize)pr.u.var_ref)
+            js_printf(s, "]")
+        else:
+            js_print_value_rec(s, *pr.u.var_ref.pvalue)
+    elif kind == prop_autoinit:
+        if s.options.raw_dump:
+            js_printf(s, "[autoinit ")
+            js_print_ptr(s, (usize)js_autoinit_get_realm(pr))
+            js_printf(s, f" {(i32)js_autoinit_get_id(pr)} ")
+            var opaque: usize = 0
+            if let o = pr.u.init.opaque:
+                opaque = (usize)o
+            js_print_ptr(s, opaque)
+            js_printf(s, "]")
+        else:
+            # XXX: could autoinit but need to restart the iteration
+            js_printf(s, "[autoinit]")
+    else:
+        js_print_value_rec(s, pr.u.value)
+
+func js_print_object(s: PrintValueState*, p: Object*):
+    let rt = s.rt
+    var comma_state: i32 = 0
+    var is_array = false
+    var default_obj = false
+    let class_array = rt.class_array else trap("the class array is not allocated")
+    if p.class_id == ClassId.array:
+        is_array = true
+        js_printf(s, "[ ")
+        # XXX: print array like properties even if not fast array
+        if p.fast_array:
+            let len = js_print_array_get_length(p)
+
+            let len1 = cutils.min_uint32(p.u.array.count, s.options.max_item_count)
+            for i: u32 in 0..<len1:
+                js_print_comma(s, &comma_state)
+                js_print_value_rec(s, p.u.array.u.values[i])
+            if len1 < p.u.array.count:
+                js_print_more_items(s, &comma_state, p.u.array.count - len1)
+            if p.u.array.count < len:
+                let n = len - p.u.array.count
+                js_print_comma(s, &comma_state)
+                js_printf(s, f"<{n} empty item{"s" if n > 1 else ""}>")
+    elif ((u16)p.class_id >= (u16)ClassId.uint8c_array and
+          (u16)p.class_id <= (u16)ClassId.float64_array):
+        is_array = true
+        js_print_typed_array(s, p, &comma_state)
+    elif (p.class_id == ClassId.bytecode_function or
+          (class_array[(usize)p.class_id].call != none and p.class_id != ClassId.proxy)):
+        js_printf(s, "[Function")
+        # XXX: allow dump without ctx
+        if not s.options.raw_dump and s.ctx != none:
+            let ctx = s.ctx else trap("unreachable")
+            js_putc(s, (u8)' ')
+            let func_name_str = get_prop_string(ctx, js_mkptr(Tag.object, p), atom_name)
+            if let name = func_name_str:
+                if name[0] == 0:
+                    js_puts(s, "(anonymous)")
+                else:
+                    js_puts_c(s, name)
+            else:
+                js_puts(s, "(anonymous)")
+            js_free_c_string(ctx, func_name_str)
+        js_printf(s, "]")
+        comma_state = 2
+    elif p.class_id == ClassId.map or p.class_id == ClassId.set:
+        if let ms = p.u.opaque:
+            js_print_map(s, p, (MapState*)ms, &comma_state)
+        else:
+            default_obj = true
+    elif p.class_id == ClassId.regexp and s.ctx != none:
+        js_print_regexp(s, p)
+        comma_state = 2
+    elif p.class_id == ClassId.date and s.ctx != none:
+        let ctx = s.ctx else trap("unreachable")
+        # get_date_string() has no side effect
+        var no_args = js_undefined()
+        let date_str: Value? = get_date_string(ctx, js_mkptr(Tag.object, p), 0, &no_args,
+                                               0x23) catch: # toISOString()
+            recover none
+        if let text = date_str:
+            js_print_raw_string(s, text)
+            js_free_value_rt(s.rt, text)
+            comma_state = 2
+        else:
+            default_obj = true
+    elif p.class_id == ClassId.error_ and s.ctx != none:
+        js_print_error(s, p)
+        comma_state = 2
+    else:
+        default_obj = true
+    if default_obj:
+        if p.class_id != ClassId.object:
+            js_print_atom(s, class_array[(usize)p.class_id].class_name)
+            js_printf(s, " ")
+        js_printf(s, "{ ")
+
+    # the shape can be NULL while freeing an object in QuickJS; the port keeps it set
+    let sh = p.shape
+    var j: u32 = 0
+    let prs0 = get_shape_prop(sh)
+    for i: u32 in 0..<(u32)sh.prop_count:
+        let prs = prs0 + (usize)i
+        if prs.atom != no_atom:
+            if ((i32)prs.flags & prop_enumerable) == 0 and not s.options.show_hidden:
+                continue
+            if j < s.options.max_item_count:
+                js_print_comma(s, &comma_state)
+                js_print_atom(s, prs.atom)
+                js_printf(s, ": ")
+                js_print_property(s, prs, p.prop + (usize)i)
+            j += 1
+    if j > s.options.max_item_count:
+        js_print_more_items(s, &comma_state, j - s.options.max_item_count)
+
+    if s.options.raw_dump and js_class_has_bytecode((u32)p.class_id):
+        let b = p.u.func_.function_bytecode
+        if b.closure_var_count != 0:
+            let var_refs = p.u.func_.var_refs else trap("a closure without var_refs")
+            js_print_comma(s, &comma_state)
+            js_printf(s, "[[Closure]]: [")
+            for i in 0..<b.closure_var_count:
+                if i != 0:
+                    js_printf(s, ", ")
+                let var_ref = var_refs[i] else trap("a closure variable without a VarRef")
+                js_print_value_rec(s, var_ref.u.value)
+            js_printf(s, " ]")
+        if let home_object = p.u.func_.home_object:
+            js_print_comma(s, &comma_state)
+            js_printf(s, "[[HomeObject]]: ")
+            js_print_value_rec(s, js_mkptr(Tag.object, home_object))
+
+    if not is_array:
+        if comma_state != 2:
+            js_printf(s, " }")
+    else:
+        js_printf(s, " ]")
+
+# mark: Values ==================================================================================
+
+func js_print_stack_index(s: PrintValueState*, p: Object*) -> i32:
+    for i in 0..<s.level:
+        if s.print_stack[i] == p:
+            return i
+    return -1
+
+# A BigInt's limbs without allocating: BigInt.asIntN(bits, 0x..._...n) when negative.
+func js_print_raw_bigint(s: PrintValueState*, val: Value):
+    let p = val.u.big_int
+    # the limbs follow the header (JSBigInt.tab)
+    let tab = (u32*)((u8*)p + sizeof(BigInt))
+    # In order to avoid allocations we just dump the limbs
+    let sgn = js_bigint_sign(p)
+    if sgn != 0:
+        js_printf(s, f"BigInt.asIntN({(i32)p.len * js_limb_bits},")
+    js_printf(s, "0x")
+    var i = (i32)p.len - 1
+    while i >= 0:
+        if i != (i32)p.len - 1:
+            js_putc(s, (u8)'_')
+        js_print_hex(s, (u64)tab[i], 8)
+        i -= 1
+    js_putc(s, (u8)'n')
+    if sgn != 0:
+        js_putc(s, (u8)')')
+
+## Print `val` (js_print_value).
+func js_print_value_rec(s: PrintValueState*, val: Value):
+    match val.tag:
+        .int:
+            js_printf(s, f"{js_value_get_int(val)}")
+        .boolean:
+            js_puts(s, "true" if js_value_get_bool(val) else "false")
+        .null:
+            js_puts(s, "null")
+        .exception:
+            js_puts(s, "exception")
+        .uninitialized:
+            js_puts(s, "uninitialized")
+        .undefined:
+            js_puts(s, "undefined")
+        .float64:
+            js_print_float64(s, js_value_get_float64(val))
+        .short_big_int:
+            js_printf(s, f"{(i64)js_value_get_short_big_int(val)}n")
+        .big_int:
+            var raw = true
+            if not s.options.raw_dump and s.ctx != none:
+                let ctx = s.ctx else trap("unreachable")
+                let text: Value? = js_bigint_to_string_internal(ctx, val) catch:
+                    recover none
+                if let t = text:
+                    js_print_raw_string(s, t)
+                    js_putc(s, (u8)'n')
+                    js_free_value_rt(s.rt, t)
+                    raw = false
+            if raw:
+                js_print_raw_bigint(s, val)
+        .string, .string_rope:
+            if s.options.raw_dump and val.tag == Tag.string_rope:
+                let r = val.u.rope
+                js_printf(s, f"[rope len={r.len} depth={r.depth}]")
+            else:
+                js_print_string(s, val)
+        .function_bytecode:
+            let b = val.u.bytecode
+            js_puts(s, "[bytecode ")
+            js_print_atom(s, b.func_name)
+            js_putc(s, (u8)']')
+        .object:
+            let p = val.u.obj
+            let idx = js_print_stack_index(s, p)
+            if idx >= 0:
+                js_printf(s, f"[circular {idx}]")
+            elif (u32)s.level < s.options.max_depth:
+                s.print_stack[s.level] = p
+                s.level += 1
+                js_print_object(s, p)
+                s.level -= 1
+            else:
+                let atom = js_print_class_name(s, p)
+                js_putc(s, (u8)'[')
+                js_print_atom(s, atom)
+                if s.options.raw_dump:
+                    js_putc(s, (u8)' ')
+                    js_print_ptr(s, (usize)p)
+                js_putc(s, (u8)']')
+        .symbol:
+            let p = (AtomStruct*)val.u.ptr
+            js_puts(s, "Symbol(")
+            js_print_atom(s, js_get_atom_index(s.rt, p))
+            js_putc(s, (u8)')')
+        .module:
+            js_puts(s, "[module]")
+        _:
+            js_printf(s, f"[unknown tag {(i64)val.tag}]")
+
+# mark: JS_PrintValue ===========================================================================
+
+## The default options: depth 2, strings up to 1000 characters, up to 100 items
+## (JS_PrintValueSetDefaultOptions).
+pub func js_print_value_set_default_options(options: PrintValueOptions*):
+    *options = PrintValueOptions(max_depth = 2, max_string_length = 1000,
+                                 max_item_count = 100)
+
+func js_print_value_internal(rt: Runtime*, ctx: Context*?, write_func: PrintValueWrite,
+                             write_opaque: void*?, val: Value,
+                             options: const PrintValueOptions*?):
+    var ss = PrintValueState(rt = rt, ctx = ctx, write_func = write_func,
+                             write_opaque = write_opaque, level = 0)
+    let s = &ss
+    if let o = options:
+        s.options = *o
+    else:
+        js_print_value_set_default_options(&s.options)
+    if s.options.max_depth <= 0:
+        s.options.max_depth = (u32)js_print_max_depth
+    else:
+        s.options.max_depth = (u32)cutils.min_int((i32)s.options.max_depth, js_print_max_depth)
+    if s.options.max_string_length == 0:
+        s.options.max_string_length = 0xffffffff
+    if s.options.max_item_count == 0:
+        s.options.max_item_count = 0xffffffff
+    js_print_value_rec(s, val)
+
+## Print `val` without a context through `write_func`; `options` none means the defaults
+## (JS_PrintValueRT).
+pub func js_print_value_rt(rt: Runtime*, write_func: PrintValueWrite, write_opaque: void*?,
+                           val: Value, options: const PrintValueOptions*?):
+    js_print_value_internal(rt, none, write_func, write_opaque, val, options)
+
+## Print `val` through `write_func`, without running JavaScript code; `options` none means
+## the defaults (JS_PrintValue).
+pub func js_print_value(ctx: Context*, write_func: PrintValueWrite, write_opaque: void*?,
+                        val: Value, options: const PrintValueOptions*?):
+    js_print_value_internal(ctx.rt, ctx, write_func, write_opaque, val, options)
+
+# mark: Debug dumps =============================================================================
+
+# QuickJS writes to the FILE* in `opaque`; the port's dumps all go to standard output, so
+# the opaque is not used.
+func js_dump_value_write(opaque: void*?, buf: const u8*, len: usize):
+    print((str)u8[]((u8*)buf, len))
+
+func print_atom(ctx: Context*, atom: Atom):
+    var ss = PrintValueState(rt = ctx.rt, ctx = ctx, write_func = js_dump_value_write)
+    js_print_atom(&ss, atom)
+
+func js_dump_atom(ctx: Context*, text: str, atom: Atom):
+    print(f"{text}=")
+    print_atom(ctx, atom)
+    print("\n")
+
+func js_dump_value(ctx: Context*, text: str, val: Value):
+    print(f"{text}=")
+    js_print_value(ctx, js_dump_value_write, none, val, none)
+    print("\n")
+
+func js_dump_value_rt(rt: Runtime*, text: str, val: Value):
+    print(f"{text}=")
+    js_print_value_rt(rt, js_dump_value_write, none, val, none)
+    print("\n")
+
+func js_dump_object_header(rt: Runtime*):
+    print(f"{pad("ADDRESS", 14)} {pad("REFS", 4)} {pad("SHRF", 4)} {pad("PROTO", 14)} CONTENT\n")
+
+# printf's "%14p": the address `addr` in hexadecimal, right-aligned on 14 columns.
+func js_dump_ptr(addr: usize):
+    var buf: u8[24] = ---
+    let text = format(buf, f"0x{hex(addr)}") else "0x?"
+    print(f"{pad(text, 14)}")
+
+# for debug only: dump an object without side effect
+func js_dump_object(rt: Runtime*, p: Object*):
+    # XXX: should encode atoms with special characters
+    let sh = p.shape # the shape can be NULL while freeing an object in QuickJS
+    js_dump_ptr((usize)p)
+    print(f" {pad(js_rc(p).ref_count, 4)} ")
+    var proto: usize = 0
+    if let pr = sh.proto:
+        proto = (usize)pr
+    print(f"{pad(js_rc(sh).ref_count, 3)}{"*" if sh.is_hashed != 0 else " "} ")
+    js_dump_ptr(proto)
+    print(" ")
+
+    var options: PrintValueOptions = ---
+    js_print_value_set_default_options(&options)
+    options.max_depth = 1
+    options.show_hidden = true
+    options.raw_dump = true
+    js_print_value_rt(rt, js_dump_value_write, none, js_mkptr(Tag.object, p), &options)
+
+    print("\n")
+
+func js_dump_gc_object(rt: Runtime*, p: GCObjectHeader*):
+    let gc_obj_type = (GCObjectType)(js_rc(p).gc_bits & 0x7f)
+    if gc_obj_type == GCObjectType.js_object:
+        js_dump_object(rt, (Object*)p)
+    else:
+        js_dump_ptr((usize)p)
+        print(f" {pad(js_rc(p).ref_count, 4)} ")
+        match gc_obj_type:
+            .function_bytecode:
+                print("[function bytecode]")
+            .shape:
+                print("[shape]")
+            .var_ref:
+                print("[var_ref]")
+            .async_function:
+                print("[async_function]")
+            .js_context:
+                print("[js_context]")
+            .module:
+                print("[module]")
+            _:
+                print(f"[unknown {(i32)gc_obj_type}]")
+        print("\n")

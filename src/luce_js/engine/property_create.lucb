@@ -33,7 +33,7 @@ func create_property_array_length(ctx: Context*, p: Object*, idx: u32, flags: i3
     let plen = p.prop
     # JS_ToUint32: the length of an array is always a number, so this cannot fail
     var len: u32 = 0
-    discard(js_to_int32(ctx, (i32*)&len, plen.u.value) else 0)
+    js_to_int32(ctx, (i32*)&len, plen.u.value) catch: recover ()
     if (idx + 1) > len:
         let pslen = get_shape_prop(p.shape)
         if ((i32)pslen.flags & prop_writable) == 0:

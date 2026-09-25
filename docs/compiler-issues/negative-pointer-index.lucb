@@ -1,0 +1,10 @@
+# Negative pointer index: §7.7 says `p[i]` takes usize or isize; `sp[-1]` should read the
+# element before `sp`. Actual: "negative literal does not fit an unsigned type".
+func top(sp: i64*) -> i64:
+    return sp[-1]
+
+pub func main(arguments: str[]) -> i32:
+    var a: i64[2] = [7, 9]
+    let sp = &a[0] + 2
+    print(f"{top(sp)}")
+    return 0

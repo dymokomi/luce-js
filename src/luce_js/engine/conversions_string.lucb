@@ -1,0 +1,99 @@
+#==============================================================================================
+#
+#   conversions_string - ToString and ToPropertyKey of values, and numbers as text
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 13557-13677: js_bigint_to_string, js_dtoa2 (a float as a
+#       string, through luce_js.dtoa), JS_ToStringInternal and its wrappers JS_ToString,
+#       JS_ToStringFree, JS_ToLocaleStringFree, JS_ToPropertyKey and
+#       JS_ToStringCheckObject.
+#
+#==============================================================================================
+
+## A BigInt value in decimal (js_bigint_to_string).
+func js_bigint_to_string_internal(ctx: Context*, val: Value) -> Value!:
+    return try js_bigint_to_string1(ctx, val, 10)
+
+## `d` as a string in `radix` with `n_digits` and the `dtoa.dtoa_*` `flags` (js_dtoa2).
+func js_dtoa2(ctx: Context*, d: f64, radix: i32, n_digits: i32, flags: i32) -> Value!:
+    var static_buf: u8[128] = ---
+    var dtoa_mem: dtoa.DTOATempMem = ---
+    let len_max = dtoa.js_dtoa_max_len(d, radix, n_digits, flags)
+
+    # longer buffer may be used if radix != 10
+    var tmp_buf: void*? = none
+    var buf: u8* = &static_buf[0]
+    if len_max > (i32)sizeof(u8[128]) - 1:
+        let p = try js_malloc(ctx, (usize)len_max + 1)
+        tmp_buf = p
+        buf = (u8*)p
+    let len = dtoa.js_dtoa(buf, d, radix, n_digits, flags, &dtoa_mem)
+    let res = js_new_string8_len(ctx, buf, len) catch failure:
+        js_free(ctx, tmp_buf)
+        error(failure.code, failure.message)
+    js_free(ctx, tmp_buf)
+    return res
+
+## ToString of `val`; symbols are kept when `is_to_property_key`, else a TypeError
+## (JS_ToStringInternal).
+func js_to_string_internal(ctx: Context*, val: Value, is_to_property_key: bool) -> Value!:
+    match val.tag:
+        .string:
+            return js_dup_value(ctx, val)
+        .string_rope:
+            return try js_linearize_string_rope(ctx, js_dup_value(ctx, val))
+        .int:
+            var buf: u8[32] = ---
+            let len = dtoa.i32toa(&buf[0], js_value_get_int(val))
+            return try js_new_string8_len(ctx, &buf[0], (i32)len)
+        .boolean:
+            return try js_atom_to_string(ctx, atom_true if js_value_get_bool(val) else atom_false)
+        .null:
+            return try js_atom_to_string(ctx, atom_null)
+        .undefined:
+            return try js_atom_to_string(ctx, atom_undefined)
+        .exception:
+            error(exception, "")
+        .object:
+            let val1 = try js_to_primitive(ctx, val, hint_string)
+            defer js_free_value(ctx, val1)
+            return try js_to_string_internal(ctx, val1, is_to_property_key)
+        .function_bytecode:
+            return try js_new_string8(ctx, "[function bytecode]".bytes.data)
+        .symbol:
+            if is_to_property_key:
+                return js_dup_value(ctx, val)
+            try js_throw_type_error(ctx, "cannot convert symbol to string")
+        .float64:
+            return try js_dtoa2(ctx, js_value_get_float64(val), 10, 0, dtoa.dtoa_format_free)
+        .short_big_int, .big_int:
+            return try js_bigint_to_string_internal(ctx, val)
+        _:
+            return try js_new_string8(ctx, "[unsupported type]".bytes.data)
+
+## ToString of `val` (JS_ToString).
+pub func js_to_string(ctx: Context*, val: Value) -> Value!:
+    return try js_to_string_internal(ctx, val, false)
+
+## ToString of `val`, which is freed (JS_ToStringFree).
+func js_to_string_free(ctx: Context*, val: Value) -> Value!:
+    defer js_free_value(ctx, val)
+    return try js_to_string(ctx, val)
+
+## `val.toLocaleString()` for an object, else ToString; `val` is freed
+## (JS_ToLocaleStringFree).
+func js_to_locale_string_free(ctx: Context*, val: Value) -> Value!:
+    if js_is_undefined(val) or js_is_null(val):
+        return try js_to_string_free(ctx, val)
+    var no_args = js_undefined()
+    return try js_invoke_free(ctx, val, atom_toLocaleString, 0, &no_args)
+
+## ToPropertyKey of `val`: a string or a symbol (JS_ToPropertyKey).
+pub func js_to_property_key(ctx: Context*, val: Value) -> Value!:
+    return try js_to_string_internal(ctx, val, true)
+
+## ToString of `val`, a TypeError for null and undefined (JS_ToStringCheckObject).
+func js_to_string_check_object(ctx: Context*, val: Value) -> Value!:
+    if val.tag == Tag.null or val.tag == Tag.undefined:
+        try js_throw_type_error(ctx, "null or undefined are forbidden")
+    return try js_to_string(ctx, val)

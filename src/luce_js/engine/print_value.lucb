@@ -1,0 +1,355 @@
+#==============================================================================================
+#
+#   print_value - The value printer's state and its printers of text, atoms and records
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 13679-14026 and quickjs.h's JSPrintValueOptions and
+#       JSPrintValueWrite: the printer writes through a callback, never allocates in raw
+#       dump mode, and never runs JavaScript code. This fragment holds its output helpers
+#       (js_putc, js_puts, js_printf), the printers of floats, strings, atoms and
+#       identifiers, the array and item-count helpers, and the side-effect free printers of
+#       RegExp and Error objects. The objects and the value dispatch are in print_object.
+#
+#==============================================================================================
+
+# mark: State ===================================================================================
+
+## The deepest nesting the printer follows (JS_PRINT_MAX_DEPTH).
+let js_print_max_depth: i32 = 8
+
+## What js_print_value prints (JSPrintValueOptions).
+pub struct PrintValueOptions:
+    ## Only show enumerable properties when false.
+    pub var show_hidden: bool
+    ## Avoid doing autoinit and avoid any malloc() call (for internal use).
+    pub var raw_dump: bool
+    ## Recurse up to this depth, 0 = no limit.
+    pub var max_depth: u32
+    ## Print no more than this length for strings, 0 = no limit.
+    pub var max_string_length: u32
+    ## Print no more than this count for arrays or objects, 0 = no limit.
+    pub var max_item_count: u32
+
+## Receives the printer's output: `(opaque, buf, len)` (JSPrintValueWrite).
+pub type PrintValueWrite = func(void*?, const u8*, usize) -> unit
+
+## The printer's state (JSPrintValueState).
+struct PrintValueState:
+    var rt: Runtime*
+    ## None when printing without a context.
+    var ctx: Context*?
+    var options: PrintValueOptions
+    var write_func: PrintValueWrite
+    var write_opaque: void*?
+    var level: i32
+    ## The objects being printed, one per level (to detect cycles).
+    var print_stack: (Object*?)[8]
+
+assert(js_print_max_depth == 8, "PrintValueState.print_stack holds js_print_max_depth")
+
+# mark: Output ==================================================================================
+
+func js_putc(s: PrintValueState*, c: u8):
+    s.write_func(s.write_opaque, &c, 1)
+
+func js_puts(s: PrintValueState*, text: str):
+    s.write_func(s.write_opaque, text.bytes.data, text.length)
+
+# The formatted text is limited to 255 bytes, as QuickJS's vsnprintf buffer; the port's
+# formats are all shorter. Text that does not fit is not written.
+func js_printf(s: PrintValueState*, message: fmt):
+    var buf: u8[256] = ---
+    let text = format(buf, message) catch:
+        return
+    s.write_func(s.write_opaque, text.bytes.data, text.length)
+
+# js_printf(s, "%0*x", n_digits, v): `v` in lower case hexadecimal, zero-padded to at least
+# `n_digits` (at most 16) digits.
+func js_print_hex(s: PrintValueState*, v: u64, n_digits: i32):
+    var buf: u8[16] = ---
+    var pos: usize = 16
+    var x = v
+    while x != 0 or 16 - pos < (usize)n_digits:
+        pos -= 1
+        let d = (u8)(x & 15)
+        buf[pos] = (u8)'0' + d if d < 10 else (u8)'a' + d - 10
+        x = x >> 4
+    s.write_func(s.write_opaque, &buf[pos], 16 - pos)
+
+# printf's "%p": the address `addr` in hexadecimal.
+func js_print_ptr(s: PrintValueState*, addr: usize):
+    js_printf(s, f"0x{hex(addr)}")
+
+# The address of an object, 0 for none (for js_print_ptr).
+# workaround: compiler-issues/nullable_pointer_cast (an `Object*?` does not convert to `void*?`)
+func js_print_object_addr(p: Object*?) -> usize:
+    if let q = p:
+        return (usize)q
+    return 0
+
+func js_print_float64(s: PrintValueState*, d: f64):
+    var dtoa_mem: dtoa.DTOATempMem = ---
+    var buf: u8[32] = ---
+    let len = dtoa.js_dtoa(&buf[0], d, 10, 0, dtoa.dtoa_format_free | dtoa.dtoa_minus_zero,
+                           &dtoa_mem)
+    s.write_func(s.write_opaque, &buf[0], (usize)len)
+
+# mark: Strings =================================================================================
+
+func js_string_get_length(val: Value) -> u32:
+    if val.tag == Tag.string:
+        return val.u.string.len
+    elif val.tag == Tag.string_rope:
+        return val.u.rope.len
+    else:
+        return 0
+
+# pretty print the first 'len' characters of 'p'
+func js_print_string1(s: PrintValueState*, p: const String*, len: i32, sep: i32):
+    var buf: u8[6] = ---    # UTF8_CHAR_LEN_MAX
+    var i: i32 = 0
+    while i < len:
+        var c = string_get(p, i)
+        var quote = false
+        var escape = false
+        match c:
+            9: # '\t'
+                c = (i32)'t'
+                quote = true
+            13: # '\r'
+                c = (i32)'r'
+                quote = true
+            10: # '\n'
+                c = (i32)'n'
+                quote = true
+            8: # '\b'
+                c = (i32)'b'
+                quote = true
+            12: # '\f'
+                c = (i32)'f'
+                quote = true
+            92: # '\\'
+                quote = true
+            _:
+                if c == sep:
+                    quote = true
+                elif c >= 32 and c <= 126:
+                    js_putc(s, (u8)c)
+                elif c < 32 or (c >= 0x7f and c <= 0x9f):
+                    escape = true
+                else:
+                    if cutils.is_hi_surrogate((u32)c):
+                        if (i + 1) >= len:
+                            escape = true
+                        else:
+                            let c1 = string_get(p, i + 1)
+                            if not cutils.is_lo_surrogate((u32)c1):
+                                escape = true
+                            else:
+                                i += 1
+                                c = (i32)cutils.from_surrogate((u32)c, (u32)c1)
+                    elif cutils.is_lo_surrogate((u32)c):
+                        escape = true
+                    if not escape:
+                        let l = cutils.unicode_to_utf8(&buf[0], (u32)c)
+                        s.write_func(s.write_opaque, &buf[0], (usize)l)
+        if quote:
+            js_putc(s, (u8)'\\')
+            js_putc(s, (u8)c)
+        elif escape:
+            js_puts(s, "\\u")
+            js_print_hex(s, (u64)c, 4)
+        i += 1
+
+func js_print_string_rec(s: PrintValueState*, val: Value, sep: i32, pos: u32):
+    if val.tag == Tag.string:
+        let p = val.u.string
+        if pos < s.options.max_string_length:
+            let len = cutils.min_uint32(p.len, s.options.max_string_length - pos)
+            js_print_string1(s, p, (i32)len, sep)
+    elif val.tag == Tag.string_rope:
+        let r = val.u.rope
+        js_print_string_rec(s, r.left, sep, pos)
+        js_print_string_rec(s, r.right, sep, pos + js_string_get_length(r.left))
+    else:
+        js_printf(s, f"<invalid string tag {(i64)val.tag}>")
+
+func js_print_string(s: PrintValueState*, val: Value):
+    var sep: i32 = 0
+    if s.options.raw_dump and val.tag == Tag.string:
+        let p = val.u.string
+        js_printf(s, f"{js_rc(p).ref_count}")
+        sep = (i32)'"' if js_rc(p).ref_count == 1 else (i32)'\''
+    else:
+        sep = (i32)'"'
+    js_putc(s, (u8)sep)
+    js_print_string_rec(s, val, sep, 0)
+    js_putc(s, (u8)sep)
+    if js_string_get_length(val) > s.options.max_string_length:
+        let n = js_string_get_length(val) - s.options.max_string_length
+        js_printf(s, f"... {n} more character{"s" if n > 1 else ""}")
+
+func js_print_raw_string(s: PrintValueState*, val: Value):
+    let ctx = s.ctx else trap("js_print_raw_string: no context")
+    var len: usize = 0
+    let cstr = js_to_c_string_len(ctx, &len, val) catch:
+        return
+    s.write_func(s.write_opaque, cstr, len)
+    js_free_c_string(ctx, cstr)
+
+# mark: Atoms ===================================================================================
+
+func is_ascii_ident(p: const String*) -> bool:
+    if p.len == 0:
+        return false
+    for i in 0..<(i32)p.len:
+        let c = string_get(p, i)
+        if not ((c >= (i32)'a' and c <= (i32)'z') or (c >= (i32)'A' and c <= (i32)'Z') or
+                (c == (i32)'_' or c == (i32)'$') or (c >= (i32)'0' and c <= (i32)'9' and i > 0)):
+            return false
+    return true
+
+func js_print_atom(s: PrintValueState*, atom: Atom):
+    if js_atom_is_tagged_int_raw(atom):
+        js_printf(s, f"{js_atom_to_uint32_raw(atom)}")
+    elif atom == no_atom:
+        js_puts(s, "<null>")
+    else:
+        assert(atom < (u32)s.rt.atom_size)
+        let p = atom_array_get(s.rt, atom)
+        if is_ascii_ident(p):
+            for i in 0..<(i32)p.len:
+                js_putc(s, (u8)string_get(p, i))
+        else:
+            js_putc(s, (u8)'"')
+            js_print_string1(s, p, (i32)p.len, (i32)'"')
+            js_putc(s, (u8)'"')
+
+# mark: Arrays and items ========================================================================
+
+# return 0 if invalid length
+func js_print_array_get_length(p: Object*) -> u32:
+    var pr: Property*? = none
+    let prs = find_own_property(&pr, p, atom_length) else return 0
+    if ((i32)prs.flags & prop_tmask) != prop_normal:
+        return 0
+    let pr1 = pr else return 0
+    let val = pr1.u.value
+    match val.tag:
+        .int:
+            return (u32)js_value_get_int(val)
+        .float64:
+            return (u32)js_value_get_float64(val)
+        _:
+            return 0
+
+# 0: nothing printed yet, 1: after an item, 2: after a class prefix that opens with " { "
+func js_print_comma(s: PrintValueState*, pcomma_state: i32*):
+    match *pcomma_state:
+        0:
+            discard(0)
+        1:
+            js_printf(s, ", ")
+        2:
+            js_printf(s, " { ")
+        _:
+            discard(0)
+    *pcomma_state = 1
+
+func js_print_more_items(s: PrintValueState*, pcomma_state: i32*, n: u32):
+    js_print_comma(s, pcomma_state)
+    js_printf(s, f"... {n} more item{"s" if n > 1 else ""}")
+
+# mark: RegExp and Error ========================================================================
+
+## The flag letters of a RegExp in the order of their lre_flag_* bits.
+let js_print_regexp_flags: u8[8] = ['g', 'i', 'm', 's', 'u', 'y', 'd', 'v']
+
+# similar to js_regexp_toString() but without side effect
+func js_print_regexp(s: PrintValueState*, p1: Object*):
+    let re = &p1.u.regexp
+    # the regexp fields are zeroed at init: the port's never-null fields are read as
+    # addresses to see it
+    if (usize)re.pattern == 0 or (usize)re.bytecode == 0:
+        js_puts(s, "[uninitialized_regexp]")
+        return
+    let p = re.pattern
+    js_putc(s, (u8)'/')
+    if p.len == 0:
+        js_puts(s, "(?:)")
+    else:
+        var bra = false
+        var i: i32 = 0
+        let n = (i32)p.len
+        while i < n:
+            var c2: i32 = -1
+            var c = string_get(p, i)
+            i += 1
+            match c:
+                92: # '\\'
+                    if i < n:
+                        c2 = string_get(p, i)
+                        i += 1
+                93: # ']'
+                    bra = false
+                91: # '['
+                    if not bra:
+                        if i < n and string_get(p, i) == (i32)']':
+                            c2 = string_get(p, i)
+                            i += 1
+                        bra = true
+                10: # '\n'
+                    c = (i32)'\\'
+                    c2 = (i32)'n'
+                13: # '\r'
+                    c = (i32)'\\'
+                    c2 = (i32)'r'
+                47: # '/'
+                    if not bra:
+                        c = (i32)'\\'
+                        c2 = (i32)'/'
+                _:
+                    discard(0)
+            js_putc(s, (u8)c)
+            if c2 >= 0:
+                js_putc(s, (u8)c2)
+    js_putc(s, (u8)'/')
+
+    let flags = lre_get_flags(str8(re.bytecode))
+    for i in 0..<js_print_regexp_flags.length:
+        if ((flags >> (i32)i) & 1) != 0:
+            js_putc(s, js_print_regexp_flags[i])
+
+# Write the NUL-terminated text `text` (js_puts on a C string).
+func js_puts_c(s: PrintValueState*, text: const u8*):
+    s.write_func(s.write_opaque, text, cutils.strlen(text))
+
+# similar to js_error_toString() but without side effect
+func js_print_error(s: PrintValueState*, p: Object*):
+    let ctx = s.ctx else trap("js_print_error: no context")
+    var text = get_prop_string(ctx, js_mkptr(Tag.object, p), atom_name)
+    if let name = text:
+        js_puts_c(s, name)
+        js_free_c_string(ctx, name)
+    else:
+        js_puts(s, "Error")
+
+    text = get_prop_string(ctx, js_mkptr(Tag.object, p), atom_message)
+    if let message = text:
+        if message[0] != 0:
+            js_puts(s, ": ")
+            js_puts_c(s, message)
+    js_free_c_string(ctx, text)
+
+    # dump the stack if present
+    text = get_prop_string(ctx, js_mkptr(Tag.object, p), atom_stack)
+    if let stack = text:
+        js_putc(s, (u8)'\n')
+
+        # XXX: should remove the last '\n' in stack as v8. SpiderMonkey does not do it
+        var len = cutils.strlen(stack)
+        if len > 0 and stack[len - 1] == (u8)'\n':
+            len -= 1
+        s.write_func(s.write_opaque, stack, len)
+
+        js_free_c_string(ctx, stack)

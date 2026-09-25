@@ -254,3 +254,7 @@ func fulfill_or_reject_promise(ctx: Context*, promise: Value, value: Value, is_r
 ## Ported from quickjs.c:53478 reject_promise.
 func reject_promise(ctx: Context*, promise: Value, value: Value):
     trap("unported: reject_promise")
+## Ported from quickjs.c:51412 js_resolve_proxy (added by r12: the generator skipped it).
+## Fails without an exception when `throw_exception` is false.
+func js_resolve_proxy(ctx: Context*, pval: Value*, throw_exception: bool) -> !:
+    trap("unported: js_resolve_proxy")

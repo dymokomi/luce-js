@@ -206,7 +206,7 @@ func call_setter(ctx: Context*, setter: Object*?, this_obj: Value, val: Value, f
 func set_array_length(ctx: Context*, p: Object*, val: Value, flags: i32) -> bool!:
     var len: u32 = 0
     # Note: this call can reallocate the properties of 'p'
-    discard(try js_to_array_length_free(ctx, &len, val, false))
+    try js_to_array_length_free(ctx, &len, val, false)
     # JS_ToArrayLengthFree() must be done before the read-only test
     if ((i32)get_shape_prop(p.shape)[0].flags & prop_writable) == 0:
         return try js_throw_type_error_read_only(ctx, flags, atom_length)
@@ -222,7 +222,7 @@ func set_array_length(ctx: Context*, p: Object*, val: Value, flags: i32) -> bool
         # Note: length is always a uint32 because the object is an
         # array (JS_ToUint32, which cannot fail on a number)
         var cur_len: u32 = 0
-        discard(js_to_int32(ctx, (i32*)&cur_len, p.prop[0].u.value) else 0)
+        js_to_int32(ctx, (i32*)&cur_len, p.prop[0].u.value) catch: recover ()
         if len < cur_len:
             let d = cur_len - len
             var sh = p.shape

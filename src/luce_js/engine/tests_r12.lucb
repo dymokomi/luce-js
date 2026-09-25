@@ -1,0 +1,187 @@
+#==============================================================================================
+#
+#   tests_r12 - Tests of the conversion helpers and the value printer
+#
+#   DESCRIPTION:
+#       The pure number helpers (is_safe_integer, js_pow, the float parts of the slow
+#       arithmetic operators), and js_print_value_rt on a real runtime without a context:
+#       numbers, booleans and the special values, short BigInts, strings with escapes,
+#       ropes, length limits, raw dumps and atoms. The runtime cannot be freed until the
+#       collector is ported, so each test leaves its runtime allocated.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# The printer's output, collected by test_print_write.
+struct TestPrintOutput:
+    var buf: u8[512]
+    var len: usize
+
+func test_print_write(opaque: void*?, buf: const u8*, len: usize):
+    let o = opaque else trap("no output")
+    let out = (TestPrintOutput*)o
+    for i in 0..<len:
+        out.buf[out.len] = buf[i]
+        out.len += 1
+
+# What js_print_value_rt prints for `val` with `options` (none: the defaults).
+func test_print(out: TestPrintOutput*, rt: Runtime*, val: Value, options: const PrintValueOptions*?) -> str:
+    out.len = 0
+    js_print_value_rt(rt, test_print_write, out, val, options)
+    return (str)out.buf[0..<out.len]
+
+func test_runtime() -> Runtime*:
+    return js_new_runtime() else trap("out of memory")
+
+# A string value of the 8-bit `text`, with a reference count of one.
+func test_string_value(rt: Runtime*, text: str) -> Value:
+    let p = js_alloc_string_rt(rt, (i32)text.length, false) else trap("out of memory")
+    for i in 0..<text.length:
+        str8(p)[i] = text.bytes[i]
+    str8(p)[text.length] = 0
+    return js_mkptr(Tag.string, p)
+
+# A string value of the 16-bit `units`, with a reference count of one.
+func test_string16_value(rt: Runtime*, units: const u16[]) -> Value:
+    let p = js_alloc_string_rt(rt, (i32)units.length, true) else trap("out of memory")
+    for i in 0..<units.length:
+        str16(p)[i] = units[i]
+    return js_mkptr(Tag.string, p)
+
+# mark: Number helpers ==========================================================================
+
+test "safe integers are the integers up to 2^53 - 1 in magnitude":
+    assert(is_safe_integer(0.0) and is_safe_integer(-0.0))
+    assert(is_safe_integer(9007199254740991.0) and is_safe_integer(-9007199254740991.0))
+    assert(not is_safe_integer(9007199254740992.0))
+    assert(not is_safe_integer(1.5))
+    assert(not is_safe_integer(math.infinity) and not is_safe_integer(math.nan))
+
+test "js_pow answers NaN for +-1 to an infinite power":
+    assert(js_pow(2.0, 10.0) == 1024.0)
+    assert(js_pow(1.0, math.infinity) != js_pow(1.0, math.infinity))
+    assert(js_pow(-1.0, -math.infinity) != js_pow(-1.0, -math.infinity))
+    assert(js_pow(1.0, math.nan) != js_pow(1.0, math.nan))
+    assert(js_pow(math.nan, 0.0) == 1.0)
+    assert(js_pow(2.0, -math.infinity) == 0.0)
+
+test "the float parts of the arithmetic operators":
+    assert(js_unary_arith_float64(Op.inc, 1.5) == 2.5)
+    assert(js_unary_arith_float64(Op.dec, 1.5) == 0.5)
+    assert(js_unary_arith_float64(Op.plus, -3.0) == -3.0)
+    assert(js_unary_arith_float64(Op.neg, 0.0).bits() == (-0.0).bits())
+    assert(js_binary_arith_float64(Op.sub, 1.0, 3.0) == -2.0)
+    assert(js_binary_arith_float64(Op.mul, -2.0, 0.0).bits() == (-0.0).bits())
+    assert(js_binary_arith_float64(Op.div, 1.0, 0.0) == math.infinity)
+    assert(js_binary_arith_float64(Op.mod, -7.0, 2.0) == -1.0)
+    assert(js_binary_arith_float64(Op.mod, 7.5, 2.0) == 1.5)
+    assert(js_binary_arith_float64(Op.pow, 2.0, 0.5) == math.pow(2.0, 0.5))
+
+# mark: Printing values =========================================================================
+
+test "numbers, booleans and the special values print as JavaScript writes them":
+    let rt = test_runtime()
+    var out: TestPrintOutput = ---
+    assert(test_print(&out, rt, js_new_int32(-42), none) == "-42")
+    assert(test_print(&out, rt, js_new_float64_raw(1.5), none) == "1.5")
+    assert(test_print(&out, rt, js_new_float64_raw(-0.0), none) == "-0")
+    assert(test_print(&out, rt, js_new_float64_raw(1e21), none) == "1e+21")
+    assert(test_print(&out, rt, js_nan(), none) == "NaN")
+    assert(test_print(&out, rt, js_true(), none) == "true")
+    assert(test_print(&out, rt, js_false(), none) == "false")
+    assert(test_print(&out, rt, js_null(), none) == "null")
+    assert(test_print(&out, rt, js_undefined(), none) == "undefined")
+    assert(test_print(&out, rt, js_uninitialized(), none) == "uninitialized")
+    assert(test_print(&out, rt, js_exception(), none) == "exception")
+    assert(test_print(&out, rt, js_new_short_big_int_raw(-5), none) == "-5n")
+    assert(test_print(&out, rt, js_new_catch_offset(3), none) == "[unknown tag 5]")
+
+test "strings are quoted with escapes":
+    let rt = test_runtime()
+    var out: TestPrintOutput = ---
+    let a = test_string_value(rt, "a\"b\\c\n\t\u{1}")
+    assert(test_print(&out, rt, a, none) == "\"a\\\"b\\\\c\\n\\t\\u0001\"")
+    js_free_value_rt(rt, a)
+    # a surrogate pair is printed as UTF-8, a lone surrogate and C1 controls are escaped
+    let units: u16[5] = [0x3b1, 0xd83d, 0xde00, 0x85, 0xdc00]
+    let w = test_string16_value(rt, units)
+    assert(test_print(&out, rt, w, none) == "\"\u{3b1}\u{1f600}\\u0085\\udc00\"")
+    js_free_value_rt(rt, w)
+
+test "long strings and ropes are cut at max_string_length":
+    let rt = test_runtime()
+    var out: TestPrintOutput = ---
+    var options: PrintValueOptions = ---
+    js_print_value_set_default_options(&options)
+    assert(options.max_depth == 2 and options.max_string_length == 1000)
+    assert(options.max_item_count == 100 and not options.show_hidden and not options.raw_dump)
+    options.max_string_length = 4
+    let a = test_string_value(rt, "abcdef")
+    assert(test_print(&out, rt, a, &options) == "\"abcd\"... 2 more characters")
+    options.max_string_length = 5
+    assert(test_print(&out, rt, a, &options) == "\"abcde\"... 1 more character")
+
+    let b = test_string_value(rt, "xyz")
+    var r = StringRope(len = 9, is_wide_char = 0, depth = 1, left = a, right = b)
+    let rope = js_mkptr(Tag.string_rope, &r)
+    assert(test_print(&out, rt, rope, none) == "\"abcdefxyz\"")
+    options.max_string_length = 7
+    assert(test_print(&out, rt, rope, &options) == "\"abcdefx\"... 2 more characters")
+    options.raw_dump = true
+    assert(test_print(&out, rt, rope, &options) == "[rope len=9 depth=1]")
+    js_free_value_rt(rt, a)
+    js_free_value_rt(rt, b)
+
+test "a raw dump shows the reference count and quotes shared strings with '":
+    let rt = test_runtime()
+    var out: TestPrintOutput = ---
+    var options: PrintValueOptions = ---
+    js_print_value_set_default_options(&options)
+    options.raw_dump = true
+    let a = test_string_value(rt, "hi")
+    assert(test_print(&out, rt, a, &options) == "1\"hi\"")
+    let a2 = js_dup_value_rt(rt, a)
+    assert(test_print(&out, rt, a, &options) == "2'hi'")
+    js_free_value_rt(rt, a2)
+    js_free_value_rt(rt, a)
+
+test "atoms print as identifiers, quoted strings or integers":
+    let rt = test_runtime()
+    var out: TestPrintOutput = ---
+    var ss = PrintValueState(rt = rt, write_func = test_print_write, write_opaque = &out)
+    js_print_value_set_default_options(&ss.options)
+    out.len = 0
+    js_print_atom(&ss, atom_length)
+    js_putc(&ss, (u8)' ')
+    js_print_atom(&ss, js_atom_from_uint32_raw(12345))
+    js_putc(&ss, (u8)' ')
+    js_print_atom(&ss, no_atom)
+    js_putc(&ss, (u8)' ')
+    # "<eval>" is not an identifier
+    js_print_atom(&ss, atom__eval_)
+    assert((str)out.buf[0..<out.len] == "length 12345 <null> \"<eval>\"")
+
+test "identifiers are ASCII letters, digits, _ and $, not starting with a digit":
+    let rt = test_runtime()
+    let a = test_string_value(rt, "_a$9")
+    assert(is_ascii_ident(a.u.string))
+    let b = test_string_value(rt, "9a")
+    assert(not is_ascii_ident(b.u.string))
+    let c = test_string_value(rt, "")
+    assert(not is_ascii_ident(c.u.string))
+    js_free_value_rt(rt, a)
+    js_free_value_rt(rt, b)
+    js_free_value_rt(rt, c)
+
+test "js_print_hex pads with zeros":
+    let rt = test_runtime()
+    var out: TestPrintOutput = ---
+    var ss = PrintValueState(rt = rt, write_func = test_print_write, write_opaque = &out)
+    out.len = 0
+    js_print_hex(&ss, 0x1f, 4)
+    js_putc(&ss, (u8)' ')
+    js_print_hex(&ss, 0, 8)
+    js_putc(&ss, (u8)' ')
+    js_print_hex(&ss, 0xdeadbeefcafe, 4)
+    assert((str)out.buf[0..<out.len] == "001f 00000000 deadbeefcafe")

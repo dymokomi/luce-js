@@ -46,7 +46,7 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
             # the range of the Array length property is always tested before
             if ((i32)prs.flags & prop_length) != 0 and (flags & prop_has_value) != 0:
                 var array_length: u32 = 0
-                discard(try js_to_array_length_free(ctx, &array_length, js_dup_value(ctx, val), false))
+                try js_to_array_length_free(ctx, &array_length, js_dup_value(ctx, val), false)
                 # this code relies on the fact that Uint32 are never allocated
                 val = js_new_uint32(array_length)
                 # prs may have been modified
@@ -204,7 +204,7 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         let ret = js_number_is_integer(ctx, num) catch failure:
                             js_free_value(ctx, num)
                             error(failure.code, failure.message)
-                        if ret == 0:
+                        if not ret:
                             js_free_value(ctx, num)
                             return try js_throw_type_error_or_false(ctx, flags, "non integer index in typed array")
                         let negative = js_number_is_negative_or_minus_zero(ctx, num)

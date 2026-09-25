@@ -26,7 +26,7 @@ func set_property_typed_array_oob(ctx: Context*, is_receiver: bool, p1: Object*,
         # must convert the argument even if out of bound access
         if p1.class_id == ClassId.big_int64_array or p1.class_id == ClassId.big_uint64_array:
             var v: i64 = 0
-            discard(try js_to_bigint64_free(ctx, &v, val))
+            try js_to_bigint64_free(ctx, &v, val)
         else:
             let num = try js_to_number_free(ctx, val)
             js_free_value(ctx, num)

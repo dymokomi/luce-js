@@ -53,44 +53,44 @@ func js_set_property_value(ctx: Context*, this_obj: Value, prop: Value, val: Val
                     set_value(ctx, p.u.array.u.var_refs[i].pvalue, val)
                     return true
             .uint8c_array:
-                discard(try js_to_uint8_clamp_free(ctx, &v, val))
+                try js_to_uint8_clamp_free(ctx, &v, val)
                 if idx < p.u.array.count:
                     p.u.array.u.uint8_ptr[i] = (u8)v
                 return true
             .int8_array, .uint8_array:
-                discard(try js_to_int32_free(ctx, &v, val))
+                try js_to_int32_free(ctx, &v, val)
                 if idx < p.u.array.count:
                     p.u.array.u.uint8_ptr[i] = (u8)v
                 return true
             .int16_array, .uint16_array:
-                discard(try js_to_int32_free(ctx, &v, val))
+                try js_to_int32_free(ctx, &v, val)
                 if idx < p.u.array.count:
                     p.u.array.u.uint16_ptr[i] = (u16)v
                 return true
             .int32_array, .uint32_array:
-                discard(try js_to_int32_free(ctx, &v, val))
+                try js_to_int32_free(ctx, &v, val)
                 if idx < p.u.array.count:
                     p.u.array.u.uint32_ptr[i] = (u32)v
                 return true
             .big_int64_array, .big_uint64_array:
                 # XXX: need specific conversion function
                 var v64: i64 = 0
-                discard(try js_to_bigint64_free(ctx, &v64, val))
+                try js_to_bigint64_free(ctx, &v64, val)
                 if idx < p.u.array.count:
                     p.u.array.u.uint64_ptr[i] = (u64)v64
                 return true
             .float16_array:
-                discard(try js_to_float64_free(ctx, &d, val))
+                try js_to_float64_free(ctx, &d, val)
                 if idx < p.u.array.count:
                     p.u.array.u.fp16_ptr[i] = cutils.tofp16(d)
                 return true
             .float32_array:
-                discard(try js_to_float64_free(ctx, &d, val))
+                try js_to_float64_free(ctx, &d, val)
                 if idx < p.u.array.count:
                     p.u.array.u.float_ptr[i] = (f32)d
                 return true
             .float64_array:
-                discard(try js_to_float64_free(ctx, &d, val))
+                try js_to_float64_free(ctx, &d, val)
                 if idx < p.u.array.count:
                     p.u.array.u.double_ptr[i] = d
                 return true

@@ -65,12 +65,6 @@ struct ObjectList:
 struct ParsePos:
     var unported: i32
 
-struct PrintValueOptions:
-    var unported: i32
-
-struct PrintValueState:
-    var unported: i32
-
 struct PromiseData:
     var unported: i32
 
@@ -109,8 +103,6 @@ enum StrictEqMode as i32:
 
 enum VarDefKind as i32:
     unported = 0
-
-type PrintValueWrite = func() -> unit
 
 # Constants of unported regions that ported code already uses. The region that declares
 # each one deletes it here.

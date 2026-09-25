@@ -47,7 +47,12 @@ fast_arrays.lucb
 property_set.lucb
 property_set_value.lucb
 property_create.lucb
-stub_r12_conversions.lucb
+conversions_number.lucb
+conversions_string.lucb
+print_value.lucb
+print_object.lucb
+conversions_bigint.lucb
+arith_slow.lucb
 stub_r13_operators.lucb
 stub_r14_interpreter.lucb
 stub_r15_async_generators.lucb
@@ -79,3 +84,4 @@ tests_r08.lucb
 tests_r10.lucb
 tests_r09.lucb
 tests_tokenizer.lucb
+tests_r12.lucb

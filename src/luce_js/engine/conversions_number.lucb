@@ -1,0 +1,388 @@
+#==============================================================================================
+#
+#   conversions_number - ToNumber, ToNumeric and the integer conversions of values
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 13020-13555: JS_ToNumber and JS_ToNumeric (over
+#       JS_ToNumberHintFree), JS_ToFloat64, JS_ToIntegerFree, the saturating, clamping and
+#       modular conversions to 32 and 64-bit integers, JS_ToUint8ClampFree,
+#       JS_ToArrayLengthFree, JS_ToIndex, JS_ToLengthFree and the number tests. Also
+#       quickjs.h's inline JS_ToUint32. A function whose name ends in `free` takes
+#       ownership of its value. A conversion that fails leaves 0 (NaN for a float) in its
+#       result, as QuickJS does.
+#
+#==============================================================================================
+
+# mark: ToNumber and ToNumeric ==================================================================
+
+## ToNumber of `val`, which is freed (JS_ToNumberFree).
+func js_to_number_free(ctx: Context*, val: Value) -> Value!:
+    return try js_to_number_hint_free(ctx, val, ToNumberHint.number)
+
+## ToNumeric of `val` (a number or a BigInt), which is freed (JS_ToNumericFree).
+func js_to_numeric_free(ctx: Context*, val: Value) -> Value!:
+    return try js_to_number_hint_free(ctx, val, ToNumberHint.numeric)
+
+## ToNumeric of `val` (JS_ToNumeric).
+func js_to_numeric(ctx: Context*, val: Value) -> Value!:
+    return try js_to_numeric_free(ctx, js_dup_value(ctx, val))
+
+# The slow path of js_to_float64_free: `val` is neither an integer nor a float.
+func js_to_float64_free_raw(ctx: Context*, pres: f64*, val0: Value) -> !:
+    let val = js_to_number_free(ctx, val0) catch failure:
+        *pres = math.nan
+        error(failure.code, failure.message)
+    match val.tag:
+        .int:
+            *pres = f64(js_value_get_int(val))
+        .float64:
+            *pres = js_value_get_float64(val)
+        _:
+            trap("js_to_float64_free_raw: ToNumber answered neither an integer nor a float")
+
+## ToNumber of `val`, which is freed, as a float in `*pres` (JS_ToFloat64Free).
+func js_to_float64_free(ctx: Context*, pres: f64*, val: Value) -> !:
+    # the tags up to JS_TAG_NULL (as unsigned) carry an integer payload
+    if (u32)(i32)(i64)val.tag <= (u32)(i64)Tag.null:
+        *pres = f64(js_value_get_int(val))
+    elif js_tag_is_float64(val.tag):
+        *pres = js_value_get_float64(val)
+    else:
+        try js_to_float64_free_raw(ctx, pres, val)
+
+## ToNumber of `val` as a float in `*pres` (JS_ToFloat64).
+pub func js_to_float64(ctx: Context*, pres: f64*, val: Value) -> !:
+    try js_to_float64_free(ctx, pres, js_dup_value(ctx, val))
+
+## ToNumber of `val` (JS_ToNumber).
+func js_to_number(ctx: Context*, val: Value) -> Value!:
+    return try js_to_number_free(ctx, js_dup_value(ctx, val))
+
+# same as JS_ToNumber() but return 0 in case of NaN/Undefined
+func js_to_integer_free(ctx: Context*, val0: Value) -> Value!:
+    var val = val0
+    # redo:
+    while true:
+        match val.tag:
+            .int, .boolean, .null, .undefined:
+                return js_new_int32(js_value_get_int(val))
+            .float64:
+                let d = js_value_get_float64(val)
+                if d != d:
+                    return js_new_int32(0)
+                # convert -0 to +0
+                return js_new_float64(math.trunc(d) + 0.0)
+            _:
+                val = try js_to_number_free(ctx, val)
+
+# mark: 32 and 64-bit saturation ================================================================
+
+# Note: the integer value is satured to 32 bits
+func js_to_int32_sat_free(ctx: Context*, pres: i32*, val0: Value) -> !:
+    var val = val0
+    var ret: i32 = 0
+    # redo:
+    while true:
+        match val.tag:
+            .int, .boolean, .null, .undefined:
+                ret = js_value_get_int(val)
+            .exception:
+                *pres = 0
+                error(exception, "")
+            .float64:
+                let d = js_value_get_float64(val)
+                if d != d:
+                    ret = 0
+                elif d < -2147483648.0:
+                    ret = -2147483648
+                elif d > 2147483647.0:
+                    ret = 2147483647
+                else:
+                    ret = (i32)d
+            _:
+                val = js_to_number_free(ctx, val) catch failure:
+                    *pres = 0
+                    error(failure.code, failure.message)
+                continue
+        break
+    *pres = ret
+
+## ToNumber of `val`, saturated to an i32, in `*pres` (JS_ToInt32Sat).
+pub func js_to_int32_sat(ctx: Context*, pres: i32*, val: Value) -> !:
+    try js_to_int32_sat_free(ctx, pres, js_dup_value(ctx, val))
+
+## ToNumber of `val` saturated to an i32, then clamped to [min, max] in `*pres`; a value
+## below `min` is first offset by `min_offset` (JS_ToInt32Clamp).
+pub func js_to_int32_clamp(ctx: Context*, pres: i32*, val: Value, min: i32, max: i32,
+                           min_offset: i32) -> !:
+    try js_to_int32_sat_free(ctx, pres, js_dup_value(ctx, val))
+    if *pres < min:
+        *pres += min_offset
+        if *pres < min:
+            *pres = min
+    else:
+        if *pres > max:
+            *pres = max
+
+func js_to_int64_sat_free(ctx: Context*, pres: i64*, val0: Value) -> !:
+    var val = val0
+    # redo:
+    while true:
+        match val.tag:
+            .int, .boolean, .null, .undefined:
+                *pres = js_value_get_int(val)
+                return
+            .exception:
+                *pres = 0
+                error(exception, "")
+            .float64:
+                let d = js_value_get_float64(val)
+                if d != d:
+                    *pres = 0
+                elif d < -9223372036854775808.0:
+                    *pres = -9223372036854775808
+                elif d >= 9223372036854775808.0:
+                    # must use INT64_MAX + 1 because INT64_MAX cannot be exactly
+                    # represented as a double
+                    *pres = 9223372036854775807
+                else:
+                    *pres = (i64)d
+                return
+            _:
+                val = js_to_number_free(ctx, val) catch failure:
+                    *pres = 0
+                    error(failure.code, failure.message)
+
+## ToNumber of `val`, saturated to an i64, in `*pres` (JS_ToInt64Sat).
+pub func js_to_int64_sat(ctx: Context*, pres: i64*, val: Value) -> !:
+    try js_to_int64_sat_free(ctx, pres, js_dup_value(ctx, val))
+
+## ToNumber of `val` saturated to an i64, then clamped to [min, max] in `*pres`; a
+## negative value is first offset by `neg_offset` (JS_ToInt64Clamp).
+pub func js_to_int64_clamp(ctx: Context*, pres: i64*, val: Value, min: i64, max: i64,
+                           neg_offset: i64) -> !:
+    try js_to_int64_sat_free(ctx, pres, js_dup_value(ctx, val))
+    if *pres < 0:
+        *pres += neg_offset
+    if *pres < min:
+        *pres = min
+    elif *pres > max:
+        *pres = max
+
+# mark: Modular conversions =====================================================================
+
+# Same as JS_ToInt32Free() but with a 64 bit result. Return (<0, 0) in case of exception
+func js_to_int64_free(ctx: Context*, pres: i64*, val0: Value) -> !:
+    var val = val0
+    var ret: i64 = 0
+    # redo:
+    while true:
+        match val.tag:
+            .int, .boolean, .null, .undefined:
+                ret = js_value_get_int(val)
+            .float64:
+                let d = js_value_get_float64(val)
+                let bits = d.bits()
+                # we avoid doing fmod(x, 2^64)
+                let e = (i32)((bits >> 52) & 0x7ff)
+                if e <= 1023 + 62:
+                    # fast case
+                    ret = (i64)d
+                elif e <= 1023 + 62 + 53:
+                    # remainder modulo 2^64
+                    let v = (bits & (((u64)1 << 52) - 1)) | ((u64)1 << 52)
+                    ret = (i64)(v << (u64)((e - 1023) - 52))
+                    # take the sign into account
+                    if (bits >> 63) != 0:
+                        ret = -%ret
+                else:
+                    ret = 0 # also handles NaN and +inf
+            _:
+                val = js_to_number_free(ctx, val) catch failure:
+                    *pres = 0
+                    error(failure.code, failure.message)
+                continue
+        break
+    *pres = ret
+
+## ToNumber of `val` modulo 2^64 in `*pres` (JS_ToInt64).
+pub func js_to_int64(ctx: Context*, pres: i64*, val: Value) -> !:
+    try js_to_int64_free(ctx, pres, js_dup_value(ctx, val))
+
+## Same as js_to_int64() but allow BigInt (JS_ToInt64Ext).
+pub func js_to_int64_ext(ctx: Context*, pres: i64*, val: Value) -> !:
+    if js_is_big_int(val):
+        try js_to_bigint64(ctx, pres, val)
+    else:
+        try js_to_int64(ctx, pres, val)
+
+# return (<0, 0) in case of exception
+func js_to_int32_free(ctx: Context*, pres: i32*, val0: Value) -> !:
+    var val = val0
+    var ret: i32 = 0
+    # redo:
+    while true:
+        match val.tag:
+            .int, .boolean, .null, .undefined:
+                ret = js_value_get_int(val)
+            .float64:
+                let d = js_value_get_float64(val)
+                let bits = d.bits()
+                # we avoid doing fmod(x, 2^32)
+                let e = (i32)((bits >> 52) & 0x7ff)
+                if e <= 1023 + 30:
+                    # fast case
+                    ret = (i32)d
+                elif e <= 1023 + 30 + 53:
+                    # remainder modulo 2^32
+                    var v = (bits & (((u64)1 << 52) - 1)) | ((u64)1 << 52)
+                    v = v << (u64)((e - 1023) - 52 + 32)
+                    ret = (i32)(u32)(v >> 32)
+                    # take the sign into account
+                    if (bits >> 63) != 0:
+                        ret = -%ret
+                else:
+                    ret = 0 # also handles NaN and +inf
+            _:
+                val = js_to_number_free(ctx, val) catch failure:
+                    *pres = 0
+                    error(failure.code, failure.message)
+                continue
+        break
+    *pres = ret
+
+## ToInt32 of `val` in `*pres` (JS_ToInt32).
+pub func js_to_int32(ctx: Context*, pres: i32*, val: Value) -> !:
+    try js_to_int32_free(ctx, pres, js_dup_value(ctx, val))
+
+## ToUint32 of `val` in `*pres` (quickjs.h's inline JS_ToUint32).
+pub func js_to_uint32(ctx: Context*, pres: u32*, val: Value) -> !:
+    try js_to_int32(ctx, (i32*)pres, val)
+
+## ToUint32 of `val`, which is freed, in `*pres` (JS_ToUint32Free).
+func js_to_uint32_free(ctx: Context*, pres: u32*, val: Value) -> !:
+    try js_to_int32_free(ctx, (i32*)pres, val)
+
+## ToUint8Clamp of `val`, which is freed, in `*pres` (JS_ToUint8ClampFree).
+func js_to_uint8_clamp_free(ctx: Context*, pres: i32*, val0: Value) -> !:
+    var val = val0
+    var res: i32 = 0
+    # redo:
+    while true:
+        match val.tag:
+            .int, .boolean, .null, .undefined:
+                res = js_value_get_int(val)
+                res = cutils.max_int(0, cutils.min_int(255, res))
+            .float64:
+                let d = js_value_get_float64(val)
+                if d != d:
+                    res = 0
+                elif d < 0.0:
+                    res = 0
+                elif d > 255.0:
+                    res = 255
+                else:
+                    # lrint(d): to nearest in the default rounding mode, ties to even
+                    let f = math.floor(d)
+                    res = (i32)f
+                    if d - f > 0.5 or (d - f == 0.5 and (res & 1) != 0):
+                        res += 1
+            _:
+                val = js_to_number_free(ctx, val) catch failure:
+                    *pres = 0
+                    error(failure.code, failure.message)
+                continue
+        break
+    *pres = res
+
+# mark: Lengths and indexes =====================================================================
+
+## The array length `val`, which is freed, in `*plen`; RangeError unless it is an integer
+## in [0, 2^32-1]. The Array constructor converts once; `length` assignments convert twice
+## and compare, the legacy behavior (JS_ToArrayLengthFree).
+func js_to_array_length_free(ctx: Context*, plen: u32*, val0: Value, is_array_ctor: bool) -> !:
+    var val = val0
+    var len: u32 = 0
+    var fail = false
+    match val.tag:
+        .int, .boolean, .null:
+            let v = js_value_get_int(val)
+            if v < 0:
+                fail = true
+            else:
+                len = (u32)v
+        _:
+            if js_tag_is_float64(val.tag):
+                let d = js_value_get_float64(val)
+                if not (d >= 0.0 and d <= 4294967295.0):
+                    fail = true
+                else:
+                    len = (u32)d
+                    if f64(len) != d:
+                        fail = true
+            else:
+                if is_array_ctor:
+                    val = try js_to_number_free(ctx, val)
+                    # cannot recurse because val is a number
+                    try js_to_array_length_free(ctx, &len, val, true)
+                else:
+                    # legacy behavior: must do the conversion twice and compare
+                    js_to_uint32(ctx, &len, val) catch failure:
+                        js_free_value(ctx, val)
+                        error(failure.code, failure.message)
+                    val = try js_to_number_free(ctx, val)
+                    var len1: u32 = 0
+                    # cannot recurse because val is a number
+                    try js_to_array_length_free(ctx, &len1, val, false)
+                    if len1 != len:
+                        fail = true
+    if fail:
+        try js_throw_range_error(ctx, "invalid array length")
+    *plen = len
+
+## MAX_SAFE_INTEGER: 2^53 - 1.
+let max_safe_integer: i64 = ((i64)1 << 53) - 1
+
+## Whether `d` is an integer in [-(2^53-1), 2^53-1].
+func is_safe_integer(d: f64) -> bool:
+    return math.is_finite(d) and math.floor(d) == d and math.abs(d) <= f64(max_safe_integer)
+
+## ToIndex of `val` in `*plen`: RangeError unless in [0, 2^53-1] (JS_ToIndex).
+pub func js_to_index(ctx: Context*, plen: u64*, val: Value) -> !:
+    var v: i64 = 0
+    try js_to_int64_sat(ctx, &v, val)
+    if v < 0 or v > max_safe_integer:
+        *plen = 0
+        try js_throw_range_error(ctx, "invalid array index")
+    *plen = (u64)v
+
+# convert a value to a length between 0 and MAX_SAFE_INTEGER. return -1 for exception
+func js_to_length_free(ctx: Context*, plen: i64*, val: Value) -> !:
+    defer js_free_value(ctx, val)
+    try js_to_int64_clamp(ctx, plen, val, 0, max_safe_integer, 0)
+
+# mark: Number tests ============================================================================
+
+# Note: can return an exception
+func js_number_is_integer(ctx: Context*, val: Value) -> bool!:
+    if not js_is_number(val):
+        return false
+    var d: f64 = 0.0
+    try js_to_float64(ctx, &d, val)
+    return math.is_finite(d) and math.floor(d) == d
+
+## Whether the number or BigInt `val` is negative or -0; false for other values
+## (JS_NumberIsNegativeOrMinusZero).
+func js_number_is_negative_or_minus_zero(ctx: Context*, val: Value) -> bool:
+    match val.tag:
+        .int:
+            let v = js_value_get_int(val)
+            return v < 0
+        .float64:
+            return (js_value_get_float64(val).bits() >> 63) != 0
+        .short_big_int:
+            return js_value_get_short_big_int(val) < 0
+        .big_int:
+            return js_bigint_sign(val.u.big_int) != 0
+        _:
+            return false

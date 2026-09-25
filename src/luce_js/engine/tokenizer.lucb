@@ -69,7 +69,7 @@ func dump_token(s: ParseState*, token: const Token*):
         .number:
             var d: f64 = 0.0
             # no exception possible
-            discard(js_to_float64(s.ctx, &d, token.u.num.val))
+            js_to_float64(s.ctx, &d, token.u.num.val) catch: recover ()
             print(f"number: {d}")
         .ident:
             dump_token_atom(s, token)
