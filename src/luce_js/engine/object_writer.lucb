@@ -1,0 +1,313 @@
+#==============================================================================================
+#
+#   object_writer - Writing values to the binary object format (JS_WriteObject)
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 37968-38358: the writers of arrays (and template objects),
+#       plain objects, typed arrays, array buffers and SharedArrayBuffers, the recursive
+#       writer of any value (JS_WriteObjectRec), the atom table that is moved in front of
+#       the output (JS_WriteObjectAtoms), and JS_WriteObject2 / JS_WriteObject.
+#
+#       Without JS_WRITE_OBJ_REFERENCE an object met twice is a "circular reference"
+#       error (Object.tmp_mark); with it, the second meeting writes a reference to the
+#       first (the ObjectList of the writer state).
+#
+#==============================================================================================
+
+# mark: Arrays and objects ======================================================================
+
+# XXX: be compatible with the structured clone algorithm
+## Write an array: its length, then each element (undefined for holes). A non-extensible
+## array is a template object when bytecode is written, and its 'raw' property follows.
+func js_write_array(s: BCWriterState*, obj: Value) -> !:
+    let ctx = s.ctx
+    let p = obj.u.obj
+    var len: u32 = 0
+    var pr: Property*? = none
+    var is_template = false
+
+    if s.allow_bytecode and not p.extensible:
+        # not extensible array: we consider it is a template when we are saving bytecode
+        bc_put_u8(s, (u8)BCTag.template_object)
+        is_template = true
+    else:
+        bc_put_u8(s, (u8)BCTag.array)
+        is_template = false
+    discard(try js_get_length32(ctx, &len, obj))   # no side effect
+    bc_put_leb128(s, len)
+    if p.fast_array:
+        let values = p.u.array.u.values
+        for i in 0..<(usize)p.u.array.count:
+            try js_write_object_rec(s, values[i])
+        for i in (usize)p.u.array.count..<(usize)len:
+            try js_write_object_rec(s, js_undefined())
+    else:
+        for i: u32 in 0..<len:
+            let atom = try js_new_atom_uint32(ctx, i)
+            let prs = find_own_property(&pr, p, atom)
+            js_free_atom(ctx, atom)
+            var written = false
+            if let sp = prs:
+                if ((i32)sp.flags & prop_enumerable) != 0:
+                    if ((i32)sp.flags & prop_tmask) != 0:
+                        try js_throw_type_error(ctx, "only value properties are supported")
+                    let prop = pr else trap("js_write_array: no property storage")
+                    try js_write_object_rec(s, prop.u.value)
+                    written = true
+            if not written:
+                try js_write_object_rec(s, js_undefined())
+    if is_template:
+        # the 'raw' property is not enumerable
+        if let sp = find_own_property(&pr, p, atom_raw):
+            if ((i32)sp.flags & prop_tmask) != 0:
+                try js_throw_type_error(ctx, "only value properties are supported")
+            let prop = pr else trap("js_write_array: no property storage")
+            try js_write_object_rec(s, prop.u.value)
+        else:
+            try js_write_object_rec(s, js_undefined())
+
+## Write a plain object: the count of its enumerable string-keyed properties, then each
+## key and value. Getters and setters cannot be written.
+func js_write_object_tag(s: BCWriterState*, obj: Value) -> !:
+    let p = obj.u.obj
+    var prop_count: u32 = 0
+
+    bc_put_u8(s, (u8)BCTag.object)
+    let sh = p.shape
+    for pass in 0..<2:
+        if pass == 1:
+            bc_put_leb128(s, prop_count)
+        var pr = get_shape_prop(sh)
+        for i in 0..<(usize)sh.prop_count:
+            let atom = pr.atom
+            if (atom != no_atom and js_atom_is_string(s.ctx, atom) and
+                    ((i32)pr.flags & prop_enumerable) != 0):
+                if ((i32)pr.flags & prop_tmask) != 0:
+                    try js_throw_type_error(s.ctx, "only value properties are supported")
+                if pass == 0:
+                    prop_count += 1
+                else:
+                    try bc_put_atom(s, atom)
+                    try js_write_object_rec(s, p.prop[i].u.value)
+            pr = pr + 1
+
+# mark: Binary data =============================================================================
+
+## Write a typed array: its kind, length and offset, then its array buffer.
+func js_write_typed_array(s: BCWriterState*, obj: Value) -> !:
+    let p = obj.u.obj
+    let ta = p.u.typed_array
+
+    bc_put_u8(s, (u8)BCTag.typed_array)
+    bc_put_u8(s, (u8)((u16)p.class_id - (u16)ClassId.uint8c_array))
+    bc_put_leb128(s, p.u.array.count)
+    bc_put_leb128(s, ta.offset)
+    try js_write_object_rec(s, js_mkptr(Tag.object, ta.buffer))
+
+## Write an array buffer: its length, maximum length and bytes.
+func js_write_array_buffer(s: BCWriterState*, obj: Value) -> !:
+    let p = obj.u.obj
+    let abuf = p.u.array_buffer
+    if abuf.detached != 0:
+        try js_throw_type_error_detached_array_buffer(s.ctx)
+    bc_put_u8(s, (u8)BCTag.array_buffer)
+    bc_put_leb128(s, (u32)abuf.byte_length)
+    bc_put_leb128(s, (u32)abuf.max_byte_length)
+    if let data = abuf.data:
+        discard(cutils.dbuf_put(&s.dbuf, data, (usize)abuf.byte_length))
+
+## Write a SharedArrayBuffer: its lengths and the address of its data, which the reader
+## clones; the address is also kept in the writer's sab_tab for the caller.
+func js_write_shared_array_buffer(s: BCWriterState*, obj: Value) -> !:
+    let p = obj.u.obj
+    let abuf = p.u.array_buffer
+    assert(abuf.detached == 0)   # SharedArrayBuffer are never detached
+    bc_put_u8(s, (u8)BCTag.shared_array_buffer)
+    bc_put_leb128(s, (u32)abuf.byte_length)
+    bc_put_leb128(s, (u32)abuf.max_byte_length)
+    var address: usize = 0
+    if let data = abuf.data:
+        address = (usize)data
+    bc_put_u64(s, (u64)address)
+    try js_resize_array(s.ctx, (void*?*)&s.sab_tab, (i32)sizeof(u8*?), &s.sab_tab_size,
+                        s.sab_tab_len + 1)
+    # keep the SAB pointer so that the user can clone it or free it
+    let sab_tab = s.sab_tab else trap("js_write_shared_array_buffer: no table")
+    sab_tab[(usize)s.sab_tab_len] = abuf.data
+    s.sab_tab_len += 1
+
+# mark: Any value ===============================================================================
+
+## Clear the "being written" mark of an object (the C clears it after the class switch).
+func js_write_clear_tmp_mark(p: Object*):
+    p.tmp_mark = false
+
+## Write an object of a class the format supports; any other class is an error.
+func js_write_object_class(s: BCWriterState*, obj: Value, p: Object*) -> !:
+    match p.class_id:
+        .array:
+            try js_write_array(s, obj)
+        .object:
+            try js_write_object_tag(s, obj)
+        .array_buffer:
+            try js_write_array_buffer(s, obj)
+        .shared_array_buffer if s.allow_sab:
+            try js_write_shared_array_buffer(s, obj)
+        .shared_array_buffer:
+            try js_throw_internal_error(s.ctx, f"unsupported tag ({(i64)Tag.object})")
+        .date:
+            bc_put_u8(s, (u8)BCTag.date)
+            try js_write_object_rec(s, p.u.object_data)
+        .number, .string, .boolean, .big_int:
+            bc_put_u8(s, (u8)BCTag.object_value)
+            try js_write_object_rec(s, p.u.object_data)
+        _:
+            if ((u16)p.class_id >= (u16)ClassId.uint8c_array and
+                    (u16)p.class_id <= (u16)ClassId.float64_array):
+                try js_write_typed_array(s, obj)
+            else:
+                try js_throw_type_error(s.ctx, "unsupported object class")
+
+## Write any value (JS_WriteObjectRec).
+func js_write_object_rec(s: BCWriterState*, obj: Value) -> !:
+    if js_check_stack_overflow(s.ctx.rt, 0):
+        try js_throw_stack_overflow(s.ctx)
+
+    match obj.tag:
+        .null:
+            bc_put_u8(s, (u8)BCTag.null)
+        .undefined:
+            bc_put_u8(s, (u8)BCTag.undefined)
+        .boolean:
+            bc_put_u8(s, (u8)BCTag.bool_false + (u8)js_value_get_int(obj))
+        .int:
+            bc_put_u8(s, (u8)BCTag.int32)
+            bc_put_sleb128(s, js_value_get_int(obj))
+        .float64:
+            var u: Float64Union = ---
+            bc_put_u8(s, (u8)BCTag.float64)
+            u.d = js_value_get_float64(obj)
+            bc_put_u64(s, u.bits)
+        .string:
+            let p = obj.u.string
+            bc_put_u8(s, (u8)BCTag.string)
+            js_write_string(s, p)
+        .string_rope:
+            let text = try js_to_string(s.ctx, obj)
+            defer js_free_value(s.ctx, text)
+            try js_write_object_rec(s, text)
+        .function_bytecode if s.allow_bytecode:
+            try js_write_function_tag(s, obj)
+        .module if s.allow_bytecode:
+            try js_write_module(s, obj)
+        .object:
+            let p = obj.u.obj
+            if s.allow_reference:
+                let idx = try js_object_list_find(s.ctx, &s.object_list, p)
+                if idx >= 0:
+                    bc_put_u8(s, (u8)BCTag.object_reference)
+                    bc_put_leb128(s, (u32)idx)
+                    return
+                discard(try js_object_list_add(s.ctx, &s.object_list, p))
+            else:
+                if p.tmp_mark:
+                    try js_throw_type_error(s.ctx, "circular reference")
+                p.tmp_mark = true
+            # C leaves the mark set when an unsupported SharedArrayBuffer jumps out of the
+            # class switch; the port clears it on every exit.
+            defer js_write_clear_tmp_mark(p)
+            try js_write_object_class(s, obj, p)
+        .short_big_int, .big_int:
+            try js_write_bigint(s, obj)
+        _:
+            try js_throw_internal_error(s.ctx, f"unsupported tag ({(i64)obj.tag})")
+
+# mark: The atom table and the entry points =====================================================
+
+## Put the version and the atom table in front of the written data (JS_WriteObjectAtoms).
+func js_write_object_atoms(s: BCWriterState*) -> !:
+    let rt = s.ctx.rt
+    var dbuf1 = s.dbuf
+
+    js_dbuf_init(s.ctx, &s.dbuf)
+    bc_put_u8(s, bc_version)
+
+    bc_put_leb128(s, (u32)s.idx_to_atom_count)
+    if s.idx_to_atom_count > 0:
+        let atoms = s.idx_to_atom else trap("js_write_object_atoms: no atoms")
+        let atom_array = rt.atom_array else trap("js_write_object_atoms: no atom array")
+        for i in 0..<(usize)s.idx_to_atom_count:
+            let p = atom_array[(usize)atoms[i]]
+            js_write_string(s, p)
+    # XXX: should check for OOM in above phase
+
+    # move the atoms at the start
+    # XXX: could just append dbuf1 data, but it uses more memory if dbuf1 is larger than dbuf
+    let atoms_size = s.dbuf.size
+    if cutils.dbuf_claim(&dbuf1, atoms_size) != 0:
+        cutils.dbuf_free(&dbuf1)
+        # C returns -1 here with no exception pending; the port reports out of memory.
+        try js_throw_out_of_memory(s.ctx)
+    let out = dbuf1.buf else trap("js_write_object_atoms: no buffer")
+    let atoms_buf = s.dbuf.buf else trap("js_write_object_atoms: no atoms buffer")
+    discard(cutils.memmove(out + atoms_size, out, dbuf1.size))
+    discard(cutils.memcpy(out, atoms_buf, atoms_size))
+    dbuf1.size += atoms_size
+    cutils.dbuf_free(&s.dbuf)
+    s.dbuf = dbuf1
+
+## Free the writer's atom tables (C: js_free of atom_to_idx and idx_to_atom).
+func js_write_free_atom_tables(s: BCWriterState*):
+    # workaround: compiler-issues/nullable_pointer_cast (u32*? to void*?)
+    if let atom_to_idx = s.atom_to_idx:
+        js_free(s.ctx, atom_to_idx)
+    if let idx_to_atom = s.idx_to_atom:
+        js_free(s.ctx, idx_to_atom)
+
+## Free the writer's tables after a failed write and clear the caller's results.
+func js_write_object_fail(s: BCWriterState*, psize: usize*, psab_tab: SabTab*?, psab_tab_len: usize*?):
+    let ctx = s.ctx
+    js_object_list_end(ctx, &s.object_list)
+    js_write_free_atom_tables(s)
+    cutils.dbuf_free(&s.dbuf)
+    *psize = 0
+    if let tab_out = psab_tab:
+        *tab_out = none
+    if let len_out = psab_tab_len:
+        *len_out = 0
+
+## Serialize `obj` to a js_malloc'ed buffer of `*psize` bytes (JS_WriteObject2). `flags`
+## are the write_obj_* flags. With write_obj_sab, `*psab_tab` receives the js_malloc'ed
+## table of the `*psab_tab_len` SharedArrayBuffer data pointers written.
+pub func js_write_object2(ctx: Context*, psize: usize*, obj: Value, flags: i32, psab_tab: SabTab*?,
+                          psab_tab_len: usize*?) -> u8*!:
+    var ss = BCWriterState(ctx = ctx)
+    let s = &ss
+
+    s.allow_bytecode = (flags & write_obj_bytecode) != 0
+    s.allow_sab = (flags & write_obj_sab) != 0
+    s.allow_reference = (flags & write_obj_reference) != 0
+    # XXX: could use a different version when bytecode is included
+    if s.allow_bytecode:
+        s.first_atom = atom_end
+    else:
+        s.first_atom = 1
+    js_dbuf_init(ctx, &s.dbuf)
+    js_object_list_init(&s.object_list)
+
+    # C does not free sab_tab when the write fails.
+    errdefer js_write_object_fail(s, psize, psab_tab, psab_tab_len)
+    try js_write_object_rec(s, obj)
+    try js_write_object_atoms(s)
+    js_object_list_end(ctx, &s.object_list)
+    js_write_free_atom_tables(s)
+    *psize = s.dbuf.size
+    if let tab_out = psab_tab:
+        *tab_out = s.sab_tab
+    if let len_out = psab_tab_len:
+        *len_out = (usize)s.sab_tab_len
+    return s.dbuf.buf else trap("js_write_object2: no buffer")
+
+## Serialize `obj` to a js_malloc'ed buffer of `*psize` bytes (JS_WriteObject).
+pub func js_write_object(ctx: Context*, psize: usize*, obj: Value, flags: i32) -> u8*!:
+    return try js_write_object2(ctx, psize, obj, flags, none, none)

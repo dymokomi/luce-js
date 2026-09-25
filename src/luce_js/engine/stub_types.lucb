@@ -17,12 +17,6 @@ struct AsyncFromSyncIteratorData:
 struct AsyncGeneratorData:
     var unported: i32
 
-struct BCReaderState:
-    var unported: i32
-
-struct BCWriterState:
-    var unported: i32
-
 struct ClassFieldsDef:
     var unported: i32
 

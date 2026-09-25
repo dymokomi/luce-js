@@ -1,0 +1,261 @@
+#==============================================================================================
+#
+#   tests_bytecode_io - Unit tests of the binary object format that need no runtime
+#
+#   DESCRIPTION:
+#       Round trips of the writer's and the reader's primitives (LEB128, bytes, flags,
+#       atom numbers), the failure of reads past the end, the encodings of short big
+#       integers and 8-bit strings, and the byte swap of bytecode operands. Expected bytes
+#       are QuickJS's. None of these paths uses the context: the states hold the address
+#       of a placeholder that is never dereferenced. The paths that go through is_be
+#       (multi-byte integers) wait for its region.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+var placeholder_storage: u64[8]
+
+# Stands for the context in states whose tested paths never read it.
+func placeholder_context() -> Context*:
+    return (Context*)&placeholder_storage[0]
+
+func test_writer() -> BCWriterState:
+    var s = BCWriterState(ctx = placeholder_context())
+    cutils.dbuf_init(&s.dbuf)
+    return s
+
+# The bytes written so far.
+func written_bytes(s: BCWriterState*) -> const u8[]:
+    let buf = s.dbuf.buf else trap("nothing written")
+    return u8[](buf, s.dbuf.size)
+
+func same_bytes(a: const u8[], b: const u8[]) -> bool:
+    if a.length != b.length:
+        return false
+    for i in 0..<a.length:
+        if a[i] != b[i]:
+            return false
+    return true
+
+func reader_over(data: const u8[]) -> BCReaderState:
+    return BCReaderState(ctx = placeholder_context(), buf_start = data.data, ptr = data.data,
+                         buf_end = data.data + data.length)
+
+# Whether reading a LEB128 number fails, storing 0, without moving the read position. The
+# reader's error_state is set beforehand, so the failure throws nothing.
+func leb128_read_fails(r: BCReaderState*) -> bool:
+    let start = r.ptr
+    var v: u32 = 7
+    bc_get_leb128(r, &v) catch failure:
+        return v == 0 and r.ptr == start and failure.code == exception
+    return false
+
+func u8_read_fails(r: BCReaderState*) -> bool:
+    var v: u8 = 7
+    bc_get_u8(r, &v) catch failure:
+        return v == 0 and r.error_state == -1
+    return false
+
+func buf_read_fails(r: BCReaderState*, buf: u8*, len: u32) -> bool:
+    bc_get_buf(r, buf, len) catch failure:
+        return true
+    return false
+
+func leb128_u16_read_fails(r: BCReaderState*) -> bool:
+    var v: u16 = 7
+    bc_get_leb128_u16(r, &v) catch failure:
+        return v == 0
+    return false
+
+# mark: Primitives ==============================================================================
+
+test "the tags and the version are QuickJS's":
+    assert(bc_version == 5)
+    assert((u8)BCTag.null == 1 and (u8)BCTag.int32 == 5 and (u8)BCTag.big_int == 10)
+    assert((u8)BCTag.function_bytecode == 12 and (u8)BCTag.object_reference == 19)
+
+test "leb128 and sleb128 round trip through the writer and the reader":
+    var s = test_writer()
+    defer cutils.dbuf_free(&s.dbuf)
+    let unsigned_values: u32[7] = [0, 1, 127, 128, 300, 16384, 0xffffffff]
+    let signed_values: i32[7] = [0, -1, 1, -64, 64, 2147483647, -2147483648]
+    for v in unsigned_values:
+        bc_put_leb128(&s, v)
+    for v in signed_values:
+        bc_put_sleb128(&s, v)
+    let first: u8[4] = [0x00, 0x01, 0x7f, 0x80]
+    assert(same_bytes(written_bytes(&s)[0..<4], first))
+    let three_hundred: u8[2] = [0xac, 0x02]
+    assert(same_bytes(written_bytes(&s)[5..<7], three_hundred))
+
+    var r = reader_over(written_bytes(&s))
+    for expected in unsigned_values:
+        var v: u32 = 0
+        try bc_get_leb128(&r, &v)
+        assert(v == expected)
+    for expected in signed_values:
+        var v: i32 = 0
+        try bc_get_sleb128(&r, &v)
+        assert(v == expected)
+    assert(r.ptr == r.buf_end)
+
+test "bytes and positive ints read back":
+    var s = test_writer()
+    defer cutils.dbuf_free(&s.dbuf)
+    bc_put_u8(&s, 0x9a)
+    bc_put_leb128(&s, 65535)
+    bc_put_leb128(&s, 1234567)
+    bc_put_u8(&s, 'x')
+    bc_put_u8(&s, 'y')
+
+    var r = reader_over(written_bytes(&s))
+    var b: u8 = 0
+    try bc_get_u8(&r, &b)
+    assert(b == 0x9a)
+    var h: u16 = 0
+    try bc_get_leb128_u16(&r, &h)
+    assert(h == 65535)
+    var n: i32 = 0
+    try bc_get_leb128_int(&r, &n)
+    assert(n == 1234567)
+    var pair: u8[2]
+    try bc_get_buf(&r, &pair[0], 2)
+    assert(pair[0] == 'x' and pair[1] == 'y')
+    try bc_get_buf(&r, &pair[0], 0)
+    assert(r.ptr == r.buf_end)
+
+test "reads past the end fail and store 0":
+    let truncated: u8[2] = [0x80, 0x80]
+    var r = reader_over(truncated)
+    r.error_state = -1
+    assert(leb128_read_fails(&r))
+    assert(leb128_u16_read_fails(&r))
+
+    let empty: u8[1] = [0x42]
+    var e = reader_over(empty[0..<0])
+    e.error_state = -1
+    assert(u8_read_fails(&e))
+
+    let two: u8[2] = [1, 2]
+    var t = reader_over(two)
+    t.error_state = -1
+    var three: u8[3]
+    assert(buf_read_fails(&t, &three[0], 3))
+    assert(t.ptr == t.buf_start)
+
+test "the function flags pack as QuickJS packs them":
+    var flags: u32 = 0
+    var idx: i32 = 0
+    bc_set_flags(&flags, &idx, 1, 1)    # has_prototype
+    bc_set_flags(&flags, &idx, 0, 1)    # has_simple_parameter_list
+    bc_set_flags(&flags, &idx, 1, 1)    # is_derived_class_constructor
+    bc_set_flags(&flags, &idx, 0, 1)    # need_home_object
+    bc_set_flags(&flags, &idx, 3, 2)    # func_kind: async generator
+    bc_set_flags(&flags, &idx, 1, 1)    # new_target_allowed
+    bc_set_flags(&flags, &idx, 0, 1)    # super_call_allowed
+    bc_set_flags(&flags, &idx, 1, 1)    # super_allowed
+    bc_set_flags(&flags, &idx, 0, 1)    # arguments_allowed
+    bc_set_flags(&flags, &idx, 1, 1)    # has_debug
+    bc_set_flags(&flags, &idx, 1, 1)    # is_direct_or_indirect_eval
+    assert(idx == 12)
+    assert(flags == 0xd75)
+
+    var b: FunctionBytecode = ---
+    js_read_function_flags(&b, (u16)flags)
+    assert(b.has_prototype and not b.has_simple_parameter_list)
+    assert(b.is_derived_class_constructor and not b.need_home_object)
+    assert(b.func_kind == js_func_async_generator)
+    assert(b.new_target_allowed and not b.super_call_allowed and b.super_allowed)
+    assert(not b.arguments_allowed and b.has_debug and b.is_direct_or_indirect_eval)
+
+    var get_idx: i32 = 4
+    assert(bc_get_flags(0xd75, &get_idx, 2) == 3 and get_idx == 6)
+
+test "tagged integer and predefined atoms are written as themselves":
+    var s = test_writer()
+    defer cutils.dbuf_free(&s.dbuf)
+    s.first_atom = atom_end
+    try bc_put_atom(&s, js_atom_from_uint32_raw(5))
+    try bc_put_atom(&s, atom_length)
+    try bc_put_atom(&s, js_atom_from_uint32_raw(1000000))
+    assert(written_bytes(&s)[0] == 11)                                   # (5 << 1) | 1
+    assert(written_bytes(&s)[1] == (u8)(atom_length << 1))
+    assert(s.idx_to_atom_count == 0)
+
+    var r = reader_over(written_bytes(&s))
+    r.first_atom = atom_end
+    var atom: Atom = no_atom
+    try bc_get_atom(&r, &atom)
+    assert(atom == js_atom_from_uint32_raw(5))
+    try bc_get_atom(&r, &atom)
+    assert(atom == atom_length)
+    try bc_get_atom(&r, &atom)
+    assert(js_atom_to_uint32_raw(atom) == 1000000)
+    assert(r.ptr == r.buf_end)
+
+# mark: Values ==================================================================================
+
+# The bytes js_write_bigint writes for the short big integer `v`.
+func short_bigint_bytes_are(v: i32, expected: const u8[]) -> bool!:
+    var s = test_writer()
+    defer cutils.dbuf_free(&s.dbuf)
+    try js_write_bigint(&s, js_new_short_big_int_raw(v))
+    let out = written_bytes(&s)
+    return out[0] == (u8)BCTag.big_int and same_bytes(out[1..], expected)
+
+test "short big integers are their shortest two's complement bytes":
+    let zero: u8[1] = [0]
+    assert(try short_bigint_bytes_are(0, zero))
+    let one: u8[2] = [1, 0x01]
+    assert(try short_bigint_bytes_are(1, one))
+    let minus_one: u8[2] = [1, 0xff]
+    assert(try short_bigint_bytes_are(-1, minus_one))
+    let b127: u8[2] = [1, 0x7f]
+    assert(try short_bigint_bytes_are(127, b127))
+    let b128: u8[3] = [2, 0x80, 0x00]
+    assert(try short_bigint_bytes_are(128, b128))
+    let minus_128: u8[2] = [1, 0x80]
+    assert(try short_bigint_bytes_are(-128, minus_128))
+    let minus_129: u8[3] = [2, 0x7f, 0xff]
+    assert(try short_bigint_bytes_are(-129, minus_129))
+    let three_bytes: u8[4] = [3, 0x56, 0x34, 0x12]
+    assert(try short_bigint_bytes_are(0x123456, three_bytes))
+    let minus_three_bytes: u8[4] = [3, 0x00, 0x00, 0x80]
+    assert(try short_bigint_bytes_are(-8388608, minus_three_bytes))
+
+test "8-bit strings are (len << 1) then their bytes":
+    var storage: u64[8]
+    let p = (String*)&storage[0]
+    p.len = 3
+    p.is_wide_char = false
+    let text = b"abc"
+    discard(cutils.memcpy(str8(p), &text[0], 3))
+
+    var s = test_writer()
+    defer cutils.dbuf_free(&s.dbuf)
+    js_write_string(&s, p)
+    let expected: u8[4] = [6, 'a', 'b', 'c']
+    assert(same_bytes(written_bytes(&s), expected))
+
+test "bc_byte_swap reverses each multi-byte operand":
+    assert(op_info((u8)Op.push_i32, false).size == 5)
+    assert(op_info((u8)Op.get_loc, false).fmt == OpFormat.loc)
+    assert(op_info((u8)Op.with_get_var, false).fmt == OpFormat.atom_label_u8)
+    var code: u8[19] = [
+        (u8)Op.push_i32, 0x11, 0x22, 0x33, 0x44,
+        (u8)Op.null,
+        (u8)Op.get_loc, 0x55, 0x66,
+        (u8)Op.with_get_var, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    ]
+    let original = code
+    bc_byte_swap(&code[0], 19)
+    let swapped: u8[19] = [
+        (u8)Op.push_i32, 0x44, 0x33, 0x22, 0x11,
+        (u8)Op.null,
+        (u8)Op.get_loc, 0x66, 0x55,
+        (u8)Op.with_get_var, 4, 3, 2, 1, 8, 7, 6, 5, 9,
+    ]
+    assert(same_bytes(code, swapped))
+    bc_byte_swap(&code[0], 19)
+    assert(same_bytes(code, original))

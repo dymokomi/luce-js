@@ -33,10 +33,10 @@ func js_add_intrinsic_basic_objects(ctx: Context*) -> i32!:
 func js_add_intrinsic_base_objects(ctx: Context*) -> i32!:
     trap("unported: JS_AddIntrinsicBaseObjects")
 ## Ported from quickjs.c:56739 js_array_buffer_constructor3.
-func js_array_buffer_constructor3(ctx: Context*, new_target: Value, len: u64, max_len: u64*, class_id: u32, buf: u8*, free_func: FreeArrayBufferDataFunc, opaque: void*, alloc_flag: bool) -> Value!:
+func js_array_buffer_constructor3(ctx: Context*, new_target: Value, len: u64, max_len: u64*?, class_id: u32, buf: u8*?, free_func: FreeArrayBufferDataFunc?, opaque: void*?, alloc_flag: bool) -> Value!:
     trap("unported: js_array_buffer_constructor3")
 ## Ported from quickjs.c:56815 js_array_buffer_free.
-func js_array_buffer_free(rt: Runtime*, opaque: void*, ptr: void*):
+func js_array_buffer_free(rt: Runtime*, opaque: void*?, ptr: void*?):
     trap("unported: js_array_buffer_free")
 ## Ported from quickjs.c:56820 js_array_buffer_constructor2.
 func js_array_buffer_constructor2(ctx: Context*, new_target: Value, len: u64, max_len: u64*, class_id: u32) -> Value!:

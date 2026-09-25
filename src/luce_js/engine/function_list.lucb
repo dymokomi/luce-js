@@ -1,0 +1,202 @@
+#==============================================================================================
+#
+#   function_list - Instantiating builtin tables (JSCFunctionListEntry) on objects
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "runtime functions & objects" lines 39518-39680: check_function,
+#       check_exception_free, find_atom (entry names, "[Symbol.x]" for well-known
+#       symbols), JS_NewObjectProtoList, and the instantiation of one table entry, either
+#       at once or on first access through an auto-init property.
+#
+#       C keeps an entry's function in a union; the port's CFunctionListEntry has one
+#       field per calling shape, and `js_function_list_entry_cfunc` rebuilds the union to
+#       hand the function to js_new_c_function2 as C does.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## Fail with a TypeError unless `obj` is a function.
+func check_function(ctx: Context*, obj: Value) -> !:
+    if js_is_function(ctx, obj):
+        return
+    try js_throw_type_error(ctx, "not a function")
+
+## Release `obj` and answer whether it was the exception marker.
+func check_exception_free(ctx: Context*, obj: Value) -> bool:
+    js_free_value(ctx, obj)
+    return js_is_exception(obj)
+
+## The atom of a table entry's name: a new atom for a plain name, or the well-known symbol
+## for a name written "[Symbol.x]".
+func find_atom(ctx: Context*, name: str) -> Atom!:
+    let bytes = name.bytes
+    if bytes.length > 0 and bytes[0] == '[':
+        let inner = bytes[1..<bytes.length - 1]
+        let len = inner.length
+        # We assume 8 bit non null strings, which is the case for these symbols
+        let atom_array = ctx.rt.atom_array else trap("find_atom: no atom array")
+        var atom = atom_Symbol_toPrimitive
+        while atom < atom_end:
+            let p = atom_array[(usize)atom]
+            if (usize)p.len == len and cutils.memcmp(str8(p), inner.data, len) == 0:
+                return js_dup_atom(ctx, atom)
+            atom += 1
+        trap(f"find_atom: no symbol {name}")
+    return try js_new_atom(ctx, name)
+
+## An entry's function as the generic member of the C function union (e->u.func.cfunc).
+func js_function_list_entry_cfunc(e: const CFunctionListEntry*) -> CFunction:
+    var u: CFunctionType = ---
+    match e.cproto:
+        .generic, .constructor, .constructor_or_func:
+            u.generic = e.generic else trap(f"{e.name}: no function")
+        .generic_magic, .constructor_magic, .constructor_or_func_magic:
+            u.generic_magic = e.generic_magic else trap(f"{e.name}: no function")
+        .f_f:
+            u.f_f = e.f_f else trap(f"{e.name}: no function")
+        .f_f_f:
+            u.f_f_f = e.f_f_f else trap(f"{e.name}: no function")
+        .iterator_next:
+            u.iterator_next = e.iterator_next else trap(f"{e.name}: no function")
+        .getter:
+            u.getter = e.getter else trap(f"{e.name}: no function")
+        .setter:
+            u.setter = e.setter else trap(f"{e.name}: no function")
+        .getter_magic:
+            u.getter_magic = e.getter_magic else trap(f"{e.name}: no function")
+        .setter_magic:
+            u.setter_magic = e.setter_magic else trap(f"{e.name}: no function")
+        _:
+            trap(f"{e.name}: invalid calling shape")
+    return u.generic
+
+## A getset entry's getter as a generic C function (e->u.getset.get.generic), or none.
+func js_function_list_entry_getter(e: const CFunctionListEntry*) -> CFunction?:
+    var u: CFunctionType = ---
+    if e.def_type == def_cgetset_magic:
+        u.getter_magic = e.getter_magic else return none
+    else:
+        u.getter = e.getter else return none
+    return u.generic
+
+## A getset entry's setter as a generic C function (e->u.getset.set.generic), or none.
+func js_function_list_entry_setter(e: const CFunctionListEntry*) -> CFunction?:
+    var u: CFunctionType = ---
+    if e.def_type == def_cgetset_magic:
+        u.setter_magic = e.setter_magic else return none
+    else:
+        u.setter = e.setter else return none
+    return u.generic
+
+# mark: Instantiation ===========================================================================
+
+## A plain object with prototype `proto` holding the properties of `fields`.
+func js_new_object_proto_list(ctx: Context*, proto: Value, fields: const CFunctionListEntry[]) -> Value!:
+    let obj = try js_new_object_proto_class_alloc(ctx, proto, (u32)ClassId.object, (i32)fields.length)
+    errdefer js_free_value(ctx, obj)
+    discard(try js_set_property_function_list(ctx, obj, fields.data, (i32)fields.length))
+    return obj
+
+## The value of an auto-init property of a table entry (`opaque`), created on first access.
+func js_instantiate_function_list_item2(ctx: Context*, p: Object*, atom: Atom, opaque: void*?) -> Value!:
+    let entry = opaque else trap("js_instantiate_function_list_item2: no entry")
+    let e = (const CFunctionListEntry*)entry
+    if e.def_type == def_cfunc:
+        return try js_new_c_function2(ctx, js_function_list_entry_cfunc(e), e.name.bytes.data,
+                                      (i32)e.length, e.cproto, (i32)e.magic)
+    elif e.def_type == def_prop_string:
+        return try js_new_atom_string(ctx, e.string_value.bytes.data)
+    elif e.def_type == def_object:
+        var proto = js_null()
+        # XXX: could add a flag
+        if atom != atom_Symbol_unscopables:
+            let class_proto = ctx.class_proto else trap("no class prototypes")
+            proto = class_proto[(usize)ClassId.object]
+        let prop_list = e.prop_list else trap(f"{e.name}: no property list")
+        return try js_new_object_proto_list(ctx, proto, prop_list)
+    trap(f"{e.name}: not an auto-init entry")   # abort()
+
+## The property flags of a function named by a well-known symbol: Symbol.toPrimitive
+## functions are not writable, Function.prototype[Symbol.hasInstance] is not writable nor
+## configurable.
+func js_function_list_symbol_flags(atom: Atom, prop_flags: i32) -> i32:
+    if atom == atom_Symbol_toPrimitive:
+        return prop_configurable
+    elif atom == atom_Symbol_hasInstance:
+        return 0
+    return prop_flags
+
+## Define the getter and setter of a getset entry.
+func js_instantiate_getset(ctx: Context*, obj: Value, atom: Atom, e: const CFunctionListEntry*, prop_flags: i32) -> !:
+    var buf: u8[64]
+    let is_magic = e.def_type == def_cgetset_magic
+
+    var getter = js_undefined()
+    if let get = js_function_list_entry_getter(e):
+        discard(format(buf, f"get {e.name}") else "")
+        var kind = CFunctionEnum.getter
+        if is_magic:
+            kind = CFunctionEnum.getter_magic
+        getter = try js_new_c_function2(ctx, get, &buf[0], 0, kind, (i32)e.magic)
+    var setter = js_undefined()
+    if let set = js_function_list_entry_setter(e):
+        discard(format(buf, f"set {e.name}") else "")
+        var kind = CFunctionEnum.setter
+        if is_magic:
+            kind = CFunctionEnum.setter_magic
+        setter = js_new_c_function2(ctx, set, &buf[0], 1, kind, (i32)e.magic) catch failure:
+            js_free_value(ctx, getter)
+            error(failure.code, failure.message)
+    discard(try js_define_property_get_set(ctx, obj, atom, getter, setter, prop_flags))
+
+## Define the property `atom` of `obj` from the table entry `e`: functions, strings and
+## objects become auto-init properties, the other entries are created now.
+func js_instantiate_function_list_item(ctx: Context*, obj: Value, atom: Atom, e: const CFunctionListEntry*) -> !:
+    var val = js_undefined()
+    var prop_flags = (i32)e.prop_flags
+
+    if e.def_type == def_alias:   # using autoinit for aliases is not safe
+        let atom1 = try find_atom(ctx, e.alias_name)
+        var target = obj
+        match e.alias_base:
+            -1:
+                target = obj
+            0:
+                target = ctx.global_obj
+            1:
+                let class_proto = ctx.class_proto else trap("no class prototypes")
+                target = class_proto[(usize)ClassId.array]
+            _:
+                trap(f"{e.name}: invalid alias base")   # abort()
+        val = js_get_property(ctx, target, atom1) catch failure:
+            js_free_atom(ctx, atom1)
+            error(failure.code, failure.message)
+        js_free_atom(ctx, atom1)
+        prop_flags = js_function_list_symbol_flags(atom, prop_flags)
+    elif e.def_type == def_cfunc:
+        prop_flags = js_function_list_symbol_flags(atom, prop_flags)
+        discard(try js_define_auto_init_property(ctx, obj, atom, AutoInitId.prop, (void*)e, prop_flags))
+        return
+    elif e.def_type == def_cgetset or e.def_type == def_cgetset_magic:
+        # XXX: use autoinit again ?
+        try js_instantiate_getset(ctx, obj, atom, e, prop_flags)
+        return
+    elif e.def_type == def_prop_int32:
+        val = js_new_int32(e.i32_value)
+    elif e.def_type == def_prop_int64:
+        val = js_new_int64(e.i64_value)
+    elif e.def_type == def_prop_double:
+        val = js_new_float64_raw(e.f64_value)
+    elif e.def_type == def_prop_undefined:
+        val = js_undefined()
+    elif e.def_type == def_prop_atom:
+        val = try js_atom_to_value(ctx, (Atom)e.i32_value)
+    elif e.def_type == def_prop_bool:
+        val = js_new_bool(e.i32_value != 0)
+    elif e.def_type == def_prop_string or e.def_type == def_object:
+        discard(try js_define_auto_init_property(ctx, obj, atom, AutoInitId.prop, (void*)e, prop_flags))
+        return
+    else:
+        trap(f"{e.name}: invalid entry type")   # abort()
+    discard(try js_define_property_value(ctx, obj, atom, val, prop_flags))

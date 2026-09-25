@@ -1,0 +1,481 @@
+#==============================================================================================
+#
+#   bytecode_reader - The binary object reader: its state, primitives and function records
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 38360-39059: the reader's state, the
+#       little-endian primitives (bc_get_*) that fail at the end of the buffer, the atom
+#       numbers of the input mapped back to atoms, strings, big integers, the table of
+#       objects already read (for JS_READ_OBJ_REFERENCE), and the readers of compiled
+#       functions (relocating the atoms of their bytecode) and modules.
+#
+#       A reader function that returns -1 or JS_EXCEPTION in C is fallible here. As in C,
+#       `error_state` records that a read failed, so that reading past the end throws only
+#       once; a primitive that fails still stores 0 in its result.
+#
+#==============================================================================================
+
+# mark: State ===================================================================================
+
+## The state of JS_ReadObject (BCReaderState).
+struct BCReaderState:
+    var ctx: Context*
+    var buf_start: const u8*
+    var ptr: const u8*
+    var buf_end: const u8*
+    ## Atom numbers below this one are atoms; the others index the atom table of the input.
+    var first_atom: u32
+    var idx_to_atom_count: u32
+    var idx_to_atom: Atom*?
+    var error_state: i32
+    var allow_sab: bool
+    var allow_bytecode: bool
+    ## The input outlives the result: bytecode is used in place (JS_READ_OBJ_ROM_DATA).
+    var is_rom_data: bool
+    var allow_reference: bool
+    ## Object references: every object read so far, in order (none for a typed array
+    ## whose buffer is still being read).
+    var objects: Object*?*?
+    var objects_count: i32
+    var objects_size: i32
+
+# mark: Primitives ==============================================================================
+
+## Fail for a read past the end of the input; only the first such failure throws.
+func bc_read_error_end(s: BCReaderState*) -> never!:
+    let first = s.error_state == 0
+    s.error_state = -1
+    if first:
+        try js_throw_syntax_error(s.ctx, "read after the end of the buffer")
+    error(exception, "")
+
+## The bytes left to read.
+func bc_remaining(s: const BCReaderState*) -> isize:
+    return s.buf_end - s.ptr
+
+func bc_get_u8(s: BCReaderState*, pval: u8*) -> !:
+    if bc_remaining(s) < 1:
+        *pval = 0   # avoid warning
+        try bc_read_error_end(s)
+    *pval = *s.ptr
+    s.ptr = s.ptr + 1
+
+func bc_get_u16(s: BCReaderState*, pval: u16*) -> !:
+    if bc_remaining(s) < 2:
+        *pval = 0   # avoid warning
+        try bc_read_error_end(s)
+    var v = (u16)cutils.get_u16(s.ptr)
+    if is_be():
+        v = cutils.bswap16(v)
+    *pval = v
+    s.ptr = s.ptr + 2
+
+func bc_get_u32(s: BCReaderState*, pval: u32*) -> !:
+    if bc_remaining(s) < 4:
+        *pval = 0   # avoid warning
+        try bc_read_error_end(s)
+    var v = cutils.get_u32(s.ptr)
+    if is_be():
+        v = cutils.bswap32(v)
+    *pval = v
+    s.ptr = s.ptr + 4
+
+func bc_get_u64(s: BCReaderState*, pval: u64*) -> !:
+    if bc_remaining(s) < 8:
+        *pval = 0   # avoid warning
+        try bc_read_error_end(s)
+    var v = cutils.get_u64(s.ptr)
+    if is_be():
+        v = cutils.bswap64(v)
+    *pval = v
+    s.ptr = s.ptr + 8
+
+func bc_get_leb128(s: BCReaderState*, pval: u32*) -> !:
+    let ret = get_leb128(pval, s.ptr, s.buf_end)
+    if ret < 0:
+        try bc_read_error_end(s)
+    s.ptr = s.ptr + (usize)ret
+
+func bc_get_sleb128(s: BCReaderState*, pval: i32*) -> !:
+    let ret = get_sleb128(pval, s.ptr, s.buf_end)
+    if ret < 0:
+        try bc_read_error_end(s)
+    s.ptr = s.ptr + (usize)ret
+
+# XXX: used to read an `int` with a positive value
+func bc_get_leb128_int(s: BCReaderState*, pval: i32*) -> !:
+    try bc_get_leb128(s, (u32*)pval)
+
+func bc_get_leb128_u16(s: BCReaderState*, pval: u16*) -> !:
+    var val: u32 = 0
+    bc_get_leb128(s, &val) catch failure:
+        *pval = 0
+        error(failure.code, failure.message)
+    *pval = (u16)val
+
+## Copy the next `buf_len` bytes of the input to `buf`.
+func bc_get_buf(s: BCReaderState*, buf: u8*, buf_len: u32) -> !:
+    if buf_len != 0:
+        if bc_remaining(s) < (isize)buf_len:
+            try bc_read_error_end(s)
+        discard(cutils.memcpy(buf, s.ptr, (usize)buf_len))
+        s.ptr = s.ptr + (usize)buf_len
+
+## The atom of number `idx` of the input, as a new reference.
+func bc_idx_to_atom(s: BCReaderState*, patom: Atom*, idx0: u32) -> !:
+    var atom: Atom = no_atom
+    var idx = idx0
+
+    if js_atom_is_tagged_int_raw(idx):
+        atom = idx
+    elif idx < s.first_atom:
+        atom = js_dup_atom(s.ctx, idx)
+    else:
+        idx -= s.first_atom
+        if idx >= s.idx_to_atom_count:
+            *patom = no_atom
+            s.error_state = -1
+            try js_throw_syntax_error(s.ctx, f"invalid atom index (pos={(u32)(s.ptr - s.buf_start)})")
+        let atoms = s.idx_to_atom else trap("bc_idx_to_atom: no atom table")
+        atom = js_dup_atom(s.ctx, atoms[(usize)idx])
+    *patom = atom
+
+## Read an atom: (n << 1) | 1 is the tagged integer n, anything else an atom number << 1.
+func bc_get_atom(s: BCReaderState*, patom: Atom*) -> !:
+    var v: u32 = 0
+    try bc_get_leb128(s, &v)
+    if (v & 1) != 0:
+        *patom = js_atom_from_uint32_raw(v >> 1)
+    else:
+        try bc_idx_to_atom(s, patom, v >> 1)
+
+# mark: Strings and big integers ================================================================
+
+## Read a flat string: (len << 1) | is_wide_char, then its characters.
+func js_read_string(s: BCReaderState*) -> String*!:
+    var len: u32 = 0
+
+    try bc_get_leb128(s, &len)
+    let is_wide_char = (len & 1) != 0
+    len = len >> 1
+    if len > (u32)js_string_len_max:
+        try js_throw_internal_error(s.ctx, "string too long")
+    let p = js_alloc_string(s.ctx, (i32)len, is_wide_char) catch failure:
+        s.error_state = -1
+        error(failure.code, failure.message)
+    var size = (usize)len
+    if is_wide_char:
+        size = size << 1
+    if (usize)bc_remaining(s) < size:
+        js_free_string(s.ctx.rt, p)
+        try bc_read_error_end(s)
+    discard(cutils.memcpy(str8(p), s.ptr, size))
+    s.ptr = s.ptr + size
+    if is_wide_char:
+        if is_be():
+            let chars = str16(p)
+            for i in 0..<(usize)len:
+                chars[i] = cutils.bswap16(chars[i])
+    else:
+        str8(p)[size] = 0   # add the trailing zero for 8 bit strings
+    return p
+
+## The `n`-bit field at bit `*pidx` of `flags`; advances `*pidx`.
+func bc_get_flags(flags: u32, pidx: i32*, n: i32) -> u32:
+    # XXX: this does not work for n == 32
+    let val = (flags >> (u32)*pidx) & (((u32)1 << (u32)n) -% 1)
+    *pidx += n
+    return val
+
+## Read a big integer: its byte count, then its little-endian two's complement bytes.
+func js_read_bigint(s: BCReaderState*) -> Value!:
+    var len: u32 = 0
+    var v: u32 = 0
+    var v8: u8 = 0
+    let limb_bytes = (u32)(js_limb_bits // 8)
+
+    try bc_get_leb128(s, &len)
+    if len == 0:
+        # zero case
+        return js_new_short_big_int_raw(0)
+    let p = try js_bigint_new(s.ctx, (i32)((len - 1) // limb_bytes + 1))
+    # C leaks p when the input ends early.
+    errdefer js_free(s.ctx, p)
+    let tab = js_bigint_tab(p)
+    for i in 0..<(usize)(len // limb_bytes):
+        try bc_get_u32(s, &v)
+        tab[i] = v
+    let n = len % limb_bytes
+    if n != 0:
+        v = 0
+        for i: u32 in 0..<n:
+            try bc_get_u8(s, &v8)
+            v |= (u32)v8 << (i * 8)
+        let shift = (u32)js_limb_bits - n * 8
+        # extend the sign
+        if shift != 0:
+            v = (u32)((i32)(v << shift) >> shift)
+        tab[(usize)p.len - 1] = v
+    return js_compact_bigint(s.ctx, p)
+
+# mark: Object references =======================================================================
+
+## Remember the object just read, when references are allowed (BC_add_object_ref1).
+func bc_add_object_ref1(s: BCReaderState*, p: Object*?) -> !:
+    if s.allow_reference:
+        try js_resize_array(s.ctx, (void*?*)&s.objects, (i32)sizeof(Object*?), &s.objects_size,
+                            s.objects_count + 1)
+        let objects = s.objects else trap("bc_add_object_ref1: no table")
+        objects[(usize)s.objects_count] = p
+        s.objects_count += 1
+
+## Remember the object value just read (BC_add_object_ref).
+func bc_add_object_ref(s: BCReaderState*, obj: Value) -> !:
+    try bc_add_object_ref1(s, obj.u.obj)
+
+# mark: Functions ===============================================================================
+
+## Read `bc_len` bytes of bytecode into the function (or use them in place for ROM data)
+## and turn their atom numbers into atoms. The port keeps `b.byte_code_len` at the
+## number of bytes whose atoms are references, so that freeing a function whose read
+## failed releases exactly those (C gets the same effect from a NULL byte_code_buf and
+## from setting byte_code_len to the failing position).
+func js_read_function_bytecode(s: BCReaderState*, b: FunctionBytecode*, byte_code_offset: i32, bc_len: u32) -> !:
+    var bc_buf: u8* = ---
+
+    if s.is_rom_data:
+        # directly use the input buffer
+        if bc_remaining(s) < (isize)bc_len:
+            try bc_read_error_end(s)
+        bc_buf = (u8*)s.ptr
+        s.ptr = s.ptr + (usize)bc_len
+    else:
+        bc_buf = (u8*)b + (usize)byte_code_offset
+        try bc_get_buf(s, bc_buf, bc_len)
+    b.byte_code_buf = bc_buf
+
+    if is_be():
+        bc_byte_swap(bc_buf, (i32)bc_len)
+
+    var pos: i32 = 0
+    while pos < (i32)bc_len:
+        let op = bc_buf[(usize)pos]
+        let info = op_info(op, false)
+        let len = (i32)info.size
+        match info.fmt:
+            .atom, .atom_u8, .atom_u16, .atom_label_u8, .atom_label_u16:
+                let idx = cutils.get_u32(bc_buf + (usize)pos + 1)
+                if s.is_rom_data:
+                    # just increment the reference count of the atom
+                    discard(js_dup_atom(s.ctx, idx))
+                else:
+                    var atom: Atom = no_atom
+                    bc_idx_to_atom(s, &atom, idx) catch failure:
+                        # Note: the atoms will be freed up to this position
+                        b.byte_code_len = pos
+                        error(failure.code, failure.message)
+                    cutils.put_u32(bc_buf + (usize)pos + 1, atom)
+            _:
+                discard(0)
+        pos += len
+    b.byte_code_len = (i32)bc_len
+
+## The flags word of a compiled function (see js_write_function_tag) into `bc`.
+func js_read_function_flags(bc: FunctionBytecode*, v16: u16):
+    var idx: i32 = 0
+    let flags = (u32)v16
+    bc.has_prototype = bc_get_flags(flags, &idx, 1) != 0
+    bc.has_simple_parameter_list = bc_get_flags(flags, &idx, 1) != 0
+    bc.is_derived_class_constructor = bc_get_flags(flags, &idx, 1) != 0
+    bc.need_home_object = bc_get_flags(flags, &idx, 1) != 0
+    bc.func_kind = (u8)bc_get_flags(flags, &idx, 2)
+    bc.new_target_allowed = bc_get_flags(flags, &idx, 1) != 0
+    bc.super_call_allowed = bc_get_flags(flags, &idx, 1) != 0
+    bc.super_allowed = bc_get_flags(flags, &idx, 1) != 0
+    bc.arguments_allowed = bc_get_flags(flags, &idx, 1) != 0
+    bc.has_debug = bc_get_flags(flags, &idx, 1) != 0
+    bc.is_direct_or_indirect_eval = bc_get_flags(flags, &idx, 1) != 0
+
+## Read a compiled function written by js_write_function_tag. Its variables, closure
+## variables, constant pool and bytecode are allocated with it, in one block.
+func js_read_function_tag(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    var bc: FunctionBytecode = ---
+    var v16: u16 = 0
+    var v8: u8 = 0
+    var idx: i32 = 0
+    var local_count: i32 = 0
+
+    discard(cutils.memset(&bc, 0, sizeof(FunctionBytecode)))
+
+    try bc_get_u16(s, &v16)
+    js_read_function_flags(&bc, v16)
+    bc.read_only_bytecode = s.is_rom_data
+    try bc_get_u8(s, &v8)
+    bc.js_mode = v8
+    try bc_get_atom(s, &bc.func_name)   # @ atom leak if failure
+    try bc_get_leb128_u16(s, &bc.arg_count)
+    try bc_get_leb128_u16(s, &bc.var_count)
+    try bc_get_leb128_u16(s, &bc.defined_arg_count)
+    try bc_get_leb128_u16(s, &bc.stack_size)
+    try bc_get_leb128_u16(s, &bc.var_ref_count)
+    try bc_get_leb128_int(s, &bc.closure_var_count)
+    try bc_get_leb128_int(s, &bc.cpool_count)
+    try bc_get_leb128_int(s, &bc.byte_code_len)
+    try bc_get_leb128_int(s, &local_count)
+
+    # The sizes wrap as C's uint64_t arithmetic does; a huge count is refused below.
+    var function_size: u64 = 0
+    if bc.has_debug:
+        function_size = (u64)sizeof(FunctionBytecode)
+    else:
+        function_size = (u64)offsetof(FunctionBytecode, debug)
+    let cpool_offset = (i32)function_size
+    function_size = function_size +% (u64)(i64)bc.cpool_count *% (u64)sizeof(Value)
+    let vardefs_offset = (i32)function_size
+    function_size = function_size +% (u64)(i64)local_count *% (u64)sizeof(BytecodeVarDef)
+    let closure_var_offset = (i32)function_size
+    function_size = function_size +% (u64)(i64)bc.closure_var_count *% (u64)sizeof(ClosureVar)
+    let byte_code_offset = (i32)function_size
+    if not bc.read_only_bytecode:
+        function_size = function_size +% (u64)(i64)bc.byte_code_len
+
+    if function_size > 0x7fffffff:
+        try js_throw_out_of_memory(ctx)
+
+    let b = (FunctionBytecode*)(try js_mallocz(ctx, (usize)function_size))
+
+    discard(cutils.memcpy(b, &bc, offsetof(FunctionBytecode, debug)))
+    if local_count != 0:
+        b.vardefs = (BytecodeVarDef*)((u8*)b + (usize)vardefs_offset)
+    if b.closure_var_count != 0:
+        b.closure_var = (ClosureVar*)((u8*)b + (usize)closure_var_offset)
+    if b.cpool_count != 0:
+        b.cpool = (Value*)((u8*)b + (usize)cpool_offset)
+    # The port declares the realm and the bytecode never null, where C tests both before
+    # marking and freeing. The realm is therefore set now (C sets it on success), and the
+    # bytecode is an empty buffer until js_read_function_bytecode reads it.
+    b.realm = js_dup_context(ctx)
+    b.byte_code_buf = (u8*)b + (usize)byte_code_offset
+    b.byte_code_len = 0
+
+    js_rc(b).ref_count = 1
+    add_gc_object(ctx.rt, &b.header, GCObjectType.function_bytecode)
+
+    let obj = js_mkptr(Tag.function_bytecode, b)
+    errdefer js_free_value(ctx, obj)
+
+    if local_count != 0:
+        let vardefs = b.vardefs else trap("js_read_function_tag: no variables")
+        for i: i32 in 0..<local_count:
+            let vd = vardefs + (usize)i
+            try bc_get_atom(s, &vd.var_name)
+            try bc_get_leb128_int(s, &vd.scope_next)
+            vd.scope_next -= 1
+            try bc_get_leb128_u16(s, &vd.var_ref_idx)
+            try bc_get_u8(s, &v8)
+            idx = 0
+            vd.var_kind = (VarKind)(u8)bc_get_flags((u32)v8, &idx, 4)
+            vd.is_const = bc_get_flags((u32)v8, &idx, 1) != 0
+            vd.is_lexical = bc_get_flags((u32)v8, &idx, 1) != 0
+            vd.is_captured = bc_get_flags((u32)v8, &idx, 1) != 0
+            vd.has_scope = bc_get_flags((u32)v8, &idx, 1) != 0
+    if b.closure_var_count != 0:
+        let closure_var = b.closure_var else trap("js_read_function_tag: no closure variables")
+        for i: i32 in 0..<b.closure_var_count:
+            let cv = closure_var + (usize)i
+            var var_idx: i32 = 0
+            try bc_get_atom(s, &cv.var_name)
+            try bc_get_leb128_int(s, &var_idx)
+            cv.var_idx = (u16)var_idx
+            try bc_get_u16(s, &v16)
+            idx = 0
+            cv.closure_type = (ClosureType)(u8)bc_get_flags((u32)v16, &idx, 3)
+            cv.is_const = bc_get_flags((u32)v16, &idx, 1) != 0
+            cv.is_lexical = bc_get_flags((u32)v16, &idx, 1) != 0
+            cv.var_kind = (VarKind)(u8)bc_get_flags((u32)v16, &idx, 4)
+    try js_read_function_bytecode(s, b, byte_code_offset, (u32)bc.byte_code_len)
+    if b.has_debug:
+        # read optional debug information
+        try bc_get_atom(s, &b.debug.filename)
+        try bc_get_leb128_int(s, &b.debug.pc2line_len)
+        if b.debug.pc2line_len != 0:
+            let pc2line_buf = (u8*)(try js_mallocz(ctx, (usize)b.debug.pc2line_len))
+            b.debug.pc2line_buf = pc2line_buf
+            try bc_get_buf(s, pc2line_buf, (u32)b.debug.pc2line_len)
+        try bc_get_leb128_int(s, &b.debug.source_len)
+        if b.debug.source_len != 0:
+            let source = (u8*)(try js_mallocz(ctx, (usize)b.debug.source_len))
+            b.debug.source = source
+            try bc_get_buf(s, source, (u32)b.debug.source_len)
+    if b.cpool_count != 0:
+        let cpool = b.cpool else trap("js_read_function_tag: no constant pool")
+        for i: i32 in 0..<b.cpool_count:
+            cpool[(usize)i] = try js_read_object_rec(s)
+    return obj
+
+# mark: Modules =================================================================================
+
+## Read a module written by js_write_module.
+func js_read_module(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    var module_name: Atom = no_atom
+    var v8: u8 = 0
+
+    try bc_get_atom(s, &module_name)
+    let m = try js_new_module_def(ctx, module_name)
+    errdefer js_free_value(ctx, js_mkptr(Tag.module, m))
+    let obj = try js_new_module_value(ctx, m)
+    try bc_get_leb128_int(s, &m.req_module_entries_count)
+    if m.req_module_entries_count != 0:
+        m.req_module_entries_size = m.req_module_entries_count
+        let entries = (ReqModuleEntry*)(try js_mallocz(ctx, sizeof(ReqModuleEntry) *% (usize)m.req_module_entries_size))
+        m.req_module_entries = entries
+        for i: i32 in 0..<m.req_module_entries_count:
+            let rme = entries + (usize)i
+            try bc_get_atom(s, &rme.module_name)
+            rme.attributes = try js_read_object_rec(s)
+
+    try bc_get_leb128_int(s, &m.export_entries_count)
+    if m.export_entries_count != 0:
+        m.export_entries_size = m.export_entries_count
+        let entries = (ExportEntry*)(try js_mallocz(ctx, sizeof(ExportEntry) *% (usize)m.export_entries_size))
+        m.export_entries = entries
+        for i: i32 in 0..<m.export_entries_count:
+            let me = entries + (usize)i
+            try bc_get_u8(s, &v8)
+            me.export_type = (ExportType)(i32)v8
+            if me.export_type == ExportType.local_:
+                try bc_get_leb128_int(s, &me.u.local_.var_idx)
+            else:
+                try bc_get_leb128_int(s, &me.u.req_module_idx)
+                try bc_get_atom(s, &me.local_name)
+            try bc_get_atom(s, &me.export_name)
+
+    try bc_get_leb128_int(s, &m.star_export_entries_count)
+    if m.star_export_entries_count != 0:
+        m.star_export_entries_size = m.star_export_entries_count
+        let entries = (StarExportEntry*)(try js_mallocz(ctx, sizeof(StarExportEntry) *% (usize)m.star_export_entries_size))
+        m.star_export_entries = entries
+        for i: i32 in 0..<m.star_export_entries_count:
+            let se = entries + (usize)i
+            try bc_get_leb128_int(s, &se.req_module_idx)
+
+    try bc_get_leb128_int(s, &m.import_entries_count)
+    if m.import_entries_count != 0:
+        m.import_entries_size = m.import_entries_count
+        let entries = (ImportEntry*)(try js_mallocz(ctx, sizeof(ImportEntry) *% (usize)m.import_entries_size))
+        m.import_entries = entries
+        for i: i32 in 0..<m.import_entries_count:
+            let mi = entries + (usize)i
+            try bc_get_leb128_int(s, &mi.var_idx)
+            try bc_get_u8(s, &v8)
+            mi.is_star = v8 != 0
+            try bc_get_atom(s, &mi.import_name)
+            try bc_get_leb128_int(s, &mi.req_module_idx)
+
+    try bc_get_u8(s, &v8)
+    m.has_tla = v8 != 0
+
+    m.func_obj = try js_read_object_rec(s)
+    return obj
