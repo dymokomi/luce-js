@@ -53,6 +53,7 @@ extern func realloc(ptr: void*?, size: usize) -> void*?
 extern func c_free as "free"(ptr: void*?)
 extern func malloc_size(ptr: const void*?) -> usize
 extern func malloc_usable_size(ptr: const void*?) -> usize
+extern func msize as "_msize"(ptr: const void*?) -> usize
 extern func strlen(s: const u8*) -> usize
 extern func strcmp(a: const u8*, b: const u8*) -> i32
 extern func strtod(s: const u8*, endp: (u8*)*?) -> f64
@@ -151,6 +152,10 @@ func js_trace_malloc_ptr_offset(ptr: u8*, dp: TraceMallocData*) -> i64:
 func js_trace_malloc_usable_size(ptr: const void*?) -> usize:
     if platform.macos:
         return malloc_size(ptr)
+    elif platform.windows:
+        return msize(ptr)
+    elif platform.wasm32:
+        return 0
     else:
         return malloc_usable_size(ptr)
 
