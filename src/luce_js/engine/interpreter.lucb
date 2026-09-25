@@ -825,10 +825,13 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                     # plain object, own or (for reads) inherited, found by find_own_property's
                     # hash-chain walk written out here as C inlines it. An accessor, an exotic
                     # object on the way, a read-only or missing property (for writes) and a
-                    # primitive fall through to the outlined body.
+                    # primitive take the opcode's slow path (interp_get_field_slow,
+                    # interp_put_field_slow).
                     .get_field, .get_field2, .get_length:
+                        let atom = atom_length if op == Op.get_length else ((const Operand32*)pc).v
+                        # the exotic object the walk stops at, where the slow path starts
+                        var exotic: Object*? = none
                         if sp[-1].tag == Tag.object:
-                            let atom = atom_length if op == Op.get_length else ((const Operand32*)pc).v
                             var p = sp[-1].u.obj
                             search: while true:
                                 let sh = p.shape
@@ -859,6 +862,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                         continue dispatch
                                     h = prs.hash_next
                                 if p.is_exotic:
+                                    exotic = p
                                     break search
                                 if let proto = sh.proto:
                                     p = proto
@@ -877,9 +881,18 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                     if op != Op.get_length:
                                         pc += 4
                                     continue dispatch
+                        # the slow path, without the outlined body's second walk
+                        st.pc = pc if op == Op.get_length else pc + 4
+                        st.sp = sp
+                        st.opcode = op
+                        if not interp_get_field_slow(&st, exotic, atom):
+                            break dispatch
+                        pc = st.pc
+                        sp = st.sp
+                        continue dispatch
                     .put_field:
+                        let atom = ((const Operand32*)pc).v
                         if sp[-2].tag == Tag.object:
-                            let atom = ((const Operand32*)pc).v
                             let p = sp[-2].u.obj
                             let sh = p.shape
                             let hash_table = (usize)sh +% sizeof(Shape)
@@ -907,6 +920,14 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                     h = 0
                                 else:
                                     h = prs.hash_next
+                        # put_field_slow_path, without the outlined body's second search
+                        st.pc = pc + 4
+                        st.sp = sp
+                        if not interp_put_field_slow(&st, atom):
+                            break dispatch
+                        pc = st.pc
+                        sp = st.sp
+                        continue dispatch
 
                     # Elements of fast arrays at an int index inside them
                     # (GET_ARRAY_EL_INLINE, OP_get_array_el3, OP_put_array_el).
