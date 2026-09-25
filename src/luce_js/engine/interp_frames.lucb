@@ -120,7 +120,12 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
     st.ret_val = js_undefined()
     st.var_refs = none
     st.heap_frame = none
-    js_poll_interrupts(st.caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
+    # js_poll_interrupts, whose countdown is taken here while the handler's call is more
+    # than one step away (it is not expanded inline: it calls)
+    if caller_ctx.interrupt_counter > 1:
+        caller_ctx.interrupt_counter -= 1
+    else:
+        js_poll_interrupts(caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
     if st.func_obj.tag != Tag.object:
         if (flags & call_flag_generator) == 0:
             return enter_not_a_function(st)

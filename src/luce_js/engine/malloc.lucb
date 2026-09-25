@@ -127,8 +127,15 @@ func js_malloc_large(s: MallocContext*, size: usize) -> void*?:
 ## The size of a small block holding `size` user bytes, header included, or none when
 ## the rounding overflows (C would wrap).
 func small_block_total_size(size: usize) -> usize?:
-    let rounded = size +? (js_malloc_align - 1) else return none
-    return (rounded & ~(js_malloc_align - 1)) +? sizeof(MallocBlockHeader)
+    # the overflow tests spelled out: `+?` lowers to a call of the runtime's generic
+    # checked addition, on every allocation
+    let largest: usize = ~(usize)0
+    if size > largest - (js_malloc_align - 1):
+        return none
+    let rounded = (size + (js_malloc_align - 1)) & ~(js_malloc_align - 1)
+    if rounded > largest - sizeof(MallocBlockHeader):
+        return none
+    return rounded + sizeof(MallocBlockHeader)
 
 ## Allocate `size` bytes (__js_malloc); none if the host allocator fails.
 func js_malloc_raw(s: MallocContext*, size: usize) -> void*?:
