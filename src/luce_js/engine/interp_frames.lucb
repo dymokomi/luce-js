@@ -47,7 +47,7 @@ noinline func interp_call(st: InterpState*) -> bool:
     # has_call_argc:
     let call_argv = st.sp - (usize)call_argc
     st.sf.cur_pc = st.pc
-    st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: return false
+    st.ret_val = js_call_internal(st.ctx, call_argv[-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: return false
     if st.opcode == Op.tail_call:
         return true
     interp_call_done(st, call_argc, 1)
@@ -58,7 +58,7 @@ noinline func interp_call_constructor(st: InterpState*) -> bool:
     let call_argc = interp_call_argc(st)
     let call_argv = st.sp - (usize)call_argc
     st.sf.cur_pc = st.pc
-    st.ret_val = js_call_constructor_internal(st.ctx, call_argv[(isize)-2], call_argv[(isize)-1], call_argc, call_argv, 0) catch: return false
+    st.ret_val = js_call_constructor_internal(st.ctx, call_argv[-2], call_argv[-1], call_argc, call_argv, 0) catch: return false
     interp_call_done(st, call_argc, 2)
     return true
 
@@ -68,7 +68,7 @@ noinline func interp_call_method(st: InterpState*) -> bool:
     let call_argc = interp_call_argc(st)
     let call_argv = st.sp - (usize)call_argc
     st.sf.cur_pc = st.pc
-    st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], call_argv[(isize)-2], js_undefined(), call_argc, call_argv, 0) catch: return false
+    st.ret_val = js_call_internal(st.ctx, call_argv[-1], call_argv[-2], js_undefined(), call_argc, call_argv, 0) catch: return false
     if st.opcode == Op.tail_call_method:
         return true
     interp_call_done(st, call_argc, 2)
@@ -207,9 +207,9 @@ noinline func interp_unwind(st: InterpState*) -> bool:
                 let pos = js_value_get_int(val)
                 if pos == 0:
                     # enumerator: close it with a throw
-                    js_free_value(st.ctx, st.sp[(isize)-1]) # drop the next method
+                    js_free_value(st.ctx, st.sp[-1]) # drop the next method
                     st.sp = st.sp - 1
-                    js_iterator_close(st.ctx, st.sp[(isize)-1], true) catch: recover ()
+                    js_iterator_close(st.ctx, st.sp[-1], true) catch: recover ()
                 else:
                     *st.sp = st.rt.current_exception
                     st.sp = st.sp + 1

@@ -145,8 +145,8 @@ inline func get_array_el_inline(ctx: Context*, sf: StackFrame*, pc: const u8*, o
 ## caller pops one slot. Numbers, objects against objects or null/undefined, and strings
 ## are compared here; the rest takes js_eq_slow.
 inline func eq_inline(ctx: Context*, sf: StackFrame*, pc: const u8*, sp: Value*, inv: bool) -> !:
-    let op1 = sp[(isize)-2]
-    let op2 = sp[(isize)-1]
+    let op1 = sp[-2]
+    let op2 = sp[-1]
     let tag1 = op1.tag
     let tag2 = op2.tag
     var res = false
@@ -193,13 +193,13 @@ inline func eq_inline(ctx: Context*, sf: StackFrame*, pc: const u8*, sp: Value*,
         sf.cur_pc = pc
         discard(try js_eq_slow(ctx, sp, inv))
         return
-    sp[(isize)-2] = js_new_bool(res != inv)
+    sp[-2] = js_new_bool(res != inv)
 
 ## OP_CMP_STRICT_EQ: `sp[-2] === sp[-1]` (`inv`: `!==`) into sp[-2], releasing both
 ## operands; the caller pops one slot. It cannot fail.
 inline func strict_eq_inline(ctx: Context*, sp: Value*, inv: bool):
-    let op1 = sp[(isize)-2]
-    let op2 = sp[(isize)-1]
+    let op1 = sp[-2]
+    let op2 = sp[-1]
     let tag1 = op1.tag
     let tag2 = op2.tag
     var res = false
@@ -237,7 +237,7 @@ inline func strict_eq_inline(ctx: Context*, sp: Value*, inv: bool):
         res = js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
         js_free_value(ctx, op1)
         js_free_value(ctx, op2)
-    sp[(isize)-2] = js_new_bool(res != inv)
+    sp[-2] = js_new_bool(res != inv)
 
 ## The two hex digits of a byte, for the "invalid opcode" message (C's `%02x`).
 func hex_byte_prefix(byte: u8) -> str:

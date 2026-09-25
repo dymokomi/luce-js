@@ -17,25 +17,25 @@
 noinline func interp_get_field(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     st.pc = st.pc + 4
-    let val = get_field_inline(st.ctx, st.sf, st.pc, st.sp[(isize)-1], atom) catch: return false
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    st.sp[(isize)-1] = val
+    let val = get_field_inline(st.ctx, st.sf, st.pc, st.sp[-1], atom) catch: return false
+    js_free_value(st.ctx, st.sp[-1])
+    st.sp[-1] = val
     return true
 
 ## The body of OP_get_field2 in JS_CallInternal.
 noinline func interp_get_field2(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     st.pc = st.pc + 4
-    let val = get_field_inline(st.ctx, st.sf, st.pc, st.sp[(isize)-1], atom) catch: return false
+    let val = get_field_inline(st.ctx, st.sf, st.pc, st.sp[-1], atom) catch: return false
     *st.sp = val
     st.sp = st.sp + 1
     return true
 
 ## The body of OP_get_length in JS_CallInternal.
 noinline func interp_get_length(st: InterpState*) -> bool:
-    let val = get_field_inline(st.ctx, st.sf, st.pc, st.sp[(isize)-1], atom_length) catch: return false
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    st.sp[(isize)-1] = val
+    let val = get_field_inline(st.ctx, st.sf, st.pc, st.sp[-1], atom_length) catch: return false
+    js_free_value(st.ctx, st.sp[-1])
+    st.sp[-1] = val
     return true
 
 ## The body of OP_put_field in JS_CallInternal.
@@ -43,7 +43,7 @@ noinline func interp_put_field(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     st.pc = st.pc + 4
 
-    let obj = st.sp[(isize)-2]
+    let obj = st.sp[-2]
     var fast = false
     if obj.tag == Tag.object:
         var pr: Property*? = none
@@ -51,7 +51,7 @@ noinline func interp_put_field(st: InterpState*) -> bool:
             if ((i32)prs.flags & (prop_tmask | prop_writable | prop_length)) == prop_writable:
                 # fast path
                 let found = pr else trap("find_own_property found no property")
-                set_value(st.ctx, &found.u.value, st.sp[(isize)-1])
+                set_value(st.ctx, &found.u.value, st.sp[-1])
                 fast = true
     if fast:
         js_free_value(st.ctx, obj)
@@ -59,7 +59,7 @@ noinline func interp_put_field(st: InterpState*) -> bool:
     else:
         # put_field_slow_path
         st.sf.cur_pc = st.pc
-        let ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[(isize)-1], obj, prop_throw_strict) catch: recover none)
+        let ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[-1], obj, prop_throw_strict) catch: recover none)
         js_free_value(st.ctx, obj)
         st.sp = st.sp - 2
         if ret < 0:
@@ -79,10 +79,10 @@ noinline func interp_private_symbol(st: InterpState*) -> bool:
 
 ## The body of OP_get_private_field in JS_CallInternal.
 noinline func interp_get_private_field(st: InterpState*) -> bool:
-    let val = js_get_private_field(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: recover js_exception()
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    st.sp[(isize)-2] = val
+    let val = js_get_private_field(st.ctx, st.sp[-2], st.sp[-1]) catch: recover js_exception()
+    js_free_value(st.ctx, st.sp[-1])
+    js_free_value(st.ctx, st.sp[-2])
+    st.sp[-2] = val
     st.sp = st.sp - 1
     if js_is_exception(val):
         return false
@@ -91,11 +91,11 @@ noinline func interp_get_private_field(st: InterpState*) -> bool:
 ## The body of OP_put_private_field in JS_CallInternal.
 noinline func interp_put_private_field(st: InterpState*) -> bool:
     var ret: i32 = 0
-    js_set_private_field(st.ctx, st.sp[(isize)-3], st.sp[(isize)-1], st.sp[(isize)-2]) catch:
+    js_set_private_field(st.ctx, st.sp[-3], st.sp[-1], st.sp[-2]) catch:
         ret = -1
         recover ()
-    js_free_value(st.ctx, st.sp[(isize)-3])
-    js_free_value(st.ctx, st.sp[(isize)-1])
+    js_free_value(st.ctx, st.sp[-3])
+    js_free_value(st.ctx, st.sp[-1])
     st.sp = st.sp - 3
     if ret < 0:
         return false
@@ -104,10 +104,10 @@ noinline func interp_put_private_field(st: InterpState*) -> bool:
 ## The body of OP_define_private_field in JS_CallInternal.
 noinline func interp_define_private_field(st: InterpState*) -> bool:
     var ret: i32 = 0
-    js_define_private_field(st.ctx, st.sp[(isize)-3], st.sp[(isize)-2], st.sp[(isize)-1]) catch:
+    js_define_private_field(st.ctx, st.sp[-3], st.sp[-2], st.sp[-1]) catch:
         ret = -1
         recover ()
-    js_free_value(st.ctx, st.sp[(isize)-2])
+    js_free_value(st.ctx, st.sp[-2])
     st.sp = st.sp - 2
     if ret < 0:
         return false
@@ -118,7 +118,7 @@ noinline func interp_define_field(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     st.pc = st.pc + 4
 
-    discard(js_define_property_value(st.ctx, st.sp[(isize)-2], atom, st.sp[(isize)-1], prop_c_w_e | prop_throw) catch:
+    discard(js_define_property_value(st.ctx, st.sp[-2], atom, st.sp[-1], prop_c_w_e | prop_throw) catch:
         st.sp = st.sp - 1
         return false)
     st.sp = st.sp - 1
@@ -129,34 +129,34 @@ noinline func interp_set_name(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     st.pc = st.pc + 4
 
-    js_define_object_name(st.ctx, st.sp[(isize)-1], atom, prop_configurable) catch: return false
+    js_define_object_name(st.ctx, st.sp[-1], atom, prop_configurable) catch: return false
     return true
 
 ## The body of OP_set_name_computed in JS_CallInternal.
 noinline func interp_set_name_computed(st: InterpState*) -> bool:
-    js_define_object_name_computed(st.ctx, st.sp[(isize)-1], st.sp[(isize)-2], prop_configurable) catch: return false
+    js_define_object_name_computed(st.ctx, st.sp[-1], st.sp[-2], prop_configurable) catch: return false
     return true
 
 ## The body of OP_set_proto in JS_CallInternal.
 noinline func interp_set_proto(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
-    let proto = st.sp[(isize)-1]
+    let proto = st.sp[-1]
     if js_is_object(proto) or js_is_null(proto):
-        discard(js_set_prototype_internal(st.ctx, st.sp[(isize)-2], proto, true) catch: return false)
+        discard(js_set_prototype_internal(st.ctx, st.sp[-2], proto, true) catch: return false)
     js_free_value(st.ctx, proto)
     st.sp = st.sp - 1
     return true
 
 ## The body of OP_set_home_object in JS_CallInternal.
 noinline func interp_set_home_object(st: InterpState*):
-    js_method_set_home_object(st.ctx, st.sp[(isize)-1], st.sp[(isize)-2])
+    js_method_set_home_object(st.ctx, st.sp[-1], st.sp[-2])
 
 ## The body of OP_define_method, OP_define_method_computed in JS_CallInternal.
 noinline func interp_define_method(st: InterpState*) -> bool:
     let is_computed = st.opcode == Op.define_method_computed
     var atom: Atom = no_atom
     if is_computed:
-        atom = js_value_to_atom(st.ctx, st.sp[(isize)-2]) catch: return false
+        atom = js_value_to_atom(st.ctx, st.sp[-2]) catch: return false
         # opcode += OP_define_method - OP_define_method_computed
         st.opcode = Op.define_method
     else:
@@ -174,24 +174,24 @@ noinline func interp_define_method(st: InterpState*) -> bool:
     var getter = js_undefined()
     var setter = js_undefined()
     if op_flags == op_define_method_method:
-        value = st.sp[(isize)-1]
+        value = st.sp[-1]
         prop_flags |= prop_has_value | prop_has_writable | prop_writable
     elif op_flags == op_define_method_getter:
-        getter = st.sp[(isize)-1]
+        getter = st.sp[-1]
         prop_flags |= prop_has_get
     else:
-        setter = st.sp[(isize)-1]
+        setter = st.sp[-1]
         prop_flags |= prop_has_set
     var ret: i32 = 0
-    js_method_set_properties(st.ctx, st.sp[(isize)-1], atom, prop_flags, obj) catch:
+    js_method_set_properties(st.ctx, st.sp[-1], atom, prop_flags, obj) catch:
         ret = -1
         recover ()
     if ret >= 0:
         ret = bool_status(js_define_property(st.ctx, obj, atom, value, getter, setter, prop_flags) catch: recover none)
-    js_free_value(st.ctx, st.sp[(isize)-1])
+    js_free_value(st.ctx, st.sp[-1])
     if is_computed:
         js_free_atom(st.ctx, atom)
-        js_free_value(st.ctx, st.sp[(isize)-2])
+        js_free_value(st.ctx, st.sp[-2])
     st.sp = st.sp - (usize)(1 + (i32)is_computed)
     if ret < 0:
         return false
@@ -210,48 +210,48 @@ noinline func interp_define_class(st: InterpState*) -> bool:
 ## The body of OP_get_array_el in JS_CallInternal.
 noinline func interp_get_array_el(st: InterpState*) -> bool:
     # GET_ARRAY_EL_INLINE(get_array_el, 0)
-    let val = get_array_el_inline(st.ctx, st.sf, st.pc, st.sp[(isize)-2], st.sp[(isize)-1]) catch:
+    let val = get_array_el_inline(st.ctx, st.sf, st.pc, st.sp[-2], st.sp[-1]) catch:
         st.sp = st.sp - 1
         return false
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    st.sp[(isize)-2] = val
+    js_free_value(st.ctx, st.sp[-2])
+    st.sp[-2] = val
     st.sp = st.sp - 1
     return true
 
 ## The body of OP_get_array_el2 in JS_CallInternal.
 noinline func interp_get_array_el2(st: InterpState*) -> bool:
     # GET_ARRAY_EL_INLINE(get_array_el2, 1)
-    let val = get_array_el_inline(st.ctx, st.sf, st.pc, st.sp[(isize)-2], st.sp[(isize)-1]) catch:
-        st.sp[(isize)-1] = js_undefined()
+    let val = get_array_el_inline(st.ctx, st.sf, st.pc, st.sp[-2], st.sp[-1]) catch:
+        st.sp[-1] = js_undefined()
         return false
-    st.sp[(isize)-1] = val
+    st.sp[-1] = val
     return true
 
 ## The body of OP_get_array_el3 in JS_CallInternal.
 noinline func interp_get_array_el3(st: InterpState*) -> bool:
     var val = js_undefined()
     var fast = false
-    if st.sp[(isize)-2].tag == Tag.object and st.sp[(isize)-1].tag == Tag.int:
-        let arr = st.sp[(isize)-2].u.obj
-        let idx = (u32)js_value_get_int(st.sp[(isize)-1])
+    if st.sp[-2].tag == Tag.object and st.sp[-1].tag == Tag.int:
+        let arr = st.sp[-2].u.obj
+        let idx = (u32)js_value_get_int(st.sp[-1])
         if arr.class_id == ClassId.array and idx < arr.u.array.count:
             val = js_dup_value(st.ctx, arr.u.array.u.values[(usize)idx])
             fast = true
     if not fast:
         # get_array_el3_slow_path
-        let key_tag = st.sp[(isize)-1].tag
+        let key_tag = st.sp[-1].tag
         # for int, string and symbol keys, undefined and null are
         # tested in JS_GetPropertyValue()
         if not (key_tag == Tag.int or key_tag == Tag.string or key_tag == Tag.symbol):
             # must be tested before JS_ToPropertyKey
-            if js_is_undefined(st.sp[(isize)-2]) or js_is_null(st.sp[(isize)-2]):
+            if js_is_undefined(st.sp[-2]) or js_is_null(st.sp[-2]):
                 js_throw_type_error(st.ctx, "value has no property") catch: return false
             st.sf.cur_pc = st.pc
-            st.ret_val = js_to_property_key(st.ctx, st.sp[(isize)-1]) catch: return false
-            js_free_value(st.ctx, st.sp[(isize)-1])
-            st.sp[(isize)-1] = st.ret_val
+            st.ret_val = js_to_property_key(st.ctx, st.sp[-1]) catch: return false
+            js_free_value(st.ctx, st.sp[-1])
+            st.sp[-1] = st.ret_val
         st.sf.cur_pc = st.pc
-        val = js_get_property_value(st.ctx, st.sp[(isize)-2], js_dup_value(st.ctx, st.sp[(isize)-1])) catch: return false
+        val = js_get_property_value(st.ctx, st.sp[-2], js_dup_value(st.ctx, st.sp[-1])) catch: return false
     *st.sp = val
     st.sp = st.sp + 1
     return true
@@ -259,12 +259,12 @@ noinline func interp_get_array_el3(st: InterpState*) -> bool:
 ## The body of OP_get_ref_value in JS_CallInternal.
 noinline func interp_get_ref_value(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
-    let atom = js_value_to_atom(st.ctx, st.sp[(isize)-1]) catch: return false
-    if js_is_undefined(st.sp[(isize)-2]):
+    let atom = js_value_to_atom(st.ctx, st.sp[-1]) catch: return false
+    if js_is_undefined(st.sp[-2]):
         js_throw_reference_error_not_defined(st.ctx, atom) catch:
             js_free_atom(st.ctx, atom)
             return false
-    let ret = bool_status(js_has_property(st.ctx, st.sp[(isize)-2], atom) catch: recover none)
+    let ret = bool_status(js_has_property(st.ctx, st.sp[-2], atom) catch: recover none)
     var val = js_undefined()
     if ret <= 0:
         if ret < 0:
@@ -276,7 +276,7 @@ noinline func interp_get_ref_value(st: InterpState*) -> bool:
                 return false
         val = js_undefined()
     else:
-        val = js_get_property(st.ctx, st.sp[(isize)-2], atom) catch: recover js_exception()
+        val = js_get_property(st.ctx, st.sp[-2], atom) catch: recover js_exception()
     js_free_atom(st.ctx, atom)
     if js_is_exception(val):
         return false
@@ -287,24 +287,24 @@ noinline func interp_get_ref_value(st: InterpState*) -> bool:
 ## The body of OP_get_super_value in JS_CallInternal.
 noinline func interp_get_super_value(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
-    let atom = js_value_to_atom(st.ctx, st.sp[(isize)-1]) catch: return false
-    let val = js_get_property_internal(st.ctx, st.sp[(isize)-2], atom, st.sp[(isize)-3], false) catch: recover js_exception()
+    let atom = js_value_to_atom(st.ctx, st.sp[-1]) catch: return false
+    let val = js_get_property_internal(st.ctx, st.sp[-2], atom, st.sp[-3], false) catch: recover js_exception()
     js_free_atom(st.ctx, atom)
     if js_is_exception(val):
         return false
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    js_free_value(st.ctx, st.sp[(isize)-3])
-    st.sp[(isize)-3] = val
+    js_free_value(st.ctx, st.sp[-1])
+    js_free_value(st.ctx, st.sp[-2])
+    js_free_value(st.ctx, st.sp[-3])
+    st.sp[-3] = val
     st.sp = st.sp - 2
     return true
 
 ## The body of OP_put_array_el in JS_CallInternal.
 noinline func interp_put_array_el(st: InterpState*) -> bool:
     var fast = false
-    if st.sp[(isize)-3].tag == Tag.object and st.sp[(isize)-2].tag == Tag.int:
-        let arr = st.sp[(isize)-3].u.obj
-        let idx = (u32)js_value_get_int(st.sp[(isize)-2])
+    if st.sp[-3].tag == Tag.object and st.sp[-2].tag == Tag.int:
+        let arr = st.sp[-3].u.obj
+        let idx = (u32)js_value_get_int(st.sp[-2])
         if arr.class_id == ClassId.array:
             if idx >= arr.u.array.count:
                 if idx == arr.u.array.count and arr.fast_array and can_extend_fast_array(arr) and arr.prop[0].u.value.tag == Tag.int:
@@ -320,19 +320,19 @@ noinline func interp_put_array_el(st: InterpState*) -> bool:
                                 arr.prop[0].u.value = js_new_int32((i32)new_len)
                         if length_ok:
                             arr.u.array.count = new_len
-                            arr.u.array.u.values[(usize)idx] = st.sp[(isize)-1]
+                            arr.u.array.u.values[(usize)idx] = st.sp[-1]
                             fast = true
             else:
-                set_value(st.ctx, arr.u.array.u.values + (usize)idx, st.sp[(isize)-1])
+                set_value(st.ctx, arr.u.array.u.values + (usize)idx, st.sp[-1])
                 fast = true
     if fast:
-        js_free_value(st.ctx, st.sp[(isize)-3])
+        js_free_value(st.ctx, st.sp[-3])
         st.sp = st.sp - 3
     else:
         # put_array_el_slow_path
         st.sf.cur_pc = st.pc
-        let ret = bool_status(js_set_property_value(st.ctx, st.sp[(isize)-3], st.sp[(isize)-2], st.sp[(isize)-1], prop_throw_strict) catch: recover none)
-        js_free_value(st.ctx, st.sp[(isize)-3])
+        let ret = bool_status(js_set_property_value(st.ctx, st.sp[-3], st.sp[-2], st.sp[-1], prop_throw_strict) catch: recover none)
+        js_free_value(st.ctx, st.sp[-3])
         st.sp = st.sp - 3
         if ret < 0:
             return false
@@ -341,15 +341,15 @@ noinline func interp_put_array_el(st: InterpState*) -> bool:
 ## The body of OP_put_ref_value in JS_CallInternal.
 noinline func interp_put_ref_value(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
-    let atom = js_value_to_atom(st.ctx, st.sp[(isize)-2]) catch: return false
-    if js_is_undefined(st.sp[(isize)-3]):
+    let atom = js_value_to_atom(st.ctx, st.sp[-2]) catch: return false
+    if js_is_undefined(st.sp[-3]):
         if is_strict_mode(st.ctx):
             js_throw_reference_error_not_defined(st.ctx, atom) catch:
                 js_free_atom(st.ctx, atom)
                 return false
         else:
-            st.sp[(isize)-3] = js_dup_value(st.ctx, st.ctx.global_obj)
-    var ret = bool_status(js_has_property(st.ctx, st.sp[(isize)-3], atom) catch: recover none)
+            st.sp[-3] = js_dup_value(st.ctx, st.ctx.global_obj)
+    var ret = bool_status(js_has_property(st.ctx, st.sp[-3], atom) catch: recover none)
     if ret <= 0:
         if ret < 0:
             js_free_atom(st.ctx, atom)
@@ -358,10 +358,10 @@ noinline func interp_put_ref_value(st: InterpState*) -> bool:
             js_throw_reference_error_not_defined(st.ctx, atom) catch:
                 js_free_atom(st.ctx, atom)
                 return false
-    ret = bool_status(js_set_property_internal(st.ctx, st.sp[(isize)-3], atom, st.sp[(isize)-1], st.sp[(isize)-3], prop_throw_strict) catch: recover none)
+    ret = bool_status(js_set_property_internal(st.ctx, st.sp[-3], atom, st.sp[-1], st.sp[-3], prop_throw_strict) catch: recover none)
     js_free_atom(st.ctx, atom)
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    js_free_value(st.ctx, st.sp[(isize)-3])
+    js_free_value(st.ctx, st.sp[-2])
+    js_free_value(st.ctx, st.sp[-3])
     st.sp = st.sp - 3
     if ret < 0:
         return false
@@ -370,14 +370,14 @@ noinline func interp_put_ref_value(st: InterpState*) -> bool:
 ## The body of OP_put_super_value in JS_CallInternal.
 noinline func interp_put_super_value(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
-    if st.sp[(isize)-3].tag != Tag.object:
+    if st.sp[-3].tag != Tag.object:
         js_throw_type_error_not_an_object(st.ctx) catch: return false
-    let atom = js_value_to_atom(st.ctx, st.sp[(isize)-2]) catch: return false
-    let ret = bool_status(js_set_property_internal(st.ctx, st.sp[(isize)-3], atom, st.sp[(isize)-1], st.sp[(isize)-4], prop_throw_strict) catch: recover none)
+    let atom = js_value_to_atom(st.ctx, st.sp[-2]) catch: return false
+    let ret = bool_status(js_set_property_internal(st.ctx, st.sp[-3], atom, st.sp[-1], st.sp[-4], prop_throw_strict) catch: recover none)
     js_free_atom(st.ctx, atom)
-    js_free_value(st.ctx, st.sp[(isize)-4])
-    js_free_value(st.ctx, st.sp[(isize)-3])
-    js_free_value(st.ctx, st.sp[(isize)-2])
+    js_free_value(st.ctx, st.sp[-4])
+    js_free_value(st.ctx, st.sp[-3])
+    js_free_value(st.ctx, st.sp[-2])
     st.sp = st.sp - 4
     if ret < 0:
         return false
@@ -385,7 +385,7 @@ noinline func interp_put_super_value(st: InterpState*) -> bool:
 
 ## The body of OP_define_array_el in JS_CallInternal.
 noinline func interp_define_array_el(st: InterpState*) -> bool:
-    let ret = bool_status(js_define_property_value_value(st.ctx, st.sp[(isize)-3], js_dup_value(st.ctx, st.sp[(isize)-2]), st.sp[(isize)-1], prop_c_w_e | prop_throw) catch: recover none)
+    let ret = bool_status(js_define_property_value_value(st.ctx, st.sp[-3], js_dup_value(st.ctx, st.sp[-2]), st.sp[-1], prop_c_w_e | prop_throw) catch: recover none)
     st.sp = st.sp - 1
     if ret < 0:
         return false

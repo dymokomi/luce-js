@@ -15,11 +15,11 @@
 
 ## The body of OP_lt in JS_CallInternal.
 noinline func interp_lt(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-2]
-    let op2 = st.sp[(isize)-1]
+    let op1 = st.sp[-2]
+    let op2 = st.sp[-1]
     var slow = false
     if js_value_is_both_int(op1, op2):
-        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) < js_value_get_int(op2))
+        st.sp[-2] = js_new_bool(js_value_get_int(op1) < js_value_get_int(op2))
         st.sp = st.sp - 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
@@ -37,7 +37,7 @@ noinline func interp_lt(st: InterpState*) -> bool:
         else:
             slow = true
         if not slow:
-            st.sp[(isize)-2] = js_new_bool(d1 < d2)
+            st.sp[-2] = js_new_bool(d1 < d2)
             st.sp = st.sp - 1
     else:
         slow = true
@@ -49,11 +49,11 @@ noinline func interp_lt(st: InterpState*) -> bool:
 
 ## The body of OP_lte in JS_CallInternal.
 noinline func interp_lte(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-2]
-    let op2 = st.sp[(isize)-1]
+    let op1 = st.sp[-2]
+    let op2 = st.sp[-1]
     var slow = false
     if js_value_is_both_int(op1, op2):
-        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) <= js_value_get_int(op2))
+        st.sp[-2] = js_new_bool(js_value_get_int(op1) <= js_value_get_int(op2))
         st.sp = st.sp - 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
@@ -71,7 +71,7 @@ noinline func interp_lte(st: InterpState*) -> bool:
         else:
             slow = true
         if not slow:
-            st.sp[(isize)-2] = js_new_bool(d1 <= d2)
+            st.sp[-2] = js_new_bool(d1 <= d2)
             st.sp = st.sp - 1
     else:
         slow = true
@@ -83,11 +83,11 @@ noinline func interp_lte(st: InterpState*) -> bool:
 
 ## The body of OP_gt in JS_CallInternal.
 noinline func interp_gt(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-2]
-    let op2 = st.sp[(isize)-1]
+    let op1 = st.sp[-2]
+    let op2 = st.sp[-1]
     var slow = false
     if js_value_is_both_int(op1, op2):
-        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) > js_value_get_int(op2))
+        st.sp[-2] = js_new_bool(js_value_get_int(op1) > js_value_get_int(op2))
         st.sp = st.sp - 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
@@ -105,7 +105,7 @@ noinline func interp_gt(st: InterpState*) -> bool:
         else:
             slow = true
         if not slow:
-            st.sp[(isize)-2] = js_new_bool(d1 > d2)
+            st.sp[-2] = js_new_bool(d1 > d2)
             st.sp = st.sp - 1
     else:
         slow = true
@@ -117,11 +117,11 @@ noinline func interp_gt(st: InterpState*) -> bool:
 
 ## The body of OP_gte in JS_CallInternal.
 noinline func interp_gte(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-2]
-    let op2 = st.sp[(isize)-1]
+    let op1 = st.sp[-2]
+    let op2 = st.sp[-1]
     var slow = false
     if js_value_is_both_int(op1, op2):
-        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) >= js_value_get_int(op2))
+        st.sp[-2] = js_new_bool(js_value_get_int(op1) >= js_value_get_int(op2))
         st.sp = st.sp - 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
@@ -139,7 +139,7 @@ noinline func interp_gte(st: InterpState*) -> bool:
         else:
             slow = true
         if not slow:
-            st.sp[(isize)-2] = js_new_bool(d1 >= d2)
+            st.sp[-2] = js_new_bool(d1 >= d2)
             st.sp = st.sp - 1
     else:
         slow = true
@@ -196,11 +196,11 @@ noinline func interp_instanceof(st: InterpState*) -> bool:
 
 ## The body of OP_typeof in JS_CallInternal.
 noinline func interp_typeof(st: InterpState*):
-    let op1 = st.sp[(isize)-1]
+    let op1 = st.sp[-1]
     let atom = js_operator_typeof(st.ctx, op1)
     js_free_value(st.ctx, op1)
     # a predefined atom: C does not test for an exception
-    st.sp[(isize)-1] = js_atom_to_string(st.ctx, atom) catch: recover js_exception()
+    st.sp[-1] = js_atom_to_string(st.ctx, atom) catch: recover js_exception()
 
 ## The body of OP_delete in JS_CallInternal.
 noinline func interp_delete(st: InterpState*) -> bool:
@@ -222,21 +222,21 @@ noinline func interp_delete_var(st: InterpState*) -> bool:
 
 ## The body of OP_to_object in JS_CallInternal.
 noinline func interp_to_object(st: InterpState*) -> bool:
-    if st.sp[(isize)-1].tag != Tag.object:
+    if st.sp[-1].tag != Tag.object:
         st.sf.cur_pc = st.pc
-        st.ret_val = js_to_object(st.ctx, st.sp[(isize)-1]) catch: return false
-        js_free_value(st.ctx, st.sp[(isize)-1])
-        st.sp[(isize)-1] = st.ret_val
+        st.ret_val = js_to_object(st.ctx, st.sp[-1]) catch: return false
+        js_free_value(st.ctx, st.sp[-1])
+        st.sp[-1] = st.ret_val
     return true
 
 ## The body of OP_to_propkey in JS_CallInternal.
 noinline func interp_to_propkey(st: InterpState*) -> bool:
-    let tag = st.sp[(isize)-1].tag
+    let tag = st.sp[-1].tag
     if not (tag == Tag.int or tag == Tag.string or tag == Tag.symbol):
         st.sf.cur_pc = st.pc
-        st.ret_val = js_to_property_key(st.ctx, st.sp[(isize)-1]) catch: return false
-        js_free_value(st.ctx, st.sp[(isize)-1])
-        st.sp[(isize)-1] = st.ret_val
+        st.ret_val = js_to_property_key(st.ctx, st.sp[-1]) catch: return false
+        js_free_value(st.ctx, st.sp[-1])
+        st.sp[-1] = st.ret_val
     return true
 
 # mark: with statements =========================================================================
@@ -249,7 +249,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
     st.pc = st.pc + 9
     st.sf.cur_pc = st.pc
 
-    let obj = st.sp[(isize)-1]
+    let obj = st.sp[-1]
     var ret = js_has_property(st.ctx, obj, atom) catch: return false
     var found = ret
     if found and is_with:
@@ -276,15 +276,15 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
                 ret = js_has_property(st.ctx, obj, atom) catch: return false
                 if not ret and is_strict_mode(st.ctx):
                     js_throw_reference_error_not_defined(st.ctx, atom) catch: return false
-                let set_ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[(isize)-2], obj, prop_throw_strict) catch: recover none)
-                js_free_value(st.ctx, st.sp[(isize)-1])
+                let set_ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[-2], obj, prop_throw_strict) catch: recover none)
+                js_free_value(st.ctx, st.sp[-1])
                 st.sp = st.sp - 2
                 if set_ret < 0:
                     return false
             .with_delete_var:
                 ret = js_delete_property(st.ctx, obj, atom, 0) catch: return false
-                js_free_value(st.ctx, st.sp[(isize)-1])
-                st.sp[(isize)-1] = js_new_bool(ret)
+                js_free_value(st.ctx, st.sp[-1])
+                st.sp[-1] = js_new_bool(ret)
             .with_make_ref:
                 # produce a pair object/propname on the stack
                 *st.sp = js_atom_to_value(st.ctx, atom) catch: return false
@@ -306,7 +306,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
         st.pc = st.pc + (isize)(diff - 5)
     else:
         # no_with: if not jumping, drop the object argument
-        js_free_value(st.ctx, st.sp[(isize)-1])
+        js_free_value(st.ctx, st.sp[-1])
         st.sp = st.sp - 1
     return true
 
@@ -314,48 +314,48 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
 
 ## The body of OP_is_undefined_or_null in JS_CallInternal.
 noinline func interp_is_undefined_or_null(st: InterpState*):
-    if st.sp[(isize)-1].tag == Tag.undefined or st.sp[(isize)-1].tag == Tag.null:
+    if st.sp[-1].tag == Tag.undefined or st.sp[-1].tag == Tag.null:
         # set_true
-        st.sp[(isize)-1] = js_true()
+        st.sp[-1] = js_true()
     else:
         # free_and_set_false
-        js_free_value(st.ctx, st.sp[(isize)-1])
-        st.sp[(isize)-1] = js_false()
+        js_free_value(st.ctx, st.sp[-1])
+        st.sp[-1] = js_false()
 
 ## The body of OP_is_undefined in JS_CallInternal.
 noinline func interp_is_undefined(st: InterpState*):
-    if st.sp[(isize)-1].tag == Tag.undefined:
+    if st.sp[-1].tag == Tag.undefined:
         # set_true
-        st.sp[(isize)-1] = js_true()
+        st.sp[-1] = js_true()
     else:
         # free_and_set_false
-        js_free_value(st.ctx, st.sp[(isize)-1])
-        st.sp[(isize)-1] = js_false()
+        js_free_value(st.ctx, st.sp[-1])
+        st.sp[-1] = js_false()
 
 ## The body of OP_is_null in JS_CallInternal.
 noinline func interp_is_null(st: InterpState*):
-    if st.sp[(isize)-1].tag == Tag.null:
+    if st.sp[-1].tag == Tag.null:
         # set_true
-        st.sp[(isize)-1] = js_true()
+        st.sp[-1] = js_true()
     else:
         # free_and_set_false
-        js_free_value(st.ctx, st.sp[(isize)-1])
-        st.sp[(isize)-1] = js_false()
+        js_free_value(st.ctx, st.sp[-1])
+        st.sp[-1] = js_false()
 
 ## The body of OP_typeof_is_undefined in JS_CallInternal.
 noinline func interp_typeof_is_undefined(st: InterpState*):
     # different from OP_is_undefined because of isHTMLDDA
-    let res = js_operator_typeof(st.ctx, st.sp[(isize)-1]) == atom_undefined
+    let res = js_operator_typeof(st.ctx, st.sp[-1]) == atom_undefined
     # free_and_set_true / free_and_set_false
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    st.sp[(isize)-1] = js_new_bool(res)
+    js_free_value(st.ctx, st.sp[-1])
+    st.sp[-1] = js_new_bool(res)
 
 ## The body of OP_typeof_is_function in JS_CallInternal.
 noinline func interp_typeof_is_function(st: InterpState*):
-    let res = js_operator_typeof(st.ctx, st.sp[(isize)-1]) == atom_function
+    let res = js_operator_typeof(st.ctx, st.sp[-1]) == atom_function
     # free_and_set_true / free_and_set_false
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    st.sp[(isize)-1] = js_new_bool(res)
+    js_free_value(st.ctx, st.sp[-1])
+    st.sp[-1] = js_new_bool(res)
 
 ## The body of OP_invalid and DEFAULT in JS_CallInternal.
 noinline func interp_invalid(st: InterpState*) -> bool:

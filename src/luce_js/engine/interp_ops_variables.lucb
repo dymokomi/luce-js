@@ -41,7 +41,7 @@ noinline func interp_put_var(st: InterpState*) -> bool:
         if var_ref.is_lexical != 0:
             if st.opcode == Op.put_var_init:
                 # put_var_ok
-                set_value(st.ctx, var_ref.pvalue, st.sp[(isize)-1])
+                set_value(st.ctx, var_ref.pvalue, st.sp[-1])
                 st.sp = st.sp - 1
             else:
                 if js_is_uninitialized(*var_ref.pvalue):
@@ -56,13 +56,13 @@ noinline func interp_put_var(st: InterpState*) -> bool:
                 return false
             if ret == 0 and is_strict_mode(st.ctx):
                 js_throw_reference_error_not_defined(st.ctx, cv.var_name) catch: return false
-            ret = bool_status(js_set_property_internal(st.ctx, st.ctx.global_obj, cv.var_name, st.sp[(isize)-1], st.ctx.global_obj, prop_throw_strict) catch: recover none)
+            ret = bool_status(js_set_property_internal(st.ctx, st.ctx.global_obj, cv.var_name, st.sp[-1], st.ctx.global_obj, prop_throw_strict) catch: recover none)
             st.sp = st.sp - 1
             if ret < 0:
                 return false
     else:
         # put_var_ok
-        set_value(st.ctx, var_ref.pvalue, st.sp[(isize)-1])
+        set_value(st.ctx, var_ref.pvalue, st.sp[-1])
         st.sp = st.sp - 1
     return true
 
@@ -79,14 +79,14 @@ noinline func interp_get_loc(st: InterpState*):
 noinline func interp_put_loc(st: InterpState*):
     let idx = (usize)cutils.get_u16(st.pc)
     st.pc = st.pc + 2
-    set_value(st.ctx, st.var_buf + idx, st.sp[(isize)-1])
+    set_value(st.ctx, st.var_buf + idx, st.sp[-1])
     st.sp = st.sp - 1
 
 ## The body of OP_set_loc in JS_CallInternal.
 noinline func interp_set_loc(st: InterpState*):
     let idx = (usize)cutils.get_u16(st.pc)
     st.pc = st.pc + 2
-    set_value(st.ctx, st.var_buf + idx, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.var_buf + idx, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_get_arg in JS_CallInternal.
 noinline func interp_get_arg(st: InterpState*):
@@ -99,14 +99,14 @@ noinline func interp_get_arg(st: InterpState*):
 noinline func interp_put_arg(st: InterpState*):
     let idx = (usize)cutils.get_u16(st.pc)
     st.pc = st.pc + 2
-    set_value(st.ctx, st.arg_buf + idx, st.sp[(isize)-1])
+    set_value(st.ctx, st.arg_buf + idx, st.sp[-1])
     st.sp = st.sp - 1
 
 ## The body of OP_set_arg in JS_CallInternal.
 noinline func interp_set_arg(st: InterpState*):
     let idx = (usize)cutils.get_u16(st.pc)
     st.pc = st.pc + 2
-    set_value(st.ctx, st.arg_buf + idx, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.arg_buf + idx, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_get_loc8 in JS_CallInternal.
 noinline func interp_get_loc8(st: InterpState*):
@@ -125,7 +125,7 @@ noinline func interp_put_loc8(st: InterpState*):
 noinline func interp_set_loc8(st: InterpState*):
     let idx = (usize)*st.pc
     st.pc = st.pc + 1
-    set_value(st.ctx, st.var_buf + idx, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.var_buf + idx, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_get_loc0 in JS_CallInternal.
 noinline func interp_get_loc0(st: InterpState*):
@@ -169,19 +169,19 @@ noinline func interp_put_loc3(st: InterpState*):
 
 ## The body of OP_set_loc0 in JS_CallInternal.
 noinline func interp_set_loc0(st: InterpState*):
-    set_value(st.ctx, st.var_buf, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.var_buf, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_loc1 in JS_CallInternal.
 noinline func interp_set_loc1(st: InterpState*):
-    set_value(st.ctx, st.var_buf + 1, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.var_buf + 1, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_loc2 in JS_CallInternal.
 noinline func interp_set_loc2(st: InterpState*):
-    set_value(st.ctx, st.var_buf + 2, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.var_buf + 2, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_loc3 in JS_CallInternal.
 noinline func interp_set_loc3(st: InterpState*):
-    set_value(st.ctx, st.var_buf + 3, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.var_buf + 3, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_get_arg0 in JS_CallInternal.
 noinline func interp_get_arg0(st: InterpState*):
@@ -225,19 +225,19 @@ noinline func interp_put_arg3(st: InterpState*):
 
 ## The body of OP_set_arg0 in JS_CallInternal.
 noinline func interp_set_arg0(st: InterpState*):
-    set_value(st.ctx, st.arg_buf, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.arg_buf, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_arg1 in JS_CallInternal.
 noinline func interp_set_arg1(st: InterpState*):
-    set_value(st.ctx, st.arg_buf + 1, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.arg_buf + 1, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_arg2 in JS_CallInternal.
 noinline func interp_set_arg2(st: InterpState*):
-    set_value(st.ctx, st.arg_buf + 2, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.arg_buf + 2, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_arg3 in JS_CallInternal.
 noinline func interp_set_arg3(st: InterpState*):
-    set_value(st.ctx, st.arg_buf + 3, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.arg_buf + 3, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_get_var_ref0 in JS_CallInternal.
 noinline func interp_get_var_ref0(st: InterpState*):
@@ -281,19 +281,19 @@ noinline func interp_put_var_ref3(st: InterpState*):
 
 ## The body of OP_set_var_ref0 in JS_CallInternal.
 noinline func interp_set_var_ref0(st: InterpState*):
-    set_value(st.ctx, var_ref_at(st.var_refs, 0).pvalue, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, var_ref_at(st.var_refs, 0).pvalue, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_var_ref1 in JS_CallInternal.
 noinline func interp_set_var_ref1(st: InterpState*):
-    set_value(st.ctx, var_ref_at(st.var_refs, 1).pvalue, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, var_ref_at(st.var_refs, 1).pvalue, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_var_ref2 in JS_CallInternal.
 noinline func interp_set_var_ref2(st: InterpState*):
-    set_value(st.ctx, var_ref_at(st.var_refs, 2).pvalue, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, var_ref_at(st.var_refs, 2).pvalue, js_dup_value(st.ctx, st.sp[-1]))
 
 ## The body of OP_set_var_ref3 in JS_CallInternal.
 noinline func interp_set_var_ref3(st: InterpState*):
-    set_value(st.ctx, var_ref_at(st.var_refs, 3).pvalue, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, var_ref_at(st.var_refs, 3).pvalue, js_dup_value(st.ctx, st.sp[-1]))
 
 # mark: Closure variables =======================================================================
 
@@ -309,14 +309,14 @@ noinline func interp_get_var_ref(st: InterpState*):
 noinline func interp_put_var_ref(st: InterpState*):
     let idx = (usize)cutils.get_u16(st.pc)
     st.pc = st.pc + 2
-    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, st.sp[(isize)-1])
+    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, st.sp[-1])
     st.sp = st.sp - 1
 
 ## The body of OP_set_var_ref in JS_CallInternal.
 noinline func interp_set_var_ref(st: InterpState*):
     let idx = (usize)cutils.get_u16(st.pc)
     st.pc = st.pc + 2
-    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, js_dup_value(st.ctx, st.sp[-1]))
 
 # mark: Checked variables and references ========================================================
 
@@ -337,7 +337,7 @@ noinline func interp_put_var_ref_check(st: InterpState*) -> bool:
     st.pc = st.pc + 2
     if js_is_uninitialized(*var_ref_at(st.var_refs, idx).pvalue):
         js_throw_reference_error_uninitialized2(st.ctx, st.b, (i32)idx, true) catch: return false
-    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, st.sp[(isize)-1])
+    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, st.sp[-1])
     st.sp = st.sp - 1
     return true
 
@@ -347,7 +347,7 @@ noinline func interp_put_var_ref_check_init(st: InterpState*) -> bool:
     st.pc = st.pc + 2
     if not js_is_uninitialized(*var_ref_at(st.var_refs, idx).pvalue):
         js_throw_reference_error_uninitialized2(st.ctx, st.b, (i32)idx, true) catch: return false
-    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, st.sp[(isize)-1])
+    set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, st.sp[-1])
     st.sp = st.sp - 1
     return true
 
@@ -383,7 +383,7 @@ noinline func interp_put_loc_check(st: InterpState*) -> bool:
     st.pc = st.pc + 2
     if js_is_uninitialized(st.var_buf[idx]):
         js_throw_reference_error_uninitialized2(st.ctx, st.b, (i32)idx, false) catch: return false
-    set_value(st.ctx, st.var_buf + idx, st.sp[(isize)-1])
+    set_value(st.ctx, st.var_buf + idx, st.sp[-1])
     st.sp = st.sp - 1
     return true
 
@@ -393,7 +393,7 @@ noinline func interp_set_loc_check(st: InterpState*) -> bool:
     st.pc = st.pc + 2
     if js_is_uninitialized(st.var_buf[idx]):
         js_throw_reference_error_uninitialized2(st.ctx, st.b, (i32)idx, false) catch: return false
-    set_value(st.ctx, st.var_buf + idx, js_dup_value(st.ctx, st.sp[(isize)-1]))
+    set_value(st.ctx, st.var_buf + idx, js_dup_value(st.ctx, st.sp[-1]))
     return true
 
 ## The body of OP_put_loc_check_init in JS_CallInternal.
@@ -402,7 +402,7 @@ noinline func interp_put_loc_check_init(st: InterpState*) -> bool:
     st.pc = st.pc + 2
     if not js_is_uninitialized(st.var_buf[idx]):
         js_throw_reference_error(st.ctx, "'this' can be initialized only once") catch: return false
-    set_value(st.ctx, st.var_buf + idx, st.sp[(isize)-1])
+    set_value(st.ctx, st.var_buf + idx, st.sp[-1])
     st.sp = st.sp - 1
     return true
 
@@ -425,7 +425,7 @@ noinline func interp_make_loc_ref(st: InterpState*) -> bool:
         js_rc(var_ref).ref_count += 1
     else:
         var_ref = get_var_ref(st.ctx, st.sf, idx, st.opcode == Op.make_arg_ref) catch: return false
-    let pr = add_property(st.ctx, st.sp[(isize)-1].u.obj, atom, prop_writable | prop_varref) catch:
+    let pr = add_property(st.ctx, st.sp[-1].u.obj, atom, prop_writable | prop_varref) catch:
         free_var_ref(st.rt, var_ref)
         return false
     pr.u.var_ref = var_ref

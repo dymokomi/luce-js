@@ -54,8 +54,8 @@
 #         selects the shared tail of the body. The opcodes that share a body (call0 to
 #         call3 with call, get_var_undef with get_var, ...) are one arm, as in C.
 #       - The large macros are inline functions of interpreter_support.lucb.
-#       - pc, sp and the frame buffers are pointers, exactly as in C; `sp[-1]` is written
-#         `sp[(isize)-1]` (workaround: compiler-issues/negative-pointer-index).
+#       - pc, sp and the frame buffers are pointers, exactly as in C: `sp[-1]` is the top
+#         of the stack.
 #       - C allocates the frame with alloca. Base has no alloca: a frame that fits
 #         `frame_space` (js_call_inline_frame_values values) lives in js_call_internal's
 #         frame, a larger one is js_malloc'ed and released when the call returns.

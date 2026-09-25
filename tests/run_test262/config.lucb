@@ -23,7 +23,7 @@ func find_word(text: const u8*?, word: const u8*) -> const u8*?:
     var p: const u8* = s
     while true:
         let found = strstr(p, word) else return none
-        if (found == s or is_word_sep(*(found - 1))) and is_word_sep(found[len]):
+        if (found == s or is_word_sep(found[-1])) and is_word_sep(found[len]):
             return found
         p = found + len
 
@@ -195,7 +195,7 @@ func find_error(filename: const u8*, pline: i32*?, is_strict: bool) -> u8*?:
     while true:
         let found = strstr(p, filename) else return none
         p = found
-        if (p == file or *(p - 1) == '\n' or *(p - 1) == '(') and p[len] == ':':
+        if (p == file or p[-1] == '\n' or p[-1] == '(') and p[len] == ':':
             var q: const u8* = p + len
             var line: i32 = 1
             if *q == ':':

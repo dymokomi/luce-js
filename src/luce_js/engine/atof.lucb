@@ -115,7 +115,7 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
     var is_float = false
     let p_start = p
     while (to_digit((i32)*p) < radix or
-            ((i32)*p == sep and (radix != 10 or p != p_start + 1 or *(p - 1) != '0') and
+            ((i32)*p == sep and (radix != 10 or p != p_start + 1 or p[-1] != '0') and
              to_digit((i32)p[1]) < radix)):
         p = p + 1
     if (flags & atod_int_only) == 0 and radix == 10:

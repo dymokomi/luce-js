@@ -205,8 +205,8 @@ func js_async_generator_resume_exec(ctx: Context*, s: AsyncGeneratorData*) -> bo
         assert(func_ret.tag == Tag.int)
         let func_ret_code = js_value_get_int(func_ret)
         let cur_sp = fs.frame.cur_sp else trap("js_async_generator_resume_next: the frame is running")
-        let value = *(cur_sp - 1)
-        *(cur_sp - 1) = js_undefined()
+        let value = cur_sp[-1]
+        cur_sp[-1] = js_undefined()
         if func_ret_code == func_ret_yield or func_ret_code == func_ret_yield_star:
             if func_ret_code == func_ret_yield_star:
                 s.state = AsyncGeneratorState.suspended_yield_star
@@ -269,7 +269,7 @@ func js_async_generator_resume_next(ctx: Context*, s: AsyncGeneratorData*):
                     # 'yield' returns a value. 'yield *' also returns a value
                     # in case the 'throw' method is called
                     let cur_sp = fs.frame.cur_sp else trap("js_async_generator_resume_next: the frame is running")
-                    *(cur_sp - 1) = value
+                    cur_sp[-1] = value
                     *cur_sp = js_new_int32(next.completion_type)
                     fs.frame.cur_sp = cur_sp + 1
                     fs.throw_flag = false
@@ -308,7 +308,7 @@ func js_async_generator_resolve_function(ctx: Context*, this_obj: Value, argc: i
         else:
             # return value of await
             let cur_sp = fs.frame.cur_sp else trap("js_async_generator_resolve_function: the frame is running")
-            *(cur_sp - 1) = js_dup_value(ctx, arg)
+            cur_sp[-1] = js_dup_value(ctx, arg)
         js_async_generator_resume_next(ctx, s)
     return js_undefined()
 

@@ -163,152 +163,152 @@ noinline func interp_rest(st: InterpState*) -> bool:
 
 ## The body of OP_drop in JS_CallInternal.
 noinline func interp_drop(st: InterpState*):
-    js_free_value(st.ctx, st.sp[(isize)-1])
+    js_free_value(st.ctx, st.sp[-1])
     st.sp = st.sp - 1
 
 ## The body of OP_nip in JS_CallInternal.
 noinline func interp_nip(st: InterpState*):
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    st.sp[(isize)-2] = st.sp[(isize)-1]
+    js_free_value(st.ctx, st.sp[-2])
+    st.sp[-2] = st.sp[-1]
     st.sp = st.sp - 1
 
 ## The body of OP_nip1 in JS_CallInternal.
 # a b c -> b c
 noinline func interp_nip1(st: InterpState*):
-    js_free_value(st.ctx, st.sp[(isize)-3])
-    st.sp[(isize)-3] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-1]
+    js_free_value(st.ctx, st.sp[-3])
+    st.sp[-3] = st.sp[-2]
+    st.sp[-2] = st.sp[-1]
     st.sp = st.sp - 1
 
 ## The body of OP_dup in JS_CallInternal.
 noinline func interp_dup(st: InterpState*):
-    st.sp[0] = js_dup_value(st.ctx, st.sp[(isize)-1])
+    st.sp[0] = js_dup_value(st.ctx, st.sp[-1])
     st.sp = st.sp + 1
 
 ## The body of OP_dup2 in JS_CallInternal.
 # a b -> a b a b
 noinline func interp_dup2(st: InterpState*):
-    st.sp[0] = js_dup_value(st.ctx, st.sp[(isize)-2])
-    st.sp[1] = js_dup_value(st.ctx, st.sp[(isize)-1])
+    st.sp[0] = js_dup_value(st.ctx, st.sp[-2])
+    st.sp[1] = js_dup_value(st.ctx, st.sp[-1])
     st.sp = st.sp + 2
 
 ## The body of OP_dup3 in JS_CallInternal.
 # a b c -> a b c a b c
 noinline func interp_dup3(st: InterpState*):
-    st.sp[0] = js_dup_value(st.ctx, st.sp[(isize)-3])
-    st.sp[1] = js_dup_value(st.ctx, st.sp[(isize)-2])
-    st.sp[2] = js_dup_value(st.ctx, st.sp[(isize)-1])
+    st.sp[0] = js_dup_value(st.ctx, st.sp[-3])
+    st.sp[1] = js_dup_value(st.ctx, st.sp[-2])
+    st.sp[2] = js_dup_value(st.ctx, st.sp[-1])
     st.sp = st.sp + 3
 
 ## The body of OP_dup1 in JS_CallInternal.
 # a b -> a a b
 noinline func interp_dup1(st: InterpState*):
-    st.sp[0] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = js_dup_value(st.ctx, st.sp[(isize)-2])
+    st.sp[0] = st.sp[-1]
+    st.sp[-1] = js_dup_value(st.ctx, st.sp[-2])
     st.sp = st.sp + 1
 
 ## The body of OP_insert2 in JS_CallInternal.
 # obj a -> a obj a (dup_x1)
 noinline func interp_insert2(st: InterpState*):
-    st.sp[0] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = js_dup_value(st.ctx, st.sp[0])
+    st.sp[0] = st.sp[-1]
+    st.sp[-1] = st.sp[-2]
+    st.sp[-2] = js_dup_value(st.ctx, st.sp[0])
     st.sp = st.sp + 1
 
 ## The body of OP_insert3 in JS_CallInternal.
 # obj prop a -> a obj prop a (dup_x2)
 noinline func interp_insert3(st: InterpState*):
-    st.sp[0] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = js_dup_value(st.ctx, st.sp[0])
+    st.sp[0] = st.sp[-1]
+    st.sp[-1] = st.sp[-2]
+    st.sp[-2] = st.sp[-3]
+    st.sp[-3] = js_dup_value(st.ctx, st.sp[0])
     st.sp = st.sp + 1
 
 ## The body of OP_insert4 in JS_CallInternal.
 # this obj prop a -> a this obj prop a
 noinline func interp_insert4(st: InterpState*):
-    st.sp[0] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = st.sp[(isize)-4]
-    st.sp[(isize)-4] = js_dup_value(st.ctx, st.sp[0])
+    st.sp[0] = st.sp[-1]
+    st.sp[-1] = st.sp[-2]
+    st.sp[-2] = st.sp[-3]
+    st.sp[-3] = st.sp[-4]
+    st.sp[-4] = js_dup_value(st.ctx, st.sp[0])
     st.sp = st.sp + 1
 
 ## The body of OP_perm3 in JS_CallInternal.
 # obj a b -> a obj b (213)
 noinline func interp_perm3(st: InterpState*):
-    let tmp = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = tmp
+    let tmp = st.sp[-2]
+    st.sp[-2] = st.sp[-3]
+    st.sp[-3] = tmp
 
 ## The body of OP_rot3l in JS_CallInternal.
 # x a b -> a b x (231)
 noinline func interp_rot3l(st: InterpState*):
-    let tmp = st.sp[(isize)-3]
-    st.sp[(isize)-3] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = tmp
+    let tmp = st.sp[-3]
+    st.sp[-3] = st.sp[-2]
+    st.sp[-2] = st.sp[-1]
+    st.sp[-1] = tmp
 
 ## The body of OP_rot4l in JS_CallInternal.
 # x a b c -> a b c x
 noinline func interp_rot4l(st: InterpState*):
-    let tmp = st.sp[(isize)-4]
-    st.sp[(isize)-4] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = tmp
+    let tmp = st.sp[-4]
+    st.sp[-4] = st.sp[-3]
+    st.sp[-3] = st.sp[-2]
+    st.sp[-2] = st.sp[-1]
+    st.sp[-1] = tmp
 
 ## The body of OP_rot5l in JS_CallInternal.
 # x a b c d -> a b c d x
 noinline func interp_rot5l(st: InterpState*):
-    let tmp = st.sp[(isize)-5]
-    st.sp[(isize)-5] = st.sp[(isize)-4]
-    st.sp[(isize)-4] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = tmp
+    let tmp = st.sp[-5]
+    st.sp[-5] = st.sp[-4]
+    st.sp[-4] = st.sp[-3]
+    st.sp[-3] = st.sp[-2]
+    st.sp[-2] = st.sp[-1]
+    st.sp[-1] = tmp
 
 ## The body of OP_rot3r in JS_CallInternal.
 # a b x -> x a b (312)
 noinline func interp_rot3r(st: InterpState*):
-    let tmp = st.sp[(isize)-1]
-    st.sp[(isize)-1] = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = tmp
+    let tmp = st.sp[-1]
+    st.sp[-1] = st.sp[-2]
+    st.sp[-2] = st.sp[-3]
+    st.sp[-3] = tmp
 
 ## The body of OP_perm4 in JS_CallInternal.
 # obj prop a b -> a obj prop b
 noinline func interp_perm4(st: InterpState*):
-    let tmp = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = st.sp[(isize)-4]
-    st.sp[(isize)-4] = tmp
+    let tmp = st.sp[-2]
+    st.sp[-2] = st.sp[-3]
+    st.sp[-3] = st.sp[-4]
+    st.sp[-4] = tmp
 
 ## The body of OP_perm5 in JS_CallInternal.
 # this obj prop a b -> a this obj prop b
 noinline func interp_perm5(st: InterpState*):
-    let tmp = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-3]
-    st.sp[(isize)-3] = st.sp[(isize)-4]
-    st.sp[(isize)-4] = st.sp[(isize)-5]
-    st.sp[(isize)-5] = tmp
+    let tmp = st.sp[-2]
+    st.sp[-2] = st.sp[-3]
+    st.sp[-3] = st.sp[-4]
+    st.sp[-4] = st.sp[-5]
+    st.sp[-5] = tmp
 
 ## The body of OP_swap in JS_CallInternal.
 # a b -> b a
 noinline func interp_swap(st: InterpState*):
-    let tmp = st.sp[(isize)-2]
-    st.sp[(isize)-2] = st.sp[(isize)-1]
-    st.sp[(isize)-1] = tmp
+    let tmp = st.sp[-2]
+    st.sp[-2] = st.sp[-1]
+    st.sp[-1] = tmp
 
 ## The body of OP_swap2 in JS_CallInternal.
 # a b c d -> c d a b
 noinline func interp_swap2(st: InterpState*):
-    let tmp1 = st.sp[(isize)-4]
-    let tmp2 = st.sp[(isize)-3]
-    st.sp[(isize)-4] = st.sp[(isize)-2]
-    st.sp[(isize)-3] = st.sp[(isize)-1]
-    st.sp[(isize)-2] = tmp1
-    st.sp[(isize)-1] = tmp2
+    let tmp1 = st.sp[-4]
+    let tmp2 = st.sp[-3]
+    st.sp[-4] = st.sp[-2]
+    st.sp[-3] = st.sp[-1]
+    st.sp[-2] = tmp1
+    st.sp[-1] = tmp2
 
 # mark: Closures, calls and constructors ========================================================
 
@@ -338,10 +338,10 @@ noinline func interp_apply(st: InterpState*) -> bool:
     st.pc = st.pc + 2
     st.sf.cur_pc = st.pc
 
-    st.ret_val = js_function_apply(st.ctx, st.sp[(isize)-3], 2, st.sp - 2, magic) catch: return false
-    js_free_value(st.ctx, st.sp[(isize)-3])
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.ret_val = js_function_apply(st.ctx, st.sp[-3], 2, st.sp - 2, magic) catch: return false
+    js_free_value(st.ctx, st.sp[-3])
+    js_free_value(st.ctx, st.sp[-2])
+    js_free_value(st.ctx, st.sp[-1])
     st.sp = st.sp - 3
     *st.sp = st.ret_val
     st.sp = st.sp + 1
@@ -350,8 +350,8 @@ noinline func interp_apply(st: InterpState*) -> bool:
 ## The body of OP_check_ctor_return in JS_CallInternal.
 noinline func interp_check_ctor_return(st: InterpState*) -> bool:
     # return TRUE if 'this' should be returned
-    if not js_is_object(st.sp[(isize)-1]):
-        if not js_is_undefined(st.sp[(isize)-1]):
+    if not js_is_object(st.sp[-1]):
+        if not js_is_undefined(st.sp[-1]):
             js_throw_type_error(st.caller_ctx, "derived class constructor must return an object or undefined") catch: return false
         st.sp[0] = js_true()
     else:
@@ -383,16 +383,16 @@ noinline func interp_init_ctor(st: InterpState*) -> bool:
 
 ## The body of OP_check_brand in JS_CallInternal.
 noinline func interp_check_brand(st: InterpState*) -> bool:
-    let ret = js_check_brand(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: return false
+    let ret = js_check_brand(st.ctx, st.sp[-2], st.sp[-1]) catch: return false
     if not ret:
         js_throw_type_error(st.ctx, "invalid brand on object") catch: return false
     return true
 
 ## The body of OP_add_brand in JS_CallInternal.
 noinline func interp_add_brand(st: InterpState*) -> bool:
-    js_add_brand(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: return false
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    js_free_value(st.ctx, st.sp[(isize)-1])
+    js_add_brand(st.ctx, st.sp[-2], st.sp[-1]) catch: return false
+    js_free_value(st.ctx, st.sp[-2])
+    js_free_value(st.ctx, st.sp[-1])
     st.sp = st.sp - 2
     return true
 
@@ -430,13 +430,13 @@ noinline func interp_eval(st: InterpState*) -> bool:
     st.pc = st.pc + 4
     let call_argv = st.sp - (usize)call_argc
     st.sf.cur_pc = st.pc
-    if js_same_value_internal(st.ctx, call_argv[(isize)-1], st.ctx.eval_obj):
+    if js_same_value_internal(st.ctx, call_argv[-1], st.ctx.eval_obj):
         var obj = js_undefined()
         if call_argc >= 1:
             obj = call_argv[0]
         st.ret_val = js_eval_object(st.ctx, js_undefined(), obj, eval_type_direct, scope_idx) catch: return false
     else:
-        st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: return false
+        st.ret_val = js_call_internal(st.ctx, call_argv[-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: return false
     var i: isize = -1
     while i < (isize)call_argc:
         js_free_value(st.ctx, call_argv[i])
@@ -452,19 +452,19 @@ noinline func interp_apply_eval(st: InterpState*) -> bool:
     st.pc = st.pc + 2
     st.sf.cur_pc = st.pc
     var len: u32 = 0
-    let tab = build_arg_list(st.ctx, &len, st.sp[(isize)-1]) catch: return false
-    if js_same_value_internal(st.ctx, st.sp[(isize)-2], st.ctx.eval_obj):
+    let tab = build_arg_list(st.ctx, &len, st.sp[-1]) catch: return false
+    if js_same_value_internal(st.ctx, st.sp[-2], st.ctx.eval_obj):
         var obj = js_undefined()
         if len >= 1:
             obj = tab[0]
         st.ret_val = js_eval_object(st.ctx, js_undefined(), obj, eval_type_direct, scope_idx) catch: recover js_exception()
     else:
-        st.ret_val = js_call(st.ctx, st.sp[(isize)-2], js_undefined(), (i32)len, tab) catch: recover js_exception()
+        st.ret_val = js_call(st.ctx, st.sp[-2], js_undefined(), (i32)len, tab) catch: recover js_exception()
     free_arg_list(st.ctx, tab, len)
     if js_is_exception(st.ret_val):
         return false
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    js_free_value(st.ctx, st.sp[(isize)-1])
+    js_free_value(st.ctx, st.sp[-2])
+    js_free_value(st.ctx, st.sp[-1])
     st.sp = st.sp - 2
     *st.sp = st.ret_val
     st.sp = st.sp + 1
@@ -472,26 +472,26 @@ noinline func interp_apply_eval(st: InterpState*) -> bool:
 
 ## The body of OP_regexp in JS_CallInternal.
 noinline func interp_regexp(st: InterpState*) -> bool:
-    st.sp[(isize)-2] = js_new_regexp(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: recover js_exception()
+    st.sp[-2] = js_new_regexp(st.ctx, st.sp[-2], st.sp[-1]) catch: recover js_exception()
     st.sp = st.sp - 1
-    if js_is_exception(st.sp[(isize)-1]):
+    if js_is_exception(st.sp[-1]):
         return false
     return true
 
 ## The body of OP_get_super in JS_CallInternal.
 noinline func interp_get_super(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
-    let proto = js_get_prototype(st.ctx, st.sp[(isize)-1]) catch: return false
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    st.sp[(isize)-1] = proto
+    let proto = js_get_prototype(st.ctx, st.sp[-1]) catch: return false
+    js_free_value(st.ctx, st.sp[-1])
+    st.sp[-1] = proto
     return true
 
 ## The body of OP_import in JS_CallInternal.
 noinline func interp_import(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
-    let val = js_dynamic_import(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: return false
-    js_free_value(st.ctx, st.sp[(isize)-2])
-    js_free_value(st.ctx, st.sp[(isize)-1])
+    let val = js_dynamic_import(st.ctx, st.sp[-2], st.sp[-1]) catch: return false
+    js_free_value(st.ctx, st.sp[-2])
+    js_free_value(st.ctx, st.sp[-1])
     st.sp = st.sp - 1
-    st.sp[(isize)-1] = val
+    st.sp[-1] = val
     return true

@@ -81,8 +81,8 @@ func js_async_function_resume(ctx: Context*, s: AsyncFunctionState*):
         js_free_value(ctx, ret2) # XXX: what to do if exception ?
     else:
         let cur_sp = s.frame.cur_sp else trap("js_async_function_resume: the frame is running")
-        let value = *(cur_sp - 1)
-        *(cur_sp - 1) = js_undefined()
+        let value = cur_sp[-1]
+        cur_sp[-1] = js_undefined()
 
         # await
         js_free_value(ctx, func_ret) # not used
@@ -103,7 +103,7 @@ func js_async_function_resolve_call(ctx: Context*, func_obj: Value, this_obj: Va
     else:
         # return value of await
         let cur_sp = s.frame.cur_sp else trap("js_async_function_resolve_call: the frame is running")
-        *(cur_sp - 1) = js_dup_value(ctx, arg)
+        cur_sp[-1] = js_dup_value(ctx, arg)
     js_async_function_resume(ctx, s)
     return js_undefined()
 

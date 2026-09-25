@@ -33,7 +33,7 @@ noinline func interp_goto8(st: InterpState*) -> bool:
 
 ## The body of OP_if_true in JS_CallInternal.
 noinline func interp_if_true(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-1]
+    let op1 = st.sp[-1]
     st.pc = st.pc + 4
     var res = false
     if (u64)op1.tag <= (u64)Tag.undefined:
@@ -48,7 +48,7 @@ noinline func interp_if_true(st: InterpState*) -> bool:
 
 ## The body of OP_if_false in JS_CallInternal.
 noinline func interp_if_false(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-1]
+    let op1 = st.sp[-1]
     st.pc = st.pc + 4
     var res = false
     # quick and dirty test for JS_TAG_INT, JS_TAG_BOOL, JS_TAG_NULL and
@@ -65,7 +65,7 @@ noinline func interp_if_false(st: InterpState*) -> bool:
 
 ## The body of OP_if_true8 in JS_CallInternal.
 noinline func interp_if_true8(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-1]
+    let op1 = st.sp[-1]
     st.pc = st.pc + 1
     var res = false
     if (u64)op1.tag <= (u64)Tag.undefined:
@@ -74,13 +74,13 @@ noinline func interp_if_true8(st: InterpState*) -> bool:
         res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
     st.sp = st.sp - 1
     if res:
-        st.pc = st.pc + (isize)((i32)(i8)st.pc[(isize)-1] - 1)
+        st.pc = st.pc + (isize)((i32)(i8)st.pc[-1] - 1)
     js_poll_interrupts(st.ctx) catch: return false
     return true
 
 ## The body of OP_if_false8 in JS_CallInternal.
 noinline func interp_if_false8(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-1]
+    let op1 = st.sp[-1]
     st.pc = st.pc + 1
     var res = false
     if (u64)op1.tag <= (u64)Tag.undefined:
@@ -89,7 +89,7 @@ noinline func interp_if_false8(st: InterpState*) -> bool:
         res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
     st.sp = st.sp - 1
     if not res:
-        st.pc = st.pc + (isize)((i32)(i8)st.pc[(isize)-1] - 1)
+        st.pc = st.pc + (isize)((i32)(i8)st.pc[-1] - 1)
     js_poll_interrupts(st.ctx) catch: return false
     return true
 
@@ -112,7 +112,7 @@ noinline func interp_gosub(st: InterpState*):
 
 ## The body of OP_ret in JS_CallInternal.
 noinline func interp_ret(st: InterpState*) -> bool:
-    let op1 = st.sp[(isize)-1]
+    let op1 = st.sp[-1]
     if op1.tag != Tag.int or (u32)js_value_get_int(op1) >= (u32)st.b.byte_code_len:
         # ret_fail
         js_throw_internal_error(st.ctx, "invalid ret value") catch: return false
@@ -179,7 +179,7 @@ noinline func interp_iterator_get_value_done(st: InterpState*) -> bool:
 
 ## The body of OP_iterator_check_object in JS_CallInternal.
 noinline func interp_iterator_check_object(st: InterpState*) -> bool:
-    if not js_is_object(st.sp[(isize)-1]):
+    if not js_is_object(st.sp[-1]):
         js_throw_type_error(st.ctx, "iterator must return an object") catch: return false
     return true
 
@@ -187,12 +187,12 @@ noinline func interp_iterator_check_object(st: InterpState*) -> bool:
 noinline func interp_iterator_close(st: InterpState*) -> bool:
     # iter_obj next catch_offset ->
     st.sp = st.sp - 1 # drop the catch offset to avoid getting caught by exception
-    js_free_value(st.ctx, st.sp[(isize)-1]) # drop the next method
+    js_free_value(st.ctx, st.sp[-1]) # drop the next method
     st.sp = st.sp - 1
-    if not js_is_undefined(st.sp[(isize)-1]):
+    if not js_is_undefined(st.sp[-1]):
         st.sf.cur_pc = st.pc
-        js_iterator_close(st.ctx, st.sp[(isize)-1], false) catch: return false
-        js_free_value(st.ctx, st.sp[(isize)-1])
+        js_iterator_close(st.ctx, st.sp[-1], false) catch: return false
+        js_free_value(st.ctx, st.sp[-1])
     st.sp = st.sp - 1
     return true
 
@@ -201,23 +201,23 @@ noinline func interp_nip_catch(st: InterpState*) -> bool:
     # catch_offset ... ret_val -> ret_eval
     st.sp = st.sp - 1
     let nip_val = *st.sp
-    while st.sp > st.stack_buf and st.sp[(isize)-1].tag != Tag.catch_offset:
+    while st.sp > st.stack_buf and st.sp[-1].tag != Tag.catch_offset:
         st.sp = st.sp - 1
         js_free_value(st.ctx, *st.sp)
     if st.sp == st.stack_buf:
         js_throw_internal_error(st.ctx, "nip_catch") catch:
             js_free_value(st.ctx, nip_val)
             return false
-    st.sp[(isize)-1] = nip_val
+    st.sp[-1] = nip_val
     return true
 
 ## The body of OP_iterator_next in JS_CallInternal.
 noinline func interp_iterator_next(st: InterpState*) -> bool:
     # stack: iter_obj next catch_offset val
     st.sf.cur_pc = st.pc
-    let ret = js_call(st.ctx, st.sp[(isize)-3], st.sp[(isize)-4], 1, st.sp - 1) catch: return false
-    js_free_value(st.ctx, st.sp[(isize)-1])
-    st.sp[(isize)-1] = ret
+    let ret = js_call(st.ctx, st.sp[-3], st.sp[-4], 1, st.sp - 1) catch: return false
+    js_free_value(st.ctx, st.sp[-1])
+    st.sp[-1] = ret
     return true
 
 ## The body of OP_iterator_call in JS_CallInternal.
@@ -226,7 +226,7 @@ noinline func interp_iterator_call(st: InterpState*) -> bool:
     let iter_flags = (i32)*st.pc
     st.pc = st.pc + 1
     st.sf.cur_pc = st.pc
-    let method = js_get_property(st.ctx, st.sp[(isize)-4], atom_throw if (iter_flags & 1) != 0 else atom_return) catch: return false
+    let method = js_get_property(st.ctx, st.sp[-4], atom_throw if (iter_flags & 1) != 0 else atom_return) catch: return false
     var ret_flag = false
     if js_is_undefined(method) or js_is_null(method):
         ret_flag = true
@@ -234,11 +234,11 @@ noinline func interp_iterator_call(st: InterpState*) -> bool:
         var ret = js_undefined()
         if (iter_flags & 2) != 0:
             # no argument
-            ret = js_call_free(st.ctx, method, st.sp[(isize)-4], 0, st.sp) catch: return false
+            ret = js_call_free(st.ctx, method, st.sp[-4], 0, st.sp) catch: return false
         else:
-            ret = js_call_free(st.ctx, method, st.sp[(isize)-4], 1, st.sp - 1) catch: return false
-        js_free_value(st.ctx, st.sp[(isize)-1])
-        st.sp[(isize)-1] = ret
+            ret = js_call_free(st.ctx, method, st.sp[-4], 1, st.sp - 1) catch: return false
+        js_free_value(st.ctx, st.sp[-1])
+        st.sp[-1] = ret
         ret_flag = false
     st.sp[0] = js_new_bool(ret_flag)
     st.sp = st.sp + 1
@@ -246,10 +246,10 @@ noinline func interp_iterator_call(st: InterpState*) -> bool:
 
 ## The body of OP_lnot in JS_CallInternal.
 noinline func interp_lnot(st: InterpState*):
-    let op1 = st.sp[(isize)-1]
+    let op1 = st.sp[-1]
     var res = false
     if (u64)op1.tag <= (u64)Tag.undefined:
         res = js_value_get_int(op1) != 0
     else:
         res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
-    st.sp[(isize)-1] = js_new_bool(not res)
+    st.sp[-1] = js_new_bool(not res)

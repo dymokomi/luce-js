@@ -70,11 +70,11 @@ func build_for_in_iterator(ctx: Context*, obj_in: Value) -> Value!:
 # obj -> enum_obj
 ## OP_for_in_start: replace the object at sp[-1] by its ForInIterator.
 func js_for_in_start(ctx: Context*, sp: Value*) -> !:
-    let enum_obj = build_for_in_iterator(ctx, *(sp - 1)) catch failure:
+    let enum_obj = build_for_in_iterator(ctx, sp[-1]) catch failure:
         # the object was consumed
-        *(sp - 1) = js_exception()
+        sp[-1] = js_exception()
         error(failure.code, failure.message)
-    *(sp - 1) = enum_obj
+    sp[-1] = enum_obj
 
 # mark: Stepping ================================================================================
 
@@ -187,7 +187,7 @@ func js_for_in_next_key(ctx: Context*, enum_obj: Value) -> Atom?!:
 # enum_obj -> enum_obj value done
 ## OP_for_in_next: push the next key and false, or undefined and true at the end.
 func js_for_in_next(ctx: Context*, sp: Value*) -> !:
-    let enum_obj = *(sp - 1)
+    let enum_obj = sp[-1]
     # fail safe
     if enum_obj.tag == Tag.object and enum_obj.u.obj.class_id == ClassId.for_in_iterator:
         if let prop = try js_for_in_next_key(ctx, enum_obj):
