@@ -1,0 +1,124 @@
+#==============================================================================================
+#
+#   array_iterator - Array and String iterators, and closing iterators on failure
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 43565-43689: the state of an Array Iterator (also used
+#       by the String Iterator), its finalizer and marker, js_create_array_iterator
+#       (Array.prototype.values/keys/entries and String.prototype[Symbol.iterator]) and
+#       its `next`. The JS_IteratorClose helpers below serve the array and iterator
+#       builtins of this region.
+#
+#==============================================================================================
+
+# mark: Closing iterators =======================================================================
+
+# JS_IteratorClose with QuickJS's status turned into a plain failure, whatever the
+# result type of js_iterator_close.
+func js_iterator_close_checked(ctx: Context*, enum_obj: Value, is_exception_pending: bool) -> !:
+    try js_iterator_close(ctx, enum_obj, is_exception_pending)
+
+## JS_IteratorClose whose result is ignored, as QuickJS does on its failure paths. With
+## `is_exception_pending`, the pending exception stays the one reported.
+func js_iterator_close_ignore(ctx: Context*, enum_obj: Value, is_exception_pending: bool):
+    js_iterator_close_checked(ctx, enum_obj, is_exception_pending) catch: return
+
+## The `fail` label of the iterator builtins: close `enum_obj`, preserving the pending
+## exception, and fail with it.
+func js_iterator_close_fail(ctx: Context*, enum_obj: Value) -> never!:
+    js_iterator_close_ignore(ctx, enum_obj, true)
+    error(exception, "")
+
+## JS_IteratorNext storing QuickJS's `int` done flag: js_iterator_next reports it as a bool.
+func js_iterator_next_pdone(ctx: Context*, enum_obj: Value, method: Value, pdone: i32*) -> Value!:
+    var no_args = js_undefined()
+    var done = false
+    let ret = js_iterator_next(ctx, enum_obj, method, 0, &no_args, &done) catch failure:
+        *pdone = (i32)done
+        error(failure.code, failure.message)
+    *pdone = (i32)done
+    return ret
+
+# mark: Array iterators =========================================================================
+
+## The state of an Array Iterator or a String Iterator (JSArrayIteratorData).
+struct ArrayIteratorData:
+    ## The iterated object, undefined once the iterator is done.
+    var obj: Value
+    var kind: IteratorKind
+    var idx: u32
+
+## Finalizer of the Array Iterator and String Iterator classes.
+func js_array_iterator_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (ArrayIteratorData*)raw
+        js_free_value_rt(rt, it.obj)
+        js_free_rt(rt, it)
+
+## Marker of the Array Iterator and String Iterator classes.
+func js_array_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (ArrayIteratorData*)raw
+        js_mark_value(rt, it.obj, mark_func)
+
+## A new Array Iterator over `this` (magic: the IteratorKind in the low 2 bits), or a
+## String Iterator over `ToString(this)` when bit 2 is set.
+func js_create_array_iterator(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let kind = (IteratorKind)(magic & 3)
+    var arr: Value = ---
+    var class_id: ClassId = ---
+    if (magic & 4) != 0:
+        # string iterator case
+        arr = try js_to_string_check_object(ctx, this_val)
+        class_id = ClassId.string_iterator
+    else:
+        arr = try js_to_object(ctx, this_val)
+        class_id = ClassId.array_iterator
+    errdefer js_free_value(ctx, arr)
+    let enum_obj = try js_new_object_class(ctx, (i32)class_id)
+    errdefer js_free_value(ctx, enum_obj)
+    let it = (ArrayIteratorData*)(try js_malloc(ctx, sizeof(ArrayIteratorData)))
+    it.obj = arr
+    it.kind = kind
+    it.idx = 0
+    js_set_opaque(enum_obj, it)
+    return enum_obj
+
+## `next` of the Array Iterator prototype.
+func js_array_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*, magic: i32) -> Value!:
+    # fail1: an exception leaves the iterator not done
+    *pdone = 0
+    let it = (ArrayIteratorData*)(try js_get_opaque2(ctx, this_val, (u32)ClassId.array_iterator))
+    if js_is_undefined(it.obj):
+        # done
+        *pdone = 1
+        return js_undefined()
+    let p = it.obj.u.obj
+    var len: u32 = 0
+    if (u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array:
+        if typed_array_is_oob(p):
+            try js_throw_type_error_array_buffer_oob(ctx)
+        len = p.u.array.count
+    else:
+        try js_get_length32(ctx, &len, it.obj)
+    let idx = it.idx
+    if idx >= len:
+        js_free_value(ctx, it.obj)
+        it.obj = js_undefined()
+        # done
+        *pdone = 1
+        return js_undefined()
+    it.idx = idx + 1
+    *pdone = 0
+    if it.kind == IteratorKind.key:
+        return js_new_uint32(idx)
+    let val = try js_get_property_uint32(ctx, it.obj, idx)
+    if it.kind == IteratorKind.value:
+        return val
+    defer js_free_value(ctx, val)
+    let num = js_new_uint32(idx)
+    defer js_free_value(ctx, num)
+    var args: Value[2] = [num, val]
+    return try js_create_array(ctx, 2, &args[0])

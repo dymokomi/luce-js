@@ -1,0 +1,196 @@
+#==============================================================================================
+#
+#   array_sort - Array.prototype.sort and toSorted
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Array sort" (lines 43349-43563): the present, non-undefined
+#       elements are copied into a slot array, sorted stably with rqsort and the
+#       comparison below (a user comparator, or string comparison of their ToString),
+#       and written back; the undefined elements follow and the holes stay at the end.
+#
+#==============================================================================================
+
+# mark: Comparison ==============================================================================
+
+## An element being sorted (ValueSlot): its value, its ToString when computed, and its
+## original index, which keeps the sort stable.
+struct ValueSlot:
+    var val: Value
+    var str: String*?
+    var pos: i64
+
+## The state the comparison shares with js_array_sort (struct array_sort_context). A
+## failed comparison records `exception` and the remaining comparisons answer 0.
+struct ArraySortContext:
+    var ctx: Context*
+    var exception: bool
+    var has_method: bool
+    var method: Value
+
+## The comparison of two slots for rqsort; `opaque` is the ArraySortContext.
+func js_array_cmp_generic(a: const void*, b: const void*, opaque: void*?) -> i32:
+    let raw = opaque else trap("js_array_cmp_generic without its context")
+    let psc = (ArraySortContext*)raw
+    let ap = (ValueSlot*)a
+    let bp = (ValueSlot*)b
+
+    if psc.exception:
+        return 0
+
+    let cmp = js_array_cmp_slots(psc, ap, bp) catch:
+        psc.exception = true
+        recover 0
+    if cmp != 0:
+        return cmp
+    # make sort stable: compare array offsets
+    return (i32)(ap.pos > bp.pos) - (i32)(ap.pos < bp.pos)
+
+# The comparison of js_array_cmp_generic before the tie on the offsets (cmp_same): the
+# sign of the user comparator, or of the string comparison.
+func js_array_cmp_slots(psc: ArraySortContext*, ap: ValueSlot*, bp: ValueSlot*) -> i32!:
+    let ctx = psc.ctx
+    if psc.has_method:
+        # custom sort function is specified as returning 0 for identical
+        # objects: avoid method call overhead.
+        if cutils.memcmp(&ap.val, &bp.val, sizeof(Value)) == 0:
+            return 0
+        var args: Value[2] = [ap.val, bp.val]
+        let res = try js_call(ctx, psc.method, js_undefined(), 2, &args[0])
+        if res.tag == Tag.int:
+            let val = js_value_get_int(res)
+            return (i32)(val > 0) - (i32)(val < 0)
+        var val: f64 = 0.0
+        try js_to_float64_free(ctx, &val, res)
+        return (i32)(val > 0.0) - (i32)(val < 0.0)
+    # Not supposed to bypass ToString even for identical objects as
+    # tested in test262/test/built-ins/Array/prototype/sort/bug_596_1.js
+    if ap.str == none:
+        let text = try js_to_string(ctx, ap.val)
+        ap.str = text.u.string
+    if bp.str == none:
+        let text = try js_to_string(ctx, bp.val)
+        bp.str = text.u.string
+    let astr = ap.str else trap("sorted without its string")
+    let bstr = bp.str else trap("sorted without its string")
+    return js_string_compare(ctx, astr, bstr)
+
+# Release the slots [*pn, *ppos) of the slot array `*parray` and the array itself: the
+# exception label of js_array_sort.
+func js_array_sort_free_slots(ctx: Context*, parray: void*?*, pn: const usize*, ppos: const usize*):
+    let raw = *parray else return
+    let array = (ValueSlot*)raw
+    for n in *pn..<*ppos:
+        js_free_value(ctx, array[n].val)
+        if let s = array[n].str:
+            js_free_value(ctx, js_mkptr(Tag.string, s))
+    js_free(ctx, raw)
+
+# mark: sort, toSorted ==========================================================================
+
+## Array.prototype.sort(comparefn).
+func js_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var asc = ArraySortContext(ctx = ctx, exception = false, has_method = false, method = argv[0])
+    # The slot array: none until the first element is read.
+    var array: void*? = none
+    var array_size: usize = 0
+    var pos: usize = 0
+    var n: usize = 0
+    var undefined_count: i64 = 0
+
+    if not js_is_undefined(asc.method):
+        try check_function(ctx, asc.method)
+        asc.has_method = true
+    let obj = try js_to_object(ctx, this_val)
+    errdefer js_free_value(ctx, obj)
+    errdefer js_array_sort_free_slots(ctx, &array, &n, &pos)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    # XXX: should special case fast arrays
+    for i: i64 in 0..<len:
+        if pos >= array_size:
+            var new_size = (array_size + (array_size >> 1) + 31) & ~(usize)15
+            var slack: usize = 0
+            let new_array = try js_realloc2(ctx, array, new_size * sizeof(ValueSlot), &slack)
+            new_size += slack // sizeof(ValueSlot)
+            array = new_array
+            array_size = new_size
+        let raw = array else trap("the slot array is allocated")
+        let slot = (ValueSlot*)raw + pos
+        let present = try js_try_get_property_int64(ctx, obj, i, &slot.val)
+        if not present:
+            continue
+        if js_is_undefined(slot.val):
+            undefined_count += 1
+            continue
+        slot.str = none
+        slot.pos = i
+        pos += 1
+    if let raw = array:
+        cutils.rqsort(raw, pos, sizeof(ValueSlot), js_array_cmp_generic, &asc)
+    if asc.exception:
+        error(exception, "")
+
+    # XXX: should special case fast arrays
+    while n < pos:
+        let raw = array else trap("the slot array is allocated")
+        let slot = (ValueSlot*)raw + n
+        if let s = slot.str:
+            js_free_value(ctx, js_mkptr(Tag.string, s))
+        if slot.pos == (i64)n:
+            js_free_value(ctx, slot.val)
+        else:
+            js_set_property_int64(ctx, obj, (i64)n, slot.val) catch failure:
+                n += 1
+                error(failure.code, failure.message)
+        n += 1
+    js_free(ctx, array)
+    array = none
+    var i = (i64)n
+    while undefined_count > 0:
+        undefined_count -= 1
+        try js_set_property_int64(ctx, obj, i, js_undefined())
+        i += 1
+    while i < len:
+        try js_delete_property_int64(ctx, obj, i, prop_throw)
+        i += 1
+    return obj
+
+# Note: a.toSorted() is a.slice().sort() with the twist that a.slice()
+# leaves holes in sparse arrays intact whereas a.toSorted() replaces them
+# with undefined, thus in effect creating a dense array.
+# Does not use Array[@@species], always returns a base Array.
+## Array.prototype.toSorted(comparefn).
+func js_array_to_sorted(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let ok = js_is_undefined(argv[0]) or js_is_function(ctx, argv[0])
+    if not ok:
+        try js_throw_type_error(ctx, "not a function")
+
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    let arr = try js_allocate_fast_array(ctx, len)
+    errdefer js_free_value(ctx, arr)
+
+    if len > 0:
+        let p = arr.u.obj
+        var i: i64 = 0
+        var pval = p.u.array.u.values
+        var arrp: Value* = ---
+        var count32: u32 = 0
+        if js_get_fast_array(ctx, obj, &arrp, &count32) and (i64)count32 == len:
+            while i < len:
+                *pval = js_dup_value(ctx, arrp[(usize)i])
+                i += 1
+                pval = pval + 1
+        else:
+            while i < len:
+                try js_try_get_property_int64(ctx, obj, i, pval)
+                i += 1
+                pval = pval + 1
+
+    let ret = try js_array_sort(ctx, arr, argc, argv)
+    js_free_value(ctx, ret)
+    return arr

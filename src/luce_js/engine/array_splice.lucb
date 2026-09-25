@@ -1,0 +1,269 @@
+#==============================================================================================
+#
+#   array_splice - Array.prototype splice, toSpliced, copyWithin, flat and flatMap
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 43000-43347: splice (in place on fast arrays with a
+#       writable length), toSpliced, copyWithin, FlattenIntoArray and flat/flatMap.
+#
+#==============================================================================================
+
+# mark: splice, toSpliced =======================================================================
+
+## Array.prototype.splice(start, deleteCount, ...items).
+func js_array_splice(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var arr = js_undefined()
+    errdefer free_value_at(ctx, &arr)
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var start: i64 = 0
+    try js_to_int64_clamp(ctx, &start, argv[0], 0, len, len)
+
+    var item_count: u32 = 0
+    var del_count: i64 = 0
+    if argc == 0:
+        item_count = 0
+        del_count = 0
+    elif argc == 1:
+        item_count = 0
+        del_count = len - start
+    else:
+        item_count = (u32)(argc - 2)
+        try js_to_int64_clamp(ctx, &del_count, argv[1], 0, len - start, 0)
+    if len + (i64)item_count - del_count > max_safe_integer:
+        try js_throw_type_error(ctx, "Array loo long")
+    let final = start + del_count
+    # warning: 'len' may be different from the actual array length
+    # because it may have been modified
+    let new_len = len + (i64)item_count - del_count
+
+    let ctor = try js_array_species_get_ctor(ctx, obj)
+
+    let p = obj.u.obj
+    if (js_is_undefined(ctor) and
+            p.class_id == ClassId.array and
+            p.fast_array and
+            final <= (i64)p.u.array.count and
+            ((i32)get_shape_prop(p.shape).flags & prop_writable) != 0 and # writable array length
+            can_extend_fast_array(p)):
+        let count32 = p.u.array.count
+        var arrp = p.u.array.u.values
+
+        # fast case
+        arr = try js_create_array(ctx, (i32)del_count, arrp + (usize)start)
+
+        if (i64)item_count != del_count:
+            # resize
+            let new_count32 = (u32)((i64)count32 + (i64)item_count - del_count)
+            if del_count > (i64)item_count:
+                for i: i64 in 0..<(del_count - (i64)item_count):
+                    js_free_value(ctx, arrp[(usize)(start + (i64)item_count + i)])
+                discard(cutils.memmove(arrp + (usize)(start + (i64)item_count), arrp + (usize)final,
+                                       (usize)((i64)count32 - final) * sizeof(Value)))
+            else:
+                if new_count32 > p.u.array.u1.size:
+                    try expand_fast_array(ctx, p, new_count32)
+                    arrp = p.u.array.u.values
+                discard(cutils.memmove(arrp + (usize)(start + (i64)item_count), arrp + (usize)final,
+                                       (usize)((i64)count32 - final) * sizeof(Value)))
+                for i: i64 in 0..<((i64)item_count - del_count):
+                    arrp[(usize)(start + del_count + i)] = js_undefined()
+            p.u.array.count = new_count32
+        for i: u32 in 0..<item_count:
+            set_value(ctx, arrp + (usize)(start + (i64)i), js_dup_value(ctx, argv[(usize)i + 2]))
+    else:
+        arr = js_array_create_from_ctor(ctx, ctor, del_count) catch failure:
+            js_free_value(ctx, ctor)
+            error(failure.code, failure.message)
+        js_free_value(ctx, ctor)
+
+        var n: i64 = 0
+        var k = start
+        while k < final:
+            var val = js_undefined()
+            let k_present = try js_try_get_property_int64(ctx, obj, k, &val)
+            if k_present:
+                try js_create_data_property_uint32(ctx, arr, n, val, prop_throw)
+            k += 1
+            n += 1
+        try js_set_property(ctx, arr, atom_length, js_new_int64(n))
+
+        if (i64)item_count != del_count:
+            let dir: i32 = 1 if (i64)item_count <= del_count else -1
+            try js_copy_sub_array(ctx, obj, start + (i64)item_count, start + del_count,
+                                  len - (start + del_count), dir)
+
+            k = len
+            while k > new_len:
+                k -= 1
+                try js_delete_property_int64(ctx, obj, k, prop_throw)
+        for i: u32 in 0..<item_count:
+            try js_set_property_int64(ctx, obj, start + (i64)i, js_dup_value(ctx, argv[(usize)i + 2]))
+    try js_set_property(ctx, obj, atom_length, js_new_int64(new_len))
+    return arr
+
+## Array.prototype.toSpliced(start, skipCount, ...items): a dense copy with the splice
+## applied.
+func js_array_to_spliced(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var start: i64 = 0
+    if argc > 0:
+        try js_to_int64_clamp(ctx, &start, argv[0], 0, len, len)
+
+    var del: i64 = 0
+    if argc > 0:
+        del = len - start
+    if argc > 1:
+        try js_to_int64_clamp(ctx, &del, argv[1], 0, del, 0)
+
+    var add: i64 = 0
+    if argc > 2:
+        add = (i64)(argc - 2)
+
+    let newlen = len + add - del
+    if newlen > max_safe_integer:
+        try js_throw_type_error(ctx, "invalid array length")
+
+    let arr = try js_allocate_fast_array(ctx, newlen)
+    errdefer js_free_value(ctx, arr)
+
+    if newlen <= 0:
+        return arr
+
+    let p = arr.u.obj
+    var pval = p.u.array.u.values
+    let last = pval + (usize)newlen
+
+    var i: i64 = 0
+    var j: i64 = 0
+    var arrp: Value* = ---
+    var count32: u32 = 0
+    if js_get_fast_array(ctx, obj, &arrp, &count32) and (i64)count32 == len:
+        while i < start:
+            *pval = js_dup_value(ctx, arrp[(usize)i])
+            i += 1
+            pval = pval + 1
+        while j < add:
+            *pval = js_dup_value(ctx, argv[(usize)(2 + j)])
+            j += 1
+            pval = pval + 1
+        i += del
+        while i < len:
+            *pval = js_dup_value(ctx, arrp[(usize)i])
+            i += 1
+            pval = pval + 1
+    else:
+        while i < start:
+            try js_try_get_property_int64(ctx, obj, i, pval)
+            i += 1
+            pval = pval + 1
+        while j < add:
+            *pval = js_dup_value(ctx, argv[(usize)(2 + j)])
+            j += 1
+            pval = pval + 1
+        i += del
+        while i < len:
+            try js_try_get_property_int64(ctx, obj, i, pval)
+            i += 1
+            pval = pval + 1
+
+    assert(pval == last)
+    return arr
+
+# mark: copyWithin ==============================================================================
+
+## Array.prototype.copyWithin(target, start, end).
+func js_array_copy_within(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    errdefer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var to: i64 = 0
+    try js_to_int64_clamp(ctx, &to, argv[0], 0, len, len)
+
+    var from_: i64 = 0
+    try js_to_int64_clamp(ctx, &from_, argv[1], 0, len, len)
+
+    var final: i64 = len
+    if argc > 2 and not js_is_undefined(argv[2]):
+        try js_to_int64_clamp(ctx, &final, argv[2], 0, len, len)
+
+    let count = cutils.min_int64(final - from_, len - to)
+
+    let dir: i32 = -1 if (from_ < to and to < from_ + count) else 1
+    try js_copy_sub_array(ctx, obj, to, from_, count, dir)
+    return obj
+
+# mark: flat, flatMap ===========================================================================
+
+## FlattenIntoArray: define the elements of `source` (mapped by `mapper_function` when it
+## is not undefined) into `target` from `target_index`, flattening arrays `depth` levels
+## deep. Answers the next target index.
+func js_flatten_into_array(ctx: Context*, target: Value, source: Value, source_len: i64,
+                           target_index: i64, depth: i32, mapper_function: Value,
+                           this_arg: Value) -> i64!:
+    if js_check_stack_overflow(ctx.rt, 0):
+        try js_throw_stack_overflow(ctx)
+
+    var index = target_index
+    for source_index: i64 in 0..<source_len:
+        var element = js_undefined()
+        let present = try js_try_get_property_int64(ctx, source, source_index, &element)
+        if not present:
+            continue
+        if not js_is_undefined(mapper_function):
+            var args: Value[3] = [element, js_new_int64(source_index), source]
+            let mapped = js_call(ctx, mapper_function, this_arg, 3, &args[0]) catch failure:
+                js_free_value(ctx, args[0])
+                js_free_value(ctx, args[1])
+                error(failure.code, failure.message)
+            js_free_value(ctx, args[0])
+            js_free_value(ctx, args[1])
+            element = mapped
+        if depth > 0:
+            errdefer js_free_value(ctx, element)
+            let is_array = try js_is_array(ctx, element)
+            if is_array:
+                var element_len: i64 = 0
+                try js_get_length64(ctx, &element_len, element)
+                index = try js_flatten_into_array(ctx, target, element, element_len, index,
+                                                  depth - 1, js_undefined(), js_undefined())
+                js_free_value(ctx, element)
+                continue
+        if index >= max_safe_integer:
+            js_free_value(ctx, element)
+            try js_throw_type_error(ctx, "Array too long")
+        try js_define_property_value_int64(ctx, target, index, element, prop_c_w_e | prop_throw)
+        index += 1
+    return index
+
+## Array.prototype.flat(depth), and flatMap(mapper, thisArg) when `map` is 1.
+func js_array_flatten(ctx: Context*, this_val: Value, argc: i32, argv: Value*, map: i32) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var source_len: i64 = 0
+    try js_get_length64(ctx, &source_len, obj)
+
+    var depth_num: i32 = 1
+    var mapper_function = js_undefined()
+    var this_arg = js_undefined()
+    if map != 0:
+        mapper_function = argv[0]
+        if argc > 1:
+            this_arg = argv[1]
+        try check_function(ctx, mapper_function)
+    else:
+        if argc > 0 and not js_is_undefined(argv[0]):
+            try js_to_int32_sat(ctx, &depth_num, argv[0])
+    let arr = try js_array_species_create(ctx, obj, 0)
+    errdefer js_free_value(ctx, arr)
+    try js_flatten_into_array(ctx, arr, obj, source_len, 0, depth_num, mapper_function, this_arg)
+    return arr

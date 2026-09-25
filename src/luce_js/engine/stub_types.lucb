@@ -8,9 +8,6 @@
 #
 #==============================================================================================
 
-struct ArrayIteratorData:
-    var unported: i32
-
 struct AsyncFromSyncIteratorData:
     var unported: i32
 
@@ -48,15 +45,6 @@ struct GetLineColCache:
     var unported: i32
 
 struct GlobalVar:
-    var unported: i32
-
-struct IteratorConcatData:
-    var unported: i32
-
-struct IteratorHelperData:
-    var unported: i32
-
-struct IteratorWrapData:
     var unported: i32
 
 struct JSONParseRecord:
@@ -137,8 +125,12 @@ enum PutLValueKind as i32:
 enum ResolveResult as i32:
     unported = 0
 
+# The cases are declared ahead (as quickjs.c's JSStrictEqModeEnum) for the regions that
+# call js_strict_eq2 before region r13 declares the enum.
 enum StrictEqMode as i32:
-    unported = 0
+    strict = 0
+    same_value = 1
+    same_value_zero = 2
 
 enum VarDefKind as i32:
     unported = 0
