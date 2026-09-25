@@ -1,0 +1,63 @@
+name: Windows x64
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CC: gcc
+    steps:
+      - name: Keep line endings as committed
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+        with:
+          path: luce-js
+      - name: Read compiler pin
+        id: pins
+        shell: pwsh
+        run: |
+          "base=$(Get-Content luce-js/bootstrap/BASE)" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-base
+          ref: ${{ steps.pins.outputs.base }}
+          path: luce-base
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+      - name: Check out the pinned library packages
+        shell: msys2 {0}
+        run: |
+          while read -r name revision; do
+            revision=${revision%$'\r'}
+            [ -n "$name" ] || continue
+            git init -q "$name"
+            git -C "$name" fetch -q --depth 1 "https://github.com/dymokomi/$name.git" "$revision"
+            git -C "$name" checkout -q --detach FETCH_HEAD
+          done < luce-js/bootstrap/PACKAGES
+      - name: Configure native library search
+        shell: msys2 {0}
+        run: echo "LIBRARY_PATH=$(cygpath -m /ucrt64/lib)" >> "$GITHUB_ENV"
+      - name: Build the compiler
+        working-directory: luce-base
+        shell: msys2 {0}
+        run: python tools/build_windows.py
+      - name: Unit tests of each module
+        working-directory: luce-js
+        shell: msys2 {0}
+        run: |
+          export PATH="$(cd ../luce-base/build && pwd):$PATH"
+          for module in cutils dtoa engine host; do luce-base test "src/luce_js/$module"; done
+      - name: QuickJS's JavaScript tests
+        working-directory: luce-js
+        shell: msys2 {0}
+        run: |
+          export PATH="$(cd ../luce-base/build && pwd):$PATH"
+          python tests/run.py
