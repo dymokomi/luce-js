@@ -226,11 +226,6 @@ func fatal(errcode: i32, message: fmt) -> never:
     discard(fprintf(stderr(), z("%s: %.*s\n"), z(cmd_name), (i32)text.length, text.bytes.data))
     c_exit(errcode)
 
-## free() of a nullable pointer.
-func free_opt(p: u8*?):
-    if let q = p:
-        c_free(q)
-
 ## A nullable pointer as a read-only one.
 func cnull(p: u8*?) -> const u8*?:
     if let q = p:

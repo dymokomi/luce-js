@@ -3,7 +3,7 @@
 #   tokenizer - Tokens, source positions, parse errors and the literal scanners
 #
 #   DESCRIPTION:
-#       Port of quickjs.c "JS parser" lines 22188-22826: releasing and dumping tokens,
+#       Port of quickjs.c "JS parser" lines 22188-22826: releasing tokens,
 #       line and column numbers, the js_parse_error family, js_parse_expect, template,
 #       string and regular expression literals, and identifiers (with the keyword
 #       conversion). next_token is in tokenizer_next.lucb.
@@ -26,11 +26,6 @@ func tok_is_keyword(tok: TokenType) -> bool:
 func tok_char(tok: TokenType) -> char:
     return char((u32)(u8)(i32)tok)
 
-# The text of a NUL-terminated C string, for printing.
-func c_text(p: const u8*) -> str:
-    let bytes: const u8[] = u8[]((u8*)p, cutils.strlen(p))
-    return (str)bytes
-
 func free_token(s: ParseState*, token: Token*):
     match token.val:
         .number:
@@ -45,49 +40,6 @@ func free_token(s: ParseState*, token: Token*):
         _:
             if tok_is_keyword(token.val):
                 js_free_atom(s.ctx, token.u.ident.atom)
-
-# The identifier or keyword of `token`, printed.
-func dump_token_atom(s: ParseState*, token: const Token*):
-    var buf: u8[atom_get_str_buf_size] = ---
-    print(f"ident: '{js_atom_get_str(s.ctx, buf, token.u.ident.atom)}'")
-
-# The value of a string token, printed with `label` (JS_ToCString, then printf).
-func dump_token_text(s: ParseState*, label: str, val: Value):
-    let text = js_to_c_string_len2(s.ctx, none, val, false) catch: return
-    print(f"{label}{c_text(text)}")
-    js_free_c_string(s.ctx, text)
-
-# A debugging aid, unused (as in QuickJS). A number prints in the shortest form that
-# reads back, where QuickJS prints "%.14g".
-func dump_token(s: ParseState*, token: const Token*):
-    match token.val:
-        .number:
-            var d: f64 = 0.0
-            # no exception possible
-            js_to_float64(s.ctx, &d, token.u.num.val) catch: recover ()
-            print(f"number: {d}")
-        .ident:
-            dump_token_atom(s, token)
-        .string:
-            # XXX: quote the string
-            dump_token_text(s, "string: ", token.u.str_.str)
-        .template:
-            dump_token_text(s, "template: ", token.u.str_.str)
-        .regexp:
-            let body = js_to_c_string_len2(s.ctx, none, token.u.regexp.body, false) catch: return
-            let flags = js_to_c_string_len2(s.ctx, none, token.u.regexp.flags, false) else return
-            print(f"regexp: '{c_text(body)}' '{c_text(flags)}'")
-            js_free_c_string(s.ctx, body)
-            js_free_c_string(s.ctx, flags)
-        .eof:
-            print("eof")
-        _:
-            if tok_is_keyword(s.token.val):
-                dump_token_atom(s, token)
-            elif (i32)s.token.val >= 256:
-                print(f"token: {(i32)token.val}")
-            else:
-                print(f"token: '{tok_char(token.val)}'")
 
 # mark: Source positions ========================================================================
 

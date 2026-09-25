@@ -76,7 +76,6 @@ func js_ordinary_is_instance_of(ctx: Context*, val: Value, obj: Value) -> bool!:
             js_poll_interrupts(ctx) catch failure:
                 js_free_value(ctx, obj1)
                 error(failure.code, failure.message)
-    return false
 
 # return TRUE, FALSE or (-1) in case of exception
 ## `val instanceof obj`: calls obj[Symbol.hasInstance] when present, else the ordinary

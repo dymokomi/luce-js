@@ -224,7 +224,6 @@ func js_async_generator_resume_exec(ctx: Context*, s: AsyncGeneratorData*) -> bo
             js_free_value(ctx, value)
             return false
         trap("js_async_generator_resume_next: unexpected FUNC_RET code")
-    return true
 
 ## Serve the queued requests of `s` in order while it can: start or resume its frame,
 ## or settle requests on a completed generator.

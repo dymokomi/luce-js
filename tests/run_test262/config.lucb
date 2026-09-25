@@ -12,19 +12,6 @@
 
 # mark: Searching ===============================================================================
 
-func is_line_sep(ch: u8) -> bool:
-    return ch == 0 or ch == '\n' or ch == '\r'
-
-func find_line(text: const u8*?, line: const u8*) -> const u8*?:
-    let s = text else return none
-    let len = strlen(line)
-    var p: const u8* = s
-    while true:
-        let found = strstr(p, line) else return none
-        if (found == s or is_line_sep(*(found - 1))) and is_line_sep(found[len]):
-            return found
-        p = found + len + 1
-
 func is_word_sep(ch: u8) -> bool:
     return ch == 0 or is_space(ch) or ch == ','
 

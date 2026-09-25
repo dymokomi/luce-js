@@ -91,7 +91,6 @@ parser_postfix.lucb
 parser_expr.lucb
 parser_statements.lucb
 parser_statement_or_decl.lucb
-bytecode_dump.lucb
 closure_vars.lucb
 resolve_scope_var.lucb
 resolve_private_fields.lucb

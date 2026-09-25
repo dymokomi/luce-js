@@ -183,7 +183,6 @@ func js_for_in_next_key(ctx: Context*, enum_obj: Value) -> Atom?!:
             let ret = try js_get_own_property_internal(ctx, none, it.obj.u.obj, prop)
             if ret:
                 return prop
-    return none
 
 # enum_obj -> enum_obj value done
 ## OP_for_in_next: push the next key and false, or undefined and true at the end.

@@ -168,7 +168,7 @@ func stat_info(buf: const u8*) -> StatInfo:
                         rdev = (i64)cutils.get_i32(buf + 24), size = read_i64(buf, 96),
                         blocks = read_i64(buf, 104), atime = read_timespec_ms(buf, 32),
                         mtime = read_timespec_ms(buf, 48), ctime = read_timespec_ms(buf, 64))
-    if platform.x86_64:
+    elif platform.x86_64:
         # dev, ino, nlink u64, mode, uid, gid u32, pad, rdev, size, blksize, blocks, timespecs
         return StatInfo(dev = read_i64(buf, 0), ino = read_i64(buf, 8),
                         mode = (i32)read_u32(buf, 24), nlink = read_i64(buf, 16),
@@ -176,20 +176,22 @@ func stat_info(buf: const u8*) -> StatInfo:
                         rdev = read_i64(buf, 40), size = read_i64(buf, 48),
                         blocks = read_i64(buf, 64), atime = read_timespec_ms(buf, 72),
                         mtime = read_timespec_ms(buf, 88), ctime = read_timespec_ms(buf, 104))
-    # Linux's generic layout (arm64): dev, ino u64, mode, nlink, uid, gid u32, rdev, pad,
-    # size, blksize i32, pad, blocks, timespecs
-    return StatInfo(dev = read_i64(buf, 0), ino = read_i64(buf, 8),
-                    mode = (i32)read_u32(buf, 16), nlink = read_u32(buf, 20),
-                    uid = read_u32(buf, 24), gid = read_u32(buf, 28),
-                    rdev = read_i64(buf, 32), size = read_i64(buf, 48),
-                    blocks = read_i64(buf, 64), atime = read_timespec_ms(buf, 72),
-                    mtime = read_timespec_ms(buf, 88), ctime = read_timespec_ms(buf, 104))
+    else:
+        # Linux's generic layout (arm64): dev, ino u64, mode, nlink, uid, gid u32, rdev, pad,
+        # size, blksize i32, pad, blocks, timespecs
+        return StatInfo(dev = read_i64(buf, 0), ino = read_i64(buf, 8),
+                        mode = (i32)read_u32(buf, 16), nlink = read_u32(buf, 20),
+                        uid = read_u32(buf, 24), gid = read_u32(buf, 28),
+                        rdev = read_i64(buf, 32), size = read_i64(buf, 48),
+                        blocks = read_i64(buf, 64), atime = read_timespec_ms(buf, 72),
+                        mtime = read_timespec_ms(buf, 88), ctime = read_timespec_ms(buf, 104))
 
 ## The NUL-terminated `d_name` of the `struct dirent` readdir() answered.
 func dirent_name(d: void*) -> const u8*:
     if platform.macos:
         return (const u8*)d + 21    # d_ino, d_seekoff, d_reclen, d_namlen, d_type
-    return (const u8*)d + 19        # d_ino, d_off, d_reclen, d_type
+    else:
+        return (const u8*)d + 19    # d_ino, d_off, d_reclen, d_type
 
 # mark: Time ====================================================================================
 

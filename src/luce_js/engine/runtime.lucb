@@ -221,7 +221,8 @@ extern func msize as "_msize"(ptr: void*?) -> usize
 func malloc_overhead() -> usize:
     if os.macos:
         return malloc_overhead_macos
-    return malloc_overhead_other
+    else:
+        return malloc_overhead_other
 
 # default memory allocation functions with memory limitation
 func js_def_malloc_usable_size(ptr: const void*?) -> usize:

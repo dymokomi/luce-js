@@ -240,16 +240,3 @@ func js_malloc_usable_size_raw(s: MallocContext*, ptr: const void*?) -> usize:
         return 0
     let block_size = (usize)js_malloc_block_sizes[b.block_size_idx]
     return block_size - sizeof(MallocBlockHeader)
-
-## Print every arena with its block size and occupancy (a debugging aid, unused upstream).
-func js_malloc_dump_arenas(s: MallocContext*):
-    print(f"{pad("PTR", 20)} {pad("BLK_SIZE", 10)} {pad("ALLOC", 10)}")
-    for block_size_idx in 0..<js_malloc_block_size_count:
-        let block_size = js_malloc_block_sizes[block_size_idx]
-        let head = &s.arena_list[block_size_idx]
-        var el = head.next else trap("js_malloc: unlinked arena list")
-        while el != head:
-            let ar = (MallocArena*)((u8*)el - offsetof(MallocArena, link))
-            let percent = f64(ar.n_used_blocks) / f64(ar.n_blocks) * 100.0
-            print(f"{pad(ar, 20)} {pad(block_size, 10)} {pad(percent, 9)}%")
-            el = el.next else trap("js_malloc: unlinked arena list")
