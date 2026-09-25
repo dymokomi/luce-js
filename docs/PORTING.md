@@ -28,9 +28,8 @@ fragments of one module share one scope, exactly like the one C file they came f
 `static` C function is a private Luce function visible to every fragment of its module.
 Another module's declarations are reached with `import luce_js.cutils as cutils` in the
 module's first fragment (imports in `module.lucb` apply to every fragment) and must be `pub`.
-`luce_js.cutils` also holds the few helpers every module shares: the C library binding,
-C strings as `str` views (`c_str_view`, `c_str_equals`) and nullable byte pointers as untyped
-ones (`nullable_void`, `nullable_const_void`).
+`luce_js.cutils` also holds the few helpers every module shares: the C library binding and
+C strings as `str` views (`c_str_view`, `c_str_equals`).
 
 - Keep each fragment focused and under about 600 lines. Split along the C source's own
   sections, in the C source's order. Generated tables (`atoms_table`, `opcodes_table`) and

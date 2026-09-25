@@ -277,9 +277,7 @@ func bc_reader_free(s: BCReaderState*):
         for i in 0..<(usize)s.idx_to_atom_count:
             js_free_atom(s.ctx, atoms[i])
         js_free(s.ctx, atoms)
-    # workaround: compiler-issues/nullable_pointer_cast (Object*?*? to void*?)
-    if let objects = s.objects:
-        js_free(s.ctx, objects)
+    js_free(s.ctx, s.objects)
 
 ## Deserialize a value from the `buf_len` bytes at `buf` (JS_ReadObject). `flags` are the
 ## read_obj_* flags; with read_obj_rom_data the buffer must outlive the result.

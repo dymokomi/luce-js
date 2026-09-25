@@ -226,16 +226,14 @@ func malloc_overhead() -> usize:
 
 # default memory allocation functions with memory limitation
 func js_def_malloc_usable_size(ptr: const void*?) -> usize:
-    # workaround: compiler-issues/nullable_pointer_cast (const void*? to void*?)
-    let p = ptr else return 0
     if os.macos:
-        return malloc_size(p)
+        return malloc_size(ptr)
     elif os.windows:
-        return msize((void*)p)
+        return msize((void*?)ptr)
     elif os.wasm32:
         return 0
     else:
-        return malloc_usable_size((void*)p)
+        return malloc_usable_size((void*?)ptr)
 
 func js_def_malloc(s: MallocState*, size: usize) -> void*?:
     # Do not allocate zero bytes: behavior is platform dependent

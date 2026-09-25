@@ -167,7 +167,7 @@ func js_typed_array_set_internal(ctx: Context*, dst: Value, src: Value, off: Val
         if src_p.class_id == p.class_id:
             # same type, use memmove
             discard(cutils.memmove(array_buffer_data_at(dest_abuf.data, dest_ta.offset + (u32)(offset << shift)),
-                                   array_buffer_const_data_at(src_abuf.data, src_ta.offset),
+                                   array_buffer_data_at(src_abuf.data, src_ta.offset),
                                    (usize)(src_len << shift)))
             return js_undefined()
         # if dest_abuf.data == src_abuf.data: copying between the same buffer using

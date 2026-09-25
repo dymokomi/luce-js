@@ -106,7 +106,7 @@ func js_bigint_normalize1(ctx: Context*, a: BigInt*, l0: i32) -> BigInt*:
         # pending there too).
         let a1 = js_realloc(ctx, a, sizeof(BigInt) + (usize)l * sizeof(u32)) catch failure:
             recover (void*)a
-        # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+        # js_realloc of a non-zero size never answers none
         return (BigInt*)(a1 else trap("js_realloc answered none"))
     return a
 
@@ -132,7 +132,7 @@ func js_bigint_extend(ctx: Context*, r: BigInt*, op1: u32) -> BigInt*!:
     if (op1 != 0 and op1 != 0xffffffff) or (op1 & 1) != js_bigint_tab(r)[n2 - 1] >> 31:
         errdefer js_free(ctx, r)
         let r1_raw = try js_realloc(ctx, r, sizeof(BigInt) + (usize)(n2 + 1) * sizeof(u32))
-        # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+        # js_realloc of a non-zero size never answers none
         let r1 = (BigInt*)(r1_raw else trap("js_realloc answered none"))
         r1.len = (u32)(n2 + 1)
         js_bigint_tab(r1)[n2] = op1

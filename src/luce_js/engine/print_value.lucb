@@ -80,8 +80,8 @@ func js_print_hex(s: PrintValueState*, v: u64, n_digits: i32):
 func js_print_ptr(s: PrintValueState*, addr: usize):
     js_printf(s, f"0x{hex(addr)}")
 
-# The address of an object, 0 for none (for js_print_ptr).
-# workaround: compiler-issues/nullable_pointer_cast (an `Object*?` does not convert to `void*?`)
+# The address of an object, 0 for none (for js_print_ptr): a nullable pointer does not
+# cast to an integer.
 func js_print_object_addr(p: Object*?) -> usize:
     if let q = p:
         return (usize)q

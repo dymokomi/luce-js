@@ -258,11 +258,8 @@ func js_write_object_atoms(s: BCWriterState*) -> !:
 
 ## Free the writer's atom tables (C: js_free of atom_to_idx and idx_to_atom).
 func js_write_free_atom_tables(s: BCWriterState*):
-    # workaround: compiler-issues/nullable_pointer_cast (u32*? to void*?)
-    if let atom_to_idx = s.atom_to_idx:
-        js_free(s.ctx, atom_to_idx)
-    if let idx_to_atom = s.idx_to_atom:
-        js_free(s.ctx, idx_to_atom)
+    js_free(s.ctx, s.atom_to_idx)
+    js_free(s.ctx, s.idx_to_atom)
 
 ## Free the writer's tables after a failed write and clear the caller's results.
 func js_write_object_fail(s: BCWriterState*, psize: usize*, psab_tab: SabTab*?, psab_tab_len: usize*?):

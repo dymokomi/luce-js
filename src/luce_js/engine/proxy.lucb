@@ -41,12 +41,9 @@ func js_proxy_delete_property(ctx: Context*, obj: Value, atom: Atom) -> bool!:
             js_free_desc(ctx, &desc)
     return res
 
-# workaround: compiler-issues/nullable_pointer_cast (`tab` is not `const`: a `T*?` does not
-# convert to `const T*?`, neither implicitly nor by a cast)
-
 ## The index of the property `atom` in the `n` entries of `tab`, or -1 if not found
 ## (find_prop_key). `tab` is none only when `n` is 0.
-func find_prop_key(tab: PropertyEnum*?, n: i32, atom: Atom) -> i32:
+func find_prop_key(tab: const PropertyEnum*?, n: i32, atom: Atom) -> i32:
     let t = tab else return -1
     for i in 0..<(usize)n:
         if t[i].atom == atom:

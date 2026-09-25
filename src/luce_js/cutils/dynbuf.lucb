@@ -73,7 +73,7 @@ pub func dbuf_claim(s: DynBuf*, len: usize) -> i32:
         if size > new_size:
             new_size = size
         let realloc_func = s.realloc_func else trap("DynBuf: not initialised")
-        if let new_buf = realloc_func(s.opaque, nullable_void(s.buf), new_size):
+        if let new_buf = realloc_func(s.opaque, s.buf, new_size):
             s.buf = (u8*)new_buf
             s.allocated_size = new_size
         else:

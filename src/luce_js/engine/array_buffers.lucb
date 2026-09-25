@@ -84,7 +84,7 @@ func js_array_buffer_constructor3(ctx: Context*, new_target: Value, len: u64, ma
     else:
         if class_id == (u32)ClassId.shared_array_buffer:
             if let sab_dup = rt.sab_funcs.sab_dup:
-                sab_dup(rt.sab_funcs.sab_opaque, cutils.nullable_void(buf))
+                sab_dup(rt.sab_funcs.sab_opaque, buf)
         abuf.data = buf
     cutils.init_list_head(&abuf.array_list)
     abuf.detached = 0
@@ -93,7 +93,7 @@ func js_array_buffer_constructor3(ctx: Context*, new_target: Value, len: u64, ma
     abuf.free_func = free_func
     if alloc_flag:
         if let src = buf:
-            discard(cutils.memcpy(cutils.nullable_void(abuf.data), src, (usize)len))
+            discard(cutils.memcpy(abuf.data, src, (usize)len))
     js_set_opaque(obj, abuf)
     return obj
 
@@ -186,10 +186,10 @@ func js_array_buffer_finalizer(rt: Runtime*, val: Value):
     let sab_free = rt.sab_funcs.sab_free
     if abuf.shared != 0 and sab_free != none:
         let f = sab_free else trap("unreachable")
-        f(rt.sab_funcs.sab_opaque, cutils.nullable_void(abuf.data))
+        f(rt.sab_funcs.sab_opaque, abuf.data)
     else:
         if let free_func = abuf.free_func:
-            free_func(rt, abuf.opaque, cutils.nullable_void(abuf.data))
+            free_func(rt, abuf.opaque, abuf.data)
     js_free_rt(rt, abuf)
 
 func js_array_buffer_is_view(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
@@ -276,12 +276,6 @@ func array_buffer_data_at(data: u8*?, offset: u32) -> void*?:
         return d + (usize)offset
     return none
 
-## `&data[offset]` read-only, none when the buffer has no storage.
-func array_buffer_const_data_at(data: u8*?, offset: u32) -> const void*?:
-    if let d = data:
-        return d + (usize)offset
-    return none
-
 ## Detach the ArrayBuffer `obj`: release its storage and empty its views
 ## (JS_DetachArrayBuffer). Nothing if it is not an ArrayBuffer or already detached.
 pub func js_detach_array_buffer(ctx: Context*, obj: Value):
@@ -290,7 +284,7 @@ pub func js_detach_array_buffer(ctx: Context*, obj: Value):
     if abuf.detached != 0:
         return
     if let free_func = abuf.free_func:
-        free_func(ctx.rt, abuf.opaque, cutils.nullable_void(abuf.data))
+        free_func(ctx.rt, abuf.opaque, abuf.data)
     abuf.data = none
     abuf.byte_length = 0
     abuf.detached = 1
