@@ -11,3 +11,6 @@ done
 
 echo "== tests/run.py"
 python3 tests/run.py "$@"
+
+echo "== tests/tools.py"
+python3 tests/tools.py
