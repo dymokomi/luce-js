@@ -1,0 +1,25 @@
+# The C backend emits a `match` case of a negative integer-backed enum value as an
+# out-of-range signed literal.
+#
+# Expected: `luce-base test --backend=c` builds and passes, as the default backend does.
+# Actual:   gen.c: error: integer literal is too large to be represented in a signed
+#           integer type, interpreting as unsigned [-Werror,-Wimplicitly-unsigned-literal]
+#                   case 18446744073709551615LL:
+#           (the case -1 is printed as its u64 bit pattern with an LL suffix).
+# Workaround: none in the port; QuickJS's JSValue tags are negative for heap values and
+#           the engine matches on Tag everywhere. Use the default backend.
+
+enum Tag as i64:
+    object = -1
+    int = 0
+
+func is_object(t: Tag) -> bool:
+    match t:
+        .object:
+            return true
+        _:
+            return false
+
+test "negative enum case":
+    assert(is_object(Tag.object))
+    assert(not is_object(Tag.int))
