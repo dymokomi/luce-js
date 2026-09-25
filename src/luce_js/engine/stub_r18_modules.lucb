@@ -93,7 +93,7 @@ func js_module_ns_has(ctx: Context*, obj: Value, atom: Atom) -> i32:
 func exported_names_cmp(p1: const void*, p2: const void*, opaque: void*) -> i32:
     trap("unported: exported_names_cmp")
 ## Ported from quickjs.c:30378 js_module_ns_autoinit.
-func js_module_ns_autoinit(ctx: Context*, p: Object*, atom: Atom, opaque: void*) -> Value!:
+func js_module_ns_autoinit(ctx: Context*, p: Object*, atom: Atom, opaque: void*?) -> Value!:
     trap("unported: js_module_ns_autoinit")
 ## Ported from quickjs.c:30407 js_build_module_ns.
 func js_build_module_ns(ctx: Context*, m: ModuleDef*) -> Value!:

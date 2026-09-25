@@ -1,0 +1,261 @@
+#==============================================================================================
+#
+#   property_get - instanceof, auto-initialized properties and the core property read
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 8050-8364: JS_GetPrototypeFree, instanceof
+#       (JS_OrdinaryIsInstanceOf, JS_IsInstanceOf), the auto-initialized properties
+#       (JS_AutoInitProperty and its function table) and JS_GetPropertyInternal, the
+#       property read through strings, own properties, getters, variable references,
+#       fast arrays, exotic objects and the prototype chain. JS_GetPrototype itself is
+#       ported with its region (r07).
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## The storage of a property that find_own_property found: never none when it answered
+## a shape property.
+func own_property_storage(pr: Property*?) -> Property*:
+    return pr else trap("find_own_property found a property without storage")
+
+## The exotic methods of `p`'s class, or none (ctx->rt->class_array[p->class_id].exotic).
+func object_exotic(ctx: Context*, p: Object*) -> const ClassExoticMethods*?:
+    let class_array = ctx.rt.class_array else trap("the class array is not allocated")
+    return class_array[(usize)(u16)p.class_id].exotic
+
+# JS_ThrowTypeErrorAtom(ctx, "... '%s' ...", atom) expands to __JS_ThrowTypeErrorAtom,
+# which formats the atom with JS_AtomGetStr into the message's %s. The port formats the
+# message in place: js_throw_type_error(ctx, f"... '{js_atom_get_str(ctx, buf, atom)}' ...").
+
+# mark: Prototypes and instanceof ===============================================================
+
+## The prototype of `obj`, releasing `obj` (JS_GetPrototypeFree).
+func js_get_prototype_free(ctx: Context*, obj: Value) -> Value!:
+    defer js_free_value(ctx, obj)
+    return try js_get_prototype(ctx, obj)
+
+# return TRUE, FALSE or (-1) in case of exception
+## OrdinaryHasInstance: whether `obj`'s "prototype" is in the prototype chain of `val`
+## (JS_OrdinaryIsInstanceOf).
+func js_ordinary_is_instance_of(ctx: Context*, val: Value, obj: Value) -> bool!:
+    if not js_is_function(ctx, obj):
+        return false
+    var p: const Object* = obj.u.obj
+    if p.class_id == ClassId.bound_function:
+        let s = p.u.bound_function
+        return try js_is_instance_of(ctx, val, s.func_obj)
+
+    # Only explicitly boxed values are instances of constructors
+    if val.tag != Tag.object:
+        return false
+    let obj_proto = try js_get_property(ctx, obj, atom_prototype)
+    defer js_free_value(ctx, obj_proto)
+    if obj_proto.tag != Tag.object:
+        try js_throw_type_error(ctx, "operand 'prototype' property is not an object")
+    let proto: const Object* = obj_proto.u.obj
+    p = val.u.obj
+    while true:
+        if let proto1 = p.shape.proto:
+            p = proto1
+            if proto == p:
+                return true
+            continue
+        # slow case if exotic object in the prototype chain
+        if not (p.is_exotic and not p.fast_array):
+            return false
+        var obj1 = js_dup_value(ctx, js_mkptr(Tag.object, (Object*)p))
+        while true:
+            obj1 = try js_get_prototype_free(ctx, obj1)
+            if js_is_null(obj1):
+                return false
+            if proto == obj1.u.obj:
+                js_free_value(ctx, obj1)
+                return true
+            # must check for timeout to avoid infinite loop
+            js_poll_interrupts(ctx) catch failure:
+                js_free_value(ctx, obj1)
+                error(failure.code, failure.message)
+    return false
+
+# return TRUE, FALSE or (-1) in case of exception
+## `val instanceof obj`: calls obj[Symbol.hasInstance] when present, else the ordinary
+## test (JS_IsInstanceOf).
+pub func js_is_instance_of(ctx: Context*, val: Value, obj: Value) -> bool!:
+    if not js_is_object(obj):
+        try js_throw_type_error(ctx, "invalid 'instanceof' right operand")
+    let method = try js_get_property(ctx, obj, atom_Symbol_hasInstance)
+    if not js_is_null(method) and not js_is_undefined(method):
+        var arg = val
+        let ret = try js_call_free(ctx, method, obj, 1, &arg)
+        return try js_to_bool_free(ctx, ret) != 0
+
+    # legacy case
+    if not js_is_function(ctx, obj):
+        try js_throw_type_error(ctx, "invalid 'instanceof' right operand")
+    return try js_ordinary_is_instance_of(ctx, val, obj)
+
+# mark: Auto-initialized properties =============================================================
+
+# return the value associated to the autoinit property or an exception
+## Instantiates an auto-initialized property: `(realm, p, atom, opaque)` (JSAutoInitFunc).
+type AutoInitFunc = func(Context*, Object*, Atom, void*?) -> Value!
+
+## The instantiation function of each AutoInitId.
+let js_autoinit_func_table: AutoInitFunc[3] = [
+    js_instantiate_prototype,               # AutoInitId.prototype
+    js_module_ns_autoinit,                  # AutoInitId.module_ns
+    js_instantiate_function_list_item2,     # AutoInitId.prop
+]
+
+## Turn the auto-initialized property `pr` back into an undefined plain value after its
+## function ran (successfully or not).
+func js_autoinit_clear(rt: Runtime*, pr: Property*, prs: ShapeProperty*):
+    js_autoinit_free(rt, pr)
+    prs.flags &= ~(u8)prop_tmask
+    pr.u.value = js_undefined()
+
+# warning: 'prs' is reallocated after it
+## Instantiate the auto-initialized property `prop` of `p` (JS_AutoInitProperty). The
+## caller looks the property up again.
+func js_auto_init_property(ctx: Context*, p: Object*, prop: Atom, pr: Property*, prs0: ShapeProperty*) -> !:
+    var prs = prs0
+    discard(try js_shape_prepare_update(ctx, p, &prs))
+
+    let realm = js_autoinit_get_realm(pr)
+    let id = js_autoinit_get_id(pr)
+    let init_func = js_autoinit_func_table[(usize)(i32)id]
+    # 'func' shall not modify the object properties 'pr'
+    let val = init_func(realm, p, prop, pr.u.init.opaque) catch failure:
+        js_autoinit_clear(ctx.rt, pr, prs)
+        error(failure.code, failure.message)
+    js_autoinit_clear(ctx.rt, pr, prs)
+    if id == AutoInitId.module_ns and val.tag == Tag.string:
+        # WARNING: a varref is returned as a string  !
+        prs.flags |= (u8)prop_varref
+        let var_ref = (VarRef*)val.u.ptr
+        pr.u.var_ref = var_ref
+        js_rc(var_ref).ref_count += 1
+    elif p.class_id == ClassId.global_object:
+        # in the global object we use references
+        let var_ref = try js_create_var_ref(ctx, false)
+        prs.flags |= (u8)prop_varref
+        pr.u.var_ref = var_ref
+        var_ref.u.value = val
+        var_ref.is_const = (u8)(((i32)prs.flags & prop_writable) == 0)
+    else:
+        pr.u.value = val
+
+# mark: Reading a property ======================================================================
+
+## The property `prop` of `obj`, with `this_obj` as the receiver of getters; a missing
+## property is undefined, or a ReferenceError when `throw_ref_error`
+## (JS_GetPropertyInternal).
+pub func js_get_property_internal(ctx: Context*, obj: Value, prop: Atom, this_obj: Value, throw_ref_error: bool) -> Value!:
+    var p: Object* = ---
+    var no_args = js_undefined()
+
+    if obj.tag != Tag.object:
+        match obj.tag:
+            .null:
+                var buf: u8[atom_get_str_buf_size] = ---
+                try js_throw_type_error(ctx, f"cannot read property '{js_atom_get_str(ctx, buf, prop)}' of null")
+            .undefined:
+                var buf: u8[atom_get_str_buf_size] = ---
+                try js_throw_type_error(ctx, f"cannot read property '{js_atom_get_str(ctx, buf, prop)}' of undefined")
+            .exception:
+                error(exception, "")
+            .string:
+                let p1 = obj.u.string
+                if js_atom_is_tagged_int_raw(prop):
+                    let idx = js_atom_to_uint32_raw(prop)
+                    if idx < p1.len:
+                        return try js_new_string_char(ctx, (u16)string_get(p1, (i32)idx))
+                elif prop == atom_length:
+                    return js_new_int32((i32)p1.len)
+            .string_rope:
+                let p1 = obj.u.rope
+                if js_atom_is_tagged_int_raw(prop):
+                    let idx = js_atom_to_uint32_raw(prop)
+                    if idx < p1.len:
+                        return try js_new_string_char(ctx, (u16)string_rope_get(obj, idx))
+                elif prop == atom_length:
+                    return js_new_int32((i32)p1.len)
+            _:
+                discard(0)
+        # cannot raise an exception
+        let proto = try js_get_prototype_primitive(ctx, obj)
+        if proto.tag != Tag.object:
+            return js_undefined()
+        p = proto.u.obj
+    else:
+        p = obj.u.obj
+
+    while true:
+        var pr: Property*? = none
+        if let prs = find_own_property(&pr, p, prop):
+            # found
+            let pr1 = own_property_storage(pr)
+            let kind = (i32)prs.flags & prop_tmask
+            if kind != 0:
+                if kind == prop_getset:
+                    if let getter = pr1.u.getset.getter:
+                        # Note: the field could be removed in the getter
+                        let func_obj = js_dup_value(ctx, js_mkptr(Tag.object, getter))
+                        return try js_call_free(ctx, func_obj, this_obj, 0, &no_args)
+                    return js_undefined()
+                elif kind == prop_varref:
+                    let val = *pr1.u.var_ref.pvalue
+                    if js_is_uninitialized(val):
+                        try js_throw_reference_error_uninitialized(ctx, prs.atom)
+                    return js_dup_value(ctx, val)
+                elif kind == prop_autoinit:
+                    # Instantiate property and retry
+                    try js_auto_init_property(ctx, p, prop, pr1, prs)
+                    continue
+            else:
+                return js_dup_value(ctx, pr1.u.value)
+        if p.is_exotic:
+            # exotic behaviors
+            if p.fast_array:
+                let is_typed_array = ((u16)p.class_id >= (u16)ClassId.uint8c_array and
+                    (u16)p.class_id <= (u16)ClassId.float64_array)
+                if js_atom_is_tagged_int_raw(prop):
+                    let idx = js_atom_to_uint32_raw(prop)
+                    if idx < p.u.array.count:
+                        # we avoid duplicating the code
+                        return try js_get_property_uint32(ctx, js_mkptr(Tag.object, p), idx)
+                    elif is_typed_array:
+                        return js_undefined()
+                elif is_typed_array:
+                    if try js_atom_is_numeric_index(ctx, prop):
+                        return js_undefined()
+            elif let em = object_exotic(ctx, p):
+                if let method = em.get_property:
+                    # XXX: should pass throw_ref_error
+                    # Note: if 'p' is a prototype, it can be freed in the called function
+                    let obj1 = js_dup_value(ctx, js_mkptr(Tag.object, p))
+                    defer js_free_value(ctx, obj1)
+                    return try method(ctx, obj1, prop, this_obj)
+                if let method = em.get_own_property:
+                    var desc = PropertyDescriptor(flags = 0, value = js_undefined(),
+                        getter = js_undefined(), setter = js_undefined())
+                    # Note: if 'p' is a prototype, it can be freed in the called function
+                    let obj1 = js_dup_value(ctx, js_mkptr(Tag.object, p))
+                    let ret = method(ctx, &desc, obj1, prop) catch failure:
+                        js_free_value(ctx, obj1)
+                        error(failure.code, failure.message)
+                    js_free_value(ctx, obj1)
+                    if ret:
+                        if (desc.flags & prop_getset) != 0:
+                            js_free_value(ctx, desc.setter)
+                            return try js_call_free(ctx, desc.getter, this_obj, 0, &no_args)
+                        else:
+                            return desc.value
+        if let proto = p.shape.proto:
+            p = proto
+        else:
+            break
+    if throw_ref_error:
+        try js_throw_reference_error_not_defined(ctx, prop)
+    return js_undefined()

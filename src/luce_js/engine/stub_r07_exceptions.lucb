@@ -105,7 +105,7 @@ func js_throw_interrupted(ctx: Context*):
 func js_poll_interrupts_raw(ctx: Context*) -> i32!:
     trap("unported: __js_poll_interrupts")
 ## Ported from quickjs.c:7877 js_poll_interrupts.
-func js_poll_interrupts(ctx: Context*) -> i32:
+func js_poll_interrupts(ctx: Context*) -> !:
     trap("unported: js_poll_interrupts")
 ## Ported from quickjs.c:7886 JS_SetImmutablePrototype.
 func js_set_immutable_prototype(ctx: Context*, obj: Value):

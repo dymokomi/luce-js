@@ -150,7 +150,7 @@ pub type ClassCall = func(Context*, Value, Value, i32, Value*, i32) -> Value!
 ## The exotic method get_own_property of ClassExoticMethods.
 pub type ExoticGetOwnProperty = func(Context*, PropertyDescriptor*?, Value, Atom) -> bool!
 ## The exotic method get_own_property_names of ClassExoticMethods.
-pub type ExoticGetOwnPropertyNames = func(Context*, PropertyEnum**?, u32*, Value) -> unit!
+pub type ExoticGetOwnPropertyNames = func(Context*, PropertyEnum*?*, u32*, Value) -> unit!
 ## The exotic method delete_property of ClassExoticMethods.
 pub type ExoticDeleteProperty = func(Context*, Value, Atom) -> bool!
 ## The exotic method define_own_property of ClassExoticMethods.

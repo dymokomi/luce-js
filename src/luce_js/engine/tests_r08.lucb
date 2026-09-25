@@ -1,0 +1,164 @@
+#==============================================================================================
+#
+#   tests_r08 - Unit tests of the property read, own keys and extensibility helpers
+#
+#   DESCRIPTION:
+#       Tests of the parts of quickjs.c lines 8030-9000 that work on plain data without a
+#       runtime: the array-index key order (num_keys_cmp under rqsort), the JS_GPN_*
+#       selection, and property reads, own descriptors, HasProperty and extensibility
+#       over ordinary objects and strings built by hand in buffers (with a block header
+#       before each, for the reference count). The context is never dereferenced on
+#       these paths; it is a buffer the size of a Context.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## A context-sized buffer: the paths under test never read it.
+struct TestContextBuf:
+    var words: u64[sizeof(Context) // 8 + 1]
+
+## Lay out an ordinary, extensible object with shape `sh` and storage `props` in `buf`,
+## after a block header holding a reference count of 1.
+func test_object_in(buf: u64*, sh: Shape*, props: Property*) -> Object*:
+    let header = (MallocBlockHeader*)buf
+    header.block_idx = free_nil
+    header.block_size_idx = 0
+    header.gc_bits = 0
+    header.ref_count = 1
+    let p = (Object*)(buf + 1)
+    discard(cutils.memset(p, 0, sizeof(Object)))
+    p.class_id = ClassId.object
+    p.extensible = true
+    p.shape = sh
+    p.prop = props
+    return p
+
+## Lay out the 8-bit string `text` in `buf`, after a block header.
+func test_string_in(buf: u64*, text: str) -> String*:
+    let header = (MallocBlockHeader*)buf
+    header.ref_count = 1
+    let p = (String*)(buf + 1)
+    p.len = (u32)text.length
+    p.hash = 0
+    p.hash_next = 0
+    p.is_wide_char = false
+    p.atom_type = 0
+    for i in 0..<text.length:
+        str8(p)[i] = text.bytes[i]
+    str8(p)[text.length] = 0
+    return p
+
+# mark: Property keys ===========================================================================
+
+test "num_keys_cmp sorts array-index keys numerically":
+    var ctx_buf: TestContextBuf = ---
+    let ctx = (Context*)&ctx_buf
+    var tab: PropertyEnum[5] = ---
+    let keys: u32[5] = [10, 2, 2147483647, 0, 7]
+    for i in 0..<keys.length:
+        tab[i] = PropertyEnum(is_enumerable = true, atom = js_atom_from_uint32_raw(keys[i]))
+    cutils.rqsort(&tab[0], 5, sizeof(PropertyEnum), num_keys_cmp, ctx)
+    let sorted: u32[5] = [0, 2, 7, 10, 2147483647]
+    for i in 0..<sorted.length:
+        assert(js_atom_to_uint32_raw(tab[i].atom) == sorted[i])
+    assert(num_keys_cmp(&tab[1], &tab[1], ctx) == 0)
+    assert(num_keys_cmp(&tab[1], &tab[0], ctx) == 1)
+    assert(num_keys_cmp(&tab[0], &tab[1], ctx) == -1)
+
+test "GPN flags select keys by kind and enumerability":
+    assert(gpn_selects(gpn_string_mask, AtomKind.string, false))
+    assert(not gpn_selects(gpn_string_mask, AtomKind.symbol, true))
+    assert(gpn_selects(gpn_string_mask | gpn_symbol_mask, AtomKind.symbol, false))
+    assert(not gpn_selects(gpn_string_mask | gpn_symbol_mask, AtomKind.private, true))
+    assert(gpn_selects(gpn_private_mask, AtomKind.private, false))
+    assert(not gpn_selects(gpn_string_mask | gpn_enum_only, AtomKind.string, false))
+    assert(gpn_selects(gpn_string_mask | gpn_enum_only, AtomKind.string, true))
+
+# mark: Reading properties ======================================================================
+
+test "property reads: own values, the prototype chain and missing keys":
+    var ctx_buf: TestContextBuf = ---
+    let ctx = (Context*)&ctx_buf
+
+    # the prototype holds 50 = 42 and an accessor 54 without a getter
+    var proto_shape_buf: u64[32] = ---
+    let proto_sh = test_shape_in(&proto_shape_buf[0], 4, 4)
+    test_shape_add(proto_sh, 50, (u8)prop_c_w_e)
+    test_shape_add(proto_sh, 54, (u8)(prop_getset | prop_enumerable))
+    var proto_props: Property[4] = ---
+    proto_props[0].u.value = js_new_int32(42)
+    proto_props[1].u.getset = PropertyGetSet(getter = none, setter = none)
+    var proto_buf: u64[32] = ---
+    let proto = test_object_in(&proto_buf[0], proto_sh, &proto_props[0])
+
+    # the object holds 61 = 7 (writable only) and inherits from the prototype
+    var shape_buf: u64[32] = ---
+    let sh = test_shape_in(&shape_buf[0], 4, 4)
+    sh.proto = proto
+    test_shape_add(sh, 61, (u8)prop_writable)
+    var props: Property[4] = ---
+    props[0].u.value = js_new_int32(7)
+    var obj_buf: u64[32] = ---
+    let obj = js_mkptr(Tag.object, test_object_in(&obj_buf[0], sh, &props[0]))
+
+    let own = try js_get_property_internal(ctx, obj, 61, obj, false)
+    assert(own.tag == Tag.int and js_value_get_int(own) == 7)
+    let inherited = try js_get_property_internal(ctx, obj, 50, obj, false)
+    assert(inherited.tag == Tag.int and js_value_get_int(inherited) == 42)
+    assert(js_is_undefined(try js_get_property_internal(ctx, obj, 54, obj, false)))
+    assert(js_is_undefined(try js_get_property_internal(ctx, obj, 99, obj, false)))
+
+    # own descriptors
+    var desc = PropertyDescriptor(flags = 0, value = js_undefined(), getter = js_undefined(),
+        setter = js_undefined())
+    assert(try js_get_own_property(ctx, &desc, obj, 61))
+    assert(desc.flags == prop_writable and js_value_get_int(desc.value) == 7)
+    assert(not try js_get_own_property(ctx, &desc, obj, 50))
+    assert(try js_get_own_property_internal(ctx, &desc, proto, 54))
+    assert(desc.flags == (prop_getset | prop_enumerable))
+    assert(js_is_undefined(desc.getter) and js_is_undefined(desc.setter))
+    assert(try js_get_own_property_internal(ctx, none, proto, 50))
+
+    # HasProperty walks the chain and leaves the reference counts as they were
+    assert(try js_has_property(ctx, obj, 61))
+    assert(try js_has_property(ctx, obj, 50))
+    assert(not try js_has_property(ctx, obj, 99))
+    assert(not try js_has_property(ctx, js_new_int32(1), 50))
+    assert(js_rc(proto).ref_count == 1)
+    assert(js_rc(obj.u.obj).ref_count == 1)
+
+test "string reads: length and the String object length":
+    var ctx_buf: TestContextBuf = ---
+    let ctx = (Context*)&ctx_buf
+    var string_buf: u64[8] = ---
+    let s = js_mkptr(Tag.string, test_string_in(&string_buf[0], "abc"))
+    let len = try js_get_property_internal(ctx, s, atom_length, s, false)
+    assert(len.tag == Tag.int and js_value_get_int(len) == 3)
+
+    var shape_buf: u64[32] = ---
+    let sh = test_shape_in(&shape_buf[0], 4, 1)
+    var props: Property[1] = ---
+    var obj_buf: u64[32] = ---
+    let p = test_object_in(&obj_buf[0], sh, &props[0])
+    p.class_id = ClassId.string
+    p.u.object_data = s
+    assert(js_string_obj_get_length(ctx, js_mkptr(Tag.object, p)) == 3)
+    p.u.object_data = js_undefined()
+    assert(js_string_obj_get_length(ctx, js_mkptr(Tag.object, p)) == 0)
+
+# mark: Extensibility ===========================================================================
+
+test "extensibility of ordinary objects and primitives":
+    var ctx_buf: TestContextBuf = ---
+    let ctx = (Context*)&ctx_buf
+    var shape_buf: u64[32] = ---
+    let sh = test_shape_in(&shape_buf[0], 4, 1)
+    var props: Property[1] = ---
+    var obj_buf: u64[32] = ---
+    let obj = js_mkptr(Tag.object, test_object_in(&obj_buf[0], sh, &props[0]))
+    assert(try js_is_extensible(ctx, obj))
+    assert(try js_prevent_extensions(ctx, obj))
+    assert(not try js_is_extensible(ctx, obj))
+    assert(not try js_is_extensible(ctx, js_null()))
+    assert(not try js_prevent_extensions(ctx, js_new_int32(0)))

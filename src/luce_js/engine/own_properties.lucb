@@ -1,0 +1,363 @@
+#==============================================================================================
+#
+#   own_properties - Own property keys and descriptors, extensibility and HasProperty
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 8552-9000: the own property keys of an object in
+#       specification order (JS_GetOwnPropertyNamesInternal: array indexes ascending,
+#       then strings, then symbols, then exotic keys), JS_FreePropertyEnum, the own
+#       property descriptor (JS_GetOwnPropertyInternal), JS_IsExtensible,
+#       JS_PreventExtensions, JS_HasProperty and js_symbol_to_atom.
+#
+#==============================================================================================
+
+# mark: Property keys ===========================================================================
+
+## The length of a String object's primitive string (js_string_obj_get_length).
+func js_string_obj_get_length(ctx: Context*, obj: Value) -> u32:
+    # This is a class exotic method: obj class_id is JS_CLASS_STRING
+    let p = obj.u.obj
+    if p.u.object_data.tag == Tag.string:
+        return p.u.object_data.u.string.len
+    return 0
+
+## Order two PropertyEnum entries whose atoms are array indexes by their numeric value;
+## `opaque` is the context (num_keys_cmp, an rqsort comparator).
+func num_keys_cmp(p1: const void*, p2: const void*, opaque: void*?) -> i32:
+    let ctx = (Context*)(opaque else trap("num_keys_cmp without a context"))
+    let atom1 = ((const PropertyEnum*)p1).atom
+    let atom2 = ((const PropertyEnum*)p2).atom
+    var v1: u32 = 0
+    var v2: u32 = 0
+    let atom1_is_integer = js_atom_is_array_index(ctx, &v1, atom1)
+    let atom2_is_integer = js_atom_is_array_index(ctx, &v2, atom2)
+    assert(atom1_is_integer and atom2_is_integer)
+    if v1 < v2:
+        return -1
+    elif v1 == v2:
+        return 0
+    else:
+        return 1
+
+## Release the `len` atoms of `tab` and `tab` itself (JS_FreePropertyEnum).
+pub func js_free_property_enum(ctx: Context*, tab: PropertyEnum*?, len: u32):
+    if let t = tab:
+        for i in 0..<(usize)len:
+            js_free_atom(ctx, t[i].atom)
+        js_free(ctx, t)
+
+## Whether the own property keys of kind `kind` and enumerability `is_enumerable` are
+## selected by the JS_GPN_* `flags`.
+func gpn_selects(flags: i32, kind: AtomKind, is_enumerable: bool) -> bool:
+    return ((flags & gpn_enum_only) == 0 or is_enumerable) and ((flags >> (i32)kind) & 1) != 0
+
+# return < 0 in case if exception, 0 if OK. ptab and its atoms must
+# be freed by the user.
+## The own property keys of `p` selected by the JS_GPN_* `flags`, in `*ptab` (js_malloc'ed,
+## with a reference to each atom) and their count in `*plen`
+## (JS_GetOwnPropertyNamesInternal).
+func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum*?*, plen: u32*, p: Object*, flags: i32) -> !:
+    var num_key: u32 = 0
+
+    # clear pointer for consistency in case of failure
+    *ptab = none
+    *plen = 0
+
+    # compute the number of returned properties
+    var num_keys_count: u32 = 0
+    var str_keys_count: u32 = 0
+    var sym_keys_count: u32 = 0
+    var exotic_keys_count: u32 = 0
+    var exotic_count: u32 = 0
+    var tab_exotic: PropertyEnum*? = none
+    var sh = p.shape
+    var shape_props = get_shape_prop(sh)
+    for i in 0..<(usize)sh.prop_count:
+        let prs = shape_props + i
+        let atom = prs.atom
+        if atom != no_atom:
+            let is_enumerable = ((i32)prs.flags & prop_enumerable) != 0
+            let kind = js_atom_get_kind(ctx, atom)
+            if gpn_selects(flags, kind, is_enumerable):
+                # need to raise an exception in case of the module
+                # name space (implicit GetOwnProperty)
+                if (((i32)prs.flags & prop_tmask) == prop_varref and
+                        (flags & (gpn_set_enum | gpn_enum_only)) != 0):
+                    let var_ref = p.prop[i].u.var_ref
+                    if js_is_uninitialized(*var_ref.pvalue):
+                        try js_throw_reference_error_uninitialized(ctx, prs.atom)
+                if js_atom_is_array_index(ctx, &num_key, atom):
+                    num_keys_count += 1
+                elif kind == AtomKind.string:
+                    str_keys_count += 1
+                else:
+                    sym_keys_count += 1
+
+    if p.is_exotic:
+        if p.fast_array:
+            if (flags & gpn_string_mask) != 0:
+                num_keys_count += p.u.array.count
+        elif p.class_id == ClassId.string:
+            if (flags & gpn_string_mask) != 0:
+                num_keys_count += js_string_obj_get_length(ctx, js_mkptr(Tag.object, p))
+        elif let em = object_exotic(ctx, p):
+            if let method = em.get_own_property_names:
+                try method(ctx, &tab_exotic, &exotic_count, js_mkptr(Tag.object, p))
+            if let exotic = tab_exotic:
+                for i in 0..<(usize)exotic_count:
+                    let atom = exotic[i].atom
+                    let kind = js_atom_get_kind(ctx, atom)
+                    if ((flags >> (i32)kind) & 1) != 0:
+                        var is_enumerable = false
+                        if (flags & (gpn_set_enum | gpn_enum_only)) != 0:
+                            var desc = PropertyDescriptor(flags = 0, value = js_undefined(),
+                                getter = js_undefined(), setter = js_undefined())
+                            # set the "is_enumerable" field if necessary
+                            let res = js_get_own_property_internal(ctx, &desc, p, atom) catch failure:
+                                js_free_property_enum(ctx, tab_exotic, exotic_count)
+                                error(failure.code, failure.message)
+                            if res:
+                                is_enumerable = (desc.flags & prop_enumerable) != 0
+                                js_free_desc(ctx, &desc)
+                            exotic[i].is_enumerable = is_enumerable
+                        if (flags & gpn_enum_only) == 0 or is_enumerable:
+                            exotic_keys_count += 1
+
+    # fill them
+
+    # the sums are checked for wrapping as unsigned, as QuickJS does
+    var atom_count = num_keys_count +% str_keys_count
+    var overflow = atom_count < str_keys_count
+    atom_count = atom_count +% sym_keys_count
+    overflow = overflow or atom_count < sym_keys_count
+    atom_count = atom_count +% exotic_keys_count
+    if overflow or atom_count < exotic_keys_count or atom_count > 0x7fffffff:
+        js_free_property_enum(ctx, tab_exotic, exotic_count)
+        try js_throw_out_of_memory(ctx)
+    # XXX: need generic way to test for js_malloc(ctx, a * b) overflow
+
+    # avoid allocating 0 bytes
+    let tab_raw = js_malloc(ctx, sizeof(PropertyEnum) * (usize)(atom_count if atom_count > 1 else 1)) catch failure:
+        js_free_property_enum(ctx, tab_exotic, exotic_count)
+        error(failure.code, failure.message)
+    let tab_atom = (PropertyEnum*)tab_raw
+
+    var num_index: u32 = 0
+    var str_index = num_keys_count
+    var sym_index = str_index + str_keys_count
+
+    var num_sorted = true
+    sh = p.shape
+    shape_props = get_shape_prop(sh)
+    for i in 0..<(usize)sh.prop_count:
+        let prs = shape_props + i
+        let atom = prs.atom
+        if atom != no_atom:
+            let is_enumerable = ((i32)prs.flags & prop_enumerable) != 0
+            let kind = js_atom_get_kind(ctx, atom)
+            if gpn_selects(flags, kind, is_enumerable):
+                var j: u32 = 0
+                if js_atom_is_array_index(ctx, &num_key, atom):
+                    j = num_index
+                    num_index += 1
+                    num_sorted = false
+                elif kind == AtomKind.string:
+                    j = str_index
+                    str_index += 1
+                else:
+                    j = sym_index
+                    sym_index += 1
+                tab_atom[(usize)j].atom = js_dup_atom(ctx, atom)
+                tab_atom[(usize)j].is_enumerable = is_enumerable
+
+    if p.is_exotic:
+        # the fast array and String object cases share the add_array_keys loop
+        var add_array_keys = false
+        var len: u32 = 0
+        if p.fast_array:
+            if (flags & gpn_string_mask) != 0:
+                len = p.u.array.count
+                add_array_keys = true
+        elif p.class_id == ClassId.string:
+            if (flags & gpn_string_mask) != 0:
+                len = js_string_obj_get_length(ctx, js_mkptr(Tag.object, p))
+                add_array_keys = true
+        else:
+            # Note: exotic keys are not reordered and comes after the object own properties.
+            if let exotic = tab_exotic:
+                for i in 0..<(usize)exotic_count:
+                    let atom = exotic[i].atom
+                    let is_enumerable = exotic[i].is_enumerable
+                    let kind = js_atom_get_kind(ctx, atom)
+                    if gpn_selects(flags, kind, is_enumerable):
+                        tab_atom[(usize)sym_index].atom = atom
+                        tab_atom[(usize)sym_index].is_enumerable = is_enumerable
+                        sym_index += 1
+                    else:
+                        js_free_atom(ctx, atom)
+                js_free(ctx, exotic)
+        if add_array_keys:
+            for i in 0..<len:
+                tab_atom[(usize)num_index].atom = js_atom_from_uint32_raw(i)
+                if tab_atom[(usize)num_index].atom == no_atom:
+                    js_free_property_enum(ctx, tab_atom, num_index)
+                    error(exception, "")
+                tab_atom[(usize)num_index].is_enumerable = true
+                num_index += 1
+
+    assert(num_index == num_keys_count)
+    assert(str_index == num_keys_count + str_keys_count)
+    assert(sym_index == atom_count)
+
+    if num_keys_count != 0 and not num_sorted:
+        cutils.rqsort(tab_atom, (usize)num_keys_count, sizeof(PropertyEnum), num_keys_cmp, ctx)
+    *ptab = tab_atom
+    *plen = atom_count
+
+## The own property keys of `obj` selected by the JS_GPN_* `flags` (JS_GetOwnPropertyNames);
+## free them with js_free_property_enum.
+pub func js_get_own_property_names(ctx: Context*, ptab: PropertyEnum*?*, plen: u32*, obj: Value, flags: i32) -> !:
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    try js_get_own_property_names_internal(ctx, ptab, plen, obj.u.obj, flags)
+
+# mark: Own property descriptors ================================================================
+
+# Return -1 if exception,
+# FALSE if the property does not exist, TRUE if it exists. If TRUE is
+# returned, the property descriptor 'desc' is filled present.
+## (JS_GetOwnPropertyInternal.)
+func js_get_own_property_internal(ctx: Context*, desc: PropertyDescriptor*?, p: Object*, prop: Atom) -> bool!:
+    while true:
+        var pr: Property*? = none
+        let prs = find_own_property(&pr, p, prop) else break
+        let pr1 = own_property_storage(pr)
+        let kind = (i32)prs.flags & prop_tmask
+        if let d = desc:
+            d.flags = (i32)prs.flags & prop_c_w_e
+            d.getter = js_undefined()
+            d.setter = js_undefined()
+            d.value = js_undefined()
+            if kind != 0:
+                if kind == prop_getset:
+                    d.flags |= prop_getset
+                    if let getter = pr1.u.getset.getter:
+                        d.getter = js_dup_value(ctx, js_mkptr(Tag.object, getter))
+                    if let setter = pr1.u.getset.setter:
+                        d.setter = js_dup_value(ctx, js_mkptr(Tag.object, setter))
+                elif kind == prop_varref:
+                    let val = *pr1.u.var_ref.pvalue
+                    if js_is_uninitialized(val):
+                        try js_throw_reference_error_uninitialized(ctx, prs.atom)
+                    d.value = js_dup_value(ctx, val)
+                elif kind == prop_autoinit:
+                    # Instantiate property and retry
+                    try js_auto_init_property(ctx, p, prop, pr1, prs)
+                    continue
+            else:
+                d.value = js_dup_value(ctx, pr1.u.value)
+        else:
+            # for consistency, send the exception even if desc is NULL
+            if kind == prop_varref:
+                if js_is_uninitialized(*pr1.u.var_ref.pvalue):
+                    try js_throw_reference_error_uninitialized(ctx, prs.atom)
+            elif kind == prop_autoinit:
+                # nothing to do: delay instantiation until actual value and/or attributes are read
+                discard(0)
+        return true
+    if p.is_exotic:
+        if p.fast_array:
+            # specific case for fast arrays
+            if js_atom_is_tagged_int_raw(prop):
+                let idx = js_atom_to_uint32_raw(prop)
+                if idx < p.u.array.count:
+                    if let d = desc:
+                        d.flags = prop_writable | prop_enumerable | prop_configurable
+                        d.getter = js_undefined()
+                        d.setter = js_undefined()
+                        d.value = try js_get_property_uint32(ctx, js_mkptr(Tag.object, p), idx)
+                    return true
+        elif let em = object_exotic(ctx, p):
+            if let method = em.get_own_property:
+                return try method(ctx, desc, js_mkptr(Tag.object, p), prop)
+    return false
+
+## The own property descriptor of `prop` in `obj`, filled into `desc` when given and the
+## property exists (JS_GetOwnProperty).
+pub func js_get_own_property(ctx: Context*, desc: PropertyDescriptor*?, obj: Value, prop: Atom) -> bool!:
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    return try js_get_own_property_internal(ctx, desc, obj.u.obj, prop)
+
+# mark: Extensibility ===========================================================================
+
+# return -1 if exception (exotic object only) or TRUE/FALSE
+## Whether new properties can be added to `obj` (JS_IsExtensible).
+pub func js_is_extensible(ctx: Context*, obj: Value) -> bool!:
+    if obj.tag != Tag.object:
+        return false
+    let p = obj.u.obj
+    if p.is_exotic:
+        if let em = object_exotic(ctx, p):
+            if let method = em.is_extensible:
+                return try method(ctx, obj)
+    return p.extensible
+
+# return -1 if exception (exotic object only) or TRUE/FALSE
+## Make `obj` non-extensible; false when it cannot be (JS_PreventExtensions).
+pub func js_prevent_extensions(ctx: Context*, obj: Value) -> bool!:
+    if obj.tag != Tag.object:
+        return false
+    let p = obj.u.obj
+    if p.is_exotic:
+        if ((u16)p.class_id >= (u16)ClassId.uint8c_array and
+                (u16)p.class_id <= (u16)ClassId.float64_array):
+            # resizable type arrays return FALSE
+            let ta = p.u.typed_array
+            let abuf = ta.buffer.u.array_buffer
+            if ta.track_rab or (array_buffer_is_resizable(abuf) and abuf.shared == 0):
+                return false
+        elif let em = object_exotic(ctx, p):
+            if let method = em.prevent_extensions:
+                return try method(ctx, obj)
+    p.extensible = false
+    return true
+
+# mark: HasProperty =============================================================================
+
+# return -1 if exception otherwise TRUE or FALSE
+## Whether `prop` is an own or inherited property of `obj` (JS_HasProperty).
+pub func js_has_property(ctx: Context*, obj: Value, prop: Atom) -> bool!:
+    if obj.tag != Tag.object:
+        return false
+    var p = obj.u.obj
+    while true:
+        if p.is_exotic:
+            if let em = object_exotic(ctx, p):
+                if let method = em.has_property:
+                    # has_property can free the prototype
+                    let obj1 = js_dup_value(ctx, js_mkptr(Tag.object, p))
+                    defer js_free_value(ctx, obj1)
+                    return try method(ctx, obj1, prop)
+        # JS_GetOwnPropertyInternal can free the prototype
+        discard(js_dup_value(ctx, js_mkptr(Tag.object, p)))
+        let ret = js_get_own_property_internal(ctx, none, p, prop) catch failure:
+            js_free_value(ctx, js_mkptr(Tag.object, p))
+            error(failure.code, failure.message)
+        js_free_value(ctx, js_mkptr(Tag.object, p))
+        if ret:
+            return true
+        if ((u16)p.class_id >= (u16)ClassId.uint8c_array and
+                (u16)p.class_id <= (u16)ClassId.float64_array):
+            if try js_atom_is_numeric_index(ctx, prop):
+                return false
+        if let proto = p.shape.proto:
+            p = proto
+        else:
+            break
+    return false
+
+# val must be a symbol
+## The atom of the symbol `val`, without a new reference (js_symbol_to_atom).
+func js_symbol_to_atom(ctx: Context*, val: Value) -> Atom:
+    return js_get_atom_index(ctx.rt, val.u.string)

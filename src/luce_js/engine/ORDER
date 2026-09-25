@@ -23,7 +23,9 @@ objects.lucb
 object_free.lucb
 stub_r06_gc.lucb
 stub_r07_exceptions.lucb
-stub_r08_property_get.lucb
+property_get.lucb
+private_fields.lucb
+own_properties.lucb
 stub_r09_property_set.lucb
 stub_r10_define_property.lucb
 stub_r11_bigint.lucb
@@ -49,3 +51,4 @@ tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
+tests_r08.lucb

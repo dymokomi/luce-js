@@ -186,7 +186,7 @@ func find_atom(ctx: Context*, name: const u8*) -> Atom:
 func js_new_object_proto_list(ctx: Context*, proto: Value, fields: const CFunctionListEntry*, n_fields: i32) -> Value!:
     trap("unported: JS_NewObjectProtoList")
 ## Ported from quickjs.c:39569 JS_InstantiateFunctionListItem2.
-func js_instantiate_function_list_item2(ctx: Context*, p: Object*, atom: Atom, opaque: void*) -> Value!:
+func js_instantiate_function_list_item2(ctx: Context*, p: Object*, atom: Atom, opaque: void*?) -> Value!:
     trap("unported: JS_InstantiateFunctionListItem2")
 ## Ported from quickjs.c:39598 JS_InstantiateFunctionListItem.
 func js_instantiate_function_list_item(ctx: Context*, obj: Value, atom: Atom, e: const CFunctionListEntry*) -> i32!:
