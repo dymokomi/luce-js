@@ -1,0 +1,315 @@
+#==============================================================================================
+#
+#   rqsort - A reentrant quicksort over untyped elements with a comparator and an opaque
+#
+#   DESCRIPTION:
+#       Port of QuickJS cutils.c lines 340-641: the width-specialised exchange functions,
+#       heapsortx (the worst-case fallback), med3 and rqsort itself.
+#
+#==============================================================================================
+
+## A comparator for `rqsort`: `(a, b, opaque)`, negative, zero or positive.
+pub type CmpF = func(const void*, const void*, void*?) -> i32
+
+type ExchangeF = func(void*, void*, usize) -> unit
+
+# mark: Exchange functions =====================================================================
+
+func exchange_bytes(a: void*, b: void*, size: usize):
+    var ap = (u8*)a
+    var bp = (u8*)b
+    var n = size
+    while n != 0:
+        n -= 1
+        let t = *ap
+        *ap = *bp
+        *bp = t
+        ap = ap + 1
+        bp = bp + 1
+
+func exchange_one_byte(a: void*, b: void*, size: usize):
+    let ap = (u8*)a
+    let bp = (u8*)b
+    let t = *ap
+    *ap = *bp
+    *bp = t
+
+func exchange_int16s(a: void*, b: void*, size: usize):
+    var ap = (u16*)a
+    var bp = (u16*)b
+    var n = size // sizeof(u16)
+    while n != 0:
+        n -= 1
+        let t = *ap
+        *ap = *bp
+        *bp = t
+        ap = ap + 1
+        bp = bp + 1
+
+func exchange_one_int16(a: void*, b: void*, size: usize):
+    let ap = (u16*)a
+    let bp = (u16*)b
+    let t = *ap
+    *ap = *bp
+    *bp = t
+
+func exchange_int32s(a: void*, b: void*, size: usize):
+    var ap = (u32*)a
+    var bp = (u32*)b
+    var n = size // sizeof(u32)
+    while n != 0:
+        n -= 1
+        let t = *ap
+        *ap = *bp
+        *bp = t
+        ap = ap + 1
+        bp = bp + 1
+
+func exchange_one_int32(a: void*, b: void*, size: usize):
+    let ap = (u32*)a
+    let bp = (u32*)b
+    let t = *ap
+    *ap = *bp
+    *bp = t
+
+func exchange_int64s(a: void*, b: void*, size: usize):
+    var ap = (u64*)a
+    var bp = (u64*)b
+    var n = size // sizeof(u64)
+    while n != 0:
+        n -= 1
+        let t = *ap
+        *ap = *bp
+        *bp = t
+        ap = ap + 1
+        bp = bp + 1
+
+func exchange_one_int64(a: void*, b: void*, size: usize):
+    let ap = (u64*)a
+    let bp = (u64*)b
+    let t = *ap
+    *ap = *bp
+    *bp = t
+
+func exchange_int128s(a: void*, b: void*, size: usize):
+    var ap = (u64*)a
+    var bp = (u64*)b
+    var n = size // (sizeof(u64) * 2)
+    while n != 0:
+        n -= 1
+        let t = ap[0]
+        let u = ap[1]
+        ap[0] = bp[0]
+        ap[1] = bp[1]
+        bp[0] = t
+        bp[1] = u
+        ap = ap + 2
+        bp = bp + 2
+
+func exchange_one_int128(a: void*, b: void*, size: usize):
+    let ap = (u64*)a
+    let bp = (u64*)b
+    let t = ap[0]
+    let u = ap[1]
+    ap[0] = bp[0]
+    ap[1] = bp[1]
+    bp[0] = t
+    bp[1] = u
+
+func exchange_func(base: const void*, size: usize) -> ExchangeF:
+    match ((usize)base | size) & 15:
+        0:
+            if size == sizeof(u64) * 2:
+                return exchange_one_int128
+            else:
+                return exchange_int128s
+        8:
+            if size == sizeof(u64):
+                return exchange_one_int64
+            else:
+                return exchange_int64s
+        4, 12:
+            if size == sizeof(u32):
+                return exchange_one_int32
+            else:
+                return exchange_int32s
+        2, 6, 10, 14:
+            if size == sizeof(u16):
+                return exchange_one_int16
+            else:
+                return exchange_int16s
+        _:
+            if size == 1:
+                return exchange_one_byte
+            else:
+                return exchange_bytes
+
+# mark: Heapsort ===============================================================================
+
+func heapsortx(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*?):
+    let basep = (u8*)base
+    let swap = exchange_func(base, size)
+
+    if nmemb > 1:
+        var i = (nmemb // 2) * size
+        let n = nmemb * size
+
+        while i > 0:
+            i -= size
+            var r = i
+            while true:
+                var c = r * 2 + size
+                if c >= n:
+                    break
+                if c < n - size and cmp(basep + c, basep + c + size, opaque) <= 0:
+                    c += size
+                if cmp(basep + r, basep + c, opaque) > 0:
+                    break
+                swap(basep + r, basep + c, size)
+                r = c
+        i = n - size
+        while i > 0:
+            swap(basep, basep + i, size)
+
+            var r: usize = 0
+            while true:
+                var c = r * 2 + size
+                if c >= i:
+                    break
+                if c < i - size and cmp(basep + c, basep + c + size, opaque) <= 0:
+                    c += size
+                if cmp(basep + r, basep + c, opaque) > 0:
+                    break
+                swap(basep + r, basep + c, size)
+                r = c
+            i -= size
+
+func med3(a: u8*, b: u8*, c: u8*, cmp: CmpF, opaque: void*?) -> u8*:
+    if cmp(a, b, opaque) < 0:
+        return b if cmp(b, c, opaque) < 0 else (c if cmp(a, c, opaque) < 0 else a)
+    return b if cmp(b, c, opaque) > 0 else (a if cmp(a, c, opaque) < 0 else c)
+
+# mark: rqsort =================================================================================
+
+struct RqsortSegment:
+    var base: u8*?
+    var count: usize
+    var depth: i32
+
+## Sort `nmemb` elements of `size` bytes at `base` with `cmp(a, b, opaque)`. Not stable.
+## (pointer based version with local stack and insertion sort threshhold)
+pub func rqsort(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*?):
+    var stack: RqsortSegment[50]
+    var sp: usize = 0
+    let swap = exchange_func(base, size)
+    let swap_block = exchange_func(base, size | 128)
+
+    if nmemb < 2 or size <= 0:
+        return
+
+    stack[sp] = RqsortSegment(base = (u8*)base, count = nmemb, depth = 0)
+    sp += 1
+
+    while sp > 0:
+        sp -= 1
+        var ptr = stack[sp].base else trap("rqsort: empty segment")
+        var n = stack[sp].count
+        var depth = stack[sp].depth
+
+        while n > 6:
+            depth += 1
+            if depth > 50:
+                # depth check to ensure worst case logarithmic time
+                heapsortx(ptr, n, size, cmp, opaque)
+                n = 0
+                break
+            # select median of 3 from 1/4, 1/2, 3/4 positions
+            # should use median of 5 or 9?
+            let m4 = (n >> 2) * size
+            let m = med3(ptr + m4, ptr + 2 * m4, ptr + 3 * m4, cmp, opaque)
+            swap(ptr, m, size) # move the pivot to the start or the array
+            var i: usize = 1
+            var lt: usize = 1
+            var pi = ptr + size
+            var plt = pi
+            var gt = n
+            let top = ptr + n * size
+            var pj = top
+            var pgt = top
+            while true:
+                while pi < pj:
+                    let c = cmp(ptr, pi, opaque)
+                    if c < 0:
+                        break
+                    if c == 0:
+                        swap(plt, pi, size)
+                        lt += 1
+                        plt = plt + size
+                    i += 1
+                    pi = pi + size
+                while true:
+                    pj = pj - size
+                    if pi >= pj:
+                        break
+                    let c = cmp(ptr, pj, opaque)
+                    if c > 0:
+                        break
+                    if c == 0:
+                        gt -= 1
+                        pgt = pgt - size
+                        swap(pgt, pj, size)
+                if pi >= pj:
+                    break
+                swap(pi, pj, size)
+                i += 1
+                pi = pi + size
+            # array has 4 parts:
+            # from 0 to lt excluded: elements identical to pivot
+            # from lt to pi excluded: elements smaller than pivot
+            # from pi to gt excluded: elements greater than pivot
+            # from gt to n excluded: elements identical to pivot
+            #
+            # move elements identical to pivot in the middle of the array:
+            # swap values in ranges [0..lt[ and [i-lt..i[
+            # swapping the smallest span between lt and i-lt is sufficient
+            var span = (usize)(plt - ptr)
+            var span2 = (usize)(pi - plt)
+            lt = i - lt
+            if span > span2:
+                span = span2
+            swap_block(ptr, pi - span, span)
+            # swap values in ranges [gt..top[ and [i..top-(top-gt)[
+            # swapping the smallest span between top-gt and gt-i is sufficient
+            span = (usize)(top - pgt)
+            span2 = (usize)(pgt - pi)
+            pgt = top - span2
+            gt = n - (gt - i)
+            if span > span2:
+                span = span2
+            swap_block(pi, top - span, span)
+
+            # now array has 3 parts:
+            # from 0 to lt excluded: elements smaller than pivot
+            # from lt to gt excluded: elements identical to pivot
+            # from gt to n excluded: elements greater than pivot
+            #
+            # stack the larger segment and keep processing the smaller one
+            # to minimize stack use for pathological distributions
+            if lt > n - gt:
+                stack[sp] = RqsortSegment(base = ptr, count = lt, depth = depth)
+                sp += 1
+                ptr = pgt
+                n -= gt
+            else:
+                stack[sp] = RqsortSegment(base = pgt, count = n - gt, depth = depth)
+                sp += 1
+                n = lt
+        # Use insertion sort for small fragments
+        var pi = ptr + size
+        let top = ptr + n * size
+        while pi < top:
+            var pj = pi
+            while pj > ptr and cmp(pj - size, pj, opaque) > 0:
+                swap(pj, pj - size, size)
+                pj = pj - size
+            pi = pi + size

@@ -1,0 +1,109 @@
+luce_js.cutils is ready: `luce-base test src/luce_js/cutils` passes (17 tests).
+Use: `import luce_js.cutils as cutils` in your module's first fragment.
+
+Notes for callers:
+- `free` is a reserved word: the C free is `cutils.c_free(p)`.
+- libc pointer params are nullable (`void*?`), so `u8*`/`T*` pass directly. A `u8*?` does NOT
+  convert to `void*?` (docs/compiler-issues/nullable_pointer_cast.lucb): unwrap with `if let`.
+- DynBuf.buf is `u8*?` (none until first growth): `let b = s.buf else trap("...")`.
+- DynBuf is an io.Writer; dbuf_printf takes a formatted string: `cutils.dbuf_printf(&s, f":{n}")`.
+- clz/ctz of 0 answer the bit width (C is undefined).
+- strstart's prefix is a Luce `str`: `cutils.strstart(p, "Infinity", &p)`.
+- ListHead links are `ListHead*?`; iteration pattern is in the `ListHead` doc comment (list.lucb):
+      var el = head.next else trap("unlinked")
+      while el != head:
+          let obj = (T*)((u8*)el - offsetof(T, link))
+          el = el.next else trap("unlinked")
+
+Pub signatures:
+pub type DynBufReallocFunc = func(void*?, void*?, usize) -> void*?
+pub struct DynBuf: Writer
+    pub var buf: u8*?
+    pub var size: usize
+    pub var allocated_size: usize
+    pub var error: bool
+    pub var realloc_func: DynBufReallocFunc?
+    pub var opaque: void*?
+    pub mutating func write(data: const u8[]) -> usize!
+pub func dbuf_init2(s: DynBuf*, opaque: void*?, realloc_func: DynBufReallocFunc?)
+pub func dbuf_init(s: DynBuf*)
+pub func dbuf_claim(s: DynBuf*, len: usize) -> i32
+pub func dbuf_put(s: DynBuf*, data: const u8*, len: usize) -> i32
+pub func dbuf_put_self(s: DynBuf*, offset: usize, len: usize) -> i32
+pub func dbuf_putc_raw(s: DynBuf*, c: u8) -> i32
+pub func dbuf_put_u16_raw(s: DynBuf*, val: u16) -> i32
+pub func dbuf_put_u32_raw(s: DynBuf*, val: u32) -> i32
+pub func dbuf_put_u64_raw(s: DynBuf*, val: u64) -> i32
+pub func dbuf_putstr(s: DynBuf*, text: str) -> i32
+pub func dbuf_putc(s: DynBuf*, val: u8) -> i32
+pub func dbuf_put_u16(s: DynBuf*, val: u16) -> i32
+pub func dbuf_put_u32(s: DynBuf*, val: u32) -> i32
+pub func dbuf_put_u64(s: DynBuf*, val: u64) -> i32
+pub func dbuf_printf(s: DynBuf*, text: fmt) -> i32
+pub func dbuf_free(s: DynBuf*)
+pub func dbuf_error(s: const DynBuf*) -> bool
+pub func dbuf_set_error(s: DynBuf*)
+pub let utf8_char_len_max: i32 = 6
+pub func unicode_to_utf8(buf: u8*, c: u32) -> i32
+pub func unicode_from_utf8(p: const u8*, max_len: i32, pp: const u8**) -> i32
+pub func is_surrogate(c: u32) -> bool
+pub func is_hi_surrogate(c: u32) -> bool
+pub func is_lo_surrogate(c: u32) -> bool
+pub func get_hi_surrogate(c: u32) -> u32
+pub func get_lo_surrogate(c: u32) -> u32
+pub func from_surrogate(hi: u32, lo: u32) -> u32
+pub func from_hex(c: i32) -> i32
+pub extern func malloc(size: usize) -> void*?
+pub extern func realloc(ptr: void*?, size: usize) -> void*?
+pub extern func c_free as "free"(ptr: void*?)
+pub extern func memcpy(dest: void*?, src: const void*?, n: usize) -> void*?
+pub extern func memmove(dest: void*?, src: const void*?, n: usize) -> void*?
+pub extern func memset(s: void*?, c: i32, n: usize) -> void*?
+pub extern func memcmp(s1: const void*?, s2: const void*?, n: usize) -> i32
+pub extern func strlen(s: const u8*) -> usize
+pub func pstrcpy(buf: u8*, buf_size: i32, text: const u8*)
+pub func pstrcat(buf: u8*, buf_size: i32, s: const u8*) -> u8*
+pub func strstart(text: const u8*, val: str, ptr: const u8**?) -> bool
+pub func memcpy_no_ub(dest: void*?, src: const void*?, n: usize)
+pub func max_int(a: i32, b: i32) -> i32
+pub func min_int(a: i32, b: i32) -> i32
+pub func max_uint32(a: u32, b: u32) -> u32
+pub func min_uint32(a: u32, b: u32) -> u32
+pub func max_int64(a: i64, b: i64) -> i64
+pub func min_int64(a: i64, b: i64) -> i64
+pub func clz32(a: u32) -> i32
+pub func clz64(a: u64) -> i32
+pub func ctz32(a: u32) -> i32
+pub func ctz64(a: u64) -> i32
+pub func get_u64(tab: const u8*) -> u64
+pub func get_i64(tab: const u8*) -> i64
+pub func put_u64(tab: u8*, val: u64)
+pub func get_u32(tab: const u8*) -> u32
+pub func get_i32(tab: const u8*) -> i32
+pub func put_u32(tab: u8*, val: u32)
+pub func get_u16(tab: const u8*) -> u32
+pub func get_i16(tab: const u8*) -> i32
+pub func put_u16(tab: u8*, val: u16)
+pub func get_u8(tab: const u8*) -> u32
+pub func get_i8(tab: const u8*) -> i32
+pub func put_u8(tab: u8*, val: u8)
+pub func bswap16(x: u16) -> u16
+pub func bswap32(v: u32) -> u32
+pub func bswap64(v: u64) -> u64
+pub type CmpF = func(const void*, const void*, void*?) -> i32
+pub func rqsort(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*?)
+pub struct ListHead
+    pub var prev: ListHead*?
+    pub var next: ListHead*?
+pub func init_list_head(head: ListHead*)
+pub func list_add_raw(el: ListHead*, prev: ListHead*, next: ListHead*)
+pub func list_add(el: ListHead*, head: ListHead*)
+pub func list_add_tail(el: ListHead*, head: ListHead*)
+pub func list_del(el: ListHead*)
+pub func list_empty(el: const ListHead*) -> bool
+pub func float64_as_uint64(d: f64) -> u64
+pub func uint64_as_float64(u64_bits: u64) -> f64
+pub func fromfp16(v: u16) -> f64
+pub func tofp16(d: f64) -> u16
+pub func isfp16nan(v: u16) -> bool
+pub func isfp16zero(v: u16) -> bool

@@ -1,0 +1,433 @@
+#==============================================================================================
+#
+#   api_types - The public types and flags of the engine's API
+#
+#   DESCRIPTION:
+#       Port of quickjs.h's types other than the value itself: property flags, eval
+#       flags, property descriptors, class definitions and their exotic methods, the
+#       C-function kinds and the function-list tables builtins are declared with, and
+#       the host callbacks. A JavaScript exception is a failure (`!`) everywhere a
+#       QuickJS callback returns JS_EXCEPTION or -1.
+#
+#==============================================================================================
+
+# mark: Property flags ==========================================================================
+
+## JS_PROP_CONFIGURABLE.
+pub let prop_configurable: i32 = 1 << 0
+## JS_PROP_WRITABLE.
+pub let prop_writable: i32 = 1 << 1
+## JS_PROP_ENUMERABLE.
+pub let prop_enumerable: i32 = 1 << 2
+## JS_PROP_C_W_E: configurable, writable and enumerable.
+pub let prop_c_w_e: i32 = prop_configurable | prop_writable | prop_enumerable
+## JS_PROP_LENGTH: used internally in arrays.
+pub let prop_length: i32 = 1 << 3
+## JS_PROP_TMASK: the mask of the property kinds below.
+pub let prop_tmask: i32 = 3 << 4
+## JS_PROP_NORMAL: a plain value.
+pub let prop_normal: i32 = 0 << 4
+## JS_PROP_GETSET: a getter and a setter.
+pub let prop_getset: i32 = 1 << 4
+## JS_PROP_VARREF: a variable reference, used internally.
+pub let prop_varref: i32 = 2 << 4
+## JS_PROP_AUTOINIT: created on first access, used internally.
+pub let prop_autoinit: i32 = 3 << 4
+
+## JS_PROP_HAS_SHIFT: flags below are the JS_PROP_HAS_* bits of a descriptor.
+pub let prop_has_shift: i32 = 8
+## JS_PROP_HAS_CONFIGURABLE.
+pub let prop_has_configurable: i32 = 1 << 8
+## JS_PROP_HAS_WRITABLE.
+pub let prop_has_writable: i32 = 1 << 9
+## JS_PROP_HAS_ENUMERABLE.
+pub let prop_has_enumerable: i32 = 1 << 10
+## JS_PROP_HAS_GET.
+pub let prop_has_get: i32 = 1 << 11
+## JS_PROP_HAS_SET.
+pub let prop_has_set: i32 = 1 << 12
+## JS_PROP_HAS_VALUE.
+pub let prop_has_value: i32 = 1 << 13
+## JS_PROP_THROW: throw an exception if false would be returned
+## (JS_DefineProperty/JS_SetProperty).
+pub let prop_throw: i32 = 1 << 14
+## JS_PROP_THROW_STRICT: throw an exception if false would be returned in strict mode
+## (JS_SetProperty).
+pub let prop_throw_strict: i32 = 1 << 15
+## JS_PROP_NO_EXOTIC: internal use.
+pub let prop_no_exotic: i32 = 1 << 16
+
+# mark: Eval flags ==============================================================================
+
+## JS_EVAL_TYPE_GLOBAL: global code (the default).
+pub let eval_type_global: i32 = 0 << 0
+## JS_EVAL_TYPE_MODULE: module code.
+pub let eval_type_module: i32 = 1 << 0
+## JS_EVAL_TYPE_DIRECT: a direct call (internal use).
+pub let eval_type_direct: i32 = 2 << 0
+## JS_EVAL_TYPE_INDIRECT: an indirect call (internal use).
+pub let eval_type_indirect: i32 = 3 << 0
+## JS_EVAL_TYPE_MASK.
+pub let eval_type_mask: i32 = 3 << 0
+## JS_EVAL_FLAG_STRICT: force strict mode.
+pub let eval_flag_strict: i32 = 1 << 3
+## JS_EVAL_FLAG_COMPILE_ONLY: compile but do not run. The result is an object with a
+## function_bytecode or module tag, run with `eval_function`.
+pub let eval_flag_compile_only: i32 = 1 << 5
+## JS_EVAL_FLAG_BACKTRACE_BARRIER: don't include the stack frames before this eval in
+## the Error() backtraces.
+pub let eval_flag_backtrace_barrier: i32 = 1 << 6
+## JS_EVAL_FLAG_ASYNC: allow top-level await in normal script; the result is a promise.
+## Only allowed with eval_type_global.
+pub let eval_flag_async: i32 = 1 << 7
+
+## JS_CALL_FLAG_CONSTRUCTOR: the call is a `new`.
+pub let call_flag_constructor: i32 = 1 << 0
+
+## JS_GPN_STRING_MASK.
+pub let gpn_string_mask: i32 = 1 << 0
+## JS_GPN_SYMBOL_MASK.
+pub let gpn_symbol_mask: i32 = 1 << 1
+## JS_GPN_PRIVATE_MASK.
+pub let gpn_private_mask: i32 = 1 << 2
+## JS_GPN_ENUM_ONLY: only include the enumerable properties.
+pub let gpn_enum_only: i32 = 1 << 4
+## JS_GPN_SET_ENUM: set the is_enumerable field.
+pub let gpn_set_enum: i32 = 1 << 5
+
+## JS_PARSE_JSON_EXT: allow extended JSON.
+pub let parse_json_ext: i32 = 1 << 0
+
+## JS_STRIP_SOURCE: strip the source code.
+pub let strip_source: i32 = 1 << 0
+## JS_STRIP_DEBUG: strip all debug info including the source code.
+pub let strip_debug: i32 = 1 << 1
+
+## JS_WRITE_OBJ_BYTECODE: allow function/module.
+pub let write_obj_bytecode: i32 = 1 << 0
+## JS_WRITE_OBJ_BSWAP: byte swapped output.
+pub let write_obj_bswap: i32 = 1 << 1
+## JS_WRITE_OBJ_SAB: allow SharedArrayBuffer.
+pub let write_obj_sab: i32 = 1 << 2
+## JS_WRITE_OBJ_REFERENCE: allow object references to encode arbitrary object graphs.
+pub let write_obj_reference: i32 = 1 << 3
+## JS_READ_OBJ_BYTECODE: allow function/module.
+pub let read_obj_bytecode: i32 = 1 << 0
+## JS_READ_OBJ_ROM_DATA: avoid duplicating 'buf' data.
+pub let read_obj_rom_data: i32 = 1 << 1
+## JS_READ_OBJ_SAB: allow SharedArrayBuffer.
+pub let read_obj_sab: i32 = 1 << 2
+## JS_READ_OBJ_REFERENCE: allow object references.
+pub let read_obj_reference: i32 = 1 << 3
+
+## JS_INVALID_CLASS_ID.
+pub let invalid_class_id: u32 = 0
+
+# mark: Descriptors and classes =================================================================
+
+## One key of an object's own properties (JSPropertyEnum).
+pub struct PropertyEnum:
+    pub var is_enumerable: bool
+    pub var atom: Atom
+
+## A property descriptor (JSPropertyDescriptor).
+pub struct PropertyDescriptor:
+    pub var flags: i32
+    pub var value: Value
+    pub var getter: Value
+    pub var setter: Value
+
+## The marking callback the collector passes to a class's gc_mark (JS_MarkFunc).
+pub type MarkFunc = func(Runtime*, GCObjectHeader*) -> unit
+
+## A class finalizer (JSClassFinalizer).
+pub type ClassFinalizer = func(Runtime*, Value) -> unit
+## A class's marking function (JSClassGCMark).
+pub type ClassGCMark = func(Runtime*, Value, MarkFunc) -> unit
+## A class's call behaviour (JSClassCall): `(ctx, func_obj, this_val, argc, argv, flags)`.
+pub type ClassCall = func(Context*, Value, Value, i32, Value*, i32) -> Value!
+
+## The exotic method get_own_property of ClassExoticMethods.
+pub type ExoticGetOwnProperty = func(Context*, PropertyDescriptor*?, Value, Atom) -> bool!
+## The exotic method get_own_property_names of ClassExoticMethods.
+pub type ExoticGetOwnPropertyNames = func(Context*, PropertyEnum**?, u32*, Value) -> unit!
+## The exotic method delete_property of ClassExoticMethods.
+pub type ExoticDeleteProperty = func(Context*, Value, Atom) -> bool!
+## The exotic method define_own_property of ClassExoticMethods.
+pub type ExoticDefineOwnProperty = func(Context*, Value, Atom, Value, Value, Value, i32) -> bool!
+## The exotic method has_property of ClassExoticMethods.
+pub type ExoticHasProperty = func(Context*, Value, Atom) -> bool!
+## The exotic method get_property of ClassExoticMethods.
+pub type ExoticGetProperty = func(Context*, Value, Atom, Value) -> Value!
+## The exotic method set_property of ClassExoticMethods.
+pub type ExoticSetProperty = func(Context*, Value, Atom, Value, Value, i32) -> bool!
+## The exotic method get_prototype of ClassExoticMethods.
+pub type ExoticGetPrototype = func(Context*, Value) -> Value!
+## The exotic method set_prototype of ClassExoticMethods.
+pub type ExoticSetPrototype = func(Context*, Value, Value) -> bool!
+## The exotic method is_extensible of ClassExoticMethods.
+pub type ExoticIsExtensible = func(Context*, Value) -> bool!
+## The exotic method prevent_extensions of ClassExoticMethods.
+pub type ExoticPreventExtensions = func(Context*, Value) -> bool!
+
+## The exotic behaviour of a class (JSClassExoticMethods). Every entry may be absent.
+## A result of `bool!` is QuickJS's "-1 if exception, else TRUE/FALSE".
+pub struct ClassExoticMethods:
+    ## Whether the property exists; fills `desc` when it does and `desc` is given.
+    pub let get_own_property: ExoticGetOwnProperty? = none
+    ## Answer the own property keys in `*ptab` and their count in `*plen`; is_enumerable is
+    ## ignored.
+    pub let get_own_property_names: ExoticGetOwnPropertyNames? = none
+    pub let delete_property: ExoticDeleteProperty? = none
+    pub let define_own_property: ExoticDefineOwnProperty? = none
+    # The following methods can be emulated with the previous ones, so they are usually
+    # not needed.
+    pub let has_property: ExoticHasProperty? = none
+    pub let get_property: ExoticGetProperty? = none
+    pub let set_property: ExoticSetProperty? = none
+    # To get a consistent object behavior when get_prototype != none, get_property,
+    # set_property and set_prototype must be present and the object must be created with a
+    # null prototype.
+    pub let get_prototype: ExoticGetPrototype? = none
+    pub let set_prototype: ExoticSetPrototype? = none
+    pub let is_extensible: ExoticIsExtensible? = none
+    pub let prevent_extensions: ExoticPreventExtensions? = none
+
+## A class as a host declares it (JSClassDef).
+pub struct ClassDef:
+    pub let class_name: str
+    pub let finalizer: ClassFinalizer? = none
+    pub let gc_mark: ClassGCMark? = none
+    # If call is present, the object is a function. If (flags & call_flag_constructor) != 0,
+    # the function is called as a constructor. In this case, 'this_val' is new.target. A
+    # constructor call only happens if the object constructor bit is set (see
+    # set_constructor_bit()).
+    pub let call: ClassCall? = none
+    pub let exotic: const ClassExoticMethods*? = none
+
+# mark: C functions =============================================================================
+
+## A builtin implemented in the engine (JSCFunction): `(ctx, this_val, argc, argv)`.
+pub type CFunction = func(Context*, Value, i32, Value*) -> Value!
+## A builtin with a magic number (JSCFunctionMagic).
+pub type CFunctionMagic = func(Context*, Value, i32, Value*, i32) -> Value!
+## A builtin with bound data (JSCFunctionData): `(ctx, this_val, argc, argv, magic, data)`.
+pub type CFunctionData = func(Context*, Value, i32, Value*, i32, Value*) -> Value!
+## A getter (the getter member of JSCFunctionType).
+pub type CGetter = func(Context*, Value) -> Value!
+## A setter.
+pub type CSetter = func(Context*, Value, Value) -> Value!
+## A getter with a magic number.
+pub type CGetterMagic = func(Context*, Value, i32) -> Value!
+## A setter with a magic number.
+pub type CSetterMagic = func(Context*, Value, Value, i32) -> Value!
+## An iterator's next step: `(ctx, this_val, argc, argv, pdone, magic)`.
+pub type CIteratorNext = func(Context*, Value, i32, Value*, i32*, i32) -> Value!
+## A float function of one argument (Math).
+pub type CFloatFunction = func(f64) -> f64
+## A float function of two arguments (Math).
+pub type CFloatFunction2 = func(f64, f64) -> f64
+
+## The calling shape of a C function (JSCFunctionEnum).
+pub enum CFunctionEnum as u8:
+    generic = 0
+    generic_magic = 1
+    constructor = 2
+    constructor_magic = 3
+    constructor_or_func = 4
+    constructor_or_func_magic = 5
+    f_f = 6
+    f_f_f = 7
+    getter = 8
+    setter = 9
+    getter_magic = 10
+    setter_magic = 11
+    iterator_next = 12
+
+## A C function pointer of any calling shape (JSCFunctionType); the shape is known from a
+## CFunctionEnum stored beside it.
+pub union CFunctionType:
+    generic: CFunction
+    generic_magic: CFunctionMagic
+    constructor: CFunction
+    constructor_magic: CFunctionMagic
+    constructor_or_func: CFunction
+    f_f: CFloatFunction
+    f_f_f: CFloatFunction2
+    getter: CGetter
+    setter: CSetter
+    getter_magic: CGetterMagic
+    setter_magic: CSetterMagic
+    iterator_next: CIteratorNext
+
+## JS_DEF_CFUNC.
+pub let def_cfunc: u8 = 0
+## JS_DEF_CGETSET.
+pub let def_cgetset: u8 = 1
+## JS_DEF_CGETSET_MAGIC.
+pub let def_cgetset_magic: u8 = 2
+## JS_DEF_PROP_STRING.
+pub let def_prop_string: u8 = 3
+## JS_DEF_PROP_INT32.
+pub let def_prop_int32: u8 = 4
+## JS_DEF_PROP_INT64.
+pub let def_prop_int64: u8 = 5
+## JS_DEF_PROP_DOUBLE.
+pub let def_prop_double: u8 = 6
+## JS_DEF_PROP_UNDEFINED.
+pub let def_prop_undefined: u8 = 7
+## JS_DEF_OBJECT.
+pub let def_object: u8 = 8
+## JS_DEF_ALIAS.
+pub let def_alias: u8 = 9
+## JS_DEF_PROP_ATOM.
+pub let def_prop_atom: u8 = 10
+## JS_DEF_PROP_BOOL.
+pub let def_prop_bool: u8 = 11
+
+## One entry of a builtin table (JSCFunctionListEntry). C keeps the variants in a union
+## built by macros; a union cannot be built in a constant, so each variant has its own
+## fields and an entry sets the ones of its `def_type`:
+##   JS_CFUNC_DEF(name, length, f)            -> (name = n, def_type = def_cfunc, length = l, generic = f)
+##   JS_CFUNC_MAGIC_DEF(name, length, f, m)   -> (..., cproto = CFunctionEnum.generic_magic, generic_magic = f, magic = m)
+##   JS_CFUNC_SPECIAL_DEF(name, length, k, f) -> (..., cproto = CFunctionEnum.k, and the field of k)
+##   JS_ITERATOR_NEXT_DEF(name, length, f, m) -> (..., cproto = CFunctionEnum.iterator_next, iterator_next = f, magic = m)
+##   JS_CGETSET_DEF(name, g, s)               -> (name = n, prop_flags = 1, def_type = def_cgetset, getter = g, setter = s)
+##   JS_CGETSET_MAGIC_DEF(name, g, s, m)      -> (..., def_type = def_cgetset_magic, getter_magic = g, setter_magic = s, magic = m)
+##   JS_PROP_STRING_DEF / INT32 / INT64 / DOUBLE / ATOM / BOOL / UNDEFINED -> the matching
+##   def_prop_* with string_value / i32_value / i64_value / f64_value (atoms and booleans in i32_value)
+##   JS_OBJECT_DEF(name, tab, len, flags)     -> (def_type = def_object, prop_list = tab)
+##   JS_ALIAS_DEF(name, from) / JS_ALIAS_BASE_DEF -> (def_type = def_alias, alias_name = from, alias_base = -1 or base)
+pub struct CFunctionListEntry:
+    pub let name: str
+    ## Writable and configurable unless stated, as JS_CFUNC_DEF has it.
+    pub let prop_flags: u8 = 3
+    pub let def_type: u8
+    pub let magic: i16 = 0
+    # def_cfunc
+    pub let length: u8 = 0
+    pub let cproto: CFunctionEnum = CFunctionEnum.generic
+    pub let generic: CFunction? = none
+    pub let generic_magic: CFunctionMagic? = none
+    pub let f_f: CFloatFunction? = none
+    pub let f_f_f: CFloatFunction2? = none
+    pub let iterator_next: CIteratorNext? = none
+    # def_cgetset, def_cgetset_magic
+    pub let getter: CGetter? = none
+    pub let setter: CSetter? = none
+    pub let getter_magic: CGetterMagic? = none
+    pub let setter_magic: CSetterMagic? = none
+    # def_alias
+    pub let alias_name: str = ""
+    pub let alias_base: i32 = -1
+    # def_object
+    pub let prop_list: const CFunctionListEntry[]? = none
+    # def_prop_string, def_prop_int32, def_prop_int64, def_prop_double
+    pub let string_value: str = ""
+    pub let i32_value: i32 = 0
+    pub let i64_value: i64 = 0
+    pub let f64_value: f64 = 0.0
+
+# mark: Host callbacks ==========================================================================
+
+## Answer nonzero if the running JavaScript code must be interrupted (JSInterruptHandler).
+pub type InterruptHandler = func(Runtime*, void*?) -> i32
+## Called when a promise is rejected with or without a handler (JSHostPromiseRejectionTracker):
+## `(ctx, promise, reason, is_handled, opaque)`.
+pub type HostPromiseRejectionTracker = func(Context*, Value, Value, bool, void*?) -> unit
+## Normalize a module specifier; answer a js_malloc'ed NUL-terminated name
+## (JSModuleNormalizeFunc): `(ctx, module_base_name, module_name, opaque)`.
+pub type ModuleNormalizeFunc = func(Context*, const u8*, const u8*, void*?) -> u8*!
+## Load a module by its normalized name (JSModuleLoaderFunc).
+pub type ModuleLoaderFunc = func(Context*, const u8*, void*?) -> ModuleDef*!
+## Load a module by its normalized name with import attributes (JSModuleLoaderFunc2).
+pub type ModuleLoaderFunc2 = func(Context*, const u8*, void*?, Value) -> ModuleDef*!
+## Check a module's import attributes (JSModuleCheckSupportedImportAttributes).
+pub type ModuleCheckSupportedImportAttributes = func(Context*, void*?, Value) -> unit!
+## Initialize a C module (JSModuleInitFunc).
+pub type ModuleInitFunc = func(Context*, ModuleDef*) -> unit!
+## A job queued with enqueue_job (JSJobFunc): `(ctx, argc, argv)`.
+pub type JobFunc = func(Context*, i32, Value*) -> Value!
+## Frees the data of an array buffer (JSFreeArrayBufferDataFunc): `(rt, opaque, ptr)`.
+pub type FreeArrayBufferDataFunc = func(Runtime*, void*?, void*?) -> unit
+
+## Allocates a SharedArrayBuffer's storage: `(opaque, size)`.
+pub type SabAllocFunc = func(void*?, usize) -> void*?
+## Frees or duplicates a SharedArrayBuffer's storage: `(opaque, ptr)`.
+pub type SabFreeFunc = func(void*?, void*?) -> unit
+
+## Host functions allocating, freeing and cloning SharedArrayBuffers
+## (JSSharedArrayBufferFunctions).
+pub struct SharedArrayBufferFunctions:
+    pub var sab_alloc: SabAllocFunc? = none
+    pub var sab_free: SabFreeFunc? = none
+    pub var sab_dup: SabFreeFunc? = none
+    pub var sab_opaque: void*? = none
+
+## A promise's state (JSPromiseStateEnum).
+pub enum PromiseState as i32:
+    pending = 0
+    fulfilled = 1
+    rejected = 2
+
+## The kind of a typed array (JSTypedArrayEnum).
+pub enum TypedArrayEnum as i32:
+    uint8c = 0
+    int8 = 1
+    uint8 = 2
+    int16 = 3
+    uint16 = 4
+    int32 = 5
+    uint32 = 6
+    big_int64 = 7
+    big_uint64 = 8
+    float16 = 9
+    float32 = 10
+    float64 = 11
+
+## The allocation state the host's malloc functions receive (JSMallocState).
+pub struct MallocState:
+    pub var malloc_count: usize
+    pub var malloc_size: usize
+    pub var malloc_limit: usize
+    ## User opaque.
+    pub var opaque: void*?
+
+## Answers the usable size of a block of the host allocator.
+pub type MallocUsableSizeFunc = func(const void*?) -> usize
+
+## The host's allocator (JSMallocFunctions).
+pub struct MallocFunctions:
+    pub var js_malloc: func(MallocState*, usize) -> void*?
+    pub var js_free: func(MallocState*, void*?) -> unit
+    pub var js_realloc: func(MallocState*, void*?, usize) -> void*?
+    pub var js_malloc_usable_size: MallocUsableSizeFunc?
+
+## Memory statistics (JSMemoryUsage).
+pub struct MemoryUsage:
+    pub var malloc_size: i64
+    pub var malloc_limit: i64
+    pub var memory_used_size: i64
+    pub var malloc_count: i64
+    pub var memory_used_count: i64
+    pub var atom_count: i64
+    pub var atom_size: i64
+    pub var str_count: i64
+    pub var str_size: i64
+    pub var obj_count: i64
+    pub var obj_size: i64
+    pub var prop_count: i64
+    pub var prop_size: i64
+    pub var shape_count: i64
+    pub var shape_size: i64
+    pub var js_func_count: i64
+    pub var js_func_size: i64
+    pub var js_func_code_size: i64
+    pub var js_func_pc2line_count: i64
+    pub var js_func_pc2line_size: i64
+    pub var c_func_count: i64
+    pub var array_count: i64
+    pub var fast_array_count: i64
+    pub var fast_array_elements: i64
+    pub var binary_object_count: i64
+    pub var binary_object_size: i64

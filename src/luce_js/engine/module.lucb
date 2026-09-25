@@ -1,0 +1,44 @@
+#==============================================================================================
+#
+#   engine - The QuickJS JavaScript engine, ported to luce-base
+#
+#   DESCRIPTION:
+#       Port of quickjs.c and quickjs.h (QuickJS 2026-06-04). This fragment holds the
+#       module's imports, its error code and the engine-wide limits; the fragments that
+#       follow in ORDER keep quickjs.c's order. docs/PORTING.md states the conventions.
+#
+#==============================================================================================
+
+import memory
+import luce_js.cutils as cutils
+import luce_js.dtoa as dtoa
+# import luce_js.unicode as unicode
+# import luce_js.regexp as regexp
+
+## The failure every fallible engine function reports when a JavaScript exception is
+## pending: the thrown value itself is in `rt.current_exception`, as in QuickJS.
+pub let exception: ErrorCode = ErrorCode.package(1)
+
+## An interned string or symbol (JSAtom). Values below 2^31 index the atom table;
+## values with the top bit set are tagged integers (see `atom_is_tagged_int_raw`).
+pub type Atom = u32
+
+## A class id (JSClassID): one of `ClassId`'s cases, or a class allocated at run time.
+pub type ClassIdValue = u32
+
+# The variable and scope indexes must fit on 16 bits. The (-1) and
+# arg_scope_end values are reserved.
+let js_max_local_vars: i32 = 65534
+let js_stack_size_max: i32 = 65534
+let js_string_len_max: i32 = (1 << 30) - 1
+
+# Strings <= this length are not concatenated using ropes. If too small, the rope memory
+# overhead becomes high.
+let js_string_rope_short_len: i32 = 512
+# Specific threshold for initial rope use.
+let js_string_rope_short2_len: i32 = 8192
+# Rope depth at which we rebalance.
+let js_string_rope_max_depth: i32 = 60
+
+## The default maximum stack size of a runtime (JS_DEFAULT_STACK_SIZE).
+pub let js_default_stack_size: usize = 1024 * 1024

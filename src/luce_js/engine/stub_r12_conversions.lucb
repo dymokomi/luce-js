@@ -1,0 +1,250 @@
+#==============================================================================================
+#
+#   stub_r12_conversions - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:13020 JS_ToNumberFree.
+func js_to_number_free(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToNumberFree")
+## Ported from quickjs.c:13025 JS_ToNumericFree.
+func js_to_numeric_free(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToNumericFree")
+## Ported from quickjs.c:13030 JS_ToNumeric.
+func js_to_numeric(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToNumeric")
+## Ported from quickjs.c:13035 __JS_ToFloat64Free.
+func js_to_float64_free_raw(ctx: Context*, pres: f64*, val: Value) -> i32!:
+    trap("unported: __JS_ToFloat64Free")
+## Ported from quickjs.c:13062 JS_ToFloat64Free.
+func js_to_float64_free(ctx: Context*, pres: f64*, val: Value) -> i32:
+    trap("unported: JS_ToFloat64Free")
+## Ported from quickjs.c:13078 JS_ToFloat64.
+func js_to_float64(ctx: Context*, pres: f64*, val: Value) -> i32:
+    trap("unported: JS_ToFloat64")
+## Ported from quickjs.c:13083 JS_ToNumber.
+func js_to_number(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToNumber")
+## Ported from quickjs.c:13089 JS_ToIntegerFree.
+func js_to_integer_free(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToIntegerFree")
+## Ported from quickjs.c:13125 JS_ToInt32SatFree.
+func js_to_int32_sat_free(ctx: Context*, pres: i32*, val: Value) -> i32!:
+    trap("unported: JS_ToInt32SatFree")
+## Ported from quickjs.c:13169 JS_ToInt32Sat.
+func js_to_int32_sat(ctx: Context*, pres: i32*, val: Value) -> i32:
+    trap("unported: JS_ToInt32Sat")
+## Ported from quickjs.c:13174 JS_ToInt32Clamp.
+func js_to_int32_clamp(ctx: Context*, pres: i32*, val: Value, min: i32, max: i32, min_offset: i32) -> i32:
+    trap("unported: JS_ToInt32Clamp")
+## Ported from quickjs.c:13191 JS_ToInt64SatFree.
+func js_to_int64_sat_free(ctx: Context*, pres: i64*, val: Value) -> i32!:
+    trap("unported: JS_ToInt64SatFree")
+## Ported from quickjs.c:13232 JS_ToInt64Sat.
+func js_to_int64_sat(ctx: Context*, pres: i64*, val: Value) -> i32:
+    trap("unported: JS_ToInt64Sat")
+## Ported from quickjs.c:13237 JS_ToInt64Clamp.
+func js_to_int64_clamp(ctx: Context*, pres: i64*, val: Value, min: i64, max: i64, neg_offset: i64) -> i32:
+    trap("unported: JS_ToInt64Clamp")
+## Ported from quickjs.c:13254 JS_ToInt64Free.
+func js_to_int64_free(ctx: Context*, pres: i64*, val: Value) -> i32!:
+    trap("unported: JS_ToInt64Free")
+## Ported from quickjs.c:13305 JS_ToInt64.
+func js_to_int64(ctx: Context*, pres: i64*, val: Value) -> i32:
+    trap("unported: JS_ToInt64")
+## Ported from quickjs.c:13310 JS_ToInt64Ext.
+func js_to_int64_ext(ctx: Context*, pres: i64*, val: Value) -> i32:
+    trap("unported: JS_ToInt64Ext")
+## Ported from quickjs.c:13319 JS_ToInt32Free.
+func js_to_int32_free(ctx: Context*, pres: i32*, val: Value) -> i32!:
+    trap("unported: JS_ToInt32Free")
+## Ported from quickjs.c:13371 JS_ToInt32.
+func js_to_int32(ctx: Context*, pres: i32*, val: Value) -> i32:
+    trap("unported: JS_ToInt32")
+## Ported from quickjs.c:13376 JS_ToUint32Free.
+func js_to_uint32_free(ctx: Context*, pres: u32*, val: Value) -> i32:
+    trap("unported: JS_ToUint32Free")
+## Ported from quickjs.c:13381 JS_ToUint8ClampFree.
+func js_to_uint8_clamp_free(ctx: Context*, pres: i32*, val: Value) -> i32!:
+    trap("unported: JS_ToUint8ClampFree")
+## Ported from quickjs.c:13423 JS_ToArrayLengthFree.
+func js_to_array_length_free(ctx: Context*, plen: u32*, val: Value, is_array_ctor: bool) -> i32!:
+    trap("unported: JS_ToArrayLengthFree")
+## Ported from quickjs.c:13487 is_safe_integer.
+func is_safe_integer(d: f64) -> bool:
+    trap("unported: is_safe_integer")
+## Ported from quickjs.c:13493 JS_ToIndex.
+func js_to_index(ctx: Context*, plen: u64*, val: Value) -> i32!:
+    trap("unported: JS_ToIndex")
+## Ported from quickjs.c:13509 JS_ToLengthFree.
+func js_to_length_free(ctx: Context*, plen: i64*, val: Value) -> i32:
+    trap("unported: JS_ToLengthFree")
+## Ported from quickjs.c:13518 JS_NumberIsInteger.
+func js_number_is_integer(ctx: Context*, val: Value) -> i32!:
+    trap("unported: JS_NumberIsInteger")
+## Ported from quickjs.c:13528 JS_NumberIsNegativeOrMinusZero.
+func js_number_is_negative_or_minus_zero(ctx: Context*, val: Value) -> bool:
+    trap("unported: JS_NumberIsNegativeOrMinusZero")
+## Ported from quickjs.c:13558 js_bigint_to_string.
+func js_bigint_to_string_internal(ctx: Context*, val: Value) -> Value!:
+    trap("unported: js_bigint_to_string")
+## Ported from quickjs.c:13563 js_dtoa2.
+func js_dtoa2(ctx: Context*, d: f64, radix: i32, n_digits: i32, flags: i32) -> Value!:
+    trap("unported: js_dtoa2")
+## Ported from quickjs.c:13588 JS_ToStringInternal.
+func js_to_string_internal(ctx: Context*, val: Value, is_ToPropertyKey: bool) -> Value!:
+    trap("unported: JS_ToStringInternal")
+## Ported from quickjs.c:13645 JS_ToString.
+func js_to_string(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToString")
+## Ported from quickjs.c:13650 JS_ToStringFree.
+func js_to_string_free(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToStringFree")
+## Ported from quickjs.c:13658 JS_ToLocaleStringFree.
+func js_to_locale_string_free(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToLocaleStringFree")
+## Ported from quickjs.c:13665 JS_ToPropertyKey.
+func js_to_property_key(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToPropertyKey")
+## Ported from quickjs.c:13670 JS_ToStringCheckObject.
+func js_to_string_check_object(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToStringCheckObject")
+## Ported from quickjs.c:13692 js_putc.
+func js_putc(s: PrintValueState*, c: u8):
+    trap("unported: js_putc")
+## Ported from quickjs.c:13697 js_puts.
+func js_puts(s: PrintValueState*, str_: const u8*):
+    trap("unported: js_puts")
+## Ported from quickjs.c:13702 js_printf.
+func js_printf(s: PrintValueState*, message: fmt):
+    trap("unported: js_printf")
+## Ported from quickjs.c:13713 js_print_float64.
+func js_print_float64(s: PrintValueState*, d: f64):
+    trap("unported: js_print_float64")
+## Ported from quickjs.c:13722 js_string_get_length.
+func js_string_get_length(val: Value) -> u32:
+    trap("unported: js_string_get_length")
+## Ported from quickjs.c:13736 js_print_string1.
+func js_print_string1(s: PrintValueState*, p: String*, len: i32, sep: i32):
+    trap("unported: js_print_string1")
+## Ported from quickjs.c:13793 js_print_string_rec.
+func js_print_string_rec(s: PrintValueState*, val: Value, sep: i32, pos: u32):
+    trap("unported: js_print_string_rec")
+## Ported from quickjs.c:13812 js_print_string.
+func js_print_string(s: PrintValueState*, val: Value):
+    trap("unported: js_print_string")
+## Ported from quickjs.c:13831 js_print_raw_string.
+func js_print_raw_string(s: PrintValueState*, val: Value):
+    trap("unported: js_print_raw_string")
+## Ported from quickjs.c:13842 is_ascii_ident.
+func is_ascii_ident(p: const String*) -> bool:
+    trap("unported: is_ascii_ident")
+## Ported from quickjs.c:13857 js_print_atom.
+func js_print_atom(s: PrintValueState*, atom: Atom):
+    trap("unported: js_print_atom")
+## Ported from quickjs.c:13881 js_print_array_get_length.
+func js_print_array_get_length(p: Object*) -> u32:
+    trap("unported: js_print_array_get_length")
+## Ported from quickjs.c:13903 js_print_comma.
+func js_print_comma(s: PrintValueState*, pcomma_state: i32*):
+    trap("unported: js_print_comma")
+## Ported from quickjs.c:13918 js_print_more_items.
+func js_print_more_items(s: PrintValueState*, pcomma_state: i32*, n: u32):
+    trap("unported: js_print_more_items")
+## Ported from quickjs.c:13926 js_print_regexp.
+func js_print_regexp(s: PrintValueState*, p1: Object*):
+    trap("unported: js_print_regexp")
+## Ported from quickjs.c:13992 js_print_error.
+func js_print_error(s: PrintValueState*, p: Object*):
+    trap("unported: js_print_error")
+## Ported from quickjs.c:14028 js_print_object.
+func js_print_object(s: PrintValueState*, p: Object*):
+    trap("unported: js_print_object")
+## Ported from quickjs.c:14269 js_print_stack_index.
+func js_print_stack_index(s: PrintValueState*, p: Object*) -> i32:
+    trap("unported: js_print_stack_index")
+## Ported from quickjs.c:14278 js_print_value.
+func js_print_value_rec(s: PrintValueState*, val: Value):
+    trap("unported: js_print_value")
+## Ported from quickjs.c:14401 JS_PrintValueSetDefaultOptions.
+func js_print_value_set_default_options(options: PrintValueOptions*):
+    trap("unported: JS_PrintValueSetDefaultOptions")
+## Ported from quickjs.c:14409 JS_PrintValueInternal.
+func js_print_value_internal(rt: Runtime*, ctx: Context*, write_func: PrintValueWrite, write_opaque: void*, val: Value, options: const PrintValueOptions*):
+    trap("unported: JS_PrintValueInternal")
+## Ported from quickjs.c:14434 JS_PrintValueRT.
+func js_print_value_rt(rt: Runtime*, write_func: PrintValueWrite, write_opaque: void*, val: Value, options: const PrintValueOptions*):
+    trap("unported: JS_PrintValueRT")
+## Ported from quickjs.c:14440 JS_PrintValue.
+func js_print_value(ctx: Context*, write_func: PrintValueWrite, write_opaque: void*, val: Value, options: const PrintValueOptions*):
+    trap("unported: JS_PrintValue")
+## Ported from quickjs.c:14446 js_dump_value_write.
+func js_dump_value_write(opaque: void*, buf: const u8*, len: usize):
+    trap("unported: js_dump_value_write")
+## Ported from quickjs.c:14452 print_atom.
+func print_atom(ctx: Context*, atom: Atom):
+    trap("unported: print_atom")
+## Ported from quickjs.c:14463 JS_DumpAtom.
+func js_dump_atom(ctx: Context*, str_: const u8*, atom: Atom):
+    trap("unported: JS_DumpAtom")
+## Ported from quickjs.c:14470 JS_DumpValue.
+func js_dump_value(ctx: Context*, str_: const u8*, val: Value):
+    trap("unported: JS_DumpValue")
+## Ported from quickjs.c:14477 JS_DumpValueRT.
+func js_dump_value_rt(rt: Runtime*, str_: const u8*, val: Value):
+    trap("unported: JS_DumpValueRT")
+## Ported from quickjs.c:14484 JS_DumpObjectHeader.
+func js_dump_object_header(rt: Runtime*):
+    trap("unported: JS_DumpObjectHeader")
+## Ported from quickjs.c:14491 JS_DumpObject.
+func js_dump_object(rt: Runtime*, p: Object*):
+    trap("unported: JS_DumpObject")
+## Ported from quickjs.c:14519 JS_DumpGCObject.
+func js_dump_gc_object(rt: Runtime*, p: GCObjectHeader*):
+    trap("unported: JS_DumpGCObject")
+## Ported from quickjs.c:14556 JS_IsArray.
+func js_is_array(ctx: Context*, val: Value) -> i32!:
+    trap("unported: JS_IsArray")
+## Ported from quickjs.c:14568 js_pow.
+func js_pow(a: f64, b: f64) -> f64:
+    trap("unported: js_pow")
+## Ported from quickjs.c:14578 JS_NewBigInt64.
+func js_new_bigint64(ctx: Context*, v: i64) -> Value!:
+    trap("unported: JS_NewBigInt64")
+## Ported from quickjs.c:14595 JS_NewBigUint64.
+func js_new_big_uint64(ctx: Context*, v: u64) -> Value!:
+    trap("unported: JS_NewBigUint64")
+## Ported from quickjs.c:14609 JS_StringToBigInt.
+func js_string_to_bigint(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_StringToBigInt")
+## Ported from quickjs.c:14638 JS_StringToBigIntErr.
+func js_string_to_bigint_err(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_StringToBigIntErr")
+## Ported from quickjs.c:14647 JS_ToBigIntFree.
+func js_to_bigint_free(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToBigIntFree")
+## Ported from quickjs.c:14684 JS_ToBigInt.
+func js_to_bigint(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_ToBigInt")
+## Ported from quickjs.c:14690 JS_ToBigInt64Free.
+func js_to_bigint64_free(ctx: Context*, pres: i64*, val: Value) -> i32!:
+    trap("unported: JS_ToBigInt64Free")
+## Ported from quickjs.c:14715 JS_ToBigInt64.
+func js_to_bigint64(ctx: Context*, pres: i64*, val: Value) -> i32:
+    trap("unported: JS_ToBigInt64")
+## Ported from quickjs.c:14720 js_unary_arith_slow.
+func js_unary_arith_slow(ctx: Context*, sp: Value*, op: Op) -> i32!:
+    trap("unported: js_unary_arith_slow")
+## Ported from quickjs.c:14860 js_post_inc_slow.
+func js_post_inc_slow(ctx: Context*, sp: Value*, op: Op) -> i32!:
+    trap("unported: js_post_inc_slow")
+## Ported from quickjs.c:14877 js_not_slow.
+func js_not_slow(ctx: Context*, sp: Value*) -> i32!:
+    trap("unported: js_not_slow")
+## Ported from quickjs.c:14906 js_binary_arith_slow.
+func js_binary_arith_slow(ctx: Context*, sp: Value*, op: Op) -> i32!:
+    trap("unported: js_binary_arith_slow")

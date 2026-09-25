@@ -1,0 +1,79 @@
+#==============================================================================================
+#
+#   list - Intrusive doubly linked circular lists (Linux klist like system)
+#
+#   DESCRIPTION:
+#       Port of QuickJS list.h (lines 28-97). The iteration macros have no Luce spelling;
+#       the loops are written out where they are used, as `ListHead` shows.
+#
+#       Copyright (c) 2016-2017 Fabrice Bellard. MIT licence, as cutils.
+#
+#==============================================================================================
+
+## A link in an intrusive circular list; a list is a `ListHead` whose `next` is its first
+## element and whose `prev` is its last. `prev`/`next` are none only in a zeroed or deleted
+## link (list_del's fail safe).
+##
+## `list_entry(el, T, member)` is `(T*)((u8*)el - offsetof(T, member))`.
+##
+## `list_for_each(el, head)`:
+##
+## ```luce
+## var el = head.next else trap("unlinked")
+## while el != head:
+##     let obj = (Object*)((u8*)el - offsetof(Object, link))
+##     ...
+##     el = el.next else trap("unlinked")
+## ```
+##
+## `list_for_each_safe(el, el1, head)`, where the body may `list_del(el)`:
+##
+## ```luce
+## var el = head.next else trap("unlinked")
+## while el != head:
+##     let el1 = el.next else trap("unlinked")
+##     ...
+##     el = el1
+## ```
+##
+## The `_prev` forms are the same over `prev`.
+pub struct ListHead:
+    ## The previous link, or none when unlinked.
+    pub var prev: ListHead*?
+    ## The next link, or none when unlinked.
+    pub var next: ListHead*?
+
+## Make `head` an empty list (C `LIST_HEAD_INIT` / `init_list_head`).
+pub func init_list_head(head: ListHead*):
+    head.prev = head
+    head.next = head
+
+## insert 'el' between 'prev' and 'next' (C `__list_add`).
+pub func list_add_raw(el: ListHead*, prev: ListHead*, next: ListHead*):
+    prev.next = el
+    el.prev = prev
+    el.next = next
+    next.prev = el
+
+## add 'el' at the head of the list 'head' (= after element head)
+pub func list_add(el: ListHead*, head: ListHead*):
+    list_add_raw(el, head, head.next else trap("list_add: unlinked head"))
+
+## add 'el' at the end of the list 'head' (= before element head)
+pub func list_add_tail(el: ListHead*, head: ListHead*):
+    list_add_raw(el, head.prev else trap("list_add_tail: unlinked head"), head)
+
+## Unlink `el`; its links become none (fail safe).
+pub func list_del(el: ListHead*):
+    let prev = el.prev else trap("list_del: unlinked element")
+    let next = el.next else trap("list_del: unlinked element")
+    prev.next = next
+    next.prev = prev
+    el.prev = none # fail safe
+    el.next = none # fail safe
+
+## Whether the list `el` is empty.
+pub func list_empty(el: const ListHead*) -> bool:
+    if let next = el.next:
+        return next == el
+    return false

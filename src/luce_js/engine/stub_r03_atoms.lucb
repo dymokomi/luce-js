@@ -1,0 +1,145 @@
+#==============================================================================================
+#
+#   stub_r03_atoms - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:2877 __JS_AtomIsConst.
+func js_atom_is_const_raw(v: Atom) -> bool:
+    trap("unported: __JS_AtomIsConst")
+## Ported from quickjs.c:2886 __JS_AtomIsTaggedInt.
+func js_atom_is_tagged_int_raw(v: Atom) -> bool:
+    trap("unported: __JS_AtomIsTaggedInt")
+## Ported from quickjs.c:2891 __JS_AtomFromUInt32.
+func js_atom_from_uint32_raw(v: u32) -> Atom:
+    trap("unported: __JS_AtomFromUInt32")
+## Ported from quickjs.c:2896 __JS_AtomToUInt32.
+func js_atom_to_uint32_raw(atom: Atom) -> u32:
+    trap("unported: __JS_AtomToUInt32")
+## Ported from quickjs.c:2901 is_num.
+func is_num(c: i32) -> i32:
+    trap("unported: is_num")
+## Ported from quickjs.c:2907 is_num_string.
+func is_num_string(pval: u32*, p: const String*) -> bool:
+    trap("unported: is_num_string")
+## Ported from quickjs.c:2942 hash_string8.
+func hash_string8(str_: const u8*, len: usize, h: u32) -> u32:
+    trap("unported: hash_string8")
+## Ported from quickjs.c:2951 hash_string16.
+func hash_string16(str_: const u16*, len: usize, h: u32) -> u32:
+    trap("unported: hash_string16")
+## Ported from quickjs.c:2961 hash_string.
+func hash_string(str_: const String*, h: u32) -> u32:
+    trap("unported: hash_string")
+## Ported from quickjs.c:2970 hash_string_rope.
+func hash_string_rope(val: Value, h: u32) -> u32:
+    trap("unported: hash_string_rope")
+## Ported from quickjs.c:2981 JS_DumpChar.
+func js_dump_char(fo: void*, c: i32, sep: i32):
+    trap("unported: JS_DumpChar")
+## Ported from quickjs.c:2996 JS_DumpString.
+func js_dump_string(rt: Runtime*, p: const String*):
+    trap("unported: JS_DumpString")
+## Ported from quickjs.c:3013 JS_DumpAtoms.
+func js_dump_atoms(rt: Runtime*):
+    trap("unported: JS_DumpAtoms")
+## Ported from quickjs.c:3048 JS_ResizeAtomHash.
+func js_resize_atom_hash(rt: Runtime*, new_hash_size: i32) -> i32:
+    trap("unported: JS_ResizeAtomHash")
+## Ported from quickjs.c:3078 JS_InitAtoms.
+func js_init_atoms(rt: Runtime*) -> i32:
+    trap("unported: JS_InitAtoms")
+## Ported from quickjs.c:3107 JS_DupAtomRT.
+func js_dup_atom_rt(rt: Runtime*, v: Atom) -> Atom:
+    trap("unported: JS_DupAtomRT")
+## Ported from quickjs.c:3118 JS_DupAtom.
+func js_dup_atom(ctx: Context*, v: Atom) -> Atom:
+    trap("unported: JS_DupAtom")
+## Ported from quickjs.c:3131 JS_AtomGetKind.
+func js_atom_get_kind(ctx: Context*, v: Atom) -> AtomKind:
+    trap("unported: JS_AtomGetKind")
+## Ported from quickjs.c:3155 JS_AtomIsString.
+func js_atom_is_string(ctx: Context*, v: Atom) -> bool:
+    trap("unported: JS_AtomIsString")
+## Ported from quickjs.c:3160 js_get_atom_index.
+func js_get_atom_index(rt: Runtime*, p: String*) -> Atom:
+    trap("unported: js_get_atom_index")
+## Ported from quickjs.c:3179 __JS_NewAtom.
+func js_new_atom_raw(rt: Runtime*, str_: String*, atom_type: i32) -> Atom:
+    trap("unported: __JS_NewAtom")
+## Ported from quickjs.c:3335 __JS_NewAtomInit.
+func js_new_atom_init_raw(rt: Runtime*, str_: const u8*, len: i32, atom_type: i32) -> Atom:
+    trap("unported: __JS_NewAtomInit")
+## Ported from quickjs.c:3348 __JS_FindAtom.
+func js_find_atom_raw(rt: Runtime*, str_: const u8*, len: usize, atom_type: i32) -> Atom:
+    trap("unported: __JS_FindAtom")
+## Ported from quickjs.c:3374 JS_FreeAtomStruct.
+func js_free_atom_struct(rt: Runtime*, p: String*):
+    trap("unported: JS_FreeAtomStruct")
+## Ported from quickjs.c:3423 __JS_FreeAtom.
+func js_free_atom_raw(rt: Runtime*, i: u32):
+    trap("unported: __JS_FreeAtom")
+## Ported from quickjs.c:3434 JS_NewAtomStr.
+func js_new_atom_str(ctx: Context*, p: String*) -> Atom:
+    trap("unported: JS_NewAtomStr")
+## Ported from quickjs.c:3449 count_ascii.
+func count_ascii(buf: const u8*, len: usize) -> usize:
+    trap("unported: count_ascii")
+## Ported from quickjs.c:3460 JS_NewAtomLen.
+func js_new_atom_len(ctx: Context*, str_: const u8*, len: usize) -> Atom:
+    trap("unported: JS_NewAtomLen")
+## Ported from quickjs.c:3477 JS_NewAtom.
+func js_new_atom(ctx: Context*, str_: const u8*) -> Atom:
+    trap("unported: JS_NewAtom")
+## Ported from quickjs.c:3482 JS_NewAtomUInt32.
+func js_new_atom_uint32(ctx: Context*, n: u32) -> Atom:
+    trap("unported: JS_NewAtomUInt32")
+## Ported from quickjs.c:3499 JS_NewAtomInt64.
+func js_new_atom_int64(ctx: Context*, n: i64) -> Atom:
+    trap("unported: JS_NewAtomInt64")
+## Ported from quickjs.c:3517 JS_NewSymbol.
+func js_new_symbol(ctx: Context*, p: String*, atom_type: i32) -> Value!:
+    trap("unported: JS_NewSymbol")
+## Ported from quickjs.c:3528 JS_NewSymbolFromAtom.
+func js_new_symbol_from_atom(ctx: Context*, descr: Atom, atom_type: i32) -> Value!:
+    trap("unported: JS_NewSymbolFromAtom")
+## Ported from quickjs.c:3595 __JS_AtomToValue.
+func js_atom_to_value_raw(ctx: Context*, atom: Atom, force_string: bool) -> Value!:
+    trap("unported: __JS_AtomToValue")
+## Ported from quickjs.c:3622 JS_AtomToValue.
+func js_atom_to_value(ctx: Context*, atom: Atom) -> Value!:
+    trap("unported: JS_AtomToValue")
+## Ported from quickjs.c:3627 JS_AtomToString.
+func js_atom_to_string(ctx: Context*, atom: Atom) -> Value!:
+    trap("unported: JS_AtomToString")
+## Ported from quickjs.c:3634 JS_AtomIsArrayIndex.
+func js_atom_is_array_index(ctx: Context*, pval: u32*, atom: Atom) -> bool:
+    trap("unported: JS_AtomIsArrayIndex")
+## Ported from quickjs.c:3660 JS_AtomIsNumericIndex1.
+func js_atom_is_numeric_index1(ctx: Context*, atom: Atom) -> Value!:
+    trap("unported: JS_AtomIsNumericIndex1")
+## Ported from quickjs.c:3712 JS_AtomIsNumericIndex.
+func js_atom_is_numeric_index(ctx: Context*, atom: Atom) -> i32!:
+    trap("unported: JS_AtomIsNumericIndex")
+## Ported from quickjs.c:3724 JS_FreeAtom.
+func js_free_atom(ctx: Context*, v: Atom):
+    trap("unported: JS_FreeAtom")
+## Ported from quickjs.c:3730 JS_FreeAtomRT.
+func js_free_atom_rt(rt: Runtime*, v: Atom):
+    trap("unported: JS_FreeAtomRT")
+## Ported from quickjs.c:3737 JS_AtomSymbolHasDescription.
+func js_atom_symbol_has_description(ctx: Context*, v: Atom) -> bool:
+    trap("unported: JS_AtomSymbolHasDescription")
+## Ported from quickjs.c:3770 js_atom_concat_str.
+func js_atom_concat_str(ctx: Context*, name: Atom, str1: const u8*) -> Atom!:
+    trap("unported: js_atom_concat_str")
+## Ported from quickjs.c:3802 js_atom_concat_num.
+func js_atom_concat_num(ctx: Context*, name: Atom, n: u32) -> Atom:
+    trap("unported: js_atom_concat_num")
+## Ported from quickjs.c:3811 JS_IsEmptyString.
+func js_is_empty_string(v: Value) -> bool:
+    trap("unported: JS_IsEmptyString")

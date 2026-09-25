@@ -1,0 +1,158 @@
+#==============================================================================================
+#
+#   tests - Unit tests of the dtoa port
+#
+#   DESCRIPTION:
+#       The checks the generated tests_dtoa_*, tests_atod_* and tests_itoa_* fragments call
+#       (each pins one C result bit for bit), and hand-written cases: round trips of random
+#       doubles through js_dtoa and js_atod, and the internal bignum helpers.
+#
+#       Note: upstream js_dtoa_max_len under-estimates the length of the smallest subnormals
+#       with dtoa_exp_disabled (e.g. 331 bytes written for a bound of 325); the pinned
+#       tables keep C's values, so the checks do not assert the bound.
+#
+#==============================================================================================
+
+# mark: Checks =================================================================================
+
+func check_dtoa(bits: u64, radix: i32, n_digits: i32, flags: i32, max_len: i32, expected: str):
+    var mem: DTOATempMem
+    var buf: u8[2048]
+    let d = f64.bits(bits)
+    let len = js_dtoa(&buf[0], d, radix, n_digits, flags, &mem)
+    let got = (str)buf[0..<(usize)len]
+    if got != expected or buf[(usize)len] != 0:
+        print(f"js_dtoa({hex(bits)}, {radix}, {n_digits}, {flags}): got {got}, expected {expected}")
+        assert(false)
+    let bound = js_dtoa_max_len(d, radix, n_digits, flags)
+    if bound != max_len:
+        print(f"js_dtoa_max_len({hex(bits)}, {radix}, {n_digits}, {flags}): got {bound}")
+        assert(false)
+
+func check_atod(input: str, radix: i32, flags: i32, expected_bits: u64, consumed: i32):
+    var mem: ATODTempMem
+    var next: const u8* = input.bytes.data
+    let d = js_atod(input.bytes.data, &next, radix, flags, &mem)
+    let used = (i32)(next - input.bytes.data)
+    if d.bits() != expected_bits or used != consumed:
+        print(f"js_atod(\"{input}\", {radix}, {flags}): got {hex(d.bits())} after {used}")
+        assert(false)
+
+func check_text(buf: const u8[], len: usize, expected: str):
+    let got = (str)buf[0..<len]
+    if got != expected:
+        print(f"got {got}, expected {expected}")
+        assert(false)
+
+func check_u32toa(v: u32, expected: str):
+    var buf: u8[80]
+    check_text(buf, u32toa(&buf[0], v), expected)
+
+func check_i32toa(v: u32, expected: str):
+    var buf: u8[80]
+    check_text(buf, i32toa(&buf[0], (i32)v), expected)
+
+func check_u64toa(v: u64, expected: str):
+    var buf: u8[80]
+    check_text(buf, u64toa(&buf[0], v), expected)
+
+func check_i64toa(v: u64, expected: str):
+    var buf: u8[80]
+    check_text(buf, i64toa(&buf[0], (i64)v), expected)
+
+func check_u64toa_radix(v: u64, radix: u32, expected: str):
+    var buf: u8[80]
+    check_text(buf, u64toa_radix(&buf[0], v, radix), expected)
+
+func check_i64toa_radix(v: u64, radix: u32, expected: str):
+    var buf: u8[80]
+    check_text(buf, i64toa_radix(&buf[0], (i64)v, radix), expected)
+
+# mark: Round trips ============================================================================
+
+var test_seed: u64 = 88172645463325252
+
+func next_random() -> u64:
+    test_seed ^= test_seed << 13
+    test_seed ^= test_seed >> 7
+    test_seed ^= test_seed << 17
+    return test_seed
+
+func round_trip(bits: u64, radix: i32):
+    var dmem: DTOATempMem
+    var amem: ATODTempMem
+    var buf: u8[2048]
+    let d = f64.bits(bits)
+    let len = js_dtoa(&buf[0], d, radix, 0, dtoa_format_free | dtoa_minus_zero, &dmem)
+    var next: const u8* = &buf[0]
+    var flags: i32 = 0
+    let back = js_atod(&buf[0], &next, radix, flags, &amem)
+    assert(next == (const u8*)&buf[0] + (usize)len)
+    if d == d:
+        if back.bits() != bits:
+            print(f"round trip {hex(bits)} radix {radix}: {(str)buf[0..<(usize)len]}")
+            assert(false)
+    else:
+        assert(back != back)
+
+test "random doubles round trip in radix 10":
+    for index in 0..<3000:
+        var bits = next_random()
+        if index % 2 == 0:
+            # keep the exponent moderate half of the time
+            bits = (bits & 0x800fffffffffffff) | ((1023 + next_random() % 120 - 60) << 52)
+        round_trip(bits, 10)
+
+test "random doubles round trip in other radixes":
+    # atod rounds exactly only in power-of-two radixes; others use ~128 bits
+    let radixes: i32[6] = [2, 4, 8, 16, 32, 36]
+    for radix in radixes:
+        for index in 0..<200:
+            let bits = (next_random() & 0x800fffffffffffff) | ((1023 + next_random() % 100 - 50) << 52)
+            if radix & (radix - 1) == 0:
+                round_trip(bits, radix)
+
+test "subnormals and extremes round trip":
+    let edges: u64[10] = [
+        0x0000000000000001, 0x000fffffffffffff, 0x0010000000000000, 0x7fefffffffffffff,
+        0x8000000000000001, 0x3ff0000000000001, 0x3fefffffffffffff, 0x4340000000000000,
+        0x0000000000000000, 0x8000000000000000,
+    ]
+    for bits in edges:
+        round_trip(bits, 10)
+        round_trip(bits, 2)
+        round_trip(bits, 16)
+
+# mark: Internals ==============================================================================
+
+test "pow_ui and mul_log2_radix":
+    assert(pow_ui(5, 17) == 762939453125)
+    assert(pow_ui(10, 17) == 100000000000000000)
+    assert(pow_ui(3, 40) == 12157665459056928801)
+    assert(pow_ui(36, 12) == 4738381338321616896)
+    assert(pow_ui(7, 0) == 1 and pow_ui(7, 1) == 7)
+    # floor(a / log2(radix))
+    assert(mul_log2_radix(1023, 10) == 307 and mul_log2_radix(-1075, 10) == -324)
+    assert(mul_log2_radix(-1, 2) == -1 and mul_log2_radix(-1, 16) == -1)
+    assert(mul_log2_radix(7, 8) == 2 and mul_log2_radix(-7, 8) == -3)
+
+test "udiv1norm agrees with 64-bit division":
+    for index in 0..<2000:
+        let d = (u32)next_random() | 0x80000000
+        let d_inv = udiv1norm_init(d)
+        let a1 = (u32)(next_random() % (u64)d)
+        let a0 = (u32)next_random()
+        var r: u32 = 0
+        let q = udiv1norm(&r, a1, a0, d, d_inv)
+        let a = ((u64)a1 << 32) | (u64)a0
+        assert((u64)q == a // (u64)d and (u64)r == a % (u64)d)
+
+test "js_dtoa of NaN and infinities in fixed and frac formats":
+    check_dtoa(0x7ff8000000000000, 10, 5, dtoa_format_fixed, 13, "NaN")
+    check_dtoa(0xfff0000000000000, 10, 3, dtoa_format_frac, 9, "-Infinity")
+
+test "js_atod without pnext":
+    var mem: ATODTempMem
+    assert(js_atod("42.5".bytes.data, none, 0, 0, &mem) == 42.5)
+    let nan = js_atod("x".bytes.data, none, 0, 0, &mem)
+    assert(nan != nan)

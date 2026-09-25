@@ -1,0 +1,124 @@
+#==============================================================================================
+#
+#   stub_r07_exceptions - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:7365 JS_GetException.
+func js_get_exception(ctx: Context*) -> Value!:
+    trap("unported: JS_GetException")
+## Ported from quickjs.c:7374 JS_HasException.
+func js_has_exception(ctx: Context*) -> bool:
+    trap("unported: JS_HasException")
+## Ported from quickjs.c:7379 dbuf_put_leb128.
+func dbuf_put_leb128(s: cutils.DynBuf*, v: u32):
+    trap("unported: dbuf_put_leb128")
+## Ported from quickjs.c:7394 dbuf_put_sleb128.
+func dbuf_put_sleb128(s: cutils.DynBuf*, v1: i32):
+    trap("unported: dbuf_put_sleb128")
+## Ported from quickjs.c:7400 get_leb128.
+func get_leb128(pval: u32*, buf: const u8*, buf_end: const u8*) -> i32:
+    trap("unported: get_leb128")
+## Ported from quickjs.c:7420 get_sleb128.
+func get_sleb128(pval: i32*, buf: const u8*, buf_end: const u8*) -> i32:
+    trap("unported: get_sleb128")
+## Ported from quickjs.c:7435 find_line_num.
+func find_line_num(ctx: Context*, b: FunctionBytecode*, pc_value: u32, pcol_num: i32*) -> i32!:
+    trap("unported: find_line_num")
+## Ported from quickjs.c:7538 build_backtrace.
+func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*, line_num: i32, col_num: i32, backtrace_flags: i32):
+    trap("unported: build_backtrace")
+## Ported from quickjs.c:7620 is_backtrace_needed.
+func is_backtrace_needed(ctx: Context*, obj: Value) -> bool:
+    trap("unported: is_backtrace_needed")
+## Ported from quickjs.c:7633 JS_NewError.
+func js_new_error(ctx: Context*) -> Value!:
+    trap("unported: JS_NewError")
+## Ported from quickjs.c:7638 JS_ThrowError2.
+func js_throw_error2(ctx: Context*, error_num: ErrorKind, message: fmt, add_backtrace: bool) -> never!:
+    trap("unported: JS_ThrowError2")
+## Ported from quickjs.c:7662 JS_ThrowError.
+func js_throw_error(ctx: Context*, error_num: ErrorKind, message: fmt) -> never!:
+    trap("unported: JS_ThrowError")
+## Ported from quickjs.c:7676 JS_ThrowSyntaxError.
+func js_throw_syntax_error(ctx: Context*, message: fmt) -> never!:
+    trap("unported: JS_ThrowSyntaxError")
+## Ported from quickjs.c:7687 JS_ThrowTypeError.
+func js_throw_type_error(ctx: Context*, message: fmt) -> never!:
+    trap("unported: JS_ThrowTypeError")
+## Ported from quickjs.c:7698 JS_ThrowTypeErrorOrFalse.
+func js_throw_type_error_or_false(ctx: Context*, flags: i32, message: fmt) -> i32!:
+    trap("unported: JS_ThrowTypeErrorOrFalse")
+## Ported from quickjs.c:7714 __JS_ThrowTypeErrorAtom.
+func js_throw_type_error_atom_raw(ctx: Context*, atom: Atom, message: fmt) -> never!:
+    trap("unported: __JS_ThrowTypeErrorAtom")
+## Ported from quickjs.c:7722 __JS_ThrowSyntaxErrorAtom.
+func js_throw_syntax_error_atom_raw(ctx: Context*, atom: Atom, message: fmt) -> never!:
+    trap("unported: __JS_ThrowSyntaxErrorAtom")
+## Ported from quickjs.c:7734 JS_ThrowTypeErrorReadOnly.
+func js_throw_type_error_read_only(ctx: Context*, flags: i32, atom: Atom) -> i32!:
+    trap("unported: JS_ThrowTypeErrorReadOnly")
+## Ported from quickjs.c:7745 JS_ThrowReferenceError.
+func js_throw_reference_error(ctx: Context*, message: fmt) -> never!:
+    trap("unported: JS_ThrowReferenceError")
+## Ported from quickjs.c:7756 JS_ThrowRangeError.
+func js_throw_range_error(ctx: Context*, message: fmt) -> never!:
+    trap("unported: JS_ThrowRangeError")
+## Ported from quickjs.c:7767 JS_ThrowInternalError.
+func js_throw_internal_error(ctx: Context*, message: fmt) -> never!:
+    trap("unported: JS_ThrowInternalError")
+## Ported from quickjs.c:7778 JS_ThrowOutOfMemory.
+func js_throw_out_of_memory(ctx: Context*) -> never!:
+    trap("unported: JS_ThrowOutOfMemory")
+## Ported from quickjs.c:7789 JS_ThrowStackOverflow.
+func js_throw_stack_overflow(ctx: Context*) -> never!:
+    trap("unported: JS_ThrowStackOverflow")
+## Ported from quickjs.c:7794 JS_ThrowTypeErrorNotAnObject.
+func js_throw_type_error_not_an_object(ctx: Context*) -> never!:
+    trap("unported: JS_ThrowTypeErrorNotAnObject")
+## Ported from quickjs.c:7799 JS_ThrowTypeErrorNotAConstructor.
+func js_throw_type_error_not_a_constructor(ctx: Context*, func_obj: Value) -> never!:
+    trap("unported: JS_ThrowTypeErrorNotAConstructor")
+## Ported from quickjs.c:7815 JS_ThrowTypeErrorNotASymbol.
+func js_throw_type_error_not_a_symbol(ctx: Context*) -> never!:
+    trap("unported: JS_ThrowTypeErrorNotASymbol")
+## Ported from quickjs.c:7820 JS_ThrowReferenceErrorNotDefined.
+func js_throw_reference_error_not_defined(ctx: Context*, name: Atom) -> never!:
+    trap("unported: JS_ThrowReferenceErrorNotDefined")
+## Ported from quickjs.c:7827 JS_ThrowReferenceErrorUninitialized.
+func js_throw_reference_error_uninitialized(ctx: Context*, name: Atom) -> never!:
+    trap("unported: JS_ThrowReferenceErrorUninitialized")
+## Ported from quickjs.c:7835 JS_ThrowReferenceErrorUninitialized2.
+func js_throw_reference_error_uninitialized2(ctx: Context*, b: FunctionBytecode*, idx: i32, is_ref: bool) -> never!:
+    trap("unported: JS_ThrowReferenceErrorUninitialized2")
+## Ported from quickjs.c:7850 JS_ThrowTypeErrorInvalidClass.
+func js_throw_type_error_invalid_class(ctx: Context*, class_id: i32) -> never!:
+    trap("unported: JS_ThrowTypeErrorInvalidClass")
+## Ported from quickjs.c:7858 JS_ThrowInterrupted.
+func js_throw_interrupted(ctx: Context*):
+    trap("unported: JS_ThrowInterrupted")
+## Ported from quickjs.c:7864 __js_poll_interrupts.
+func js_poll_interrupts_raw(ctx: Context*) -> i32!:
+    trap("unported: __js_poll_interrupts")
+## Ported from quickjs.c:7877 js_poll_interrupts.
+func js_poll_interrupts(ctx: Context*) -> i32:
+    trap("unported: js_poll_interrupts")
+## Ported from quickjs.c:7886 JS_SetImmutablePrototype.
+func js_set_immutable_prototype(ctx: Context*, obj: Value):
+    trap("unported: JS_SetImmutablePrototype")
+## Ported from quickjs.c:7897 JS_SetPrototypeInternal.
+func js_set_prototype_internal(ctx: Context*, obj: Value, proto_val: Value, throw_flag: bool) -> i32!:
+    trap("unported: JS_SetPrototypeInternal")
+## Ported from quickjs.c:7989 JS_SetPrototype.
+func js_set_prototype(ctx: Context*, obj: Value, proto_val: Value) -> i32:
+    trap("unported: JS_SetPrototype")
+## Ported from quickjs.c:7995 JS_GetPrototypePrimitive.
+func js_get_prototype_primitive(ctx: Context*, val: Value) -> Value!:
+    trap("unported: JS_GetPrototypePrimitive")
+## Ported from quickjs.c:8027 JS_GetPrototype.
+func js_get_prototype(ctx: Context*, obj: Value) -> Value!:
+    trap("unported: JS_GetPrototype")

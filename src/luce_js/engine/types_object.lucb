@@ -1,0 +1,622 @@
+#==============================================================================================
+#
+#   types_object - Strings, bytecode, shapes, objects and the per-class records
+#
+#   DESCRIPTION:
+#       Port of the declarations of quickjs.c lines 580-1110: JSString and ropes, closure
+#       variables, JSFunctionBytecode, the per-class data records, modules, jobs,
+#       properties, shapes, JSObject and the Map records. A flexible array member is
+#       omitted; its elements follow the struct in memory and are reached by pointer
+#       arithmetic (the helpers are in the fragment that owns the type).
+#
+#==============================================================================================
+
+# mark: Strings =================================================================================
+
+## The kinds of atoms (JS_ATOM_TYPE_*).
+let js_atom_type_string: u8 = 1
+let js_atom_type_global_symbol: u8 = 2
+let js_atom_type_symbol: u8 = 3
+let js_atom_type_private: u8 = 4
+
+## What kind of key an atom is (JSAtomKindEnum).
+enum AtomKind as i32:
+    string = 0
+    symbol = 1
+    private = 2
+
+let js_atom_hash_mask: u32 = (1 << 30) - 1
+let js_atom_hash_private: u32 = js_atom_hash_mask
+
+## A flat string (JSString), also the storage of an atom (JSAtomStruct). Its characters
+## follow the header: `len` bytes plus a NUL when 8-bit, `len` u16 units when wide.
+pub struct String:
+    ## At most 2^31 - 1.
+    var len: u32
+    ## For js_atom_type_symbol: hash = weakref_count, atom_type = 3; for
+    ## js_atom_type_private: hash = js_atom_hash_private, atom_type = 3. At most 2^30 - 1.
+    var hash: u32
+    ## atom_index for js_atom_type_symbol.
+    var hash_next: u32
+    ## False: 8-bit characters, true: 16-bit characters.
+    var is_wide_char: bool
+    ## Nonzero if an atom: js_atom_type_*.
+    var atom_type: u8
+
+## An atom's storage is a string (JSAtomStruct).
+type AtomStruct = String
+
+## A string concatenation not yet flattened (JSStringRope).
+struct StringRope:
+    var len: u32
+    ## False: 8-bit characters, true: 16-bit characters.
+    var is_wide_char: u8
+    ## Max depth of the rope tree.
+    var depth: u8
+    # XXX: could reduce memory usage by using a direct pointer with bit 0 to select rope or
+    # string
+    var left: Value
+    ## Might be the empty string.
+    var right: Value
+
+# mark: Closures and bytecode ===================================================================
+
+## Where a closure variable comes from (JSClosureTypeEnum).
+enum ClosureType as u8:
+    ## 'var_idx' is the index of a local variable in the parent function.
+    local_ = 0
+    ## 'var_idx' is the index of an argument variable in the parent function.
+    arg = 1
+    ## 'var_idx' is the index of a closure variable in the parent function.
+    ref = 2
+    ## 'var_idx' is the index of a closure variable in the parent function referencing a
+    ## global variable.
+    global_ref = 3
+    ## Global variable declaration (eval code only).
+    global_decl = 4
+    ## Global variable (eval code only).
+    global = 5
+    ## Definition of a module variable (eval code only).
+    module_decl = 6
+    ## Definition of a module import (eval code only).
+    module_import = 7
+
+## A variable a closure captures (JSClosureVar).
+struct ClosureVar:
+    var closure_type: ClosureType
+    ## Lexical variable.
+    var is_lexical: bool
+    ## Const variable (is_lexical is true if is_const is).
+    var is_const: bool
+    ## See VarKind.
+    var var_kind: VarKind
+    ## is_local: index to a normal variable of the parent function; otherwise: index to a
+    ## closure variable of the parent function.
+    var var_idx: u16
+    var var_name: Atom
+
+let arg_scope_index: i32 = 1
+let arg_scope_end: i32 = -2
+
+## The kinds of variables (JSVarKindEnum).
+enum VarKind as u8:
+    normal = 0
+    ## Lexical var with function declaration.
+    function_decl = 1
+    ## Lexical var with async/generator function declaration.
+    new_function_decl = 2
+    catch_ = 3
+    ## Function expression name.
+    function_name = 4
+    private_field = 5
+    private_method = 6
+    private_getter = 7
+    ## Must come after private_getter.
+    private_setter = 8
+    ## Must come after private_setter.
+    private_getter_setter = 9
+    ## Global function definition, only in VarDef.
+    global_function_decl = 10
+
+## A variable of a compiled function (JSBytecodeVarDef).
+struct BytecodeVarDef:
+    var var_name: Atom
+    ## Index into FunctionBytecode.vardefs of the next variable in the same or enclosing
+    ## lexical scope.
+    var scope_next: i32
+    var is_const: bool
+    var is_lexical: bool
+    var is_captured: bool
+    ## True if VarDef.scope_level != 0.
+    var has_scope: bool
+    var var_kind: VarKind
+    ## If is_captured, the index of the corresponding VarRef on the stack.
+    var var_ref_idx: u16
+
+# for the encoding of the pc2line table
+let pc2line_base: i32 = -1
+let pc2line_range: i32 = 5
+let pc2line_op_first: i32 = 1
+let pc2line_diff_pc_max: i32 = (255 - pc2line_op_first) // pc2line_range
+
+## The kinds of functions (JSFunctionKindEnum), a bit set.
+let js_func_normal: u8 = 0
+let js_func_generator: u8 = 1 << 0
+let js_func_async: u8 = 1 << 1
+let js_func_async_generator: u8 = js_func_generator | js_func_async
+
+## A compiled function's debug information (the debug struct of JSFunctionBytecode).
+struct FunctionBytecodeDebug:
+    var filename: Atom
+    var source_len: i32
+    var pc2line_len: i32
+    var pc2line_buf: u8*?
+    var source: u8*?
+
+## A compiled function (JSFunctionBytecode).
+struct FunctionBytecode:
+    ## Must come first.
+    var header: GCObjectHeader
+    var js_mode: u8
+    ## True if a prototype field is necessary.
+    var has_prototype: bool
+    var has_simple_parameter_list: bool
+    var is_derived_class_constructor: bool
+    ## True if home_object needs to be initialized.
+    var need_home_object: bool
+    var func_kind: u8
+    var new_target_allowed: bool
+    var super_call_allowed: bool
+    var super_allowed: bool
+    var arguments_allowed: bool
+    var has_debug: bool
+    var read_only_bytecode: bool
+    ## Used by get_script_or_module_name().
+    var is_direct_or_indirect_eval: bool
+    ## (Self pointer.)
+    var byte_code_buf: u8*
+    var byte_code_len: i32
+    var func_name: Atom
+    ## Arguments + local variables (arg_count + var_count) (self pointer).
+    var vardefs: BytecodeVarDef*?
+    ## The variables in the closure (self pointer).
+    var closure_var: ClosureVar*?
+    var arg_count: u16
+    var var_count: u16
+    ## For the length function property.
+    var defined_arg_count: u16
+    ## Maximum stack size.
+    var stack_size: u16
+    ## Number of local variable references.
+    var var_ref_count: u16
+    ## Function realm.
+    var realm: Context*
+    ## Constant pool (self pointer).
+    var cpool: Value*?
+    var cpool_count: i32
+    var closure_var_count: i32
+    var debug: FunctionBytecodeDebug
+
+## A bound function's target and arguments (JSBoundFunction); `argc` values follow it.
+struct BoundFunction:
+    var func_obj: Value
+    var this_val: Value
+    var argc: i32
+
+## What an iterator yields (JSIteratorKindEnum).
+enum IteratorKind as i32:
+    key = 0
+    value = 1
+    key_and_value = 2
+
+## The state of a for-in loop (JSForInIterator).
+struct ForInIterator:
+    var obj: Value
+    var idx: u32
+    var atom_count: u32
+    var in_prototype_chain: u8
+    var is_array: u8
+    ## When is_array is false.
+    var tab_atom: PropertyEnum*?
+
+## A regular expression's pattern and bytecode (JSRegExp).
+struct RegExp:
+    var pattern: String*
+    ## Also contains the flags.
+    var bytecode: String*
+
+## A proxy's target and handler (JSProxyData).
+struct ProxyData:
+    var target: Value
+    var handler: Value
+    var is_func: u8
+    var is_revoked: u8
+
+## An ArrayBuffer's storage (JSArrayBuffer).
+struct ArrayBuffer:
+    ## 0 if detached.
+    var byte_length: i32
+    ## -1 if not resizable; >= byte_length otherwise.
+    var max_byte_length: i32
+    var detached: u8
+    ## If shared, the array buffer cannot be detached.
+    var shared: u8
+    ## None if detached.
+    var data: u8*?
+    var array_list: cutils.ListHead
+    var opaque: void*?
+    var free_func: FreeArrayBufferDataFunc?
+
+## A typed array's or DataView's view of its buffer (JSTypedArray).
+struct TypedArray:
+    ## Link to the array buffer.
+    var link: cutils.ListHead
+    ## Back pointer to the TypedArray/DataView object.
+    var obj: Object*
+    ## The array buffer it views.
+    var buffer: Object*
+    ## Byte offset in the array buffer.
+    var offset: u32
+    ## Byte length in the array buffer.
+    var length: u32
+    ## Auto-track the length of the backing array buffer.
+    var track_rab: bool
+
+## The global object's data (JSGlobalObject).
+struct GlobalObject:
+    ## Hidden object containing the list of uninitialized variables.
+    var uninitialized_vars: Value
+
+## A suspended async function or generator (JSAsyncFunctionState); arg_buf, var_buf,
+## stack_buf and var_refs follow it.
+struct AsyncFunctionState:
+    var header: GCObjectHeader
+    ## 'this' argument.
+    var this_val: Value
+    ## Number of function arguments.
+    var argc: i32
+    ## Used to throw an exception in call_internal().
+    var throw_flag: bool
+    ## True if the function has returned. The stack frame is no longer valid.
+    var is_completed: bool
+    ## Only used in JS async functions.
+    var resolving_funcs: Value[2]
+    var frame: StackFrame
+
+# mark: Modules and jobs ========================================================================
+
+## A module a module requests (JSReqModuleEntry).
+struct ReqModuleEntry:
+    var module_name: Atom
+    ## Used during resolution.
+    var module: ModuleDef*?
+    ## undefined, or an object containing the attributes as key/value.
+    var attributes: Value
+
+## Whether an export is the module's own or re-exported (JSExportTypeEnum).
+enum ExportType as i32:
+    local_ = 0
+    indirect = 1
+
+## A local export's variable (the local struct of JSExportEntry).
+struct ExportLocal:
+    ## Closure variable index.
+    var var_idx: i32
+    ## If present, reference to the variable.
+    var var_ref: VarRef*?
+
+## The payload of an export entry.
+union ExportEntryUnion:
+    ## For a local export.
+    local_: ExportLocal
+    ## Module for an indirect export.
+    req_module_idx: i32
+
+## An export of a module (JSExportEntry).
+struct ExportEntry:
+    var u: ExportEntryUnion
+    var export_type: ExportType
+    ## '*' if export ns from. Not used for local export after compilation.
+    var local_name: Atom
+    ## Exported variable name.
+    var export_name: Atom
+
+## `export * from` (JSStarExportEntry).
+struct StarExportEntry:
+    ## In req_module_entries.
+    var req_module_idx: i32
+
+## An import of a module (JSImportEntry).
+struct ImportEntry:
+    ## Closure variable index.
+    var var_idx: i32
+    ## import_name = '*' is a valid import name, so need a flag.
+    var is_star: bool
+    var import_name: Atom
+    ## In req_module_entries.
+    var req_module_idx: i32
+
+## A module's evaluation status (JSModuleStatus).
+enum ModuleStatus as u8:
+    unlinked = 0
+    linking = 1
+    linked = 2
+    evaluating = 3
+    evaluating_async = 4
+    evaluated = 5
+
+## A module (JSModuleDef).
+pub struct ModuleDef:
+    ## Must come first.
+    var header: GCObjectHeader
+    var module_name: Atom
+    var link: cutils.ListHead
+
+    var req_module_entries: ReqModuleEntry*?
+    var req_module_entries_count: i32
+    var req_module_entries_size: i32
+
+    var export_entries: ExportEntry*?
+    var export_entries_count: i32
+    var export_entries_size: i32
+
+    var star_export_entries: StarExportEntry*?
+    var star_export_entries_count: i32
+    var star_export_entries_size: i32
+
+    var import_entries: ImportEntry*?
+    var import_entries_count: i32
+    var import_entries_size: i32
+
+    var module_ns: Value
+    ## Only used for JS modules.
+    var func_obj: Value
+    ## Only used for C modules.
+    var init_func: ModuleInitFunc?
+    ## True if func_obj contains await.
+    var has_tla: bool
+    var resolved: bool
+    var func_created: bool
+    var status: ModuleStatus
+    # temp use during js_module_link() & js_module_evaluate()
+    var dfs_index: i32
+    var dfs_ancestor_index: i32
+    var stack_prev: ModuleDef*?
+    # temp use during js_module_evaluate()
+    var async_parent_modules: ModuleDef**?
+    var async_parent_modules_count: i32
+    var async_parent_modules_size: i32
+    var pending_async_dependencies: i32
+    ## True: async_evaluation_timestamp corresponds to [[AsyncEvaluationOrder]]; false:
+    ## [[AsyncEvaluationOrder]] is UNSET or DONE.
+    var async_evaluation: bool
+    var async_evaluation_timestamp: i64
+    var cycle_root: ModuleDef*?
+    ## Corresponds to the spec field: capability.
+    var promise: Value
+    ## Corresponds to the spec field: capability.
+    var resolving_funcs: Value[2]
+
+    ## True if evaluation yielded an exception. It is saved in eval_exception.
+    var eval_has_exception: bool
+    var eval_exception: Value
+    ## For import.meta.
+    var meta_obj: Value
+    ## Private value for C modules.
+    var private_value: Value
+
+## A queued job (JSJobEntry); `argc` values follow it.
+struct JobEntry:
+    var link: cutils.ListHead
+    var realm: Context*
+    var job_func: JobFunc
+    var argc: i32
+
+# mark: Properties and shapes ===================================================================
+
+## A getter/setter pair (the getset struct of JSProperty); none if undefined.
+struct PropertyGetSet:
+    var getter: Object*?
+    var setter: Object*?
+
+## An auto-initialized property's initializer (the init struct of JSProperty). In order
+## to use only 2 pointers, the realm and the init id share a word.
+struct PropertyInit:
+    ## The realm and init_id (AutoInitId) in the 2 low bits.
+    var realm_and_id: usize
+    var opaque: void*?
+
+## A property's storage, by its shape flags' kind (JSProperty).
+union PropertyUnion:
+    ## prop_normal.
+    value: Value
+    ## prop_getset.
+    getset: PropertyGetSet
+    ## prop_varref.
+    var_ref: VarRef*
+    ## prop_autoinit.
+    init: PropertyInit
+
+## A property's storage (JSProperty).
+struct Property:
+    var u: PropertyUnion
+
+let js_prop_initial_size: i32 = 2
+## Must be a power of two.
+let js_prop_initial_hash_size: i32 = 4
+
+## A property's key and flags in a shape (JSShapeProperty).
+struct ShapeProperty:
+    ## 0 if last in the list; at most 2^26 - 1.
+    var hash_next: u32
+    ## JS_PROP_XXX; 6 bits.
+    var flags: u8
+    ## no_atom = a free property entry.
+    var atom: Atom
+
+## An object's prototype and property layout, shared between objects (JSShape).
+## `prop_hash_mask + 1` u32 hash entries follow the header, then `prop_size`
+## ShapeProperty entries.
+struct Shape:
+    var header: GCObjectHeader
+    ## True if the shape is inserted in the shape hash table. If not, Shape.hash is not
+    ## valid.
+    var is_hashed: u8
+    ## Current hash value.
+    var hash: u32
+    ## >= 2.
+    var prop_hash_mask: u32
+    ## Allocated properties.
+    var prop_size: i32
+    ## Includes deleted properties.
+    var prop_count: i32
+    var deleted_prop_count: i32
+    ## In Runtime.shape_hash[h] list.
+    var shape_hash_next: Shape*?
+    var proto: Object*?
+
+# mark: Objects =================================================================================
+
+## A bytecode function's closure (the func struct of JSObject's union), also used by
+## generator, async and async generator functions.
+struct ObjectFunc:
+    var function_bytecode: FunctionBytecode*
+    var var_refs: VarRef*?*?
+    ## For 'super' access.
+    var home_object: Object*?
+
+## A C function's data (the cfunc struct of JSObject's union).
+struct ObjectCFunc:
+    var realm: Context*
+    var c_function: CFunctionType
+    var length: u8
+    var cproto: CFunctionEnum
+    var magic: i16
+
+## The first word of a fast array (the u1 union of JSObject.u.array).
+union ObjectArrayU1:
+    ## ClassId.array.
+    size: u32
+    ## Typed arrays.
+    typed_array: TypedArray*
+
+## The element storage of a fast array (the u union of JSObject.u.array).
+union ObjectArrayValues:
+    ## ClassId.array, ClassId.arguments.
+    values: Value*
+    ## ClassId.mapped_arguments.
+    var_refs: VarRef**
+    ## Typed arrays.
+    ptr: void*
+    int8_ptr: i8*
+    uint8_ptr: u8*
+    int16_ptr: i16*
+    uint16_ptr: u16*
+    int32_ptr: i32*
+    uint32_ptr: u32*
+    int64_ptr: i64*
+    uint64_ptr: u64*
+    fp16_ptr: u16*
+    float_ptr: f32*
+    double_ptr: f64*
+
+## The array part of fast arrays and typed arrays (the array struct of JSObject's union).
+struct ObjectArray:
+    var u1: ObjectArrayU1
+    var u: ObjectArrayValues
+    ## <= 2^31-1. 0 for a detached typed array.
+    var count: u32
+
+## An object's class-specific data (the u union of JSObject).
+union ObjectUnion:
+    opaque: void*
+    bound_function: BoundFunction*
+    c_function_data_record: CFunctionDataRecord*
+    for_in_iterator: ForInIterator*
+    array_buffer: ArrayBuffer*
+    typed_array: TypedArray*
+    map_state: MapState*
+    map_iterator_data: MapIteratorData*
+    array_iterator_data: ArrayIteratorData*
+    regexp_string_iterator_data: RegExpStringIteratorData*
+    generator_data: GeneratorData*
+    iterator_concat_data: IteratorConcatData*
+    iterator_helper_data: IteratorHelperData*
+    iterator_wrap_data: IteratorWrapData*
+    proxy_data: ProxyData*
+    promise_data: PromiseData*
+    promise_function_data: PromiseFunctionData*
+    async_function_data: AsyncFunctionState*
+    async_from_sync_iterator_data: AsyncFromSyncIteratorData*
+    async_generator_data: AsyncGeneratorData*
+    func_: ObjectFunc
+    cfunc: ObjectCFunc
+    array: ObjectArray
+    regexp: RegExp
+    object_data: Value
+    global_object: GlobalObject
+
+## A JavaScript object (JSObject).
+pub struct Object:
+    var header: GCObjectHeader
+    ## True if the array prototype is "normal":
+    ## - no small index properties which are get/set or non writable
+    ## - its prototype is Object.prototype
+    ## - Object.prototype has no small index properties which are get/set or non writable
+    ## - the prototype of Object.prototype is null (always true as it is immutable)
+    var is_std_array_prototype: bool
+    var extensible: bool
+    ## Only used when freeing objects with cycles.
+    var free_mark: bool
+    ## True if the object has exotic property handlers.
+    var is_exotic: bool
+    ## True if u.array is used for get/put (for ClassId.array, arguments, mapped arguments
+    ## and typed arrays).
+    var fast_array: bool
+    ## True if the object is a constructor function.
+    var is_constructor: bool
+    ## Cannot modify the prototype.
+    var has_immutable_prototype: bool
+    ## Used in write_object_rec().
+    var tmp_mark: bool
+    ## Specific annex B IsHtmlDDA behavior.
+    var is_htmldda: bool
+    ## See ClassId; a run-time class id is carried by cast.
+    var class_id: ClassId
+    ## The number of weak references to this object. The object structure is freed only
+    ## if its ref_count and weakref_count are both 0.
+    var weakref_count: u32
+    ## Prototype and property names + flags.
+    var shape: Shape*
+    ## Array of properties.
+    var prop: Property*
+    var u: ObjectUnion
+
+# mark: Map records =============================================================================
+
+## One entry of a Map or Set (JSMapRecord).
+struct MapRecord:
+    ## Used during enumeration to avoid freeing the record.
+    var ref_count: i32
+    ## True if the record is deleted.
+    var empty: bool
+    var link: cutils.ListHead
+    var hash_next: MapRecord*?
+    var key: Value
+    var value: Value
+
+## A Map, Set, WeakMap or WeakSet (JSMapState).
+struct MapState:
+    ## True if WeakSet/WeakMap.
+    var is_weak: bool
+    ## List of MapRecord.link.
+    var records: cutils.ListHead
+    var record_count: u32
+    var hash_table: MapRecord*?*?
+    var hash_bits: i32
+    ## = 2 ^ hash_bits.
+    var hash_size: u32
+    ## The count at which a hash table resize is needed.
+    var record_count_threshold: u32
+    ## Only used if is_weak.
+    var weakref_header: WeakRefHeader

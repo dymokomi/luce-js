@@ -1,0 +1,130 @@
+#==============================================================================================
+#
+#   utf8 - UTF-8 encoding and decoding, UTF-16 surrogates, hex digits
+#
+#   DESCRIPTION:
+#       Port of QuickJS cutils.h lines 330-375 (UTF8_CHAR_LEN_MAX, the surrogate helpers,
+#       from_hex) and cutils.c lines 214-314 (unicode_to_utf8, unicode_from_utf8).
+#
+#==============================================================================================
+
+# mark: UTF-8 ==================================================================================
+
+## The longest UTF-8 sequence `unicode_to_utf8` writes (31-bit values).
+pub let utf8_char_len_max: i32 = 6
+
+## Encode `c` at `buf`; answers the number of bytes written (0 for `c >= 0x80000000`).
+## Note: at most 31 bits are encoded. At most UTF8_CHAR_LEN_MAX bytes are output.
+pub func unicode_to_utf8(buf: u8*, c: u32) -> i32:
+    var q = buf
+    if c < 0x80:
+        *q = (u8)c
+        q = q + 1
+    else:
+        if c < 0x800:
+            *q = (u8)((c >> 6) | 0xc0)
+            q = q + 1
+        else:
+            if c < 0x10000:
+                *q = (u8)((c >> 12) | 0xe0)
+                q = q + 1
+            else:
+                if c < 0x00200000:
+                    *q = (u8)((c >> 18) | 0xf0)
+                    q = q + 1
+                else:
+                    if c < 0x04000000:
+                        *q = (u8)((c >> 24) | 0xf8)
+                        q = q + 1
+                    elif c < 0x80000000:
+                        *q = (u8)((c >> 30) | 0xfc)
+                        q = q + 1
+                        *q = (u8)(((c >> 24) & 0x3f) | 0x80)
+                        q = q + 1
+                    else:
+                        return 0
+                    *q = (u8)(((c >> 18) & 0x3f) | 0x80)
+                    q = q + 1
+                *q = (u8)(((c >> 12) & 0x3f) | 0x80)
+                q = q + 1
+            *q = (u8)(((c >> 6) & 0x3f) | 0x80)
+            q = q + 1
+        *q = (u8)((c & 0x3f) | 0x80)
+        q = q + 1
+    return (i32)(q - buf)
+
+let utf8_min_code: u32[5] = [0x80, 0x800, 0x10000, 0x00200000, 0x04000000]
+
+let utf8_first_code_mask: u8[5] = [0x1f, 0xf, 0x7, 0x3, 0x1]
+
+## Decode one sequence at `p`, reading at most `max_len` bytes (at least 1); answers the
+## code point and sets `*pp` past it, or answers -1 and leaves `*pp` alone. Sequences of up
+## to 6 bytes (31-bit values) are accepted; overlong forms are rejected.
+pub func unicode_from_utf8(p: const u8*, max_len: i32, pp: const u8**) -> i32:
+    var q = p
+    var c = (i32)*q
+    q = q + 1
+    if c < 0x80:
+        *pp = q
+        return c
+    var l: i32
+    match c:
+        0xc0..=0xdf: l = 1
+        0xe0..=0xef: l = 2
+        0xf0..=0xf7: l = 3
+        0xf8..=0xfb: l = 4
+        0xfc, 0xfd: l = 5
+        _: return -1
+    # check that we have enough characters
+    if l > (max_len - 1):
+        return -1
+    c &= (i32)utf8_first_code_mask[(usize)(l - 1)]
+    for i in 0..<(usize)l:
+        let b = (i32)*q
+        q = q + 1
+        if b < 0x80 or b >= 0xc0:
+            return -1
+        c = (c << 6) | (b & 0x3f)
+    if (u32)c < utf8_min_code[(usize)(l - 1)]:
+        return -1
+    *pp = q
+    return c
+
+# mark: Surrogates =============================================================================
+
+## Whether `c` is a UTF-16 surrogate, 0xD800-0xDFFF.
+pub func is_surrogate(c: u32) -> bool:
+    return (c >> 11) == (0xD800 >> 11) # 0xD800-0xDFFF
+
+## Whether `c` is a high (leading) surrogate, 0xD800-0xDBFF.
+pub func is_hi_surrogate(c: u32) -> bool:
+    return (c >> 10) == (0xD800 >> 10) # 0xD800-0xDBFF
+
+## Whether `c` is a low (trailing) surrogate, 0xDC00-0xDFFF.
+pub func is_lo_surrogate(c: u32) -> bool:
+    return (c >> 10) == (0xDC00 >> 10) # 0xDC00-0xDFFF
+
+## The high surrogate of the supplementary code point `c`.
+pub func get_hi_surrogate(c: u32) -> u32:
+    return (c >> 10) -% (0x10000 >> 10) +% 0xD800
+
+## The low surrogate of the supplementary code point `c`.
+pub func get_lo_surrogate(c: u32) -> u32:
+    return (c & 0x3FF) | 0xDC00
+
+## The code point of the surrogate pair `hi`, `lo`.
+pub func from_surrogate(hi: u32, lo: u32) -> u32:
+    return 0x10000 +% 0x400 *% (hi -% 0xD800) +% (lo -% 0xDC00)
+
+# mark: Hex digits =============================================================================
+
+## The value of the hex digit `c` (either case), or -1.
+pub func from_hex(c: i32) -> i32:
+    if c >= (i32)'0' and c <= (i32)'9':
+        return c - (i32)'0'
+    elif c >= (i32)'A' and c <= (i32)'F':
+        return c - (i32)'A' + 10
+    elif c >= (i32)'a' and c <= (i32)'f':
+        return c - (i32)'a' + 10
+    else:
+        return -1

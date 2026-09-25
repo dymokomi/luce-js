@@ -1,0 +1,226 @@
+#==============================================================================================
+#
+#   stub_r05_shapes_objects - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:5121 get_shape_size.
+func get_shape_size(hash_size: usize, prop_size: usize) -> usize:
+    trap("unported: get_shape_size")
+## Ported from quickjs.c:5127 get_shape_prop.
+func get_shape_prop(sh: Shape*) -> ShapeProperty*:
+    trap("unported: get_shape_prop")
+## Ported from quickjs.c:5132 init_shape_hash.
+func init_shape_hash(rt: Runtime*) -> i32:
+    trap("unported: init_shape_hash")
+## Ported from quickjs.c:5145 shape_hash.
+func shape_hash(h: u32, val: u32) -> u32:
+    trap("unported: shape_hash")
+## Ported from quickjs.c:5151 get_shape_hash.
+func get_shape_hash(h: u32, hash_bits: i32) -> u32:
+    trap("unported: get_shape_hash")
+## Ported from quickjs.c:5156 shape_initial_hash.
+func shape_initial_hash(proto: Object*) -> u32:
+    trap("unported: shape_initial_hash")
+## Ported from quickjs.c:5165 resize_shape_hash.
+func resize_shape_hash(rt: Runtime*, new_shape_hash_bits: i32) -> i32:
+    trap("unported: resize_shape_hash")
+## Ported from quickjs.c:5191 js_shape_hash_link.
+func js_shape_hash_link(rt: Runtime*, sh: Shape*):
+    trap("unported: js_shape_hash_link")
+## Ported from quickjs.c:5200 js_shape_hash_unlink.
+func js_shape_hash_unlink(rt: Runtime*, sh: Shape*):
+    trap("unported: js_shape_hash_unlink")
+## Ported from quickjs.c:5214 js_new_shape_nohash.
+func js_new_shape_nohash(ctx: Context*, proto: Object*, hash_size: i32, prop_size: i32) -> Shape*!:
+    trap("unported: js_new_shape_nohash")
+## Ported from quickjs.c:5238 js_new_shape2.
+func js_new_shape2(ctx: Context*, proto: Object*, hash_size: i32, prop_size: i32) -> Shape*?:
+    trap("unported: js_new_shape2")
+## Ported from quickjs.c:5260 js_new_shape.
+func js_new_shape(ctx: Context*, proto: Object*) -> Shape*:
+    trap("unported: js_new_shape")
+## Ported from quickjs.c:5268 js_clone_shape.
+func js_clone_shape(ctx: Context*, sh1: Shape*) -> Shape*!:
+    trap("unported: js_clone_shape")
+## Ported from quickjs.c:5294 js_dup_shape.
+func js_dup_shape(sh: Shape*) -> Shape*:
+    trap("unported: js_dup_shape")
+## Ported from quickjs.c:5300 js_free_shape0.
+func js_free_shape0(rt: Runtime*, sh: Shape*):
+    trap("unported: js_free_shape0")
+## Ported from quickjs.c:5320 js_free_shape.
+func js_free_shape(rt: Runtime*, sh: Shape*):
+    trap("unported: js_free_shape")
+## Ported from quickjs.c:5327 js_free_shape_null.
+func js_free_shape_null(rt: Runtime*, sh: Shape*):
+    trap("unported: js_free_shape_null")
+## Ported from quickjs.c:5334 resize_properties.
+func resize_properties(ctx: Context*, psh: Shape**, p: Object*, count: u32) -> i32!:
+    trap("unported: resize_properties")
+## Ported from quickjs.c:5401 compact_properties.
+func compact_properties(ctx: Context*, p: Object*) -> i32!:
+    trap("unported: compact_properties")
+## Ported from quickjs.c:5469 add_shape_property.
+func add_shape_property(ctx: Context*, psh: Shape**, p: Object*, atom: Atom, prop_flags: i32) -> i32!:
+    trap("unported: add_shape_property")
+## Ported from quickjs.c:5514 find_hashed_shape_proto.
+func find_hashed_shape_proto(rt: Runtime*, proto: Object*) -> Shape*?:
+    trap("unported: find_hashed_shape_proto")
+## Ported from quickjs.c:5533 find_hashed_shape_prop.
+func find_hashed_shape_prop(rt: Runtime*, sh: Shape*, atom: Atom, prop_flags: i32) -> Shape*?:
+    trap("unported: find_hashed_shape_prop")
+## Ported from quickjs.c:5566 JS_DumpShape.
+func js_dump_shape(rt: Runtime*, i: i32, sh: Shape*):
+    trap("unported: JS_DumpShape")
+## Ported from quickjs.c:5582 JS_DumpShapes.
+func js_dump_shapes(rt: Runtime*):
+    trap("unported: JS_DumpShapes")
+## Ported from quickjs.c:5613 JS_NewObjectFromShape.
+func js_new_object_from_shape(ctx: Context*, sh: Shape*, class_id: u32, props: Property*) -> Value!:
+    trap("unported: JS_NewObjectFromShape")
+## Ported from quickjs.c:5734 get_proto_obj.
+func get_proto_obj(proto_val: Value) -> Object*?:
+    trap("unported: get_proto_obj")
+## Ported from quickjs.c:5743 JS_NewObjectProtoClass.
+func js_new_object_proto_class(ctx: Context*, proto_val: Value, class_id: u32) -> Value!:
+    trap("unported: JS_NewObjectProtoClass")
+## Ported from quickjs.c:5763 JS_NewObjectProtoClassAlloc.
+func js_new_object_proto_class_alloc(ctx: Context*, proto_val: Value, class_id: u32, n_alloc_props: i32) -> Value!:
+    trap("unported: JS_NewObjectProtoClassAlloc")
+## Ported from quickjs.c:5785 JS_GetObjectData.
+func js_get_object_data(ctx: Context*, obj: Value) -> Value!:
+    trap("unported: JS_GetObjectData")
+## Ported from quickjs.c:5805 JS_SetObjectData.
+func js_set_object_data(ctx: Context*, obj: Value, val: Value) -> i32!:
+    trap("unported: JS_SetObjectData")
+## Ported from quickjs.c:5831 JS_NewObjectClass.
+func js_new_object_class(ctx: Context*, class_id: i32) -> Value!:
+    trap("unported: JS_NewObjectClass")
+## Ported from quickjs.c:5836 JS_NewObjectProto.
+func js_new_object_proto(ctx: Context*, proto: Value) -> Value!:
+    trap("unported: JS_NewObjectProto")
+## Ported from quickjs.c:5841 JS_NewArray.
+func js_new_array(ctx: Context*) -> Value!:
+    trap("unported: JS_NewArray")
+## Ported from quickjs.c:5847 JS_NewObject.
+func js_new_object(ctx: Context*) -> Value!:
+    trap("unported: JS_NewObject")
+## Ported from quickjs.c:5853 js_function_set_properties.
+func js_function_set_properties(ctx: Context*, func_obj: Value, name: Atom, len: i32):
+    trap("unported: js_function_set_properties")
+## Ported from quickjs.c:5863 js_class_has_bytecode.
+func js_class_has_bytecode(class_id: u32) -> bool:
+    trap("unported: js_class_has_bytecode")
+## Ported from quickjs.c:5872 JS_GetFunctionBytecode.
+func js_get_function_bytecode(val: Value) -> FunctionBytecode*?:
+    trap("unported: JS_GetFunctionBytecode")
+## Ported from quickjs.c:5883 js_method_set_home_object.
+func js_method_set_home_object(ctx: Context*, func_obj: Value, home_obj: Value):
+    trap("unported: js_method_set_home_object")
+## Ported from quickjs.c:5908 js_get_function_name.
+func js_get_function_name(ctx: Context*, name: Atom) -> Value!:
+    trap("unported: js_get_function_name")
+## Ported from quickjs.c:5923 js_method_set_properties.
+func js_method_set_properties(ctx: Context*, func_obj: Value, name: Atom, flags: i32, home_obj: Value) -> i32!:
+    trap("unported: js_method_set_properties")
+## Ported from quickjs.c:5944 JS_NewCFunction3.
+func js_new_c_function3(ctx: Context*, func_: CFunction, name: const u8*, length: i32, cproto: CFunctionEnum, magic: i32, proto_val: Value, n_fields: i32) -> Value!:
+    trap("unported: JS_NewCFunction3")
+## Ported from quickjs.c:5983 JS_NewCFunction2.
+func js_new_c_function2(ctx: Context*, func_: CFunction, name: const u8*, length: i32, cproto: CFunctionEnum, magic: i32) -> Value!:
+    trap("unported: JS_NewCFunction2")
+## Ported from quickjs.c:5999 js_c_function_data_finalizer.
+func js_c_function_data_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_c_function_data_finalizer")
+## Ported from quickjs.c:6012 js_c_function_data_mark.
+func js_c_function_data_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_c_function_data_mark")
+## Ported from quickjs.c:6025 js_c_function_data_call.
+func js_c_function_data_call(ctx: Context*, func_obj: Value, this_val: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    trap("unported: js_c_function_data_call")
+## Ported from quickjs.c:6047 JS_NewCFunctionData.
+func js_new_c_function_data(ctx: Context*, func_: CFunctionData, length: i32, magic: i32, data_len: i32, data: Value*) -> Value!:
+    trap("unported: JS_NewCFunctionData")
+## Ported from quickjs.c:6076 js_autoinit_get_realm.
+func js_autoinit_get_realm(pr: Property*) -> Context*:
+    trap("unported: js_autoinit_get_realm")
+## Ported from quickjs.c:6081 js_autoinit_get_id.
+func js_autoinit_get_id(pr: Property*) -> AutoInitId:
+    trap("unported: js_autoinit_get_id")
+## Ported from quickjs.c:6086 js_autoinit_free.
+func js_autoinit_free(rt: Runtime*, pr: Property*):
+    trap("unported: js_autoinit_free")
+## Ported from quickjs.c:6091 js_autoinit_mark.
+func js_autoinit_mark(rt: Runtime*, pr: Property*, mark_func: MarkFunc):
+    trap("unported: js_autoinit_mark")
+## Ported from quickjs.c:6097 free_property.
+func free_property(rt: Runtime*, pr: Property*, prop_flags: i32):
+    trap("unported: free_property")
+## Ported from quickjs.c:6115 find_own_property1.
+func find_own_property1(p: Object*, atom: Atom) -> ShapeProperty*?:
+    trap("unported: find_own_property1")
+## Ported from quickjs.c:6135 find_own_property.
+func find_own_property(ppr: Property**, p: Object*, atom: Atom) -> ShapeProperty*?:
+    trap("unported: find_own_property")
+## Ported from quickjs.c:6160 set_cycle_flag.
+func set_cycle_flag(ctx: Context*, obj: Value):
+    trap("unported: set_cycle_flag")
+## Ported from quickjs.c:6164 free_var_ref.
+func free_var_ref(rt: Runtime*, var_ref: VarRef*):
+    trap("unported: free_var_ref")
+## Ported from quickjs.c:6186 js_array_finalizer.
+func js_array_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_array_finalizer")
+## Ported from quickjs.c:6197 js_array_mark.
+func js_array_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_array_mark")
+## Ported from quickjs.c:6208 js_object_data_finalizer.
+func js_object_data_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_object_data_finalizer")
+## Ported from quickjs.c:6215 js_object_data_mark.
+func js_object_data_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_object_data_mark")
+## Ported from quickjs.c:6222 js_c_function_finalizer.
+func js_c_function_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_c_function_finalizer")
+## Ported from quickjs.c:6230 js_c_function_mark.
+func js_c_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_c_function_mark")
+## Ported from quickjs.c:6239 js_bytecode_function_finalizer.
+func js_bytecode_function_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_bytecode_function_finalizer")
+## Ported from quickjs.c:6262 js_bytecode_function_mark.
+func js_bytecode_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_bytecode_function_mark")
+## Ported from quickjs.c:6289 js_bound_function_finalizer.
+func js_bound_function_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_bound_function_finalizer")
+## Ported from quickjs.c:6303 js_bound_function_mark.
+func js_bound_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_bound_function_mark")
+## Ported from quickjs.c:6316 js_for_in_iterator_finalizer.
+func js_for_in_iterator_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_for_in_iterator_finalizer")
+## Ported from quickjs.c:6332 js_for_in_iterator_mark.
+func js_for_in_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_for_in_iterator_mark")
+## Ported from quickjs.c:6340 free_object.
+func free_object(rt: Runtime*, p: Object*):
+    trap("unported: free_object")
+## Ported from quickjs.c:6394 free_gc_object.
+func free_gc_object(rt: Runtime*, gp: GCObjectHeader*):
+    trap("unported: free_gc_object")
+## Ported from quickjs.c:6414 free_zero_refcount.
+func free_zero_refcount(rt: Runtime*):
+    trap("unported: free_zero_refcount")
+## Ported from quickjs.c:6432 __JS_FreeValueRT.
+func js_free_value_rt_raw(rt: Runtime*, v: Value):
+    trap("unported: __JS_FreeValueRT")
+## Ported from quickjs.c:6503 __JS_FreeValue.
+func js_free_value_raw(ctx: Context*, v: Value):
+    trap("unported: __JS_FreeValue")

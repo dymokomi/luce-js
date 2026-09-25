@@ -1,0 +1,371 @@
+#==============================================================================================
+#
+#   tests - Unit tests of the cutils port
+#
+#   DESCRIPTION:
+#       Pins the behaviour of the C utilities: integer helpers against reference loops,
+#       DynBuf growth and failure, UTF-8 round trips and rejections, rqsort over every
+#       exchange width, binary16 conversion of every half value, and the intrusive list.
+#
+#==============================================================================================
+
+# mark: Helpers ================================================================================
+
+var test_seed: u32 = 12345
+
+func next_random() -> u32:
+    test_seed = test_seed *% 1103515245 +% 12345
+    return test_seed >> 8
+
+func clz32_reference(a: u32) -> i32:
+    var n: i32 = 0
+    var bit: u32 = 0x80000000
+    while bit != 0 and (a & bit) == 0:
+        n += 1
+        bit = bit >> 1
+    return n
+
+func ctz32_reference(a: u32) -> i32:
+    var n: i32 = 0
+    var bit: u32 = 1
+    while n < 32 and (a & bit) == 0:
+        n += 1
+        bit = bit << 1
+    return n
+
+# mark: Integers and strings ===================================================================
+
+test "min and max":
+    assert(max_int(-3, 2) == 2 and min_int(-3, 2) == -3)
+    assert(max_uint32(0xffffffff, 1) == 0xffffffff and min_uint32(0xffffffff, 1) == 1)
+    assert(max_int64(-9223372036854775808, 0) == 0)
+    assert(min_int64(-9223372036854775808, 0) == -9223372036854775808)
+
+test "clz and ctz":
+    for shift in 0..<32:
+        let one = (u32)1 << (u32)shift
+        assert(clz32(one) == 31 - (i32)shift)
+        assert(ctz32(one) == (i32)shift)
+        assert(clz64((u64)one << 32) == 31 - (i32)shift)
+        assert(ctz64((u64)one << 32) == 32 + (i32)shift)
+        assert(clz64((u64)one) == 63 - (i32)shift)
+        assert(ctz64((u64)one) == (i32)shift)
+    for index in 0..<2000:
+        let a = next_random() | (next_random() << 24)
+        let b = a >> (next_random() % 32)
+        if b != 0:
+            assert(clz32(b) == clz32_reference(b))
+            assert(ctz32(b) == ctz32_reference(b))
+    assert(clz32(0) == 32 and ctz32(0) == 32 and clz64(0) == 64 and ctz64(0) == 64)
+
+test "unaligned access and byte swaps":
+    var bytes: u8[16]
+    let p: u8* = &bytes[1]
+    put_u64(p, 0x0102030405060708)
+    assert(get_u64(p) == 0x0102030405060708)
+    assert(bytes[1] == 0x08 and bytes[8] == 0x01) # little-endian host
+    put_u32(p + 1, 0xdeadbeef)
+    assert(get_u32(p + 1) == 0xdeadbeef and get_i32(p + 1) == -559038737)
+    put_u16(p + 3, 0x8001)
+    assert(get_u16(p + 3) == 0x8001 and get_i16(p + 3) == -32767)
+    put_u8(p, 0xff)
+    assert(get_u8(p) == 255 and get_i8(p) == -1)
+    put_u64(p, 0xffffffffffffffff)
+    assert(get_i64(p) == -1)
+    assert(bswap16(0x1234) == 0x3412)
+    assert(bswap32(0x12345678) == 0x78563412)
+    assert(bswap64(0x0102030405060708) == 0x0807060504030201)
+
+test "pstrcpy, pstrcat and strstart":
+    var buf: u8[8]
+    pstrcpy(&buf[0], 8, "hello world".bytes.data)
+    assert((str)buf[0..<7] == "hello w" and buf[7] == 0)
+    pstrcpy(&buf[0], 8, "ab".bytes.data)
+    assert(strlen(&buf[0]) == 2)
+    discard(pstrcat(&buf[0], 8, "cdefghij".bytes.data))
+    assert((str)buf[0..<7] == "abcdefg" and buf[7] == 0)
+    pstrcpy(&buf[0], 0, "zz".bytes.data)
+    assert(buf[0] == 'a')
+    let text = "Infinity!"
+    var rest: const u8* = text.bytes.data
+    assert(strstart(text.bytes.data, "Infinity", &rest))
+    assert(*rest == '!')
+    assert(not strstart(text.bytes.data, "Inf!", none))
+    assert(strstart(text.bytes.data, "", none))
+
+# mark: DynBuf =================================================================================
+
+var failing_budget: usize = 0
+
+func failing_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    if size > failing_budget:
+        return none
+    let counter = (i32*)(opaque else trap("no opaque"))
+    *counter += 1
+    return realloc(ptr, size)
+
+test "DynBuf growth and contents":
+    var s: DynBuf
+    dbuf_init(&s)
+    for index in 0..<1000:
+        assert(dbuf_putc(&s, (u8)(index % 251)) == 0)
+    assert(s.size == 1000 and s.allocated_size >= 1000)
+    let b = s.buf else trap("no buffer")
+    for index in 0..<1000:
+        assert(b[index] == (u8)(index % 251))
+    assert(dbuf_put_u16(&s, 0x1234) == 0)
+    assert(dbuf_put_u32(&s, 0x89abcdef) == 0)
+    assert(dbuf_put_u64(&s, 0x0102030405060708) == 0)
+    let c = s.buf else trap("no buffer")
+    assert(get_u16(c + 1000) == 0x1234 and get_u32(c + 1002) == 0x89abcdef)
+    assert(get_u64(c + 1006) == 0x0102030405060708)
+    assert(s.size == 1014)
+    assert(dbuf_put_self(&s, 1000, 14) == 0)
+    let d = s.buf else trap("no buffer")
+    assert(memcmp(d + 1000, d + 1014, 14) == 0)
+    assert(not dbuf_error(&s))
+    dbuf_free(&s)
+    assert(s.size == 0 and s.allocated_size == 0 and s.buf == none)
+    dbuf_free(&s) # twice is safe
+
+test "DynBuf slow paths from empty":
+    var s: DynBuf
+    dbuf_init(&s)
+    assert(dbuf_put_u16(&s, 0xbeef) == 0)
+    dbuf_free(&s)
+    dbuf_init(&s)
+    assert(dbuf_put_u32(&s, 7) == 0)
+    assert(dbuf_put_u64(&s, 9) == 0)
+    assert(dbuf_putstr(&s, "abc") == 0)
+    assert(dbuf_put(&s, "".bytes.data, 0) == 0)
+    assert(s.size == 15)
+    let b = s.buf else trap("no buffer")
+    assert(get_u32(b) == 7 and get_u64(b + 4) == 9 and b[12] == 'a' and b[14] == 'c')
+    dbuf_free(&s)
+
+test "dbuf_printf":
+    var s: DynBuf
+    dbuf_init(&s)
+    let line: i32 = 12
+    let col: i32 = -3
+    assert(dbuf_printf(&s, f"    at {"file.js"}:{line}:{col}") == 0)
+    assert(dbuf_printf(&s, " (native)") == 0)
+    let b = s.buf else trap("no buffer")
+    assert((str)u8[](b, s.size) == "    at file.js:12:-3 (native)")
+    dbuf_free(&s)
+
+test "DynBuf allocation failure":
+    var s: DynBuf
+    var calls: i32 = 0
+    dbuf_init2(&s, &calls, failing_realloc)
+    failing_budget = 16
+    assert(dbuf_claim(&s, 12) == 0 and s.allocated_size == 12)
+    assert(dbuf_putstr(&s, "0123456789") == 0)
+    assert(calls == 1)
+    assert(dbuf_putstr(&s, "0123456789") == -1)
+    assert(dbuf_error(&s))
+    failing_budget = 1000
+    # once in error, growth fails even when memory is available
+    assert(dbuf_putstr(&s, "0123456789") == -1)
+    assert(dbuf_printf(&s, f"{calls}") == 0) # fits the remaining space
+    assert(dbuf_printf(&s, f"{"0123456789"}") == -1)
+    assert(dbuf_claim(&s, 0xffffffffffffffff) == -1)
+    dbuf_set_error(&s)
+    dbuf_free(&s)
+    assert(calls == 2 and not dbuf_error(&s)) # the free is the second call
+
+# mark: UTF-8, surrogates, hex =================================================================
+
+test "unicode_to_utf8 and unicode_from_utf8 round trip":
+    var buf: u8[8]
+    var c: u32 = 0
+    while c < 0x80000000:
+        let len = unicode_to_utf8(&buf[0], c)
+        assert(len >= 1 and len <= utf8_char_len_max)
+        var next: const u8* = &buf[0]
+        assert(unicode_from_utf8(&buf[0], len, &next) == (i32)c)
+        assert(next == (const u8*)&buf[0] + (usize)len)
+        assert(unicode_from_utf8(&buf[0], len - 1, &next) == -1 or len == 1)
+        c = c + 1 if c < 0x11000 else c *% 3 +% 7
+    assert(unicode_to_utf8(&buf[0], 0x80000000) == 0)
+    assert(unicode_to_utf8(&buf[0], 0x20ac) == 3)
+    assert(buf[0] == 0xe2 and buf[1] == 0x82 and buf[2] == 0xac)
+
+test "unicode_from_utf8 rejects":
+    var next: const u8* = "x".bytes.data
+    let start = next
+    let overlong: u8[2] = [0xc0, 0x80]
+    assert(unicode_from_utf8(&overlong[0], 2, &next) == -1)
+    let bad_continuation: u8[3] = [0xe2, 0x28, 0xa1]
+    assert(unicode_from_utf8(&bad_continuation[0], 3, &next) == -1)
+    let lone: u8[1] = [0x80]
+    assert(unicode_from_utf8(&lone[0], 1, &next) == -1)
+    let ff: u8[1] = [0xff]
+    assert(unicode_from_utf8(&ff[0], 1, &next) == -1)
+    let overlong3: u8[3] = [0xe0, 0x80, 0x80]
+    assert(unicode_from_utf8(&overlong3[0], 3, &next) == -1)
+    assert(next == start)
+
+test "surrogates and hex":
+    assert(is_surrogate(0xd800) and is_surrogate(0xdfff) and not is_surrogate(0xe000))
+    assert(is_hi_surrogate(0xdbff) and not is_hi_surrogate(0xdc00))
+    assert(is_lo_surrogate(0xdc00) and not is_lo_surrogate(0xdbff))
+    var c: u32 = 0x10000
+    while c <= 0x10ffff:
+        let hi = get_hi_surrogate(c)
+        let lo = get_lo_surrogate(c)
+        assert(is_hi_surrogate(hi) and is_lo_surrogate(lo))
+        assert(from_surrogate(hi, lo) == c)
+        c += 0x3ff
+    assert(get_hi_surrogate(0x1f600) == 0xd83d and get_lo_surrogate(0x1f600) == 0xde00)
+    assert(from_hex((i32)'7') == 7 and from_hex((i32)'b') == 11 and from_hex((i32)'F') == 15)
+    assert(from_hex((i32)'g') == -1 and from_hex(-1) == -1)
+
+# mark: rqsort =================================================================================
+
+func compare_by_first_u16(a: const void*, b: const void*, opaque: void*?) -> i32:
+    let x = memory.read[u16](a)
+    let y = memory.read[u16](b)
+    if opaque != none:
+        let counter = (i32*)(opaque else trap("no opaque"))
+        *counter += 1
+    return (i32)x - (i32)y
+
+func check_sort(count: usize, size: usize, offset: usize, pattern: i32):
+    let storage = (u8*)(malloc(count * size + 32) else trap("no memory"))
+    defer c_free(storage)
+    let base = storage + offset
+    var sum: u64 = 0
+    for index in 0..<count:
+        let key: u16 = match pattern:
+            0 => (u16)(next_random() % 97)
+            1 => (u16)index
+            2 => (u16)(count - index)
+            _ => 5
+        for byte in 0..<size:
+            base[index * size + byte] = (u8)(index +% byte * 7)
+        if size >= 2:
+            memory.write[u16](base + index * size, key)
+        else:
+            base[index] = (u8)key
+        sum += key
+    if size >= 2:
+        rqsort(base, count, size, compare_by_first_u16, none)
+        var check: u64 = 0
+        for index in 0..<count:
+            let key = memory.read[u16](base + index * size)
+            check += key
+            if index > 0:
+                assert(memory.read[u16](base + (index - 1) * size) <= key)
+        assert(check == sum)
+
+func compare_bytes(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return (i32)*(const u8*)a - (i32)*(const u8*)b
+
+test "rqsort every exchange width and pattern":
+    let sizes: usize[9] = [2, 3, 4, 6, 8, 12, 16, 24, 32]
+    let counts: usize[10] = [0, 1, 2, 5, 7, 8, 31, 100, 257, 1000]
+    for size in sizes:
+        for count in counts:
+            for pattern in 0..<4:
+                check_sort(count, size, 0, (i32)pattern)
+                check_sort(count, size, 2, (i32)pattern)
+
+test "rqsort bytes and opaque":
+    var bytes: u8[300]
+    for index in 0..<300:
+        bytes[index] = (u8)(next_random() % 256)
+    rqsort(&bytes[0], 300, 1, compare_bytes, none)
+    for index in 1..<300:
+        assert(bytes[index - 1] <= bytes[index])
+    var keys: u16[64]
+    for index in 0..<64:
+        keys[index] = (u16)(64 - index)
+    var calls: i32 = 0
+    rqsort(&keys[0], 64, 2, compare_by_first_u16, &calls)
+    assert(calls > 0 and keys[0] == 1 and keys[63] == 64)
+
+test "heapsortx":
+    var keys: u16[500]
+    for index in 0..<500:
+        keys[index] = (u16)(next_random() % 1000)
+    heapsortx(&keys[0], 500, 2, compare_by_first_u16, none)
+    for index in 1..<500:
+        assert(keys[index - 1] <= keys[index])
+
+# mark: Floats =================================================================================
+
+test "float bits":
+    assert(float64_as_uint64(1.0) == 0x3ff0000000000000)
+    assert(float64_as_uint64(-0.0) == 0x8000000000000000)
+    assert(uint64_as_float64(0x4000000000000000) == 2.0)
+
+test "binary16 conversion":
+    assert(fromfp16(0x3c00) == 1.0 and fromfp16(0xc000) == -2.0)
+    assert(fromfp16(0x7bff) == 65504.0 and fromfp16(0x0001) == 5.9604644775390625e-08)
+    assert(fromfp16(0x7c00) > 1.0e308 and fromfp16(0xfc00) < -1.0e308)
+    assert(float64_as_uint64(fromfp16(0x8000)) == 0x8000000000000000)
+    assert(fromfp16(0x7e00) != fromfp16(0x7e00)) # NaN
+    # every non-NaN half converts exactly and back
+    for index in 0..<65536:
+        let v = (u16)index
+        if not isfp16nan(v):
+            assert(tofp16(fromfp16(v)) == v)
+    assert(tofp16(65520.0) == 0x7c00)            # rounds up to infinity
+    assert(tofp16(65519.0) == 0x7bff)
+    assert(tofp16(1.0e-8) == 0x0000)
+    assert(tofp16(-1.0e-8) == 0x8000)
+    assert(tofp16(2.98023223876953125e-08) == 0x0000)   # 0x1p-25: tie to even zero
+    assert(tofp16(uint64_as_float64(0x3e60000000000001)) == 0x0001) # just above
+    assert(tofp16(1.00048828125) == 0x3c00)      # tie to even
+    assert(tofp16(1.00146484375) == 0x3c02)      # tie to even (up)
+    assert(tofp16(fromfp16(0x7e00)) == 0x7c01)
+    assert(isfp16nan(0x7c01) and not isfp16nan(0x7c00))
+    assert(isfp16zero(0x8000) and isfp16zero(0) and not isfp16zero(1))
+
+# mark: Lists ==================================================================================
+
+struct Item:
+    var value: i32
+    var link: ListHead
+
+func item_of(el: ListHead*) -> Item*:
+    return (Item*)((u8*)el - offsetof(Item, link))
+
+test "intrusive list":
+    var head: ListHead
+    init_list_head(&head)
+    assert(list_empty(&head))
+    var items: Item[4]
+    for index in 0..<4:
+        items[index].value = (i32)index
+    list_add_tail(&items[1].link, &head)
+    list_add_tail(&items[2].link, &head)
+    list_add(&items[0].link, &head)
+    list_add_tail(&items[3].link, &head)
+    assert(not list_empty(&head))
+    var expected: i32 = 0
+    var el = head.next else trap("unlinked")
+    while el != &head:
+        assert(item_of(el).value == expected)
+        expected += 1
+        el = el.next else trap("unlinked")
+    assert(expected == 4)
+    # delete while iterating (list_for_each_safe)
+    el = head.next else trap("unlinked")
+    while el != &head:
+        let el1 = el.next else trap("unlinked")
+        if item_of(el).value % 2 == 0:
+            list_del(el)
+        el = el1
+    assert(items[0].link.next == none and items[2].link.prev == none)
+    # backwards (list_for_each_prev)
+    var seen: i32 = 0
+    el = head.prev else trap("unlinked")
+    while el != &head:
+        seen = seen * 10 + item_of(el).value
+        el = el.prev else trap("unlinked")
+    assert(seen == 31)
+    list_del(&items[1].link)
+    list_del(&items[3].link)
+    assert(list_empty(&head))

@@ -1,0 +1,435 @@
+#==============================================================================================
+#
+#   types_runtime - The runtime, its allocator, classes, frames and GC headers
+#
+#   DESCRIPTION:
+#       Port of the declarations at the top of quickjs.c (lines 120-600): class ids,
+#       error kinds, the JS malloc context, JSRuntime, JSClass, JSStackFrame, the GC
+#       object header, weak reference headers, JSVarRef, big integers and JSContext.
+#       Bit-fields are separate fields, except in the malloc block header, whose 8-byte
+#       layout the reference counts depend on.
+#
+#==============================================================================================
+
+# mark: Classes and errors ======================================================================
+
+## The predefined classes (JS_CLASS_*). A class allocated at run time has an id at or above
+## `class_init_count` and is carried in the same field by cast.
+pub enum ClassId as u16:
+    object = 1                      # must be first
+    array = 2                       # u.array       | length
+    error_ = 3
+    number = 4                      # u.object_data
+    string = 5                      # u.object_data
+    boolean = 6                     # u.object_data
+    symbol = 7                      # u.object_data
+    arguments = 8                   # u.array       | length
+    mapped_arguments = 9            # u.array       | length
+    date = 10                       # u.object_data
+    module_ns = 11
+    c_function = 12                 # u.cfunc
+    bytecode_function = 13          # u.func
+    bound_function = 14             # u.bound_function
+    c_function_data = 15            # u.c_function_data_record
+    generator_function = 16         # u.func
+    for_in_iterator = 17            # u.for_in_iterator
+    regexp = 18                     # u.regexp
+    array_buffer = 19               # u.array_buffer
+    shared_array_buffer = 20        # u.array_buffer
+    uint8c_array = 21               # u.array (typed_array)
+    int8_array = 22                 # u.array (typed_array)
+    uint8_array = 23                # u.array (typed_array)
+    int16_array = 24                # u.array (typed_array)
+    uint16_array = 25               # u.array (typed_array)
+    int32_array = 26                # u.array (typed_array)
+    uint32_array = 27               # u.array (typed_array)
+    big_int64_array = 28            # u.array (typed_array)
+    big_uint64_array = 29           # u.array (typed_array)
+    float16_array = 30              # u.array (typed_array)
+    float32_array = 31              # u.array (typed_array)
+    float64_array = 32              # u.array (typed_array)
+    dataview = 33                   # u.typed_array
+    big_int = 34                    # u.object_data
+    map = 35                        # u.map_state
+    set = 36                        # u.map_state
+    weakmap = 37                    # u.map_state
+    weakset = 38                    # u.map_state
+    iterator = 39                   # u.map_iterator_data
+    iterator_concat = 40            # u.iterator_concat_data
+    iterator_helper = 41            # u.iterator_helper_data
+    iterator_wrap = 42              # u.iterator_wrap_data
+    map_iterator = 43               # u.map_iterator_data
+    set_iterator = 44               # u.map_iterator_data
+    array_iterator = 45             # u.array_iterator_data
+    string_iterator = 46            # u.array_iterator_data
+    regexp_string_iterator = 47     # u.regexp_string_iterator_data
+    generator = 48                  # u.generator_data
+    global_object = 49              # u.global_object
+    rawjson = 50
+    proxy = 51                      # u.proxy_data
+    promise = 52                    # u.promise_data
+    promise_resolve_function = 53   # u.promise_function_data
+    promise_reject_function = 54    # u.promise_function_data
+    async_function = 55             # u.func
+    async_function_resolve = 56     # u.async_function_data
+    async_function_reject = 57      # u.async_function_data
+    async_from_sync_iterator = 58   # u.async_from_sync_iterator_data
+    async_generator_function = 59   # u.func
+    async_generator = 60            # u.async_generator_data
+    weak_ref = 61
+    finalization_registry = 62
+
+## One past the last predefined class (JS_CLASS_INIT_COUNT).
+let class_init_count: u32 = 63
+
+## The number of typed array kinds (JS_TYPED_ARRAY_COUNT).
+let js_typed_array_count: u32 = 12
+
+## The native error kinds (JSErrorEnum).
+enum ErrorKind as i32:
+    eval_error = 0
+    range_error = 1
+    reference_error = 2
+    syntax_error = 3
+    type_error = 4
+    uri_error = 5
+    internal_error = 6
+    aggregate_error = 7
+
+## The number of NativeError kinds (JS_NATIVE_ERROR_COUNT).
+let js_native_error_count: usize = 8
+
+## The collector's phase (JSGCPhaseEnum).
+enum GCPhase as u8:
+    none_ = 0
+    decref = 1
+    remove_cycles = 2
+
+# mark: JS malloc ===============================================================================
+
+let js_malloc_align: usize = 8
+let js_malloc_arena_size: usize = 4096
+let js_malloc_block_size_count: usize = 31
+let js_malloc_min_small_size: usize = 16
+let js_malloc_max_small_size: usize = 512
+let free_nil: u16 = 0xffff
+
+## The 8-byte header before every js_malloc'ed block (JSMallocBlockHeader). The
+## reference count of a GC object or string is `ref_count`, 4 bytes before its data.
+## Notes:
+## - the header is necessary at least to recover a pointer to MallocArena because we
+##   don't want to enforce a page alignment on the system malloc().
+## - could store the block offset instead of (block_idx, block_size_idx), but it would
+##   require a division to recover the block index.
+struct MallocBlockHeader:
+    ## block_idx (free_nil if a large block) while allocated; free_next (free_nil if none)
+    ## while on an arena's free list.
+    var block_idx: u16
+    var block_size_idx: u8
+    ## gc_obj_type in the low 7 bits, the GC mark in bit 7.
+    var gc_bits: u8
+    var ref_count: i32
+
+## A block too large for the arenas, straight from the host (JSMallocLargeBlockHeader).
+struct MallocLargeBlockHeader:
+    var header: MallocBlockHeader
+
+## An arena of equally sized small blocks (JSMallocArena); `n_blocks` blocks follow it.
+struct MallocArena:
+    var free_link: cutils.ListHead
+    var link: cutils.ListHead
+    var block_size_idx: u8
+    ## Number of allocated blocks.
+    var n_used_blocks: u16
+    ## Total number of blocks.
+    var n_blocks: u16
+    ## free_nil if none.
+    var first_free_block: u16
+
+## The small-block allocator's state (JSMallocContext).
+struct MallocContext:
+    ## Every arena of each size (MallocArena.link).
+    var arena_list: cutils.ListHead[31]
+    ## The arenas of each size with a free block (MallocArena.free_link).
+    var free_arena_list: cutils.ListHead[31]
+    ## The header of the one block that answers zero-sized requests.
+    var zero_size_block: MallocBlockHeader
+    ## Callbacks to the host malloc.
+    var mf: MallocFunctions
+    var malloc_state: MallocState
+
+# mark: The runtime =============================================================================
+
+## The runtime (JSRuntime): the heap, atoms, classes, shapes, the collector and the job
+## queue that its contexts share.
+pub struct Runtime:
+    var malloc_ctx: MallocContext
+    var rt_info: const u8*?
+
+    ## Power of two.
+    var atom_hash_size: i32
+    var atom_count: i32
+    var atom_size: i32
+    ## Resize the hash table at this count.
+    var atom_count_resize: i32
+    var atom_hash: u32*?
+    var atom_array: AtomStruct**?
+    ## 0 = none.
+    var atom_free_index: i32
+
+    ## Size of class_array.
+    var class_count: i32
+    var class_array: Class*?
+
+    ## List of Context.link.
+    var context_list: cutils.ListHead
+    ## List of GCObjectHeader.link: the allocated GC objects (used by the garbage
+    ## collector).
+    var gc_obj_list: cutils.ListHead
+    ## List of GCObjectHeader.link. Used during free_value_rt().
+    var gc_zero_ref_count_list: cutils.ListHead
+    ## Used during GC.
+    var tmp_obj_list: cutils.ListHead
+    var gc_phase: GCPhase
+    var malloc_gc_threshold: usize
+    ## List of WeakRefHeader.link.
+    var weakref_list: cutils.ListHead
+
+    # stack limitation
+    ## In bytes, 0 if no limit.
+    var stack_size: usize
+    var stack_top: usize
+    ## Lower stack limit.
+    var stack_limit: usize
+
+    var current_exception: Value
+    ## True if the current exception cannot be caught.
+    var current_exception_is_uncatchable: bool
+    ## True if inside an out of memory error, to avoid recursing.
+    var in_out_of_memory: bool
+
+    var current_stack_frame: StackFrame*?
+
+    var interrupt_handler: InterruptHandler?
+    var interrupt_opaque: void*?
+
+    var host_promise_rejection_tracker: HostPromiseRejectionTracker?
+    var host_promise_rejection_tracker_opaque: void*?
+
+    ## List of JobEntry.link.
+    var job_list: cutils.ListHead
+
+    var module_normalize_func: ModuleNormalizeFunc?
+    var module_loader_has_attr: bool
+    var module_loader_func: ModuleLoaderFunc?
+    var module_loader_func2: ModuleLoaderFunc2?
+    var module_check_attrs: ModuleCheckSupportedImportAttributes?
+    var module_loader_opaque: void*?
+    ## Timestamp for internal use in module evaluation.
+    var module_async_evaluation_next_timestamp: i64
+
+    ## True if Atomics.wait can block.
+    var can_block: bool
+    ## Used to allocate, free and clone SharedArrayBuffers.
+    var sab_funcs: SharedArrayBufferFunctions
+    ## See set_strip_info().
+    var strip_flags: u8
+
+    # Shape hash table
+    var shape_hash_bits: i32
+    var shape_hash_size: i32
+    ## Number of hashed shapes.
+    var shape_hash_count: i32
+    var shape_hash: Shape*?*?
+    var user_opaque: void*?
+
+## A class of the runtime (JSClass).
+struct Class:
+    ## 0 means a free entry.
+    var class_id: u32
+    var class_name: Atom
+    var finalizer: ClassFinalizer?
+    var gc_mark: ClassGCMark?
+    var call: ClassCall?
+    ## Pointers for exotic behavior, none if none are present.
+    var exotic: const ClassExoticMethods*?
+
+## JS_MODE_STRICT.
+let js_mode_strict: i32 = 1 << 0
+## JS_MODE_ASYNC: an async function.
+let js_mode_async: i32 = 1 << 2
+## JS_MODE_BACKTRACE_BARRIER: stop the backtrace before this frame.
+let js_mode_backtrace_barrier: i32 = 1 << 3
+
+## A call's frame (JSStackFrame).
+struct StackFrame:
+    ## None if the first stack frame.
+    var prev_frame: StackFrame*?
+    ## The current function, undefined if the frame is detached.
+    var cur_func: Value
+    ## Arguments.
+    var arg_buf: Value*?
+    ## Variables.
+    var var_buf: Value*?
+    ## References to arguments or local variables.
+    var var_refs: VarRef*?*?
+    ## Only used in bytecode functions: the PC of the instruction after the call.
+    var cur_pc: const u8*?
+    var arg_count: i32
+    ## Not supported for C functions.
+    var js_mode: i32
+    ## Only used in generators. The current stack pointer value; none if the function is
+    ## running.
+    var cur_sp: Value*?
+
+## The kinds of GC objects (JSGCObjectTypeEnum).
+enum GCObjectType as u8:
+    js_object = 0
+    function_bytecode = 1
+    shape = 2
+    var_ref = 3
+    async_function = 4
+    js_context = 5
+    module = 6
+
+## The header of GC objects (JSGCObjectHeader). GC objects are data structures with a
+## reference count that can reference other GC objects. JS objects are a particular type
+## of GC object. The type, mark and reference count are in the block header before it.
+pub struct GCObjectHeader:
+    var link: cutils.ListHead
+
+## The kinds of weak reference holders (JSWeakRefHeaderTypeEnum).
+enum WeakRefHeaderType as i32:
+    map = 0
+    weakref = 1
+    finrec = 2
+
+## A weak reference holder in the runtime's weakref_list (JSWeakRefHeader).
+struct WeakRefHeader:
+    var link: cutils.ListHead
+    var weakref_type: WeakRefHeaderType
+
+## Where an attached variable reference points (the anonymous struct of JSVarRef).
+struct VarRefFrame:
+    ## Index in StackFrame.var_refs[].
+    var var_ref_idx: u16
+    var stack_frame: StackFrame*
+
+## The two states of a variable reference's storage.
+union VarRefUnion:
+    ## Used when is_detached is true.
+    value: Value
+    ## Used when is_detached is false.
+    frame: VarRefFrame
+
+## A reference to a closure variable (JSVarRef).
+struct VarRef:
+    ## Must come first.
+    var header: GCObjectHeader
+    var is_detached: u8
+    ## Only used with global variables.
+    var is_lexical: u8
+    ## Only used with global variables.
+    var is_const: u8
+    ## Pointer to the value, either on the stack or to 'value'.
+    var pvalue: Value*
+    var u: VarRefUnion
+
+# mark: Big integers ============================================================================
+
+# The port uses QuickJS's 32-bit limb configuration (JS_LIMB_BITS == 32, as on hosts without
+# __int128): a limb is a u32 and a double limb (js_dlimb_t) a u64, which luce-base has.
+let js_limb_bits: i32 = 32
+let js_limb_digits: i32 = 9
+## JS_SHORT_BIG_INT_BITS: a short big integer is a signed 32-bit payload.
+let js_short_big_int_bits: i32 = 32
+
+## A big integer (JSBigInt): `len` u32 limbs follow the header in two's complement
+## representation, always normalized so that 'len' is the minimum possible length >= 1.
+struct BigInt:
+    ## Number of limbs, >= 1.
+    var len: u32
+
+## A big integer of up to 64 bits on the stack (JSBigIntBuf): the header, then its limbs.
+struct BigIntBuf:
+    ## For BigInt.
+    var big_int_buf: u32[1]
+    ## Must come just after.
+    var tab: u32[2]
+
+## The property kinds that are created on first access (JSAutoInitIDEnum).
+enum AutoInitId as i32:
+    prototype = 0
+    module_ns = 1
+    prop = 2
+
+## Must be large enough to have a negligible runtime cost and small enough to call the
+## interrupt callback often (JS_INTERRUPT_COUNTER_INIT).
+let js_interrupt_counter_init: i32 = 10000
+
+# mark: The context =============================================================================
+
+## Compiles a RegExp: `(ctx, pattern, flags)` to its bytecode string.
+type CompileRegExpFunc = func(Context*, Value, Value) -> Value!
+## Evaluates source text: `(ctx, this_obj, input, input_len, filename, flags, scope_idx)`.
+type EvalInternalFunc = func(Context*, Value, const u8*, usize, const u8*, i32, i32) -> Value!
+
+## A realm (JSContext): the global object, the intrinsics and the loaded modules.
+pub struct Context:
+    ## Must come first.
+    var header: GCObjectHeader
+    var rt: Runtime*
+    var link: cutils.ListHead
+
+    var binary_object_count: u16
+    var binary_object_size: i32
+
+    ## Initial shape for Array objects.
+    var array_shape: Shape*?
+    ## Shape for arguments objects.
+    var arguments_shape: Shape*?
+    ## Shape for mapped arguments objects.
+    var mapped_arguments_shape: Shape*?
+    ## Shape for regexp objects.
+    var regexp_shape: Shape*?
+    ## Shape for regexp result objects.
+    var regexp_result_shape: Shape*?
+
+    var class_proto: Value*?
+    var function_proto: Value
+    var function_ctor: Value
+    var array_ctor: Value
+    var regexp_ctor: Value
+    var promise_ctor: Value
+    var native_error_proto: Value[8]
+    var iterator_ctor: Value
+    var async_iterator_proto: Value
+    var array_proto_values: Value
+    var throw_type_error: Value
+    var eval_obj: Value
+
+    ## The global object.
+    var global_obj: Value
+    ## Contains the global let/const definitions.
+    var global_var_obj: Value
+
+    var random_state: u64
+
+    ## When the counter reaches zero, Runtime.interrupt_handler is called.
+    var interrupt_counter: i32
+
+    ## List of ModuleDef.link.
+    var loaded_modules: cutils.ListHead
+
+    ## If none, RegExp compilation is not supported.
+    var compile_regexp: CompileRegExpFunc?
+    ## If none, eval is not supported: `(ctx, this_obj, input, input_len, filename, flags,
+    ## scope_idx)`.
+    var eval_internal: EvalInternalFunc?
+    var user_opaque: void*?
+
+## A float's bits (JSFloat64Union).
+union Float64Union:
+    d: f64
+    bits: u64
+    words: u32[2]

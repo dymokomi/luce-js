@@ -1,0 +1,266 @@
+#==============================================================================================
+#
+#   dtoa - Float64 to text: js_dtoa_max_len and js_dtoa
+#
+#   DESCRIPTION:
+#       Port of QuickJS dtoa.c lines 1034-1352: js_dtoa_max_len, the temporary-memory
+#       allocator and js_dtoa (free, fixed and fractional formats, any radix for free).
+#       The JS_DTOA_DUMP_STATS statistics are not ported.
+#
+#==============================================================================================
+
+# mark: Length bound ===========================================================================
+
+## A maximum bound of the string length `js_dtoa` writes (without the NUL). The bound
+## depends on `d` only if the format is `dtoa_format_frac` or if `dtoa_exp_disabled` is set.
+pub func js_dtoa_max_len(d: f64, radix: i32, n_digits: i32, flags: i32) -> i32:
+    let fmt_mode = flags & dtoa_format_mask
+    var n: i32
+    if fmt_mode != dtoa_format_frac:
+        if fmt_mode == dtoa_format_free:
+            n = (i32)dtoa_max_digits_table[(usize)(radix - 2)]
+        else:
+            n = n_digits
+        if (flags & dtoa_exp_mask) == dtoa_exp_disabled:
+            # no exponential
+            let a = cutils.float64_as_uint64(d)
+            var e = (i32)((a >> 52) & 0x7ff)
+            if e == 0x7ff:
+                # NaN, Infinity
+                n = 0
+            else:
+                e -= 1023
+                # XXX: adjust
+                let v = mul_log2_radix(e - 1, radix)
+                n += 10 + (v if v >= 0 else -v)
+        else:
+            # extra: sign, 1 dot and exponent "e-1000"
+            n += 1 + 1 + 6
+    else:
+        let a = cutils.float64_as_uint64(d)
+        var e = (i32)((a >> 52) & 0x7ff)
+        if e == 0x7ff:
+            # NaN, Infinity
+            n = 0
+        else:
+            # high bound for the integer part
+            e -= 1023
+            # x < 2^(e + 1)
+            if e < 0:
+                n = 1
+            else:
+                n = 2 + mul_log2_radix(e - 1, radix)
+            # sign, extra digit, 1 dot
+            n += 1 + 1 + 1 + n_digits
+    return cutils.max_int(n, 9) # also include NaN and [-]Infinity
+
+# mark: Temporary memory =======================================================================
+
+func dtoa_malloc(pptr: u64**, size: usize) -> void*:
+    let ret = *pptr
+    *pptr = *pptr + (size + 7) // 8
+    return ret
+
+func dtoa_done(buf: u8*, q: u8*) -> i32:
+    *q = 0
+    return (i32)(q - buf)
+
+# mark: js_dtoa ================================================================================
+
+## Write `d` at `buf` in `radix` (2 to 36; other than 10 only with `dtoa_format_free`) as
+## `flags` say, NUL-terminated; answers the length. `buf` must hold `js_dtoa_max_len(...) + 1`
+## bytes. `n_digits` is the precision of the fixed and frac formats.
+pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
+                 tmp_mem: DTOATempMem*) -> i32:
+    var mptr: u64* = &tmp_mem.mem[0]
+    let tmp1 = (Mpb*)dtoa_malloc(&mptr, sizeof(Mpb) + sizeof(u32) * dbignum_len_max)
+    let mant_max = (Mpb*)dtoa_malloc(&mptr, sizeof(Mpb) + sizeof(u32) * mant_len_max)
+    assert((mptr - &tmp_mem.mem[0]) <= (isize)(sizeof(DTOATempMem) // sizeof(u64)))
+    let fmt_mode = flags & dtoa_format_mask
+
+    let radix_shift = cutils.ctz32((u32)radix)
+    let radix1 = radix >> radix_shift
+    let a = cutils.float64_as_uint64(d)
+    let sgn = (i32)(a >> 63)
+    var e = (i32)((a >> 52) & 0x7ff)
+    var m = a & (((u64)1 << 52) - 1)
+    var q = buf
+    var E: i32 = 0
+    var P: i32 = 0
+    if e == 0x7ff:
+        if m == 0:
+            if sgn != 0:
+                *q = '-'
+                q = q + 1
+            discard(cutils.memcpy(q, "Infinity".bytes.data, 8))
+            q = q + 8
+        else:
+            discard(cutils.memcpy(q, "NaN".bytes.data, 3))
+            q = q + 3
+        return dtoa_done(buf, q)
+    elif e == 0 and m == 0:
+        tmp1.len = 1
+        mpb_tab(tmp1)[0] = 0
+        E = 1
+        if fmt_mode == dtoa_format_free:
+            P = 1
+        elif fmt_mode == dtoa_format_frac:
+            P = n_digits + 1
+        else:
+            P = n_digits
+        # "-0" is displayed as "0" if JS_DTOA_MINUS_ZERO is not present
+        if sgn != 0 and (flags & dtoa_minus_zero) != 0:
+            *q = '-'
+            q = q + 1
+        # goto output
+    else:
+        if e == 0:
+            # denormal number: convert to a normal number
+            let l = cutils.clz64(m) - 11
+            e -= l - 1
+            m = m << (u64)l
+        else:
+            m |= (u64)1 << 52
+        if sgn != 0:
+            *q = '-'
+            q = q + 1
+        # remove the bias
+        e -= 1022
+        # d = 2^(e-53)*m
+        if (fmt_mode == dtoa_format_free and e >= 1 and e <= 53 and
+                (m & (((u64)1 << (u64)(53 - e)) - 1)) == 0 and
+                (flags & dtoa_exp_mask) != dtoa_exp_enabled):
+            m = m >> (u64)(53 - e)
+            # 'm' is never zero
+            q = q + u64toa_radix(q, m, (u32)radix)
+            return dtoa_done(buf, q)
+
+        # this choice of E implies F=round(x*B^(P-E) is such as:
+        # B^(P-1) <= F < 2.B^P.
+        E = 1 + mul_log2_radix(e - 1, radix)
+
+        if fmt_mode == dtoa_format_free:
+            # P_max is guarranteed to work by construction
+            let P_max = (i32)dtoa_max_digits_table[(usize)(radix - 2)]
+            let E0 = E
+            var E_found: i32 = 0
+            var P_found: i32 = 0
+            var mant_found: u64 = 0
+            # find the minimum number of digits by successive tries
+            P = P_max # P_max is guarateed to work
+            while true:
+                # mant_max always fits on 64 bits
+                let mant_max1 = pow_ui((u32)radix, (u32)P)
+                # compute the mantissa in base B
+                E = E0
+                var mant: u64
+                while true:
+                    # XXX: add inexact flag
+                    mul_pow_round(tmp1, m, e - 53, radix1, radix_shift, P - E, .rndn)
+                    mant = mpb_get_u64(tmp1)
+                    if mant < mant_max1:
+                        break
+                    E += 1 # at most one iteration is possible
+                # remove useless trailing zero digits
+                while (mant % (u64)radix) == 0:
+                    mant = mant // (u64)radix
+                    P -= 1
+                # garanteed to work for P = P_max (C: goto prec_found)
+                var found = P_found == 0
+                if not found:
+                    # convert back to base 2
+                    mpb_set_u64(tmp1, mant)
+                    var e1: i32 = 0
+                    let m1 = mul_pow_round_to_d(&e1, tmp1, radix1, radix_shift, E - P, .rndn)
+                    # Note: (m, e) is never zero here, so the exponent for m1 = 0 does not
+                    # matter
+                    found = m1 == m and e1 == e
+                if found:
+                    # prec_found:
+                    P_found = P
+                    E_found = E
+                    mant_found = mant
+                    if P == 1:
+                        break
+                    P -= 1 # try lower exponent
+                else:
+                    break
+            P = P_found
+            E = E_found
+            mpb_set_u64(tmp1, mant_found)
+        elif fmt_mode == dtoa_format_frac:
+            assert(n_digits >= 0 and n_digits <= dtoa_max_digits)
+            # P = max_int(E, 1) + n_digits;
+            # frac is rounded using RNDNA
+            mul_pow_round(tmp1, m, e - 53, radix1, radix_shift, n_digits, .rndna)
+
+            # we add one extra digit on the left and remove it if needed to avoid testing
+            # if the result is < radix^P
+            var len = output_digits(q, tmp1, radix, cutils.max_int(E + 1, 1) + n_digits,
+                                    cutils.max_int(E + 1, 1))
+            if q[0] == '0' and len >= 2 and q[1] != '.':
+                len -= 1
+                discard(cutils.memmove(q, q + 1, (usize)len))
+            q = q + (usize)len
+            return dtoa_done(buf, q)
+        else:
+            assert(n_digits >= 1 and n_digits <= dtoa_max_digits)
+            P = n_digits
+            # mant_max = radix^P
+            mant_max.len = 1
+            mpb_tab(mant_max)[0] = 1
+            let pow_shift = mul_pow(mant_max, radix1, radix_shift, P, false, 0)
+            mpb_shr_round(mant_max, pow_shift, .rndz)
+
+            while true:
+                # fixed and frac are rounded using RNDNA
+                mul_pow_round(tmp1, m, e - 53, radix1, radix_shift, P - E, .rndna)
+                if mpb_cmp(tmp1, mant_max) < 0:
+                    break
+                E += 1 # at most one iteration is possible
+
+    # output:
+    var E_max: i32
+    if fmt_mode == dtoa_format_fixed:
+        E_max = n_digits
+    else:
+        E_max = (i32)dtoa_max_digits_table[(usize)(radix - 2)] + 4
+    let exp_mode = flags & dtoa_exp_mask
+    if (exp_mode == dtoa_exp_enabled or
+            (exp_mode == dtoa_exp_auto and (E <= -6 or E > E_max))):
+        q = q + (usize)output_digits(q, tmp1, radix, P, 1)
+        E -= 1
+        if radix == 10:
+            *q = 'e'
+        elif radix1 == 1 and radix_shift <= 4:
+            E *= radix_shift
+            *q = 'p'
+        else:
+            *q = '@'
+        q = q + 1
+        if E < 0:
+            *q = '-'
+            E = -E
+        else:
+            *q = '+'
+        q = q + 1
+        q = q + u32toa(q, (u32)E)
+    elif E <= 0:
+        *q = '0'
+        q = q + 1
+        *q = '.'
+        q = q + 1
+        var i: i32 = 0
+        while i < -E:
+            *q = '0'
+            q = q + 1
+            i += 1
+        q = q + (usize)output_digits(q, tmp1, radix, P, P)
+    else:
+        q = q + (usize)output_digits(q, tmp1, radix, P, cutils.min_int(P, E))
+        var i: i32 = 0
+        while i < E - P:
+            *q = '0'
+            q = q + 1
+            i += 1
+    return dtoa_done(buf, q)

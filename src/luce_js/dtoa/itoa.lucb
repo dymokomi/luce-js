@@ -1,0 +1,155 @@
+#==============================================================================================
+#
+#   itoa - Integer to text in any radix
+#
+#   DESCRIPTION:
+#       Port of QuickJS dtoa.c lines 523-721: u32toa_len, u64toa_bin_len, limb_to_a and the
+#       exported u32toa, i32toa, u64toa, i64toa, u64toa_radix, i64toa_radix (the
+#       USE_FAST_INT versions). Digits are lowercase; nothing is NUL-terminated.
+#
+#==============================================================================================
+
+# mark: Fixed-length digits ====================================================================
+
+func u32toa_len(buf: u8*, n0: u32, len: usize):
+    var n = n0
+    var i = (isize)len - 1
+    while i >= 0:
+        let digit = n % 10
+        n = n // 10
+        buf[i] = (u8)digit + '0'
+        i -= 1
+
+# for power of 2 radixes. len >= 1
+func u64toa_bin_len(buf: u8*, n0: u64, radix_bits: u32, len: i32):
+    let mask = ((u32)1 << radix_bits) - 1
+    var n = n0
+    var i = len - 1
+    while i >= 0:
+        var digit = (i32)(n & (u64)mask)
+        n = n >> (u64)radix_bits
+        if digit < 10:
+            digit += (i32)'0'
+        else:
+            digit += (i32)'a' - 10
+        buf[(usize)i] = (u8)digit
+        i -= 1
+
+# len >= 1. 2 <= radix <= 36
+func limb_to_a(buf: u8*, n0: u32, radix: u32, len: i32):
+    if radix == 10:
+        # specific case with constant divisor
+        u32toa_len(buf, n0, (usize)len)
+    else:
+        var n = n0
+        var i = len - 1
+        while i >= 0:
+            var digit = (i32)(n % radix)
+            n = n // radix
+            if digit < 10:
+                digit += (i32)'0'
+            else:
+                digit += (i32)'a' - 10
+            buf[(usize)i] = (u8)digit
+            i -= 1
+
+# mark: Exported conversions ===================================================================
+
+## Write the decimal digits of `n` at `buf` (at most 10 bytes, no NUL); answers the length.
+pub func u32toa(buf: u8*, n0: u32) -> usize:
+    var buf1: u8[10]
+    var pos: usize = 10
+    var n = n0
+    while true:
+        pos -= 1
+        buf1[pos] = (u8)(n % 10) + '0'
+        n = n // 10
+        if n == 0:
+            break
+    let len = 10 - pos
+    discard(cutils.memcpy(buf, &buf1[pos], len))
+    return len
+
+## Write `n` in decimal at `buf` (at most 11 bytes, no NUL); answers the length.
+pub func i32toa(buf: u8*, n: i32) -> usize:
+    if n >= 0:
+        return u32toa(buf, (u32)n)
+    else:
+        buf[0] = '-'
+        return u32toa(buf + 1, -%(u32)n) + 1
+
+## Write the decimal digits of `n` at `buf` (at most 20 bytes, no NUL); answers the length.
+pub func u64toa(buf: u8*, n0: u64) -> usize:
+    if n0 < 0x100000000:
+        return u32toa(buf, (u32)n0)
+    else:
+        var q = buf
+        var n1 = n0 // 1000000000
+        let n = n0 % 1000000000
+        if n1 >= 0x100000000:
+            var n2 = (u32)(n1 // 1000000000)
+            n1 = n1 % 1000000000
+            # at most two digits
+            if n2 >= 10:
+                *q = (u8)(n2 // 10) + '0'
+                q = q + 1
+                n2 = n2 % 10
+            *q = (u8)n2 + '0'
+            q = q + 1
+            u32toa_len(q, (u32)n1, 9)
+            q = q + 9
+        else:
+            q = q + u32toa(q, (u32)n1)
+        u32toa_len(q, (u32)n, 9)
+        q = q + 9
+        return (usize)(q - buf)
+
+## Write `n` in decimal at `buf` (at most 20 bytes, no NUL); answers the length.
+pub func i64toa(buf: u8*, n: i64) -> usize:
+    if n >= 0:
+        return u64toa(buf, (u64)n)
+    else:
+        buf[0] = '-'
+        return u64toa(buf + 1, -%(u64)n) + 1
+
+## Write `n` in `radix` (2 to 36, lowercase) at `buf` (at most 64 bytes, no NUL); answers
+## the length. XXX: only tested for 1 <= n < 2^53
+pub func u64toa_radix(buf: u8*, n0: u64, radix: u32) -> usize:
+    if radix == 10:
+        return u64toa(buf, n0)
+    if (radix & (radix - 1)) == 0:
+        let radix_bits = 31 - cutils.clz32(radix)
+        var l: i32
+        if n0 == 0:
+            l = 1
+        else:
+            l = (64 - cutils.clz64(n0) + radix_bits - 1) // radix_bits
+        u64toa_bin_len(buf, n0, (u32)radix_bits, l)
+        return (usize)l
+    else:
+        var buf1: u8[41] # maximum length for radix = 3
+        var pos: usize = 41
+        var n = n0
+        while true:
+            var digit = (i32)(n % (u64)radix)
+            n = n // (u64)radix
+            if digit < 10:
+                digit += (i32)'0'
+            else:
+                digit += (i32)'a' - 10
+            pos -= 1
+            buf1[pos] = (u8)digit
+            if n == 0:
+                break
+        let len = 41 - pos
+        discard(cutils.memcpy(buf, &buf1[pos], len))
+        return len
+
+## Write `n` in `radix` (2 to 36, lowercase) at `buf` (at most 65 bytes, no NUL); answers
+## the length.
+pub func i64toa_radix(buf: u8*, n: i64, radix: u32) -> usize:
+    if n >= 0:
+        return u64toa_radix(buf, (u64)n, radix)
+    else:
+        buf[0] = '-'
+        return u64toa_radix(buf + 1, -%(u64)n, radix) + 1

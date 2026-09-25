@@ -1,0 +1,82 @@
+#==============================================================================================
+#
+#   stub_r02_context - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:2339 atom_get_free.
+func atom_get_free(p: const String*) -> u32:
+    trap("unported: atom_get_free")
+## Ported from quickjs.c:2344 atom_is_free.
+func atom_is_free(p: const String*) -> bool:
+    trap("unported: atom_is_free")
+## Ported from quickjs.c:2349 atom_set_free.
+func atom_set_free(v: u32) -> String*:
+    trap("unported: atom_set_free")
+## Ported from quickjs.c:2355 js_alloc_string_rt.
+func js_alloc_string_rt(rt: Runtime*, max_len: i32, is_wide_char: i32) -> String*?:
+    trap("unported: js_alloc_string_rt")
+## Ported from quickjs.c:2373 js_alloc_string.
+func js_alloc_string(ctx: Context*, max_len: i32, is_wide_char: i32) -> String*!:
+    trap("unported: js_alloc_string")
+## Ported from quickjs.c:2385 js_free_string.
+func js_free_string(rt: Runtime*, str_: String*):
+    trap("unported: js_free_string")
+## Ported from quickjs.c:2399 JS_SetRuntimeInfo.
+func js_set_runtime_info(rt: Runtime*, s: const u8*):
+    trap("unported: JS_SetRuntimeInfo")
+## Ported from quickjs.c:2405 JS_FreeRuntime.
+func js_free_runtime(rt: Runtime*):
+    trap("unported: JS_FreeRuntime")
+## Ported from quickjs.c:2593 JS_NewContextRaw.
+func js_new_context_raw(rt: Runtime*) -> Context*?:
+    trap("unported: JS_NewContextRaw")
+## Ported from quickjs.c:2627 JS_NewContext.
+func js_new_context(rt: Runtime*) -> Context*?:
+    trap("unported: JS_NewContext")
+## Ported from quickjs.c:2652 JS_GetContextOpaque.
+func js_get_context_opaque(ctx: Context*) -> void*:
+    trap("unported: JS_GetContextOpaque")
+## Ported from quickjs.c:2657 JS_SetContextOpaque.
+func js_set_context_opaque(ctx: Context*, opaque: void*):
+    trap("unported: JS_SetContextOpaque")
+## Ported from quickjs.c:2664 set_value.
+func set_value(ctx: Context*, pval: Value*, new_val: Value):
+    trap("unported: set_value")
+## Ported from quickjs.c:2672 JS_SetClassProto.
+func js_set_class_proto(ctx: Context*, class_id: u32, obj: Value):
+    trap("unported: JS_SetClassProto")
+## Ported from quickjs.c:2679 JS_GetClassProto.
+func js_get_class_proto(ctx: Context*, class_id: u32) -> Value!:
+    trap("unported: JS_GetClassProto")
+## Ported from quickjs.c:2692 js_free_modules.
+func js_free_modules(ctx: Context*, flag: FreeModuleKind):
+    trap("unported: js_free_modules")
+## Ported from quickjs.c:2710 JS_DupContext.
+func js_dup_context(ctx: Context*) -> Context*:
+    trap("unported: JS_DupContext")
+## Ported from quickjs.c:2717 JS_MarkContext.
+func js_mark_context(rt: Runtime*, ctx: Context*, mark_func: MarkFunc):
+    trap("unported: JS_MarkContext")
+## Ported from quickjs.c:2765 JS_FreeContext.
+func js_free_context(ctx: Context*):
+    trap("unported: JS_FreeContext")
+## Ported from quickjs.c:2836 JS_GetRuntime.
+func js_get_runtime(ctx: Context*) -> Runtime*:
+    trap("unported: JS_GetRuntime")
+## Ported from quickjs.c:2841 update_stack_limit.
+func update_stack_limit(rt: Runtime*):
+    trap("unported: update_stack_limit")
+## Ported from quickjs.c:2850 JS_SetMaxStackSize.
+func js_set_max_stack_size(rt: Runtime*, stack_size: usize):
+    trap("unported: JS_SetMaxStackSize")
+## Ported from quickjs.c:2856 JS_UpdateStackTop.
+func js_update_stack_top(rt: Runtime*):
+    trap("unported: JS_UpdateStackTop")
+## Ported from quickjs.c:2862 is_strict_mode.
+func is_strict_mode(ctx: Context*) -> bool:
+    trap("unported: is_strict_mode")

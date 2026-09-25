@@ -1,0 +1,205 @@
+#==============================================================================================
+#
+#   stub_r25_regexp_json_reflect - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:47700 js_get_regexp.
+func js_get_regexp(ctx: Context*, obj: Value, throw_error: bool) -> RegExp*!:
+    trap("unported: js_get_regexp")
+## Ported from quickjs.c:47714 js_is_regexp.
+func js_is_regexp(ctx: Context*, obj: Value) -> i32!:
+    trap("unported: js_is_regexp")
+## Ported from quickjs.c:47728 js_regexp_constructor.
+func js_regexp_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_constructor")
+## Ported from quickjs.c:47811 js_regexp_compile.
+func js_regexp_compile(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_compile")
+## Ported from quickjs.c:47855 js_regexp_get_source.
+func js_regexp_get_source(ctx: Context*, this_val: Value) -> Value!:
+    trap("unported: js_regexp_get_source")
+## Ported from quickjs.c:47921 js_regexp_get_flag.
+func js_regexp_get_flag(ctx: Context*, this_val: Value, mask: i32) -> Value!:
+    trap("unported: js_regexp_get_flag")
+## Ported from quickjs.c:47943 js_regexp_get_flags.
+func js_regexp_get_flags(ctx: Context*, this_val: Value) -> Value!:
+    trap("unported: js_regexp_get_flags")
+## Ported from quickjs.c:47975 js_regexp_toString.
+func js_regexp_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_toString")
+## Ported from quickjs.c:48000 lre_check_stack_overflow.
+func lre_check_stack_overflow(opaque: void*, alloca_size: usize) -> i32:
+    trap("unported: lre_check_stack_overflow")
+## Ported from quickjs.c:48006 lre_check_timeout.
+func lre_check_timeout(opaque: void*) -> i32:
+    trap("unported: lre_check_timeout")
+## Ported from quickjs.c:48014 lre_realloc.
+func lre_realloc(opaque: void*, ptr: void*, size: usize) -> void*:
+    trap("unported: lre_realloc")
+## Ported from quickjs.c:48021 js_regexp_escape.
+func js_regexp_escape(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_escape")
+## Ported from quickjs.c:48076 js_regexp_get_lastIndex.
+func js_regexp_get_last_index(ctx: Context*, plast_index: i64*, this_val: Value) -> i32:
+    trap("unported: js_regexp_get_lastIndex")
+## Ported from quickjs.c:48091 js_regexp_set_lastIndex.
+func js_regexp_set_last_index(ctx: Context*, this_val: Value, last_index: i32) -> i32!:
+    trap("unported: js_regexp_set_lastIndex")
+## Ported from quickjs.c:48108 js_regexp_exec.
+func js_regexp_exec(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_exec")
+## Ported from quickjs.c:48328 js_regexp_replace.
+func js_regexp_replace(ctx: Context*, this_val: Value, arg: Value, rep_val: Value) -> Value!:
+    trap("unported: js_regexp_replace")
+## Ported from quickjs.c:48444 JS_RegExpExec.
+func js_reg_exp_exec(ctx: Context*, r: Value, s: Value) -> Value!:
+    trap("unported: JS_RegExpExec")
+## Ported from quickjs.c:48465 js_regexp_test.
+func js_regexp_test(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_test")
+## Ported from quickjs.c:48479 js_regexp_Symbol_match.
+func js_regexp_symbol_match(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_Symbol_match")
+## Ported from quickjs.c:48570 js_regexp_string_iterator_finalizer.
+func js_regexp_string_iterator_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_regexp_string_iterator_finalizer")
+## Ported from quickjs.c:48581 js_regexp_string_iterator_mark.
+func js_regexp_string_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_regexp_string_iterator_mark")
+## Ported from quickjs.c:48592 js_regexp_string_iterator_next.
+func js_regexp_string_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: bool*, magic: i32) -> Value!:
+    trap("unported: js_regexp_string_iterator_next")
+## Ported from quickjs.c:48646 js_regexp_Symbol_matchAll.
+func js_regexp_symbol_match_all(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_Symbol_matchAll")
+## Ported from quickjs.c:48722 value_buffer_init.
+func value_buffer_init(ctx: Context*, b: ValueBuffer*) -> i32:
+    trap("unported: value_buffer_init")
+## Ported from quickjs.c:48732 value_buffer_free.
+func value_buffer_free(b: ValueBuffer*):
+    trap("unported: value_buffer_free")
+## Ported from quickjs.c:48742 value_buffer_append.
+func value_buffer_append(b: ValueBuffer*, val: Value) -> i32:
+    trap("unported: value_buffer_append")
+## Ported from quickjs.c:48774 find_property_regexp.
+func find_property_regexp(ppr: Property**, p: Object*, atom: Atom) -> ShapeProperty*?:
+    trap("unported: find_property_regexp")
+## Ported from quickjs.c:48791 check_regexp_getter.
+func check_regexp_getter(ctx: Context*, p: Object*, atom: Atom, func_: CFunction, magic: i32) -> bool:
+    trap("unported: check_regexp_getter")
+## Ported from quickjs.c:48809 js_is_standard_regexp.
+func js_is_standard_regexp(ctx: Context*, obj: Value) -> bool:
+    trap("unported: js_is_standard_regexp")
+## Ported from quickjs.c:48849 js_regexp_Symbol_replace.
+func js_regexp_symbol_replace(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_Symbol_replace")
+## Ported from quickjs.c:49044 js_regexp_Symbol_search.
+func js_regexp_symbol_search(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_Symbol_search")
+## Ported from quickjs.c:49102 js_regexp_Symbol_split.
+func js_regexp_symbol_split(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_regexp_Symbol_split")
+## Ported from quickjs.c:49261 JS_AddIntrinsicRegExpCompiler.
+func js_add_intrinsic_reg_exp_compiler(ctx: Context*):
+    trap("unported: JS_AddIntrinsicRegExpCompiler")
+## Ported from quickjs.c:49266 JS_AddIntrinsicRegExp.
+func js_add_intrinsic_reg_exp(ctx: Context*) -> i32!:
+    trap("unported: JS_AddIntrinsicRegExp")
+## Ported from quickjs.c:49319 json_parse_expect.
+func json_parse_expect(s: ParseState*, tok: i32) -> i32:
+    trap("unported: json_parse_expect")
+## Ported from quickjs.c:49357 json_parse_record_init_obj.
+func json_parse_record_init_obj(ctx: Context*, pr: JSONParseRecord*, val: Value):
+    trap("unported: json_parse_record_init_obj")
+## Ported from quickjs.c:49366 json_parse_record_init_array.
+func json_parse_record_init_array(ctx: Context*, pr: JSONParseRecord*, val: Value):
+    trap("unported: json_parse_record_init_array")
+## Ported from quickjs.c:49373 json_parse_record_init_primitive.
+func json_parse_record_init_primitive(ctx: Context*, pr: JSONParseRecord*, val: Value, source_pos: u32, source_len: u32):
+    trap("unported: json_parse_record_init_primitive")
+## Ported from quickjs.c:49381 json_parse_record_resize_hash.
+func json_parse_record_resize_hash(ctx: Context*, po: JSONParseRecordObject*, new_hash_size: u32) -> i32!:
+    trap("unported: json_parse_record_resize_hash")
+## Ported from quickjs.c:49405 json_parse_record_add.
+func json_parse_record_add(ctx: Context*, pr: JSONParseRecord*, key: Atom, psize: i32*) -> JSONParseRecord*?:
+    trap("unported: json_parse_record_add")
+## Ported from quickjs.c:49435 json_parse_record_find.
+func json_parse_record_find(pr: JSONParseRecord*, key: Atom) -> JSONParseRecord*?:
+    trap("unported: json_parse_record_find")
+## Ported from quickjs.c:49459 json_free_parse_record.
+func json_free_parse_record(ctx: Context*, pr: JSONParseRecord*):
+    trap("unported: json_free_parse_record")
+## Ported from quickjs.c:49484 json_parse_value.
+func json_parse_value(s: ParseState*, pr: JSONParseRecord*) -> Value!:
+    trap("unported: json_parse_value")
+## Ported from quickjs.c:49670 JS_ParseJSON3.
+func js_parse_json3(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*, flags: i32, pr: JSONParseRecord*) -> Value!:
+    trap("unported: JS_ParseJSON3")
+## Ported from quickjs.c:49696 JS_ParseJSON2.
+func js_parse_json2(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*, flags: i32) -> Value!:
+    trap("unported: JS_ParseJSON2")
+## Ported from quickjs.c:49702 JS_ParseJSON.
+func js_parse_json(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*) -> Value!:
+    trap("unported: JS_ParseJSON")
+## Ported from quickjs.c:49709 internalize_json_property.
+func internalize_json_property(ctx: Context*, holder: Value, name: Atom, reviver: Value, text_str: const u8*, pr: JSONParseRecord*) -> Value!:
+    trap("unported: internalize_json_property")
+## Ported from quickjs.c:49814 js_json_parse.
+func js_json_parse(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_json_parse")
+## Ported from quickjs.c:49867 js_json_isRawJSON.
+func js_json_is_raw_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_json_isRawJSON")
+## Ported from quickjs.c:49879 is_valid_raw_json_char.
+func is_valid_raw_json_char(c: i32) -> bool:
+    trap("unported: is_valid_raw_json_char")
+## Ported from quickjs.c:49887 js_json_rawJSON.
+func js_json_raw_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_json_rawJSON")
+## Ported from quickjs.c:49933 JS_ToQuotedString.
+func js_to_quoted_string(ctx: Context*, b: StringBuffer*, val1: Value) -> i32!:
+    trap("unported: JS_ToQuotedString")
+## Ported from quickjs.c:50001 js_json_check.
+func js_json_check(ctx: Context*, jsc: JSONStringifyContext*, holder: Value, val: Value, key: Value) -> Value!:
+    trap("unported: js_json_check")
+## Ported from quickjs.c:50059 js_json_to_str.
+func js_json_to_str(ctx: Context*, jsc: JSONStringifyContext*, holder: Value, val: Value, indent: Value) -> i32!:
+    trap("unported: js_json_to_str")
+## Ported from quickjs.c:50251 JS_JSONStringify.
+func js_json_stringify(ctx: Context*, obj: Value, replacer: Value, space0: Value) -> Value!:
+    trap("unported: JS_JSONStringify")
+## Ported from quickjs.c:50385 js_json_stringify.
+func js_json_stringify_internal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_json_stringify")
+## Ported from quickjs.c:50404 JS_AddIntrinsicJSON.
+func js_add_intrinsic_json(ctx: Context*) -> i32:
+    trap("unported: JS_AddIntrinsicJSON")
+## Ported from quickjs.c:50412 js_reflect_apply.
+func js_reflect_apply(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_apply")
+## Ported from quickjs.c:50418 js_reflect_construct.
+func js_reflect_construct(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_construct")
+## Ported from quickjs.c:50442 js_reflect_deleteProperty.
+func js_reflect_delete_property(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_deleteProperty")
+## Ported from quickjs.c:50463 js_reflect_get.
+func js_reflect_get(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_get")
+## Ported from quickjs.c:50486 js_reflect_has.
+func js_reflect_has(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_has")
+## Ported from quickjs.c:50508 js_reflect_set.
+func js_reflect_set(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_set")
+## Ported from quickjs.c:50536 js_reflect_setPrototypeOf.
+func js_reflect_set_prototype_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_setPrototypeOf")
+## Ported from quickjs.c:50547 js_reflect_ownKeys.
+func js_reflect_own_keys(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_reflect_ownKeys")

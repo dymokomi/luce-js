@@ -1,0 +1,172 @@
+#==============================================================================================
+#
+#   stub_r01_malloc_runtime - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:1453 get_block_size_index.
+func get_block_size_index(size: usize) -> i32:
+    trap("unported: get_block_size_index")
+## Ported from quickjs.c:1468 get_zero_size_block.
+func get_zero_size_block(s: MallocContext*) -> MallocBlockHeader*:
+    trap("unported: get_zero_size_block")
+## Ported from quickjs.c:1473 js_malloc_init.
+func js_malloc_init(s: MallocContext*):
+    trap("unported: js_malloc_init")
+## Ported from quickjs.c:1487 get_arena_block.
+func get_arena_block(ar: MallocArena*, idx: u32, block_size: u32) -> void*:
+    trap("unported: get_arena_block")
+## Ported from quickjs.c:1492 js_rc.
+func js_rc(ptr: void*) -> MallocBlockHeader*:
+    trap("unported: js_rc")
+## Ported from quickjs.c:1497 js_malloc_new_arena.
+func js_malloc_new_arena(s: MallocContext*, block_size_idx: i32) -> MallocArena*?:
+    trap("unported: js_malloc_new_arena")
+## Ported from quickjs.c:1535 js_malloc_large.
+func js_malloc_large(s: MallocContext*, size: usize) -> void*?:
+    trap("unported: js_malloc_large")
+## Ported from quickjs.c:1549 __js_malloc.
+func js_malloc_raw(s: MallocContext*, size: usize) -> void*?:
+    trap("unported: __js_malloc")
+## Ported from quickjs.c:1595 __js_free.
+func js_free_raw(s: MallocContext*, ptr: void*):
+    trap("unported: __js_free")
+## Ported from quickjs.c:1636 __js_realloc.
+func js_realloc_raw(s: MallocContext*, ptr: void*, size: usize) -> void*?:
+    trap("unported: __js_realloc")
+## Ported from quickjs.c:1699 __js_malloc_usable_size.
+func js_malloc_usable_size_raw(s: MallocContext*, ptr: const u8*) -> usize:
+    trap("unported: __js_malloc_usable_size")
+## Ported from quickjs.c:1727 js_malloc_dump_arenas.
+func js_malloc_dump_arenas(s: MallocContext*):
+    trap("unported: js_malloc_dump_arenas")
+## Ported from quickjs.c:1749 js_malloc_iter.
+func js_malloc_iter(s: MallocContext*, iter_func: MallocIterFunc, iter_opaque: void*):
+    trap("unported: js_malloc_iter")
+## Ported from quickjs.c:1780 js_trigger_gc.
+func js_trigger_gc(rt: Runtime*, size: usize):
+    trap("unported: js_trigger_gc")
+## Ported from quickjs.c:1800 js_malloc_rt.
+func js_malloc_rt(rt: Runtime*, size: usize) -> void*:
+    trap("unported: js_malloc_rt")
+## Ported from quickjs.c:1805 js_free_rt.
+func js_free_rt(rt: Runtime*, ptr: void*):
+    trap("unported: js_free_rt")
+## Ported from quickjs.c:1810 js_realloc_rt.
+func js_realloc_rt(rt: Runtime*, ptr: void*, size: usize) -> void*:
+    trap("unported: js_realloc_rt")
+## Ported from quickjs.c:1815 js_malloc_usable_size_rt.
+func js_malloc_usable_size_rt(rt: Runtime*, ptr: const void*) -> usize:
+    trap("unported: js_malloc_usable_size_rt")
+## Ported from quickjs.c:1820 js_mallocz_rt.
+func js_mallocz_rt(rt: Runtime*, size: usize) -> void*?:
+    trap("unported: js_mallocz_rt")
+## Ported from quickjs.c:1830 js_malloc.
+func js_malloc(ctx: Context*, size: usize) -> void*!:
+    trap("unported: js_malloc")
+## Ported from quickjs.c:1842 js_mallocz.
+func js_mallocz(ctx: Context*, size: usize) -> void*!:
+    trap("unported: js_mallocz")
+## Ported from quickjs.c:1853 js_free.
+func js_free(ctx: Context*, ptr: void*):
+    trap("unported: js_free")
+## Ported from quickjs.c:1859 js_realloc.
+func js_realloc(ctx: Context*, ptr: void*, size: usize) -> void*!:
+    trap("unported: js_realloc")
+## Ported from quickjs.c:1871 js_realloc2.
+func js_realloc2(ctx: Context*, ptr: void*, size: usize, pslack: usize*) -> void*!:
+    trap("unported: js_realloc2")
+## Ported from quickjs.c:1886 js_malloc_usable_size.
+func js_malloc_usable_size(ctx: Context*, ptr: const void*) -> usize:
+    trap("unported: js_malloc_usable_size")
+## Ported from quickjs.c:1892 js_strndup.
+func js_strndup(ctx: Context*, s: const u8*, n: usize) -> u8*!:
+    trap("unported: js_strndup")
+## Ported from quickjs.c:1903 js_strdup.
+func js_strdup(ctx: Context*, str_: const u8*) -> u8*:
+    trap("unported: js_strdup")
+## Ported from quickjs.c:1908 js_realloc_array.
+func js_realloc_array(ctx: Context*, parray: void**, elem_size: i32, psize: i32*, req_size: i32) -> i32!:
+    trap("unported: js_realloc_array")
+## Ported from quickjs.c:1926 js_resize_array.
+func js_resize_array(ctx: Context*, parray: void**, elem_size: i32, psize: i32*, req_size: i32) -> i32:
+    trap("unported: js_resize_array")
+## Ported from quickjs.c:1935 js_dbuf_init.
+func js_dbuf_init(ctx: Context*, s: cutils.DynBuf*):
+    trap("unported: js_dbuf_init")
+## Ported from quickjs.c:1940 js_realloc_bytecode_rt.
+func js_realloc_bytecode_rt(opaque: void*, ptr: void*, size: usize) -> void*?:
+    trap("unported: js_realloc_bytecode_rt")
+## Ported from quickjs.c:1952 js_dbuf_bytecode_init.
+func js_dbuf_bytecode_init(ctx: Context*, s: cutils.DynBuf*):
+    trap("unported: js_dbuf_bytecode_init")
+## Ported from quickjs.c:2024 init_class_range.
+func init_class_range(rt: Runtime*, tab: ClassShortDef*, start: i32, count: i32) -> i32:
+    trap("unported: init_class_range")
+## Ported from quickjs.c:2043 js_get_stack_pointer.
+func js_get_stack_pointer() -> usize:
+    trap("unported: js_get_stack_pointer")
+## Ported from quickjs.c:2048 js_check_stack_overflow.
+func js_check_stack_overflow(rt: Runtime*, alloca_size: usize) -> bool:
+    trap("unported: js_check_stack_overflow")
+## Ported from quickjs.c:2067 JS_NewRuntime2.
+func js_new_runtime2(mf: const MallocFunctions*, opaque: void*) -> Runtime*?:
+    trap("unported: JS_NewRuntime2")
+## Ported from quickjs.c:2126 JS_GetRuntimeOpaque.
+func js_get_runtime_opaque(rt: Runtime*) -> void*:
+    trap("unported: JS_GetRuntimeOpaque")
+## Ported from quickjs.c:2131 JS_SetRuntimeOpaque.
+func js_set_runtime_opaque(rt: Runtime*, opaque: void*):
+    trap("unported: JS_SetRuntimeOpaque")
+## Ported from quickjs.c:2137 js_def_malloc_usable_size.
+func js_def_malloc_usable_size(ptr: const void*) -> usize:
+    trap("unported: js_def_malloc_usable_size")
+## Ported from quickjs.c:2153 js_def_malloc.
+func js_def_malloc(s: MallocState*, size: usize) -> void*?:
+    trap("unported: js_def_malloc")
+## Ported from quickjs.c:2172 js_def_free.
+func js_def_free(s: MallocState*, ptr: void*):
+    trap("unported: js_def_free")
+## Ported from quickjs.c:2182 js_def_realloc.
+func js_def_realloc(s: MallocState*, ptr: void*, size: usize) -> void*?:
+    trap("unported: js_def_realloc")
+## Ported from quickjs.c:2216 JS_NewRuntime.
+func js_new_runtime() -> Runtime*:
+    trap("unported: JS_NewRuntime")
+## Ported from quickjs.c:2221 JS_SetMemoryLimit.
+func js_set_memory_limit(rt: Runtime*, limit: usize):
+    trap("unported: JS_SetMemoryLimit")
+## Ported from quickjs.c:2227 JS_SetGCThreshold.
+func js_set_gc_threshold(rt: Runtime*, gc_threshold: usize):
+    trap("unported: JS_SetGCThreshold")
+## Ported from quickjs.c:2236 JS_SetInterruptHandler.
+func js_set_interrupt_handler(rt: Runtime*, cb: InterruptHandler, opaque: void*):
+    trap("unported: JS_SetInterruptHandler")
+## Ported from quickjs.c:2242 JS_SetCanBlock.
+func js_set_can_block(rt: Runtime*, can_block: bool):
+    trap("unported: JS_SetCanBlock")
+## Ported from quickjs.c:2247 JS_SetSharedArrayBufferFunctions.
+func js_set_shared_array_buffer_functions(rt: Runtime*, sf: const SharedArrayBufferFunctions*):
+    trap("unported: JS_SetSharedArrayBufferFunctions")
+## Ported from quickjs.c:2253 JS_SetStripInfo.
+func js_set_strip_info(rt: Runtime*, flags: i32):
+    trap("unported: JS_SetStripInfo")
+## Ported from quickjs.c:2258 JS_GetStripInfo.
+func js_get_strip_info(rt: Runtime*) -> i32:
+    trap("unported: JS_GetStripInfo")
+## Ported from quickjs.c:2263 JS_EnqueueJob2.
+func js_enqueue_job2(ctx: Context*, job_func: JobFunc, argc: i32, argv: Value*, no_exception: bool) -> i32!:
+    trap("unported: JS_EnqueueJob2")
+## Ported from quickjs.c:2287 JS_EnqueueJob.
+func js_enqueue_job(ctx: Context*, job_func: JobFunc, argc: i32, argv: Value*) -> i32:
+    trap("unported: JS_EnqueueJob")
+## Ported from quickjs.c:2293 JS_IsJobPending.
+func js_is_job_pending(rt: Runtime*) -> bool:
+    trap("unported: JS_IsJobPending")
+## Ported from quickjs.c:2303 JS_ExecutePendingJob.
+func js_execute_pending_job(rt: Runtime*, pctx: Context**) -> i32:
+    trap("unported: JS_ExecutePendingJob")

@@ -1,0 +1,193 @@
+#==============================================================================================
+#
+#   dynbuf - The dynamic buffer package: a growable byte buffer with a pluggable realloc
+#
+#   DESCRIPTION:
+#       Port of QuickJS cutils.h "DynBuf" (lines 253-328) and cutils.c "Dynamic buffer
+#       package" (lines 82-212). `dbuf_printf` takes a formatted string (`fmt`) instead of a
+#       printf format: DynBuf is an `io.Writer`, and the text is written into it directly.
+#
+#==============================================================================================
+
+# mark: Types ==================================================================================
+
+## The reallocation hook of a DynBuf: `(opaque, ptr, size)`, C `realloc` semantics; a size of
+## zero frees. XXX: should take an extra argument to pass slack information to the caller.
+pub type DynBufReallocFunc = func(void*?, void*?, usize) -> void*?
+
+## A growable byte buffer. `buf[0..<size]` holds the bytes; `error` is set once an allocation
+## failed and every later growth then fails. It is also an `io.Writer`, which is how
+## `dbuf_printf` formats into it.
+pub struct DynBuf: Writer:
+    ## The storage, none until the first growth.
+    pub var buf: u8*?
+    ## The number of bytes written.
+    pub var size: usize
+    ## The capacity of `buf`.
+    pub var allocated_size: usize
+    ## True if a memory allocation error occurred.
+    pub var error: bool
+    ## The allocator hook; `dbuf_init2` sets it.
+    pub var realloc_func: DynBufReallocFunc?
+    ## For realloc_func.
+    pub var opaque: void*?
+
+    ## Append `data` (the `io.Writer` requirement); fails with `memory.exhausted` when the
+    ## buffer cannot grow.
+    pub mutating func write(data: const u8[]) -> usize!:
+        # workaround: compiler-issues/mutating_self_type (`self` is not `Self*`)
+        if dbuf_put(&self, data.data, data.length) != 0:
+            error(memory.exhausted, "DynBuf: out of memory")
+        return data.length
+
+# `u8*?` does not convert to `void*?` implicitly or by a cast.
+# workaround: compiler-issues/nullable_pointer_cast
+func nullable_void(p: u8*?) -> void*?:
+    if let q = p:
+        return q
+    return none
+
+# The storage when the capacity check guarantees there is some.
+func dbuf_storage(s: const DynBuf*) -> u8*:
+    return s.buf else trap("DynBuf: no storage")
+
+# mark: Initialisation =========================================================================
+
+func dbuf_default_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    return realloc(ptr, size)
+
+## Initialise `s` empty, growing with `realloc_func(opaque, ...)`, or C `realloc` when none.
+pub func dbuf_init2(s: DynBuf*, opaque: void*?, realloc_func: DynBufReallocFunc?):
+    *s = DynBuf()
+    s.opaque = opaque
+    s.realloc_func = realloc_func else dbuf_default_realloc
+
+## Initialise `s` empty, growing with C `realloc`.
+pub func dbuf_init(s: DynBuf*):
+    dbuf_init2(s, none, none)
+
+## Try to allocate 'len' more bytes. return < 0 if error
+pub func dbuf_claim(s: DynBuf*, len: usize) -> i32:
+    var new_size = s.size +% len
+    if new_size < len:
+        return -1 # overflow case
+    if new_size > s.allocated_size:
+        if s.error:
+            return -1
+        let size = s.allocated_size +% (s.allocated_size // 2)
+        if size < s.allocated_size:
+            return -1 # overflow case
+        if size > new_size:
+            new_size = size
+        let realloc_func = s.realloc_func else trap("DynBuf: not initialised")
+        if let new_buf = realloc_func(s.opaque, nullable_void(s.buf), new_size):
+            s.buf = (u8*)new_buf
+            s.allocated_size = new_size
+        else:
+            s.error = true
+            return -1
+    return 0
+
+# mark: Appending ==============================================================================
+
+## Append `len` bytes from `data`; 0, or -1 when the buffer cannot grow.
+pub func dbuf_put(s: DynBuf*, data: const u8*, len: usize) -> i32:
+    if (s.allocated_size - s.size) < len:
+        if dbuf_claim(s, len) != 0:
+            return -1
+    if len != 0:
+        memcpy_no_ub(dbuf_storage(s) + s.size, data, len)
+    s.size += len
+    return 0
+
+## Append a copy of `len` bytes already in the buffer at `offset`; 0 or -1.
+pub func dbuf_put_self(s: DynBuf*, offset: usize, len: usize) -> i32:
+    if (s.allocated_size - s.size) < len:
+        if dbuf_claim(s, len) != 0:
+            return -1
+    if len != 0:
+        let b = dbuf_storage(s)
+        discard(memcpy(b + s.size, b + offset, len))
+    s.size += len
+    return 0
+
+## The slow path of `dbuf_putc` (C `__dbuf_putc`).
+pub func dbuf_putc_raw(s: DynBuf*, c: u8) -> i32:
+    return dbuf_put(s, &c, 1)
+
+## The slow path of `dbuf_put_u16` (C `__dbuf_put_u16`).
+pub func dbuf_put_u16_raw(s: DynBuf*, val: u16) -> i32:
+    return dbuf_put(s, (const u8*)&val, 2)
+
+## The slow path of `dbuf_put_u32` (C `__dbuf_put_u32`).
+pub func dbuf_put_u32_raw(s: DynBuf*, val: u32) -> i32:
+    return dbuf_put(s, (const u8*)&val, 4)
+
+## The slow path of `dbuf_put_u64` (C `__dbuf_put_u64`).
+pub func dbuf_put_u64_raw(s: DynBuf*, val: u64) -> i32:
+    return dbuf_put(s, (const u8*)&val, 8)
+
+## Append the bytes of `text` (C takes a NUL-terminated string).
+pub func dbuf_putstr(s: DynBuf*, text: str) -> i32:
+    return dbuf_put(s, text.bytes.data, text.length)
+
+## Append one byte; 0 or -1.
+pub func dbuf_putc(s: DynBuf*, val: u8) -> i32:
+    if (s.allocated_size - s.size) < 1:
+        return dbuf_putc_raw(s, val)
+    else:
+        dbuf_storage(s)[s.size] = val
+        s.size += 1
+        return 0
+
+## Append a host-order `u16`; 0 or -1.
+pub func dbuf_put_u16(s: DynBuf*, val: u16) -> i32:
+    if (s.allocated_size - s.size) < 2:
+        return dbuf_put_u16_raw(s, val)
+    else:
+        put_u16(dbuf_storage(s) + s.size, val)
+        s.size += 2
+        return 0
+
+## Append a host-order `u32`; 0 or -1.
+pub func dbuf_put_u32(s: DynBuf*, val: u32) -> i32:
+    if (s.allocated_size - s.size) < 4:
+        return dbuf_put_u32_raw(s, val)
+    else:
+        put_u32(dbuf_storage(s) + s.size, val)
+        s.size += 4
+        return 0
+
+## Append a host-order `u64`; 0 or -1.
+pub func dbuf_put_u64(s: DynBuf*, val: u64) -> i32:
+    if (s.allocated_size - s.size) < 8:
+        return dbuf_put_u64_raw(s, val)
+    else:
+        put_u64(dbuf_storage(s) + s.size, val)
+        s.size += 8
+        return 0
+
+## Append formatted text, `dbuf_printf(&b, f":{line}:{col}")`; 0, or -1 when the buffer
+## cannot grow (the text may then be partly written, and `error` is set).
+pub func dbuf_printf(s: DynBuf*, text: fmt) -> i32:
+    s.write(text) catch failure:
+        return -1
+    return 0
+
+# mark: Release and errors =====================================================================
+
+## Release the storage and reset `s` to all zeros. We test s.buf as a fail safe to avoid
+## crashing if dbuf_free() is called twice.
+pub func dbuf_free(s: DynBuf*):
+    if let b = s.buf:
+        let realloc_func = s.realloc_func else trap("DynBuf: not initialised")
+        discard(realloc_func(s.opaque, b, 0))
+    *s = DynBuf()
+
+## Whether an allocation of `s` has failed.
+pub func dbuf_error(s: const DynBuf*) -> bool:
+    return s.error
+
+## Mark `s` as failed.
+pub func dbuf_set_error(s: DynBuf*):
+    s.error = true

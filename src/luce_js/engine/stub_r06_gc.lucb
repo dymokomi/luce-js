@@ -1,0 +1,73 @@
+#==============================================================================================
+#
+#   stub_r06_gc - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:6510 gc_remove_weak_objects.
+func gc_remove_weak_objects(rt: Runtime*):
+    trap("unported: gc_remove_weak_objects")
+## Ported from quickjs.c:6540 add_gc_object.
+func add_gc_object(rt: Runtime*, h: GCObjectHeader*, type_: GCObjectType):
+    trap("unported: add_gc_object")
+## Ported from quickjs.c:6548 remove_gc_object.
+func remove_gc_object(h: GCObjectHeader*):
+    trap("unported: remove_gc_object")
+## Ported from quickjs.c:6553 JS_MarkValue.
+func js_mark_value(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: JS_MarkValue")
+## Ported from quickjs.c:6568 mark_children.
+func mark_children(rt: Runtime*, gp: GCObjectHeader*, mark_func: MarkFunc):
+    trap("unported: mark_children")
+## Ported from quickjs.c:6687 gc_decref_child.
+func gc_decref_child(rt: Runtime*, p: GCObjectHeader*):
+    trap("unported: gc_decref_child")
+## Ported from quickjs.c:6697 gc_decref.
+func gc_decref(rt: Runtime*):
+    trap("unported: gc_decref")
+## Ported from quickjs.c:6719 gc_scan_incref_child.
+func gc_scan_incref_child(rt: Runtime*, p: GCObjectHeader*):
+    trap("unported: gc_scan_incref_child")
+## Ported from quickjs.c:6731 gc_scan_incref_child2.
+func gc_scan_incref_child2(rt: Runtime*, p: GCObjectHeader*):
+    trap("unported: gc_scan_incref_child2")
+## Ported from quickjs.c:6736 gc_scan.
+func gc_scan(rt: Runtime*):
+    trap("unported: gc_scan")
+## Ported from quickjs.c:6756 gc_free_cycles.
+func gc_free_cycles(rt: Runtime*):
+    trap("unported: gc_free_cycles")
+## Ported from quickjs.c:6815 JS_RunGCInternal.
+func js_run_gc_internal(rt: Runtime*, remove_weak_objects: bool):
+    trap("unported: JS_RunGCInternal")
+## Ported from quickjs.c:6835 JS_RunGC.
+func js_run_gc(rt: Runtime*):
+    trap("unported: JS_RunGC")
+## Ported from quickjs.c:6843 JS_IsLiveObject.
+func js_is_live_object(rt: Runtime*, obj: Value) -> bool:
+    trap("unported: JS_IsLiveObject")
+## Ported from quickjs.c:6867 compute_jsstring_size.
+func compute_jsstring_size(str_: String*, hp: MemoryUsageHelper*):
+    trap("unported: compute_jsstring_size")
+## Ported from quickjs.c:6877 compute_bytecode_size.
+func compute_bytecode_size(b: FunctionBytecode*, hp: MemoryUsageHelper*):
+    trap("unported: compute_bytecode_size")
+## Ported from quickjs.c:6916 compute_value_size.
+func compute_value_size(val: Value, hp: MemoryUsageHelper*):
+    trap("unported: compute_value_size")
+## Ported from quickjs.c:6928 JS_ComputeMemoryUsage.
+func js_compute_memory_usage(rt: Runtime*, s: MemoryUsage*):
+    trap("unported: JS_ComputeMemoryUsage")
+## Ported from quickjs.c:7224 JS_DumpMemoryUsage.
+func js_dump_memory_usage(fp: void*, s: const MemoryUsage*, rt: Runtime*):
+    trap("unported: JS_DumpMemoryUsage")
+## Ported from quickjs.c:7349 JS_GetGlobalObject.
+func js_get_global_object(ctx: Context*) -> Value!:
+    trap("unported: JS_GetGlobalObject")
+## Ported from quickjs.c:7355 JS_Throw.
+func js_throw(ctx: Context*, obj: Value) -> never!:
+    trap("unported: JS_Throw")

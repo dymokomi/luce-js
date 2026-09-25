@@ -1,0 +1,197 @@
+#==============================================================================================
+#
+#   convert - Radix tables, digit output and scaling by powers of the radix
+#
+#   DESCRIPTION:
+#       Port of QuickJS dtoa.c lines 723-1011: the per-radix tables, output_digits, mul_pow,
+#       mul_pow_round, round_to_d and mul_pow_round_to_d. (The table generator under
+#       `#if 0` is not ported.)
+#
+#==============================================================================================
+
+# mark: Radix tables ===========================================================================
+
+let digits_per_limb_table: u8[35] = [
+    32, 20, 16, 13, 12, 11, 10, 10, 9, 9, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6,
+]
+
+let radix_base_table: u32[35] = [
+    0x00000000, 0xcfd41b91, 0x00000000, 0x48c27395,
+    0x81bf1000, 0x75db9c97, 0x40000000, 0xcfd41b91,
+    0x3b9aca00, 0x8c8b6d2b, 0x19a10000, 0x309f1021,
+    0x57f6c100, 0x98c29b81, 0x00000000, 0x18754571,
+    0x247dbc80, 0x3547667b, 0x4c4b4000, 0x6b5a6e1d,
+    0x94ace180, 0xcaf18367, 0x0b640000, 0x0e8d4a51,
+    0x1269ae40, 0x17179149, 0x1cb91000, 0x23744899,
+    0x2b73a840, 0x34e63b41, 0x40000000, 0x4cfa3cc1,
+    0x5c13d840, 0x6d91b519, 0x81bf1000,
+]
+
+# XXX: remove the table ?
+let dtoa_max_digits_table: u8[35] = [
+    54, 35, 28, 24, 22, 20, 19, 18, 17, 17, 16, 16, 15, 15, 15, 14, 14, 14, 14, 14, 13, 13,
+    13, 13, 13, 13, 13, 12, 12, 12, 12, 12, 12, 12, 12,
+]
+
+# we limit the maximum number of significant digits for atod to about 128 bits of precision
+# for non power of two bases. The only requirement for Javascript is at least 20 digits in
+# base 10. For power of two bases, we do an exact rounding in all the cases.
+let atod_max_digits_table: u8[35] = [
+    64, 80, 32, 55, 49, 45, 21, 40, 38, 37, 35, 34, 33, 32, 16, 31, 30, 30, 29, 29, 28, 28,
+    27, 27, 27, 26, 26, 26, 26, 25, 12, 25, 25, 24, 24,
+]
+
+# if abs(d) >= B^max_exponent, it is an overflow
+let max_exponent: i16[35] = [
+    1024, 647, 512, 442, 397, 365, 342, 324,
+    309, 297, 286, 277, 269, 263, 256, 251,
+    246, 242, 237, 234, 230, 227, 224, 221,
+    218, 216, 214, 211, 209, 207, 205, 203,
+    202, 200, 199,
+]
+
+# if abs(d) <= B^min_exponent, it is an underflow
+let min_exponent: i16[35] = [
+    -1075, -679, -538, -463, -416, -383, -359, -340,
+    -324, -311, -300, -291, -283, -276, -269, -263,
+    -258, -254, -249, -245, -242, -238, -235, -232,
+    -229, -227, -224, -222, -220, -217, -215, -214,
+    -212, -210, -208,
+]
+
+# mark: Digit output ===========================================================================
+
+# n_digits >= 1. 0 <= dot_pos <= n_digits. If dot_pos == n_digits, the dot is not
+# displayed. 'a' is modified.
+func output_digits(buf: u8*, a: Mpb*, radix: i32, n_digits1: i32, dot_pos: i32) -> i32:
+    let tab = mpb_tab(a)
+    var n_digits = n_digits1
+    var radix_bits: i32
+    if (radix & (radix - 1)) == 0:
+        # radix = 2^radix_bits
+        radix_bits = 31 - cutils.clz32((u32)radix)
+    else:
+        radix_bits = 0
+    let digits_per_limb = (i32)digits_per_limb_table[(usize)(radix - 2)]
+    if radix_bits != 0:
+        while true:
+            let n = cutils.min_int(n_digits, digits_per_limb)
+            n_digits -= n
+            u64toa_bin_len(buf + (usize)n_digits, tab[0], (u32)radix_bits, n)
+            if n_digits == 0:
+                break
+            mpb_shr_round(a, digits_per_limb * radix_bits, .rndz)
+    else:
+        while n_digits != 0:
+            let n = cutils.min_int(n_digits, digits_per_limb)
+            n_digits -= n
+            let r = mp_div1(tab, tab, (u32)a.len, radix_base_table[(usize)(radix - 2)], 0)
+            mpb_renorm(a)
+            limb_to_a(buf + (usize)n_digits, r, (u32)radix, n)
+
+    # add the dot
+    var len = n_digits1
+    if dot_pos != n_digits1:
+        discard(cutils.memmove(buf + (usize)dot_pos + 1, buf + (usize)dot_pos,
+                               (usize)(n_digits1 - dot_pos)))
+        buf[(usize)dot_pos] = '.'
+        len += 1
+    return len
+
+# mark: Scaling ================================================================================
+
+# return (a, e_offset) such that a = a * (radix1*2^radix_shift)^f * 2^-e_offset. 'f' can
+# be negative.
+func mul_pow(a: Mpb*, radix1: i32, radix_shift: i32, f0: i32, is_int: bool, e: i32) -> i32:
+    let tab = mpb_tab(a)
+    var f = f0
+    var e_offset = -f * radix_shift
+    if radix1 != 1:
+        let d = (i32)digits_per_limb_table[(usize)(radix1 - 2)]
+        if f >= 0:
+            var b: u32 = 0
+            var n0: i32 = 0
+            while f != 0:
+                let n = cutils.min_int(f, d)
+                if n != n0:
+                    b = (u32)pow_ui((u32)radix1, (u32)n)
+                    n0 = n
+                let h = mp_mul1(tab, tab, (u32)a.len, b, 0)
+                if h != 0:
+                    tab[(usize)a.len] = h
+                    a.len += 1
+                f -= n
+        else:
+            f = -f
+            let l = (f + d - 1) // d # high bound for the number of limbs (XXX: make it better)
+            e_offset += l * limb_bits
+            var extra_bits: i32
+            if not is_int:
+                # at least 'e' bits are needed in the final result for rounding
+                extra_bits = cutils.max_int(e - mpb_floor_log2(a), 0)
+            else:
+                # at least two extra bits are needed in the final result for rounding
+                extra_bits = cutils.max_int(2 + e - e_offset, 0)
+            e_offset += extra_bits
+            mpb_shr_round(a, -(l * limb_bits + extra_bits), .rndz)
+
+            var b: u32 = 0
+            var b_inv: u32 = 0
+            var shift: i32 = 0
+            var n0: i32 = 0
+            var rem: u32 = 0
+            while f != 0:
+                let n = cutils.min_int(f, d)
+                if n != n0:
+                    b = pow_ui_inv(&b_inv, &shift, (u32)radix1, (u32)n)
+                    n0 = n
+                let r = mp_div1norm(tab, tab, (u32)a.len, b, 0, b_inv, shift)
+                rem |= r
+                mpb_renorm(a)
+                f -= n
+            # if the remainder is non zero, use it for rounding
+            tab[0] |= (u32)(rem != 0)
+    return e_offset
+
+# tmp1 = round(m*2^e*radix^f). 'tmp0' is a temporary storage
+func mul_pow_round(tmp1: Mpb*, m: u64, e: i32, radix1: i32, radix_shift: i32, f: i32,
+                   rnd_mode: RndMode):
+    mpb_set_u64(tmp1, m)
+    let e_offset = mul_pow(tmp1, radix1, radix_shift, f, true, e)
+    mpb_shr_round(tmp1, -e + e_offset, rnd_mode)
+
+# return round(a*2^e_offset) rounded as a float64. 'a' is modified
+func round_to_d(pe: i32*, a: Mpb*, e_offset: i32, rnd_mode: RndMode) -> u64:
+    var e: i32
+    var m: u64
+    if mpb_tab(a)[0] == 0 and a.len == 1:
+        # zero result
+        m = 0
+        e = 0 # don't care
+    else:
+        e = mpb_floor_log2(a) + 1 - e_offset
+        let prec1: i32 = 53
+        let e_min: i32 = -1021
+        var prec: i32
+        if e < e_min:
+            # subnormal result or zero
+            prec = prec1 - (e_min - e)
+        else:
+            prec = prec1
+        mpb_shr_round(a, e + e_offset - prec, rnd_mode)
+        m = mpb_get_u64(a)
+        m = m << (u64)(53 - prec)
+        # mantissa overflow due to rounding
+        if m >= (u64)1 << 53:
+            m = m >> 1
+            e += 1
+    *pe = e
+    return m
+
+# return (m, e) such that m*2^(e-53) = round(a * radix^f) with 2^52 <= m < 2^53 or m = 0.
+# 'a' is modified.
+func mul_pow_round_to_d(pe: i32*, a: Mpb*, radix1: i32, radix_shift: i32, f: i32,
+                        rnd_mode: RndMode) -> u64:
+    let e_offset = mul_pow(a, radix1, radix_shift, f, false, 55)
+    return round_to_d(pe, a, e_offset, rnd_mode)

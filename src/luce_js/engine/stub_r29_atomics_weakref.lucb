@@ -1,0 +1,64 @@
+#==============================================================================================
+#
+#   stub_r29_atomics_weakref - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:60820 cpu_pause.
+func cpu_pause():
+    trap("unported: cpu_pause")
+## Ported from quickjs.c:60838 js_atomics_pause.
+func js_atomics_pause(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_atomics_pause")
+## Ported from quickjs.c:60862 js_atomics_wait.
+func js_atomics_wait(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_atomics_wait")
+## Ported from quickjs.c:60950 js_atomics_notify.
+func js_atomics_notify(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_atomics_notify")
+## Ported from quickjs.c:61023 JS_AddIntrinsicAtomics.
+func js_add_intrinsic_atomics(ctx: Context*) -> i32:
+    trap("unported: JS_AddIntrinsicAtomics")
+## Ported from quickjs.c:61031 JS_AddIntrinsicTypedArrays.
+func js_add_intrinsic_typed_arrays(ctx: Context*) -> i32!:
+    trap("unported: JS_AddIntrinsicTypedArrays")
+## Ported from quickjs.c:61140 js_weakref_finalizer.
+func js_weakref_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_weakref_finalizer")
+## Ported from quickjs.c:61150 weakref_delete_weakref.
+func weakref_delete_weakref(rt: Runtime*, wh: WeakRefHeader*):
+    trap("unported: weakref_delete_weakref")
+## Ported from quickjs.c:61160 js_weakref_constructor.
+func js_weakref_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_weakref_constructor")
+## Ported from quickjs.c:61186 js_weakref_deref.
+func js_weakref_deref(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_weakref_deref")
+## Ported from quickjs.c:61220 js_finrec_finalizer.
+func js_finrec_finalizer(rt: Runtime*, val: Value):
+    trap("unported: js_finrec_finalizer")
+## Ported from quickjs.c:61239 js_finrec_mark.
+func js_finrec_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    trap("unported: js_finrec_mark")
+## Ported from quickjs.c:61254 js_finrec_job.
+func js_finrec_job(ctx: Context*, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_finrec_job")
+## Ported from quickjs.c:61259 finrec_delete_weakref.
+func finrec_delete_weakref(rt: Runtime*, wh: WeakRefHeader*):
+    trap("unported: finrec_delete_weakref")
+## Ported from quickjs.c:61288 js_finrec_constructor.
+func js_finrec_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_finrec_constructor")
+## Ported from quickjs.c:61318 js_finrec_register.
+func js_finrec_register(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_finrec_register")
+## Ported from quickjs.c:61348 js_finrec_unregister.
+func js_finrec_unregister(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    trap("unported: js_finrec_unregister")
+## Ported from quickjs.c:61386 JS_AddIntrinsicWeakRef.
+func js_add_intrinsic_weak_ref(ctx: Context*) -> i32!:
+    trap("unported: JS_AddIntrinsicWeakRef")

@@ -1,0 +1,170 @@
+#==============================================================================================
+#
+#   stub_types - Not yet ported: placeholders for types declared inside regions
+#
+#   DESCRIPTION:
+#       Each placeholder is deleted when the fragment that ports its region declares the
+#       real type. The file is deleted when it is empty.
+#
+#==============================================================================================
+
+struct ArrayIteratorData:
+    var unported: i32
+
+struct AsyncFromSyncIteratorData:
+    var unported: i32
+
+struct AsyncGeneratorData:
+    var unported: i32
+
+struct BCReaderState:
+    var unported: i32
+
+struct BCWriterState:
+    var unported: i32
+
+struct BlockEnv:
+    var unported: i32
+
+struct CFunctionDataRecord:
+    var unported: i32
+
+struct ClassFieldsDef:
+    var unported: i32
+
+struct ClassShortDef:
+    var unported: i32
+
+struct CodeContext:
+    var unported: i32
+
+struct ExecModuleList:
+    var unported: i32
+
+struct FunctionDef:
+    var unported: i32
+
+struct GeneratorData:
+    var unported: i32
+
+struct GetExportNamesState:
+    var unported: i32
+
+struct GetLineColCache:
+    var unported: i32
+
+struct GlobalVar:
+    var unported: i32
+
+struct IteratorConcatData:
+    var unported: i32
+
+struct IteratorHelperData:
+    var unported: i32
+
+struct IteratorWrapData:
+    var unported: i32
+
+struct JSONParseRecord:
+    var unported: i32
+
+struct JSONParseRecordObject:
+    var unported: i32
+
+struct JSONStringifyContext:
+    var unported: i32
+
+struct LabelSlot:
+    var unported: i32
+
+struct MapIteratorData:
+    var unported: i32
+
+struct MemoryUsageHelper:
+    var unported: i32
+
+struct ObjectList:
+    var unported: i32
+
+struct ParsePos:
+    var unported: i32
+
+struct ParseState:
+    var unported: i32
+
+struct PrintValueOptions:
+    var unported: i32
+
+struct PrintValueState:
+    var unported: i32
+
+struct PromiseData:
+    var unported: i32
+
+struct PromiseFunctionData:
+    var unported: i32
+
+struct PromiseFunctionDataResolved:
+    var unported: i32
+
+struct PromiseReactionData:
+    var unported: i32
+
+struct RegExpStringIteratorData:
+    var unported: i32
+
+struct RelocEntry:
+    var unported: i32
+
+struct ResolveState:
+    var unported: i32
+
+struct StackSizeState:
+    var unported: i32
+
+struct StringBuffer:
+    var unported: i32
+
+struct StringRopeIter:
+    var unported: i32
+
+struct SumPreciseState:
+    var unported: i32
+
+struct Token:
+    var unported: i32
+
+struct ValueBuffer:
+    var unported: i32
+
+struct VarDef:
+    var unported: i32
+
+enum FreeModuleKind as i32:
+    unported = 0
+
+enum ParseExportKind as i32:
+    unported = 0
+
+enum ParseFunctionKind as i32:
+    unported = 0
+
+enum PutLValueKind as i32:
+    unported = 0
+
+enum ResolveResult as i32:
+    unported = 0
+
+enum StrictEqMode as i32:
+    unported = 0
+
+enum ToNumberHint as i32:
+    unported = 0
+
+enum VarDefKind as i32:
+    unported = 0
+
+type MallocIterFunc = func() -> unit
+
+type PrintValueWrite = func() -> unit
+

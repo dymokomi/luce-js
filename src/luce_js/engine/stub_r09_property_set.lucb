@@ -1,0 +1,97 @@
+#==============================================================================================
+#
+#   stub_r09_property_set - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:9003 JS_ValueToAtom.
+func js_value_to_atom(ctx: Context*, val: Value) -> Atom:
+    trap("unported: JS_ValueToAtom")
+## Ported from quickjs.c:9029 JS_GetPropertyValue.
+func js_get_property_value(ctx: Context*, this_obj: Value, prop: Value) -> Value!:
+    trap("unported: JS_GetPropertyValue")
+## Ported from quickjs.c:9104 JS_GetPropertyUint32.
+func js_get_property_uint32(ctx: Context*, this_obj: Value, idx: u32) -> Value!:
+    trap("unported: JS_GetPropertyUint32")
+## Ported from quickjs.c:9115 JS_TryGetPropertyInt64.
+func js_try_get_property_int64(ctx: Context*, obj: Value, idx: i64, pval: Value*) -> i32:
+    trap("unported: JS_TryGetPropertyInt64")
+## Ported from quickjs.c:9146 JS_GetPropertyInt64.
+func js_get_property_int64(ctx: Context*, obj: Value, idx: i64) -> Value!:
+    trap("unported: JS_GetPropertyInt64")
+## Ported from quickjs.c:9164 JS_GetPropertyStr.
+func js_get_property_str(ctx: Context*, this_obj: Value, prop: const u8*) -> Value!:
+    trap("unported: JS_GetPropertyStr")
+## Ported from quickjs.c:9179 add_property.
+func add_property(ctx: Context*, p: Object*, prop: Atom, prop_flags: i32) -> Property*!:
+    trap("unported: add_property")
+## Ported from quickjs.c:9244 convert_fast_array_to_array.
+func convert_fast_array_to_array(ctx: Context*, p: Object*) -> i32!:
+    trap("unported: convert_fast_array_to_array")
+## Ported from quickjs.c:9288 remove_global_object_property.
+func remove_global_object_property(ctx: Context*, p: Object*, prs: ShapeProperty*, pr: Property*) -> i32!:
+    trap("unported: remove_global_object_property")
+## Ported from quickjs.c:9311 delete_property.
+func delete_property(ctx: Context*, p: Object*, atom: Atom) -> i32!:
+    trap("unported: delete_property")
+## Ported from quickjs.c:9407 call_setter.
+func call_setter(ctx: Context*, setter: Object*, this_obj: Value, val: Value, flags: i32) -> i32!:
+    trap("unported: call_setter")
+## Ported from quickjs.c:9433 set_array_length.
+func set_array_length(ctx: Context*, p: Object*, val: Value, flags: i32) -> i32!:
+    trap("unported: set_array_length")
+## Ported from quickjs.c:9524 expand_fast_array.
+func expand_fast_array(ctx: Context*, p: Object*, new_len: u32) -> i32!:
+    trap("unported: expand_fast_array")
+## Ported from quickjs.c:9542 add_fast_array_element.
+func add_fast_array_element(ctx: Context*, p: Object*, val: Value, flags: i32) -> i32!:
+    trap("unported: add_fast_array_element")
+## Ported from quickjs.c:9575 js_allocate_fast_array.
+func js_allocate_fast_array(ctx: Context*, len: i64) -> Value!:
+    trap("unported: js_allocate_fast_array")
+## Ported from quickjs.c:9601 js_create_array.
+func js_create_array(ctx: Context*, len: i32, tab: Value*) -> Value!:
+    trap("unported: js_create_array")
+## Ported from quickjs.c:9625 js_create_array_free.
+func js_create_array_free(ctx: Context*, len: i32, tab: Value*) -> Value!:
+    trap("unported: js_create_array_free")
+## Ported from quickjs.c:9652 js_free_desc.
+func js_free_desc(ctx: Context*, desc: PropertyDescriptor*):
+    trap("unported: js_free_desc")
+## Ported from quickjs.c:9663 JS_SetPropertyInternal.
+func js_set_property_internal(ctx: Context*, obj: Value, prop: Atom, val: Value, this_obj: Value, flags: i32) -> i32!:
+    trap("unported: JS_SetPropertyInternal")
+## Ported from quickjs.c:9935 can_extend_fast_array.
+func can_extend_fast_array(p: Object*) -> bool:
+    trap("unported: can_extend_fast_array")
+## Ported from quickjs.c:9947 JS_SetPropertyValue.
+func js_set_property_value(ctx: Context*, this_obj: Value, prop: Value, val: Value, flags: i32) -> i32!:
+    trap("unported: JS_SetPropertyValue")
+## Ported from quickjs.c:10072 JS_SetPropertyUint32.
+func js_set_property_uint32(ctx: Context*, this_obj: Value, idx: u32, val: Value) -> i32:
+    trap("unported: JS_SetPropertyUint32")
+## Ported from quickjs.c:10079 JS_SetPropertyInt64.
+func js_set_property_int64(ctx: Context*, this_obj: Value, idx: i64, val: Value) -> i32!:
+    trap("unported: JS_SetPropertyInt64")
+## Ported from quickjs.c:10100 JS_SetPropertyStr.
+func js_set_property_str(ctx: Context*, this_obj: Value, prop: const u8*, val: Value) -> i32!:
+    trap("unported: JS_SetPropertyStr")
+## Ported from quickjs.c:10119 get_prop_flags.
+func get_prop_flags(flags: i32, def_flags: i32) -> i32:
+    trap("unported: get_prop_flags")
+## Ported from quickjs.c:10126 JS_CreateProperty.
+func js_create_property(ctx: Context*, p: Object*, prop: Atom, val: Value, getter: Value, setter: Value, flags: i32) -> i32!:
+    trap("unported: JS_CreateProperty")
+## Ported from quickjs.c:10272 check_define_prop_flags.
+func check_define_prop_flags(prop_flags: i32, flags: i32) -> bool:
+    trap("unported: check_define_prop_flags")
+## Ported from quickjs.c:10302 js_shape_prepare_update.
+func js_shape_prepare_update(ctx: Context*, p: Object*, pprs: ShapeProperty**) -> i32!:
+    trap("unported: js_shape_prepare_update")
+## Ported from quickjs.c:10329 js_update_property_flags.
+func js_update_property_flags(ctx: Context*, p: Object*, pprs: ShapeProperty**, flags: i32) -> i32!:
+    trap("unported: js_update_property_flags")

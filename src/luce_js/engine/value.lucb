@@ -1,0 +1,234 @@
+#==============================================================================================
+#
+#   value - JavaScript values: tags, the value word, and their constructors and tests
+#
+#   DESCRIPTION:
+#       Port of quickjs.h's value representation for 64-bit targets (the struct form,
+#       not NaN boxing): a value is a 64-bit payload beside a 64-bit tag. Tags below
+#       zero carry a reference-counted pointer. A union cannot be built in a constant
+#       expression, so JS_UNDEFINED and its kin are the functions `js_undefined()` and
+#       so on. The typed pointer members of `ValueUnion` stand for QuickJS's
+#       JS_VALUE_GET_OBJ, JS_VALUE_GET_STRING and friends.
+#
+#==============================================================================================
+
+## A value's type tag (JS_TAG_*). All tags with a reference count are negative.
+pub enum Tag as i64:
+    big_int = -9
+    symbol = -8
+    string = -7
+    string_rope = -6
+    module = -3                     # used internally
+    function_bytecode = -2          # used internally
+    object = -1
+    int = 0
+    boolean = 1
+    null = 2
+    undefined = 3
+    uninitialized = 4
+    catch_offset = 5
+    exception = 6
+    short_big_int = 7
+    float64 = 8
+
+## The first (most negative) tag; every tag at or above it as unsigned has a reference
+## count (JS_TAG_FIRST).
+let tag_first: i64 = -9
+
+## A value's payload (JSValueUnion). Which member is meaningful follows from the tag;
+## the pointer members are views of `ptr` typed for each reference-counted tag.
+pub union ValueUnion:
+    uint64: u64
+    float64: f64
+    short_big_int: i32
+    ptr: void*
+    obj: Object*
+    string: String*
+    rope: StringRope*
+    big_int: BigInt*
+    bytecode: FunctionBytecode*
+    module: ModuleDef*
+
+## A JavaScript value (JSValue): a payload and its tag. Copying one does not change any
+## reference count; `dup_value` and `free_value` do.
+pub struct Value:
+    var u: ValueUnion
+    var tag: Tag
+
+# mark: Making values ===========================================================================
+
+## A value with an integer payload (JS_MKVAL); the payload is zero-extended from 32 bits.
+func mkval(tag: Tag, val: i32) -> Value:
+    var u: ValueUnion = ---
+    u.uint64 = (u64)(u32)val
+    return Value(u = u, tag = tag)
+
+## A value with a pointer payload (JS_MKPTR).
+func mkptr(tag: Tag, p: void*) -> Value:
+    var u: ValueUnion = ---
+    u.ptr = p
+    return Value(u = u, tag = tag)
+
+## JS_NULL.
+pub func js_null() -> Value:
+    return mkval(Tag.null, 0)
+
+## JS_UNDEFINED.
+pub func js_undefined() -> Value:
+    return mkval(Tag.undefined, 0)
+
+## JS_FALSE.
+pub func js_false() -> Value:
+    return mkval(Tag.boolean, 0)
+
+## JS_TRUE.
+pub func js_true() -> Value:
+    return mkval(Tag.boolean, 1)
+
+## JS_EXCEPTION: the marker QuickJS returns with a pending exception. The port reports
+## exceptions as failures instead; the value survives where QuickJS stores it.
+pub func js_exception() -> Value:
+    return mkval(Tag.exception, 0)
+
+## JS_UNINITIALIZED: the value of a lexical binding before its declaration runs.
+pub func js_uninitialized() -> Value:
+    return mkval(Tag.uninitialized, 0)
+
+## JS_NAN.
+pub func js_nan() -> Value:
+    return new_float64_raw(f64.bits(0x7ff8000000000000))
+
+## A float value without normalising to an integer (__JS_NewFloat64).
+pub func new_float64_raw(d: f64) -> Value:
+    var u: ValueUnion = ---
+    u.float64 = d
+    return Value(u = u, tag = Tag.float64)
+
+## A short big integer (__JS_NewShortBigInt).
+func new_short_big_int(d: i32) -> Value:
+    var u: ValueUnion = ---
+    u.uint64 = 0
+    u.short_big_int = d
+    return Value(u = u, tag = Tag.short_big_int)
+
+## A boolean value (JS_NewBool).
+pub func new_bool(val: bool) -> Value:
+    return mkval(Tag.boolean, (i32)val)
+
+## An integer value (JS_NewInt32).
+pub func new_int32(val: i32) -> Value:
+    return mkval(Tag.int, val)
+
+## A catch offset pushed on the interpreter stack (JS_NewCatchOffset).
+func new_catch_offset(val: i32) -> Value:
+    return mkval(Tag.catch_offset, val)
+
+## An integer value when it fits 32 bits, else a float (JS_NewInt64).
+pub func new_int64(val: i64) -> Value:
+    if val == (i64)(i32)val:
+        return new_int32((i32)val)
+    return new_float64_raw(f64(val))
+
+## An integer value when it fits 31 bits unsigned, else a float (JS_NewUint32).
+pub func new_uint32(val: u32) -> Value:
+    if val <= 0x7fffffff:
+        return new_int32((i32)val)
+    return new_float64_raw(f64(val))
+
+## A number value: an integer when `d` is exactly one (never -0), else a float
+## (JS_NewFloat64).
+pub func new_float64(d: f64) -> Value:
+    if d >= -2147483648.0 and d <= 2147483647.0:
+        let val = (i32)d
+        # -0 cannot be represented as integer, so we compare the bit representation
+        if d.bits() == f64(val).bits():
+            return new_int32(val)
+    return new_float64_raw(d)
+
+# mark: Reading values ==========================================================================
+
+## The 32-bit integer payload (JS_VALUE_GET_INT).
+pub func value_get_int(v: Value) -> i32:
+    return (i32)v.u.uint64
+
+## The boolean payload (JS_VALUE_GET_BOOL).
+pub func value_get_bool(v: Value) -> bool:
+    return (i32)v.u.uint64 != 0
+
+## The float payload (JS_VALUE_GET_FLOAT64).
+pub func value_get_float64(v: Value) -> f64:
+    return v.u.float64
+
+## The short big integer payload (JS_VALUE_GET_SHORT_BIG_INT).
+func value_get_short_big_int(v: Value) -> i32:
+    return v.u.short_big_int
+
+## The object of an object value (JS_VALUE_GET_OBJ).
+pub func value_get_obj(v: Value) -> Object*:
+    return v.u.obj
+
+## The string of a string value (JS_VALUE_GET_STRING).
+func value_get_string(v: Value) -> String*:
+    return v.u.string
+
+## Whether the tag is the float tag (JS_TAG_IS_FLOAT64).
+func tag_is_float64(tag: Tag) -> bool:
+    return tag == Tag.float64
+
+## Whether the value is a NaN float (JS_VALUE_IS_NAN).
+func value_is_nan(v: Value) -> bool:
+    if v.tag != Tag.float64:
+        return false
+    return (v.u.uint64 & 0x7fffffffffffffff) > 0x7ff0000000000000
+
+## Whether both values are integers (JS_VALUE_IS_BOTH_INT).
+func value_is_both_int(v1: Value, v2: Value) -> bool:
+    return ((i64)v1.tag | (i64)v2.tag) == 0
+
+## Whether both values are floats (JS_VALUE_IS_BOTH_FLOAT).
+func value_is_both_float(v1: Value, v2: Value) -> bool:
+    return v1.tag == Tag.float64 and v2.tag == Tag.float64
+
+## Whether the value holds a reference-counted pointer (JS_VALUE_HAS_REF_COUNT).
+func value_has_ref_count(v: Value) -> bool:
+    return (u32)(i32)(i64)v.tag >= (u32)(i32)tag_first
+
+## JS_IsNumber.
+pub func is_number(v: Value) -> bool:
+    return v.tag == Tag.int or v.tag == Tag.float64
+
+## JS_IsBigInt.
+pub func is_big_int(v: Value) -> bool:
+    return v.tag == Tag.big_int or v.tag == Tag.short_big_int
+
+## JS_IsBool.
+pub func is_bool(v: Value) -> bool:
+    return v.tag == Tag.boolean
+
+## JS_IsNull.
+pub func is_null(v: Value) -> bool:
+    return v.tag == Tag.null
+
+## JS_IsUndefined.
+pub func is_undefined(v: Value) -> bool:
+    return v.tag == Tag.undefined
+
+## JS_IsException.
+pub func is_exception(v: Value) -> bool:
+    return v.tag == Tag.exception
+
+## JS_IsUninitialized.
+pub func is_uninitialized(v: Value) -> bool:
+    return v.tag == Tag.uninitialized
+
+## JS_IsString: a flat string or a rope.
+pub func is_string(v: Value) -> bool:
+    return v.tag == Tag.string or v.tag == Tag.string_rope
+
+## JS_IsSymbol.
+pub func is_symbol(v: Value) -> bool:
+    return v.tag == Tag.symbol
+
+## JS_IsObject.
+pub func is_object(v: Value) -> bool:
+    return v.tag == Tag.object

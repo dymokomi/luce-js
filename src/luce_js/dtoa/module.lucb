@@ -1,0 +1,197 @@
+#==============================================================================================
+#
+#   dtoa - Tiny float64 printing and parsing library: public flags, types and bignum limbs
+#
+#   DESCRIPTION:
+#       Port of QuickJS dtoa.h (lines 24-83: the JS_DTOA_* / JS_ATOD_* flags and the
+#       temporary memory types) and dtoa.c lines 1-228 (the limb types and the
+#       multi-precision primitives on 32-bit limbs).
+#
+#       Tiny float64 printing and parsing library
+#
+#       Copyright (c) 2024 Fabrice Bellard
+#
+#       Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#       software and associated documentation files (the "Software"), to deal in the Software
+#       without restriction, including without limitation the rights to use, copy, modify,
+#       merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#       permit persons to whom the Software is furnished to do so, subject to the following
+#       conditions: the above copyright notice and this permission notice shall be included
+#       in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS
+#       IS", WITHOUT WARRANTY OF ANY KIND.
+#
+#       TODO (upstream):
+#       - test n_digits=101 instead of 100
+#       - simplify subnormal handling
+#       - reduce max memory usage
+#       - free format: could add shortcut if exact result
+#       - use 64 bit limb_t when possible
+#       - use another algorithm for free format dtoa in base 10 (ryu ?)
+#
+#==============================================================================================
+
+import luce_js.cutils as cutils
+
+# mark: Public flags and types =================================================================
+
+## Maximum number of digits for fixed and frac formats.
+pub let dtoa_max_digits: i32 = 101
+
+## Use as many digits as necessary (radix != 10 is only supported with this format).
+pub let dtoa_format_free: i32 = 0 << 0
+## Use n_digits significant digits (1 <= n_digits <= dtoa_max_digits).
+pub let dtoa_format_fixed: i32 = 1 << 0
+## Force fractional format: [-]dd.dd with n_digits fractional digits
+## (0 <= n_digits <= dtoa_max_digits).
+pub let dtoa_format_frac: i32 = 2 << 0
+## The format bits of the flags.
+pub let dtoa_format_mask: i32 = 3 << 0
+
+## Select exponential notation automatically, in fixed or free format.
+pub let dtoa_exp_auto: i32 = 0 << 2
+## Always use exponential notation.
+pub let dtoa_exp_enabled: i32 = 1 << 2
+## Never use exponential notation.
+pub let dtoa_exp_disabled: i32 = 2 << 2
+## The exponent bits of the flags.
+pub let dtoa_exp_mask: i32 = 3 << 2
+
+## Show the minus sign for -0.
+pub let dtoa_minus_zero: i32 = 1 << 4
+
+## Only accepts integers (no dot, no exponent).
+pub let atod_int_only: i32 = 1 << 0
+## Accept Oo and Ob prefixes in addition to 0x prefix if radix = 0.
+pub let atod_accept_bin_oct: i32 = 1 << 1
+## Accept O prefix as octal if radix == 0 and properly formed (Annex B).
+pub let atod_accept_legacy_octal: i32 = 1 << 2
+## Accept _ between digits as a digit separator.
+pub let atod_accept_underscores: i32 = 1 << 3
+
+## Scratch memory for `js_dtoa` (C `JSDTOATempMem`); its contents do not matter.
+pub struct DTOATempMem:
+    ## The storage.
+    pub var mem: u64[37]
+
+## Scratch memory for `js_atod` (C `JSATODTempMem`); its contents do not matter.
+pub struct ATODTempMem:
+    ## The storage.
+    pub var mem: u64[27]
+
+# mark: Limbs ==================================================================================
+
+# #define USE_POW5_TABLE and USE_FAST_INT: both are always on in this port.
+#
+# limb_t is u32, slimb_t is i32, dlimb_t is u64, mp_size_t is isize.
+
+let limb_log2_bits: i32 = 5
+
+let limb_bits: i32 = 1 << limb_log2_bits
+
+let radix_max: i32 = 36
+
+let dbignum_len_max: usize = 52 # ~ 2^(1072+53)*36^100 (dtoa)
+let mant_len_max: usize = 18 # < 36^100
+
+# the represented number is sum(i, tab[i]*2^(LIMB_BITS * i)) (C mpb_t)
+struct Mpb:
+    var len: i32 # >= 1
+    # limb_t tab[] follows the struct: reached through mpb_tab
+
+func mpb_tab(r: const Mpb*) -> u32*:
+    return (u32*)((u8*)r + sizeof(Mpb))
+
+# mark: Multi-precision primitives =============================================================
+
+func mp_add_ui(tab: u32*, b: u32, n: usize) -> u32:
+    var k = b
+    for i in 0..<n:
+        if k == 0:
+            break
+        let a = tab[i] +% k
+        k = (u32)(a < k)
+        tab[i] = a
+    return k
+
+# tabr[] = taba[] * b + l. Return the high carry
+func mp_mul1(tabr: u32*, taba: const u32*, n: u32, b: u32, l0: u32) -> u32:
+    var l = l0
+    for i in 0..<(usize)n:
+        let t = (u64)taba[i] * (u64)b + (u64)l
+        tabr[i] = (u32)t
+        l = (u32)(t >> 32)
+    return l
+
+# WARNING: d must be >= 2^(LIMB_BITS-1)
+func udiv1norm_init(d: u32) -> u32:
+    let a1 = -%d -% 1
+    let a0: u32 = 0xffffffff
+    return (u32)((((u64)a1 << 32) | (u64)a0) // (u64)d)
+
+# return the quotient and the remainder in '*pr'of 'a1*2^LIMB_BITS+a0 / d' with
+# 0 <= a1 < d.
+func udiv1norm(pr: u32*, a1: u32, a0: u32, d: u32, d_inv: u32) -> u32:
+    let n1m = (u32)((i32)a0 >> (limb_bits - 1))
+    let n_adj = a0 +% (n1m & d)
+    var a = (u64)d_inv *% (u64)(a1 -% n1m) +% (u64)n_adj
+    var q = (u32)(a >> 32) +% a1
+    # compute a - q * r and update q so that the remainder is between 0 and d - 1
+    a = ((u64)a1 << 32) | (u64)a0
+    a = a -% (u64)q *% (u64)d -% (u64)d
+    let ah = (u32)(a >> 32)
+    q = q +% 1 +% ah
+    let r = (u32)a +% (ah & d)
+    *pr = r
+    return q
+
+func mp_div1(tabr: u32*, taba: const u32*, n: u32, b: u32, r0: u32) -> u32:
+    var r = r0
+    var i = (isize)n - 1
+    while i >= 0:
+        let a1 = ((u64)r << 32) | (u64)taba[i]
+        tabr[i] = (u32)(a1 // (u64)b)
+        r = (u32)(a1 % (u64)b)
+        i -= 1
+    return r
+
+# r = (a + high*B^n) >> shift. Return the remainder r (0 <= r < 2^shift).
+# 1 <= shift <= LIMB_BITS - 1
+func mp_shr(tab_r: u32*, tab: const u32*, n: isize, shift: i32, high: u32) -> u32:
+    assert(shift >= 1 and shift < limb_bits)
+    var l = high
+    var i = n - 1
+    while i >= 0:
+        let a = tab[i]
+        tab_r[i] = (a >> (u32)shift) | (l << (u32)(limb_bits - shift))
+        l = a
+        i -= 1
+    return l & (((u32)1 << (u32)shift) - 1)
+
+# r = (a << shift) + low. 1 <= shift <= LIMB_BITS - 1, 0 <= low < 2^shift.
+func mp_shl(tab_r: u32*, tab: const u32*, n: isize, shift: i32, low: u32) -> u32:
+    assert(shift >= 1 and shift < limb_bits)
+    var l = low
+    var i: isize = 0
+    while i < n:
+        let a = tab[i]
+        tab_r[i] = (a << (u32)shift) | l
+        l = a >> (u32)(limb_bits - shift)
+        i += 1
+    return l
+
+func mp_div1norm(tabr: u32*, taba: const u32*, n: u32, b: u32, r0: u32, b_inv: u32,
+                 shift: i32) -> u32:
+    var r = r0
+    if shift != 0:
+        r = (r << (u32)shift) | mp_shl(tabr, taba, (isize)n, shift, 0)
+    var i = (isize)n - 1
+    while i >= 0:
+        tabr[i] = udiv1norm(&r, r, taba[i], b, b_inv)
+        i -= 1
+    r = r >> (u32)shift
+    return r
+
+func mpb_renorm(r: Mpb*):
+    let tab = mpb_tab(r)
+    while r.len > 1 and tab[(usize)(r.len - 1)] == 0:
+        r.len -= 1

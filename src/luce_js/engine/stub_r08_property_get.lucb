@@ -1,0 +1,76 @@
+#==============================================================================================
+#
+#   stub_r08_property_get - Not yet ported: typed stubs of this region of quickjs.c
+#
+#   DESCRIPTION:
+#       Generated placeholders so the module compiles while the region is ported. Each
+#       stub is replaced by its port; the file is deleted when the region is done.
+#
+#==============================================================================================
+
+## Ported from quickjs.c:8050 JS_GetPrototypeFree.
+func js_get_prototype_free(ctx: Context*, obj: Value) -> Value!:
+    trap("unported: JS_GetPrototypeFree")
+## Ported from quickjs.c:8059 JS_OrdinaryIsInstanceOf.
+func js_ordinary_is_instance_of(ctx: Context*, val: Value, obj: Value) -> i32!:
+    trap("unported: JS_OrdinaryIsInstanceOf")
+## Ported from quickjs.c:8133 JS_IsInstanceOf.
+func js_is_instance_of(ctx: Context*, val: Value, obj: Value) -> i32!:
+    trap("unported: JS_IsInstanceOf")
+## Ported from quickjs.c:8167 JS_AutoInitProperty.
+func js_auto_init_property(ctx: Context*, p: Object*, prop: Atom, pr: Property*, prs: ShapeProperty*) -> i32!:
+    trap("unported: JS_AutoInitProperty")
+## Ported from quickjs.c:8210 JS_GetPropertyInternal.
+func js_get_property_internal(ctx: Context*, obj: Value, prop: Atom, this_obj: Value, throw_ref_error: bool) -> Value!:
+    trap("unported: JS_GetPropertyInternal")
+## Ported from quickjs.c:8366 JS_ThrowTypeErrorPrivateNotFound.
+func js_throw_type_error_private_not_found(ctx: Context*, atom: Atom) -> never!:
+    trap("unported: JS_ThrowTypeErrorPrivateNotFound")
+## Ported from quickjs.c:8374 JS_DefinePrivateField.
+func js_define_private_field(ctx: Context*, obj: Value, name: Value, val: Value) -> i32!:
+    trap("unported: JS_DefinePrivateField")
+## Ported from quickjs.c:8409 JS_GetPrivateField.
+func js_get_private_field(ctx: Context*, obj: Value, name: Value) -> Value!:
+    trap("unported: JS_GetPrivateField")
+## Ported from quickjs.c:8432 JS_SetPrivateField.
+func js_set_private_field(ctx: Context*, obj: Value, name: Value, val: Value) -> i32!:
+    trap("unported: JS_SetPrivateField")
+## Ported from quickjs.c:8464 JS_AddBrand.
+func js_add_brand(ctx: Context*, obj: Value, home_obj: Value) -> i32!:
+    trap("unported: JS_AddBrand")
+## Ported from quickjs.c:8515 JS_CheckBrand.
+func js_check_brand(ctx: Context*, obj: Value, func_: Value) -> i32!:
+    trap("unported: JS_CheckBrand")
+## Ported from quickjs.c:8552 js_string_obj_get_length.
+func js_string_obj_get_length(ctx: Context*, obj: Value) -> u32:
+    trap("unported: js_string_obj_get_length")
+## Ported from quickjs.c:8567 num_keys_cmp.
+func num_keys_cmp(p1: const void*, p2: const void*, opaque: void*) -> i32:
+    trap("unported: num_keys_cmp")
+## Ported from quickjs.c:8586 JS_FreePropertyEnum.
+func js_free_property_enum(ctx: Context*, tab: PropertyEnum*, len: u32):
+    trap("unported: JS_FreePropertyEnum")
+## Ported from quickjs.c:8598 JS_GetOwnPropertyNamesInternal.
+func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum**, plen: u32*, p: Object*, flags: i32) -> i32!:
+    trap("unported: JS_GetOwnPropertyNamesInternal")
+## Ported from quickjs.c:8803 JS_GetOwnPropertyNames.
+func js_get_own_property_names(ctx: Context*, ptab: PropertyEnum**, plen: u32*, obj: Value, flags: i32) -> i32!:
+    trap("unported: JS_GetOwnPropertyNames")
+## Ported from quickjs.c:8817 JS_GetOwnPropertyInternal.
+func js_get_own_property_internal(ctx: Context*, desc: PropertyDescriptor*, p: Object*, prop: Atom) -> i32!:
+    trap("unported: JS_GetOwnPropertyInternal")
+## Ported from quickjs.c:8895 JS_GetOwnProperty.
+func js_get_own_property(ctx: Context*, desc: PropertyDescriptor*, obj: Value, prop: Atom) -> i32!:
+    trap("unported: JS_GetOwnProperty")
+## Ported from quickjs.c:8906 JS_IsExtensible.
+func js_is_extensible(ctx: Context*, obj: Value) -> i32:
+    trap("unported: JS_IsExtensible")
+## Ported from quickjs.c:8923 JS_PreventExtensions.
+func js_prevent_extensions(ctx: Context*, obj: Value) -> i32:
+    trap("unported: JS_PreventExtensions")
+## Ported from quickjs.c:8953 JS_HasProperty.
+func js_has_property(ctx: Context*, obj: Value, prop: Atom) -> i32!:
+    trap("unported: JS_HasProperty")
+## Ported from quickjs.c:8996 js_symbol_to_atom.
+func js_symbol_to_atom(ctx: Context*, val: Value) -> Atom:
+    trap("unported: js_symbol_to_atom")

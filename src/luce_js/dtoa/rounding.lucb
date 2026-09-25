@@ -1,0 +1,229 @@
+#==============================================================================================
+#
+#   rounding - Powers, rounding shifts and comparisons of multi-precision numbers
+#
+#   DESCRIPTION:
+#       Port of QuickJS dtoa.c lines 243-519: the power-of-five tables, pow_ui,
+#       pow_ui_inv, the rounding modes, mpb_get_bit, mpb_shr_round, mpb_cmp,
+#       mpb_set_u64, mpb_get_u64, mpb_floor_log2 and mul_log2_radix. (mpb_dump, a
+#       debugging aid, is not ported.)
+#
+#==============================================================================================
+
+# mark: Powers =================================================================================
+
+let pow5_table: u32[17] = [
+    0x00000005, 0x00000019, 0x0000007d, 0x00000271,
+    0x00000c35, 0x00003d09, 0x0001312d, 0x0005f5e1,
+    0x001dcd65, 0x009502f9, 0x02e90edd, 0x0e8d4a51,
+    0x48c27395, 0x6bcc41e9, 0x1afd498d, 0x86f26fc1,
+    0xa2bc2ec5,
+]
+
+let pow5h_table: u8[4] = [0x00000001, 0x00000007, 0x00000023, 0x000000b1]
+
+let pow5_inv_table: u32[13] = [
+    0x99999999, 0x47ae147a, 0x0624dd2f, 0xa36e2eb1,
+    0x4f8b588e, 0x0c6f7a0b, 0xad7f29ab, 0x5798ee23,
+    0x12e0be82, 0xb7cdfd9d, 0x5fd7fe17, 0x19799812,
+    0xc25c2684,
+]
+
+# return a^b
+func pow_ui(a: u32, b: u32) -> u64:
+    if b == 0:
+        return 1
+    if b == 1:
+        return a
+    if (a == 5 or a == 10) and b <= 17:
+        var r5: u64 = pow5_table[(usize)(b - 1)]
+        if b >= 14:
+            r5 |= (u64)pow5h_table[(usize)(b - 14)] << 32
+        if a == 10:
+            r5 = r5 << (u64)b
+        return r5
+    var r: u64 = a
+    let n_bits = 32 - cutils.clz32(b)
+    var i = n_bits - 2
+    while i >= 0:
+        r = r *% r
+        if ((b >> (u32)i) & 1) != 0:
+            r = r *% (u64)a
+        i -= 1
+    return r
+
+func pow_ui_inv(pr_inv: u32*, pshift: i32*, a: u32, b: u32) -> u32:
+    var r: u32
+    var r_inv: u32
+    var shift: i32
+    if a == 5 and b >= 1 and b <= 13:
+        r = pow5_table[(usize)(b - 1)]
+        shift = cutils.clz32(r)
+        r = r << (u32)shift
+        r_inv = pow5_inv_table[(usize)(b - 1)]
+    else:
+        r = (u32)pow_ui(a, b)
+        shift = cutils.clz32(r)
+        r = r << (u32)shift
+        r_inv = udiv1norm_init(r)
+    *pshift = shift
+    *pr_inv = r_inv
+    return r
+
+# mark: Rounding ===============================================================================
+
+enum RndMode as i32:
+    rndn = 0 # round to nearest, ties to even
+    rndna = 1 # round to nearest, ties away from zero
+    rndz = 2
+
+func mpb_get_bit(r: const Mpb*, k0: i32) -> i32:
+    let l = (i32)((u32)k0 // (u32)limb_bits)
+    let k = k0 & (limb_bits - 1)
+    if l >= r.len:
+        return 0
+    else:
+        return (i32)((mpb_tab(r)[(usize)l] >> (u32)k) & 1)
+
+# compute round(r / 2^shift). 'shift' can be negative
+func mpb_shr_round(r: Mpb*, shift0: i32, rnd_mode: RndMode):
+    let tab = mpb_tab(r)
+    var shift = shift0
+    if shift == 0:
+        return
+    if shift < 0:
+        shift = -shift
+        let l = (i32)((u32)shift // (u32)limb_bits)
+        shift = shift & (limb_bits - 1)
+        if shift != 0:
+            tab[(usize)r.len] = mp_shl(tab, tab, (isize)r.len, shift, 0)
+            r.len += 1
+            mpb_renorm(r)
+        if l > 0:
+            var i = r.len - 1
+            while i >= 0:
+                tab[(usize)(i + l)] = tab[(usize)i]
+                i -= 1
+            for j in 0..<(usize)l:
+                tab[j] = 0
+            r.len += l
+    else:
+        var add_one: i32
+        match rnd_mode:
+            .rndn, .rndna:
+                let bit1 = mpb_get_bit(r, shift - 1)
+                if bit1 != 0:
+                    var bit2: u32
+                    if rnd_mode == .rndna:
+                        bit2 = 1
+                    else:
+                        # bit2 = oring of all the bits after bit1
+                        bit2 = 0
+                        if shift >= 2:
+                            var k = shift - 1
+                            let kl = (i32)((u32)k // (u32)limb_bits)
+                            k = k & (limb_bits - 1)
+                            for i in 0..<(usize)cutils.min_int(kl, r.len):
+                                bit2 |= tab[i]
+                            if kl < r.len:
+                                bit2 |= tab[(usize)kl] & (((u32)1 << (u32)k) - 1)
+                    if bit2 != 0:
+                        add_one = 1
+                    else:
+                        # round to even
+                        add_one = mpb_get_bit(r, shift)
+                else:
+                    add_one = 0
+            _:
+                add_one = 0
+
+        let l = (i32)((u32)shift // (u32)limb_bits)
+        shift = shift & (limb_bits - 1)
+        if l >= r.len:
+            r.len = 1
+            tab[0] = (u32)add_one
+        else:
+            if l > 0:
+                r.len -= l
+                for i in 0..<(usize)r.len:
+                    tab[i] = tab[i + (usize)l]
+            if shift != 0:
+                discard(mp_shr(tab, tab, (isize)r.len, shift, 0))
+                mpb_renorm(r)
+            if add_one != 0:
+                let a = mp_add_ui(tab, 1, (usize)r.len)
+                if a != 0:
+                    tab[(usize)r.len] = a
+                    r.len += 1
+
+# mark: Comparison and conversion ==============================================================
+
+# return -1, 0 or 1
+func mpb_cmp(a: const Mpb*, b: const Mpb*) -> i32:
+    if a.len < b.len:
+        return -1
+    elif a.len > b.len:
+        return 1
+    let ta = mpb_tab(a)
+    let tb = mpb_tab(b)
+    var i = (isize)a.len - 1
+    while i >= 0:
+        if ta[i] != tb[i]:
+            if ta[i] < tb[i]:
+                return -1
+            else:
+                return 1
+        i -= 1
+    return 0
+
+func mpb_set_u64(r: Mpb*, m: u64):
+    let tab = mpb_tab(r)
+    tab[0] = (u32)m
+    tab[1] = (u32)(m >> 32)
+    if tab[1] == 0:
+        r.len = 1
+    else:
+        r.len = 2
+
+func mpb_get_u64(r: const Mpb*) -> u64:
+    let tab = mpb_tab(r)
+    if r.len == 1:
+        return tab[0]
+    else:
+        return (u64)tab[0] | ((u64)tab[1] << 32)
+
+# floor_log2() = position of the first non zero bit or -1 if zero.
+func mpb_floor_log2(a: const Mpb*) -> i32:
+    let v = mpb_tab(a)[(usize)(a.len - 1)]
+    if v == 0:
+        return -1
+    else:
+        return a.len * limb_bits - 1 - cutils.clz32(v)
+
+let mul_log2_radix_base_log2: i32 = 24
+
+# round((1 << MUL_LOG2_RADIX_BASE_LOG2)/log2(i + 2))
+let mul_log2_radix_table: u32[35] = [
+    0x000000, 0xa1849d, 0x000000, 0x6e40d2,
+    0x6308c9, 0x5b3065, 0x000000, 0x50c24e,
+    0x4d104d, 0x4a0027, 0x4768ce, 0x452e54,
+    0x433d00, 0x418677, 0x000000, 0x3ea16b,
+    0x3d645a, 0x3c43c2, 0x3b3b9a, 0x3a4899,
+    0x39680b, 0x3897b3, 0x37d5af, 0x372069,
+    0x367686, 0x35d6df, 0x354072, 0x34b261,
+    0x342bea, 0x33ac62, 0x000000, 0x32bfd9,
+    0x3251dd, 0x31e8d6, 0x318465,
+]
+
+# return floor(a / log2(radix)) for -2048 <= a <= 2047
+func mul_log2_radix(a0: i32, radix: i32) -> i32:
+    var a = a0
+    if (radix & (radix - 1)) == 0:
+        # if the radix is a power of two better to do it exactly
+        let radix_bits = 31 - cutils.clz32((u32)radix)
+        if a < 0:
+            a -= radix_bits - 1
+        return a // radix_bits
+    else:
+        let mult = (i64)mul_log2_radix_table[(usize)(radix - 2)]
+        return (i32)(((i64)a * mult) >> (i64)mul_log2_radix_base_log2)
