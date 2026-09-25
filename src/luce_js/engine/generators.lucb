@@ -1,0 +1,229 @@
+#==============================================================================================
+#
+#   generators - Resuming suspended frames, and generator objects
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 20951-21194: resuming the frame of a generator or async
+#       function (async_func_resume) and releasing it (__async_func_free,
+#       async_func_free), then the generator objects: their state (JSGeneratorData,
+#       JSGeneratorStateEnum), their finalizer and mark function, next/return/throw
+#       (js_generator_next, magic GEN_MAGIC_x) and the call of a generator function,
+#       which runs it up to OP_initial_yield.
+#
+#==============================================================================================
+
+# mark: Resuming a suspended frame ==============================================================
+
+# JS_Throw used as a statement: `v` becomes the pending exception and the caller goes on;
+# the frame it resumes next with throw_flag starts at its exception handler.
+func js_throw_pending(ctx: Context*, v: Value):
+    js_throw(ctx, v) catch: return
+
+# end of execution: the frame of `s` returned or threw.
+func async_func_end(rt: Runtime*, s: AsyncFunctionState*):
+    let sf = &s.frame
+    let p = sf.cur_func.u.obj
+    let b = p.u.func_.function_bytecode
+    s.is_completed = true
+
+    # close the closure variables.
+    close_var_refs(rt, b, sf)
+
+    async_func_free_frame(rt, s)
+
+## Run the suspended frame of `s` until it suspends again (an integer FUNC_RET_x, the
+## yielded or awaited value at cur_sp[-1]) or ends: its return value, or its exception
+## as a failure, and `s.is_completed` is set (async_func_resume).
+func async_func_resume(ctx: Context*, s: AsyncFunctionState*) -> Value!:
+    let rt = ctx.rt
+    let sf = &s.frame
+
+    assert(not s.is_completed)
+    var ret = js_undefined()
+    if js_check_stack_overflow(ctx.rt, 0):
+        js_throw_stack_overflow(ctx) catch failure:
+            async_func_end(rt, s)
+            error(failure.code, failure.message)
+    else:
+        # the tag does not matter provided it is not an object
+        let func_obj = js_mkptr(Tag.int, s)
+        let arg_buf = sf.arg_buf else trap("async_func_resume: frame without arguments")
+        ret = js_call_internal(ctx, func_obj, s.this_val, js_undefined(), s.argc, arg_buf, call_flag_generator) catch failure:
+            async_func_end(rt, s)
+            error(failure.code, failure.message)
+    if js_is_undefined(ret):
+        let cur_sp = sf.cur_sp else trap("async_func_resume: the frame is running")
+        ret = *(cur_sp - 1)
+        *(cur_sp - 1) = js_undefined()
+        async_func_end(rt, s)
+    return ret
+
+## Free the async function state `s` whose reference count reached zero, or leave it on
+## the zero reference count list while the collector removes cycles (__async_func_free).
+func async_func_free_raw(rt: Runtime*, s: AsyncFunctionState*):
+    # cannot close the closure variables here because it would
+    # potentially modify the object graph
+    if not s.is_completed:
+        async_func_free_frame(rt, s)
+
+    js_free_value_rt(rt, s.resolving_funcs[0])
+    js_free_value_rt(rt, s.resolving_funcs[1])
+
+    remove_gc_object(&s.header)
+    if rt.gc_phase == GCPhase.remove_cycles and js_rc(s).ref_count != 0:
+        cutils.list_add_tail(&s.header.link, &rt.gc_zero_ref_count_list)
+    else:
+        js_free_rt(rt, s)
+
+## Release a reference to the async function state `s`; the last one queues it for
+## freeing (async_func_free).
+func async_func_free(rt: Runtime*, s: AsyncFunctionState*):
+    let rc = js_rc(s)
+    rc.ref_count -= 1
+    if rc.ref_count == 0:
+        if rt.gc_phase != GCPhase.remove_cycles:
+            cutils.list_del(&s.header.link)
+            cutils.list_add(&s.header.link, &rt.gc_zero_ref_count_list)
+            if rt.gc_phase == GCPhase.none_:
+                free_zero_refcount(rt)
+
+# mark: Generators ==============================================================================
+
+## The state of a generator object (JSGeneratorStateEnum).
+enum GeneratorState as i32:
+    suspended_start = 0
+    suspended_yield = 1
+    suspended_yield_star = 2
+    executing = 3
+    completed = 4
+
+## The class data of a generator object (JSGeneratorData).
+struct GeneratorData:
+    var state: GeneratorState
+    ## The suspended frame; none once the generator is completed.
+    var func_state: AsyncFunctionState*?
+
+## Release the frame of the generator `s`, which becomes completed
+## (free_generator_stack_rt).
+func free_generator_stack_rt(rt: Runtime*, s: GeneratorData*):
+    if s.state == GeneratorState.completed:
+        return
+    if let fs = s.func_state:
+        async_func_free(rt, fs)
+        s.func_state = none
+    s.state = GeneratorState.completed
+
+## Finalizer of the generator class.
+func js_generator_finalizer(rt: Runtime*, obj: Value):
+    if let raw = js_get_opaque(obj, (u32)ClassId.generator):
+        let s = (GeneratorData*)raw
+        free_generator_stack_rt(rt, s)
+        js_free_rt(rt, s)
+
+## free_generator_stack_rt with the runtime of `ctx` (free_generator_stack).
+func free_generator_stack(ctx: Context*, s: GeneratorData*):
+    free_generator_stack_rt(ctx.rt, s)
+
+## Marking function of the generator class: the suspended frame.
+func js_generator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    let raw = p.u.opaque else return
+    let s = (GeneratorData*)raw
+    let fs = s.func_state else return
+    mark_func(rt, &fs.header)
+
+# XXX: use enum
+## The completion a generator's next/return/throw (and an async generator request) asks
+## for: the magic of js_generator_next and js_async_generator_next (GEN_MAGIC_x).
+let gen_magic_next: i32 = 0
+let gen_magic_return: i32 = 1
+let gen_magic_throw: i32 = 2
+
+# execution is finished: what next/return/throw answer on a completed generator.
+func js_generator_completed_result(ctx: Context*, argv: Value*, magic: i32) -> Value!:
+    if magic == gen_magic_return:
+        return js_dup_value(ctx, argv[0])
+    if magic == gen_magic_throw:
+        try js_throw(ctx, js_dup_value(ctx, argv[0]))
+    return js_undefined()
+
+## next (gen_magic_next), return and throw of a generator: resume it with the argument
+## as the value of its `yield`. `*pdone` is 1 when the generator is done, 0 when it
+## yielded, and 2 when a `yield*` passed on the (value, done) object of its inner
+## iterator.
+func js_generator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*, magic: i32) -> Value!:
+    *pdone = 1
+    let raw = js_get_opaque(this_val, (u32)ClassId.generator) else try js_throw_type_error(ctx, "not a generator")
+    let s = (GeneratorData*)raw
+    match s.state:
+        .completed:
+            # execution is finished
+            return try js_generator_completed_result(ctx, argv, magic)
+        .executing:
+            try js_throw_type_error(ctx, "cannot invoke a running generator")
+        .suspended_yield_star, .suspended_yield:
+            let fs = s.func_state else trap("js_generator_next: suspended generator without a frame")
+            let sf = &fs.frame
+            # cur_sp[-1] was set to JS_UNDEFINED in the previous call
+            let ret = js_dup_value(ctx, argv[0])
+            if magic == gen_magic_throw and s.state == GeneratorState.suspended_yield:
+                js_throw_pending(ctx, ret)
+                fs.throw_flag = true
+            else:
+                let cur_sp = sf.cur_sp else trap("js_generator_next: the frame is running")
+                *(cur_sp - 1) = ret
+                *cur_sp = js_new_int32(magic)
+                sf.cur_sp = cur_sp + 1
+                fs.throw_flag = false
+        _:
+            # JS_GENERATOR_STATE_SUSPENDED_START
+            if magic != gen_magic_next:
+                free_generator_stack(ctx, s)
+                return try js_generator_completed_result(ctx, argv, magic)
+            let fs = s.func_state else trap("js_generator_next: suspended generator without a frame")
+            fs.throw_flag = false
+
+    let fs = s.func_state else trap("js_generator_next: suspended generator without a frame")
+    s.state = GeneratorState.executing
+    let func_ret = async_func_resume(ctx, fs) catch failure:
+        s.state = GeneratorState.suspended_yield
+        # finalize the execution in case of exception
+        free_generator_stack(ctx, s)
+        error(failure.code, failure.message)
+    s.state = GeneratorState.suspended_yield
+    if fs.is_completed:
+        # finalize the execution in case of normal return
+        free_generator_stack(ctx, s)
+        return func_ret
+    assert(func_ret.tag == Tag.int)
+    # get the returned yield value at the top of the stack
+    let cur_sp = fs.frame.cur_sp else trap("js_generator_next: the frame is running")
+    let ret = *(cur_sp - 1)
+    *(cur_sp - 1) = js_undefined()
+    if js_value_get_int(func_ret) == func_ret_yield_star:
+        s.state = GeneratorState.suspended_yield_star
+        # return (value, done) object
+        *pdone = 2
+    else:
+        *pdone = 0
+    return ret
+
+## The call of a generator function: a new generator object whose frame has run up to
+## OP_initial_yield.
+func js_generator_function_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let s = (GeneratorData*)(try js_mallocz(ctx, sizeof(GeneratorData)))
+    errdefer js_free(ctx, s)
+    errdefer free_generator_stack_rt(ctx.rt, s)
+    s.state = GeneratorState.suspended_start
+    let fs = async_func_init(ctx, func_obj, this_obj, argc, argv) catch failure:
+        s.state = GeneratorState.completed
+        error(failure.code, failure.message)
+    s.func_state = fs
+
+    # execute the function up to 'OP_initial_yield'
+    let func_ret = try async_func_resume(ctx, fs)
+    js_free_value(ctx, func_ret)
+
+    let obj = try js_create_from_ctor(ctx, func_obj, (u32)ClassId.generator)
+    js_set_opaque(obj, s)
+    return obj

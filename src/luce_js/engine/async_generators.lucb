@@ -1,0 +1,373 @@
+#==============================================================================================
+#
+#   async_generators - Async generator objects and their request queue
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "AsyncGenerator" (lines 21344-21782): the state of an async
+#       generator (JSAsyncGeneratorData, JSAsyncGeneratorStateEnum) and its queue of
+#       next/return/throw requests (JSAsyncGeneratorRequest), each with the promise
+#       capability it answers; settling the oldest request, awaiting inside the
+#       generator, the state machine that runs the queue (js_async_generator_resume_next),
+#       the functions that continue it when an awaited promise settles, the
+#       next/return/throw methods and the call of an async generator function.
+#
+#==============================================================================================
+
+# mark: State ===================================================================================
+
+## The state of an async generator (JSAsyncGeneratorStateEnum).
+enum AsyncGeneratorState as i32:
+    suspended_start = 0
+    suspended_yield = 1
+    suspended_yield_star = 2
+    executing = 3
+    awaiting_return = 4
+    completed = 5
+
+## A queued next/return/throw call on an async generator (JSAsyncGeneratorRequest).
+struct AsyncGeneratorRequest:
+    var link: cutils.ListHead
+    # completion
+    ## GEN_MAGIC_x.
+    var completion_type: i32
+    var result: Value
+    # promise capability
+    var promise: Value
+    var resolving_funcs: Value[2]
+
+## The class data of an async generator object (JSAsyncGeneratorData).
+struct AsyncGeneratorData:
+    ## Back pointer to the object (const); none until the object is created.
+    var generator: Object*?
+    var state: AsyncGeneratorState
+    ## None in the states AWAITING_RETURN and COMPLETED.
+    var func_state: AsyncFunctionState*?
+    ## List of AsyncGeneratorRequest.link.
+    var queue: cutils.ListHead
+
+# The request of the queue link `el`.
+func async_generator_request_of(el: cutils.ListHead*) -> AsyncGeneratorRequest*:
+    return (AsyncGeneratorRequest*)((u8*)el - offsetof(AsyncGeneratorRequest, link))
+
+# The oldest request of the queue of `s`, which is not empty.
+func async_generator_first_request(s: AsyncGeneratorData*) -> AsyncGeneratorRequest*:
+    let el = s.queue.next else trap("async generator: unlinked queue")
+    return async_generator_request_of(el)
+
+# The generator object of `s` as a value (JS_MKPTR(JS_TAG_OBJECT, s->generator)).
+func async_generator_value(s: AsyncGeneratorData*) -> Value:
+    let generator = s.generator else trap("async generator: no generator object")
+    return js_mkptr(Tag.object, generator)
+
+## Free the async generator data `s`: its queued requests and its frame.
+func js_async_generator_free(rt: Runtime*, s: AsyncGeneratorData*):
+    var el = s.queue.next else trap("js_async_generator_free: unlinked queue")
+    while el != &s.queue:
+        let el1 = el.next else trap("js_async_generator_free: unlinked queue")
+        let req = async_generator_request_of(el)
+        js_free_value_rt(rt, req.result)
+        js_free_value_rt(rt, req.promise)
+        js_free_value_rt(rt, req.resolving_funcs[0])
+        js_free_value_rt(rt, req.resolving_funcs[1])
+        js_free_rt(rt, req)
+        el = el1
+    if let fs = s.func_state:
+        async_func_free(rt, fs)
+    js_free_rt(rt, s)
+
+## Finalizer of the async generator class.
+func js_async_generator_finalizer(rt: Runtime*, obj: Value):
+    if let raw = js_get_opaque(obj, (u32)ClassId.async_generator):
+        js_async_generator_free(rt, (AsyncGeneratorData*)raw)
+
+## Marking function of the async generator class: the queued requests and the frame.
+func js_async_generator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let raw = js_get_opaque(val, (u32)ClassId.async_generator) else return
+    let s = (AsyncGeneratorData*)raw
+    var el = s.queue.next else trap("js_async_generator_mark: unlinked queue")
+    while el != &s.queue:
+        let req = async_generator_request_of(el)
+        js_mark_value(rt, req.result, mark_func)
+        js_mark_value(rt, req.promise, mark_func)
+        js_mark_value(rt, req.resolving_funcs[0], mark_func)
+        js_mark_value(rt, req.resolving_funcs[1], mark_func)
+        el = el.next else trap("js_async_generator_mark: unlinked queue")
+    if let fs = s.func_state:
+        mark_func(rt, &fs.header)
+
+# mark: Awaiting and settling requests ==========================================================
+
+## The two functions (resolve, reject) that continue the async generator `generator`
+## when a promise settles, into `resolving_funcs[0..1]`: after an await, or with
+## `is_resume_next` after a `return` on a completed generator.
+func js_async_generator_resolve_function_create(ctx: Context*, generator: Value, resolving_funcs: Value*, is_resume_next: bool) -> !:
+    var data = generator
+    for i: usize in 0..<2:
+        let func_val = js_new_c_function_data(ctx, js_async_generator_resolve_function, 1, (i32)i + (i32)is_resume_next * 2, 1, &data) catch failure:
+            if i == 1:
+                js_free_value(ctx, resolving_funcs[0])
+            error(failure.code, failure.message)
+        resolving_funcs[i] = func_val
+
+## Await `value` inside the async generator `s`: execution continues from
+## js_async_generator_resolve_function when its promise settles.
+func js_async_generator_await(ctx: Context*, s: AsyncGeneratorData*, value: Value) -> !:
+    var arg = value
+    let promise = try js_promise_resolve(ctx, ctx.promise_ctor, 1, &arg, 0)
+    defer js_free_value(ctx, promise)
+
+    var resolving_funcs: Value[2] = ---
+    try js_async_generator_resolve_function_create(ctx, async_generator_value(s), &resolving_funcs[0], false)
+    defer js_free_value(ctx, resolving_funcs[1])
+    defer js_free_value(ctx, resolving_funcs[0])
+
+    # Note: no need to create 'thrownawayCapability' as in
+    # the spec
+    var resolving_funcs1: Value[2] = [js_undefined(), js_undefined()]
+    try perform_promise_then(ctx, promise, &resolving_funcs[0], &resolving_funcs1[0])
+
+## Settle the oldest request of `s` with `result`, fulfilled or rejected, and drop it.
+func js_async_generator_resolve_or_reject(ctx: Context*, s: AsyncGeneratorData*, result: Value, is_reject: bool):
+    let next = async_generator_first_request(s)
+    cutils.list_del(&next.link)
+    var arg = result
+    let ret = js_call(ctx, next.resolving_funcs[1 if is_reject else 0], js_undefined(), 1, &arg) catch: recover js_undefined()
+    js_free_value(ctx, ret)
+    js_free_value(ctx, next.result)
+    js_free_value(ctx, next.promise)
+    js_free_value(ctx, next.resolving_funcs[0])
+    js_free_value(ctx, next.resolving_funcs[1])
+    js_free(ctx, next)
+
+## Fulfill the oldest request of `s` with the iterator result {value, done}.
+func js_async_generator_resolve(ctx: Context*, s: AsyncGeneratorData*, value: Value, done: bool):
+    # XXX: better exception handling ? (QuickJS passes JS_EXCEPTION on as the result)
+    let result = js_create_iterator_result(ctx, js_dup_value(ctx, value), done) catch: recover js_exception()
+    js_async_generator_resolve_or_reject(ctx, s, result, false)
+    js_free_value(ctx, result)
+
+## Reject the oldest request of `s` with `exception`.
+func js_async_generator_reject(ctx: Context*, s: AsyncGeneratorData*, exception_val: Value):
+    js_async_generator_resolve_or_reject(ctx, s, exception_val, true)
+
+## Mark `s` completed and release its frame.
+func js_async_generator_complete(ctx: Context*, s: AsyncGeneratorData*):
+    if s.state != AsyncGeneratorState.completed:
+        s.state = AsyncGeneratorState.completed
+        let fs = s.func_state else trap("js_async_generator_complete: no frame")
+        async_func_free(ctx.rt, fs)
+        s.func_state = none
+
+## `return value` on a completed async generator: await `value`, then settle the oldest
+## request from js_async_generator_resolve_function (the resume-next functions).
+func js_async_generator_completed_return(ctx: Context*, s: AsyncGeneratorData*, value: Value) -> !:
+    var arg = value
+    # Can fail looking up JS_ATOM_constructor when is_reject==0.
+    let promise = js_promise_resolve(ctx, ctx.promise_ctor, 1, &arg, 0) catch:
+        # A poisoned .constructor property is observable and the resulting
+        # exception should be delivered to the catch handler.
+        var err = js_get_exception(ctx)
+        let rejected = js_promise_resolve(ctx, ctx.promise_ctor, 1, &err, 1) catch failure:
+            js_free_value(ctx, err)
+            error(failure.code, failure.message)
+        js_free_value(ctx, err)
+        recover rejected
+    defer js_free_value(ctx, promise)
+
+    var resolving_funcs1: Value[2] = ---
+    try js_async_generator_resolve_function_create(ctx, async_generator_value(s), &resolving_funcs1[0], true)
+    defer js_free_value(ctx, resolving_funcs1[1])
+    defer js_free_value(ctx, resolving_funcs1[0])
+    var resolving_funcs: Value[2] = [js_undefined(), js_undefined()]
+    try perform_promise_then(ctx, promise, &resolving_funcs1[0], &resolving_funcs[0])
+
+# mark: Running the queue =======================================================================
+
+# The `resume_exec` step of js_async_generator_resume_next: run the frame of `s` until
+# it yields, awaits or ends. Answer true to go on with the queue, false when it is
+# waiting for an awaited promise (`goto done`).
+func js_async_generator_resume_exec(ctx: Context*, s: AsyncGeneratorData*) -> bool:
+    while true:
+        let fs = s.func_state else trap("js_async_generator_resume_next: no frame")
+        let func_ret = async_func_resume(ctx, fs) catch:
+            # fs.is_completed: the function threw
+            let value = js_get_exception(ctx)
+            js_async_generator_complete(ctx, s)
+            js_async_generator_reject(ctx, s, value)
+            js_free_value(ctx, value)
+            return true
+        if fs.is_completed:
+            # end of function
+            js_async_generator_complete(ctx, s)
+            js_async_generator_resolve(ctx, s, func_ret, true)
+            js_free_value(ctx, func_ret)
+            return true
+        assert(func_ret.tag == Tag.int)
+        let func_ret_code = js_value_get_int(func_ret)
+        let cur_sp = fs.frame.cur_sp else trap("js_async_generator_resume_next: the frame is running")
+        let value = *(cur_sp - 1)
+        *(cur_sp - 1) = js_undefined()
+        if func_ret_code == func_ret_yield or func_ret_code == func_ret_yield_star:
+            if func_ret_code == func_ret_yield_star:
+                s.state = AsyncGeneratorState.suspended_yield_star
+            else:
+                s.state = AsyncGeneratorState.suspended_yield
+            js_async_generator_resolve(ctx, s, value, false)
+            js_free_value(ctx, value)
+            return true
+        if func_ret_code == func_ret_await:
+            js_async_generator_await(ctx, s, value) catch:
+                js_free_value(ctx, value)
+                # exception: throw it
+                fs.throw_flag = true
+                continue
+            js_free_value(ctx, value)
+            return false
+        trap("js_async_generator_resume_next: unexpected FUNC_RET code")
+    return true
+
+## Serve the queued requests of `s` in order while it can: start or resume its frame,
+## or settle requests on a completed generator.
+func js_async_generator_resume_next(ctx: Context*, s: AsyncGeneratorData*):
+    while true:
+        if cutils.list_empty(&s.queue):
+            break
+        let next = async_generator_first_request(s)
+        match s.state:
+            .executing:
+                # only happens when restarting execution after await()
+                if not js_async_generator_resume_exec(ctx, s):
+                    return
+            .awaiting_return:
+                return
+            .suspended_start:
+                if next.completion_type == gen_magic_next:
+                    # exec_no_arg
+                    let fs = s.func_state else trap("js_async_generator_resume_next: no frame")
+                    fs.throw_flag = false
+                    s.state = AsyncGeneratorState.executing
+                    if not js_async_generator_resume_exec(ctx, s):
+                        return
+                else:
+                    js_async_generator_complete(ctx, s)
+            .completed:
+                if next.completion_type == gen_magic_next:
+                    js_async_generator_resolve(ctx, s, js_undefined(), true)
+                elif next.completion_type == gen_magic_return:
+                    s.state = AsyncGeneratorState.awaiting_return
+                    # QuickJS ignores a failure here: the exception stays pending
+                    js_async_generator_completed_return(ctx, s, next.result) catch: recover ()
+                else:
+                    js_async_generator_reject(ctx, s, next.result)
+                return
+            .suspended_yield, .suspended_yield_star:
+                let fs = s.func_state else trap("js_async_generator_resume_next: no frame")
+                let value = js_dup_value(ctx, next.result)
+                if next.completion_type == gen_magic_throw and s.state == AsyncGeneratorState.suspended_yield:
+                    js_throw_pending(ctx, value)
+                    fs.throw_flag = true
+                else:
+                    # 'yield' returns a value. 'yield *' also returns a value
+                    # in case the 'throw' method is called
+                    let cur_sp = fs.frame.cur_sp else trap("js_async_generator_resume_next: the frame is running")
+                    *(cur_sp - 1) = value
+                    *cur_sp = js_new_int32(next.completion_type)
+                    fs.frame.cur_sp = cur_sp + 1
+                    fs.throw_flag = false
+                s.state = AsyncGeneratorState.executing
+                if not js_async_generator_resume_exec(ctx, s):
+                    return
+            _:
+                trap("js_async_generator_resume_next: bad state")
+
+# mark: Methods and calls =======================================================================
+
+## The resolve (magic 0) and reject (1) functions of an await in an async generator
+## (func_data[0] is the generator), and with magic 2 and 3 those of a `return` on a
+## completed one.
+func js_async_generator_resolve_function(ctx: Context*, this_obj: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    let is_reject = (magic & 1) != 0
+    # XXX: what if s == NULL
+    let raw = js_get_opaque(func_data[0], (u32)ClassId.async_generator) else trap("js_async_generator_resolve_function: not an async generator")
+    let s = (AsyncGeneratorData*)raw
+    let arg = argv[0]
+
+    if magic >= 2:
+        # resume next case in AWAITING_RETURN state
+        assert(s.state == AsyncGeneratorState.awaiting_return or s.state == AsyncGeneratorState.completed)
+        s.state = AsyncGeneratorState.completed
+        if is_reject:
+            js_async_generator_reject(ctx, s, arg)
+        else:
+            js_async_generator_resolve(ctx, s, arg, true)
+    elif s.state == AsyncGeneratorState.executing:
+        # restart function execution after await()
+        let fs = s.func_state else trap("js_async_generator_resolve_function: no frame")
+        fs.throw_flag = is_reject
+        if is_reject:
+            js_throw_pending(ctx, js_dup_value(ctx, arg))
+        else:
+            # return value of await
+            let cur_sp = fs.frame.cur_sp else trap("js_async_generator_resolve_function: the frame is running")
+            *(cur_sp - 1) = js_dup_value(ctx, arg)
+        js_async_generator_resume_next(ctx, s)
+    return js_undefined()
+
+# Reject the promise of a next/return/throw call on a value that is not an async
+# generator; `resolving_funcs` are its resolving functions, which are freed.
+func js_async_generator_next_not_generator(ctx: Context*, resolving_funcs: Value*):
+    js_throw_type_error(ctx, "not an AsyncGenerator object") catch:
+        var err = js_get_exception(ctx)
+        let res2 = js_call(ctx, resolving_funcs[1], js_undefined(), 1, &err) catch: recover js_undefined()
+        js_free_value(ctx, err)
+        js_free_value(ctx, res2)
+        js_free_value(ctx, resolving_funcs[0])
+        js_free_value(ctx, resolving_funcs[1])
+        return
+
+# magic = GEN_MAGIC_x
+## next (gen_magic_next), return and throw of an async generator: queue the request
+## and answer its promise.
+func js_async_generator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let opaque = js_get_opaque(this_val, (u32)ClassId.async_generator)
+    var resolving_funcs: Value[2] = ---
+
+    let promise = try js_new_promise_capability(ctx, &resolving_funcs[0])
+    if let raw = opaque:
+        let s = (AsyncGeneratorData*)raw
+        let req_raw = js_mallocz(ctx, sizeof(AsyncGeneratorRequest)) catch failure:
+            js_free_value(ctx, resolving_funcs[0])
+            js_free_value(ctx, resolving_funcs[1])
+            js_free_value(ctx, promise)
+            error(failure.code, failure.message)
+        let req = (AsyncGeneratorRequest*)req_raw
+        req.completion_type = magic
+        req.result = js_dup_value(ctx, argv[0])
+        req.promise = js_dup_value(ctx, promise)
+        req.resolving_funcs[0] = resolving_funcs[0]
+        req.resolving_funcs[1] = resolving_funcs[1]
+        cutils.list_add_tail(&req.link, &s.queue)
+        if s.state != AsyncGeneratorState.executing:
+            js_async_generator_resume_next(ctx, s)
+    else:
+        js_async_generator_next_not_generator(ctx, &resolving_funcs[0])
+    return promise
+
+## The call of an async generator function: a new async generator object whose frame
+## has run up to OP_initial_yield.
+func js_async_generator_function_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let s = (AsyncGeneratorData*)(try js_mallocz(ctx, sizeof(AsyncGeneratorData)))
+    s.state = AsyncGeneratorState.suspended_start
+    cutils.init_list_head(&s.queue)
+    errdefer js_async_generator_free(ctx.rt, s)
+    let fs = try async_func_init(ctx, func_obj, this_obj, argc, argv)
+    s.func_state = fs
+    # execute the function up to 'OP_initial_yield' (no yield nor
+    # await are possible)
+    let func_ret = try async_func_resume(ctx, fs)
+    js_free_value(ctx, func_ret)
+
+    let obj = try js_create_from_ctor(ctx, func_obj, (u32)ClassId.async_generator)
+    s.generator = obj.u.obj
+    js_set_opaque(obj, s)
+    return obj

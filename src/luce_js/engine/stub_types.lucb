@@ -8,13 +8,7 @@
 #
 #==============================================================================================
 
-struct AsyncGeneratorData:
-    var unported: i32
-
 struct CodeContext:
-    var unported: i32
-
-struct GeneratorData:
     var unported: i32
 
 struct JSONParseRecord:

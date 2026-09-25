@@ -1,0 +1,106 @@
+#==============================================================================================
+#
+#   tests_r15 - Tests of generators and suspended frames
+#
+#   DESCRIPTION:
+#       The generator protocol run on hand-assembled generator bytecode in the raw
+#       context of tests_interpreter (a real runtime, no intrinsic): the call runs the
+#       frame up to OP_initial_yield, next() resumes it with the argument as the value
+#       of `yield`, a return completes it, a throw on a fresh generator completes it
+#       without running it, and an exception in the body completes it. Async functions
+#       and async generators need the Promise intrinsics and are left to the JavaScript
+#       tests. The runtime cannot be freed until the collector is complete, so each test
+#       leaves its runtime allocated.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# The GeneratorData of the generator object `gen`.
+func test_r15_generator_data(gen: Value) -> GeneratorData*:
+    let raw = js_get_opaque(gen, (u32)ClassId.generator) else trap("not a generator")
+    return (GeneratorData*)raw
+
+# A generator object of `code`, as a call of its generator function makes it.
+func test_r15_generator(ctx: Context*, code: const u8[]) -> Value:
+    let f = test_interp_function(ctx, code, 0, 0, 2, js_func_generator)
+    var no_args = js_undefined()
+    return js_generator_function_call(ctx, f, js_undefined(), 0, &no_args, 0) catch: trap("the generator call failed")
+
+# function* () { const x = yield 7; return x + 1 }
+let test_r15_yield_code: u8[8] = [
+    (u8)Op.initial_yield,                       # 0: the call stops here
+    (u8)Op.push_i8, 7,                          # 1
+    (u8)Op.yield,                               # 3: next() pushes its argument and magic
+    (u8)Op.drop,                                # 4: the magic
+    (u8)Op.push_1, (u8)Op.add,                  # 5: x + 1
+    (u8)Op.return_async,                        # 7: the result stays at cur_sp[-1]
+]
+
+# mark: Constants ===============================================================================
+
+test "the generator constants and states are QuickJS's":
+    assert(gen_magic_next == 0 and gen_magic_return == 1 and gen_magic_throw == 2)
+    assert((i32)GeneratorState.suspended_start == 0 and (i32)GeneratorState.completed == 4)
+    assert((i32)AsyncGeneratorState.awaiting_return == 4 and (i32)AsyncGeneratorState.completed == 5)
+
+# mark: Generators ==============================================================================
+
+test "a generator yields, resumes with the next argument and returns":
+    let ctx = test_interp_context()
+    let gen = test_r15_generator(ctx, test_r15_yield_code)
+    let s = test_r15_generator_data(gen)
+    assert(s.state == GeneratorState.suspended_start)
+
+    var done: i32 = -1
+    var arg = js_undefined()
+    let r1 = js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_next) catch: trap("the first next failed")
+    assert(test_interp_int(r1) == 7)
+    assert(done == 0)
+    assert(s.state == GeneratorState.suspended_yield)
+
+    arg = js_new_int32(10)
+    let r2 = js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_next) catch: trap("the second next failed")
+    assert(test_interp_int(r2) == 11)
+    assert(done == 1)
+    assert(s.state == GeneratorState.completed)
+    assert(s.func_state == none)
+
+    # a completed generator answers undefined to next and its argument to return
+    let r3 = js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_next) catch: trap("next on a completed generator failed")
+    assert(js_is_undefined(r3) and done == 1)
+    let r4 = js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_return) catch: trap("return on a completed generator failed")
+    assert(test_interp_int(r4) == 10 and done == 1)
+    assert(ctx.rt.current_stack_frame == none)
+
+test "throw on a fresh generator completes it without running it":
+    let ctx = test_interp_context()
+    let gen = test_r15_generator(ctx, test_r15_yield_code)
+    let s = test_r15_generator_data(gen)
+    var done: i32 = -1
+    var arg = js_new_int32(3)
+    var failed = false
+    discard(js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_throw) catch:
+        failed = true
+        recover js_undefined())
+    assert(failed and done == 1)
+    assert(s.state == GeneratorState.completed)
+    let thrown = js_get_exception(ctx)
+    assert(test_interp_int(thrown) == 3)
+
+test "an exception in the body completes the generator":
+    let ctx = test_interp_context()
+    let code: u8[4] = [(u8)Op.initial_yield, (u8)Op.push_i8, 5, (u8)Op.throw]
+    let gen = test_r15_generator(ctx, code)
+    let s = test_r15_generator_data(gen)
+    var done: i32 = -1
+    var arg = js_undefined()
+    var failed = false
+    discard(js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_next) catch:
+        failed = true
+        recover js_undefined())
+    assert(failed)
+    assert(s.state == GeneratorState.completed)
+    assert(s.func_state == none)
+    assert(test_interp_int(js_get_exception(ctx)) == 5)
+    assert(ctx.rt.current_stack_frame == none)
