@@ -285,6 +285,7 @@ func free_function_bytecode(rt: Runtime*, b: FunctionBytecode*):
     if (usize)b.realm != 0:
         js_free_context(b.realm)
 
+    free_regexp_cache(rt, b)
     js_free_atom_rt(rt, b.func_name)
     if b.has_debug:
         js_free_atom_rt(rt, b.debug.filename)

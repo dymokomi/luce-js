@@ -35,6 +35,8 @@ TESTS = [
     ("test_rw_handler.js", []),
     # not upstream: regressions found by test262 (tests/test262.py)
     ("test_conformance.js", []),
+    # not upstream: both sides of the interpreter's fast paths
+    ("test_fast_paths.js", []),
 ]
 
 # file -> why it cannot pass. Keep the classification: (a) a port bug, (b) a compiler bug,

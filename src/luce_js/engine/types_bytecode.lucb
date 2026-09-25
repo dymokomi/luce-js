@@ -196,6 +196,10 @@ struct FunctionBytecode:
     var cpool: Value*?
     var cpool_count: i32
     var closure_var_count: i32
+    ## The compiled programs of the function's regular expression literals, by first
+    ## evaluation (the port's; see RegExpShared). Before `debug`, which a function without
+    ## debug information does not allocate.
+    var regexp_cache: RegExpShared*?
     var debug: FunctionBytecodeDebug
 
 ## A bound function's target and arguments (JSBoundFunction); `argc` values follow it.
@@ -222,11 +226,27 @@ struct ForInIterator:
 
 ## A regular expression's pattern and compiled program (JSRegExp). QuickJS keeps the
 ## program as a bytecode JSString; the port holds luce-regex's program, which the object
-## owns (see regexp_bridge.lucb).
+## owns, or shares with the other objects of one regular expression literal (see
+## regexp_bridge.lucb).
 struct RegExp:
     var pattern: String*
     ## Also contains the flags; none until the object is set.
     var program: regex.Regex*?
+    ## The literal's shared program when `program` is it (the object holds a reference to
+    ## it), else none (the object owns `program`).
+    var shared: RegExpShared*?
+
+## The program of a regular expression literal, compiled when the literal is first
+## evaluated and shared by the RegExp objects it makes, as QuickJS's objects share the
+## bytecode string compiled with the function. The literal's function (its regexp_cache
+## list) and each of the objects hold a reference.
+struct RegExpShared:
+    var ref_count: i32
+    var program: regex.Regex*
+    ## The literal's pattern and flags strings, constants of the function: the cache key.
+    var pattern: String*
+    var flags: String*
+    var next: RegExpShared*?
 
 ## A proxy's target and handler (JSProxyData).
 struct ProxyData:

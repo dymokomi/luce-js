@@ -234,6 +234,13 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                         st.sp = sp
                         exit = FrameExit.done
                         break frame
+                    # an object `this` (the outlined body converts the others)
+                    .push_this:
+                        if st.this_obj.tag == Tag.object:
+                            *sp = st.this_obj
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                            sp += 1
+                            continue dispatch
                     .nop:
                         continue dispatch
 
@@ -446,6 +453,35 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                         let old_bits = pv.u.uint64
                         sp -= 1
                         *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .put_var_ref0, .put_var_ref1, .put_var_ref2, .put_var_ref3:
+                        let pv = var_refs[(usize)((u8)op - (u8)Op.put_var_ref0)].pvalue
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        sp -= 1
+                        *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .set_var_ref0, .set_var_ref1, .set_var_ref2, .set_var_ref3, .set_var_ref:
+                        var idx: usize = 0
+                        if op == Op.set_var_ref:
+                            idx = (usize)((const Operand16*)pc).v
+                            pc += 2
+                        else:
+                            idx = (usize)((u8)op - (u8)Op.set_var_ref0)
+                        let pv = var_refs[idx].pvalue
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        *pv = sp[-1]
+                        if (i64)pv.tag < 0:
+                            *(i32*)((usize)pv.u.uint64 -% 4) +%= 1
                         if (i64)old_tag < 0:
                             *(i32*)((usize)old_bits -% 4) -%= 1
                             if *(i32*)((usize)old_bits -% 4) <= 0:
@@ -787,9 +823,9 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
 
                     # Named properties (GET_FIELD_INLINE, OP_put_field): a data property of a
                     # plain object, own or (for reads) inherited, found by find_own_property's
-                    # hash-chain walk (shape_find_own) written out here as C inlines it. An
-                    # accessor, an exotic object on the way, a read-only or missing property
-                    # (for writes) and a primitive fall through to the outlined body.
+                    # hash-chain walk written out here as C inlines it. An accessor, an exotic
+                    # object on the way, a read-only or missing property (for writes) and a
+                    # primitive fall through to the outlined body.
                     .get_field, .get_field2, .get_length:
                         if sp[-1].tag == Tag.object:
                             let atom = atom_length if op == Op.get_length else ((const Operand32*)pc).v

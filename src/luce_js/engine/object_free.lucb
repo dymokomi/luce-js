@@ -48,46 +48,38 @@ func free_property(rt: Runtime*, pr: Property*, prop_flags: i32):
 # mark: Own property lookup =====================================================================
 
 # find_own_property1 and find_own_property are force_inline in C, and every property access
-# runs them. Their hash-chain walk is shape_find_own, written in integer addressing with
-# wrapping arithmetic and no traps (as C reads the table) so that it stays within the size
-# the native inliner expands; the 1-based index it answers reaches both the shape property
-# (shape_prop_at) and the object's storage (`p.prop + (h - 1)`).
-
-## The 1-based index of the property `atom` in the shape `sh`, or 0 when the shape has
-## none: the hash-chain walk of find_own_property.
-func shape_find_own(sh: Shape*, atom: Atom) -> u32:
-    let hash_table = (usize)sh +% sizeof(Shape)
-    var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
-    # prop[h - 1] lies at prop_base + h * sizeof(ShapeProperty)
-    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
-    while h != 0:
-        let pr = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
-        if pr.atom == atom:
-            return h
-        h = pr.hash_next
-    return 0
-
-## `&get_shape_prop(sh)[h - 1]` for the 1-based index `h` of shape_find_own.
-func shape_prop_at(sh: Shape*, h: u32) -> ShapeProperty*:
-    return (ShapeProperty*)((usize)sh +% sizeof(Shape) +% (usize)sh.prop_hash_mask *% 4 +% 4 +% (usize)(h -% 1) *% sizeof(ShapeProperty))
+# runs them. The native inliner does not expand a function with a loop, so each walks the
+# hash chain itself (as in C) rather than through a shared helper: one call per lookup. The
+# walk is written in integer addressing with wrapping arithmetic and no traps, as C reads
+# the table: prop[h - 1] lies at `prop_base + h * sizeof(ShapeProperty)`.
 
 ## The shape property of `p`'s own property `atom`, or none.
 func find_own_property1(p: Object*, atom: Atom) -> ShapeProperty*?:
     let sh = p.shape
-    let h = shape_find_own(sh, atom)
-    if h != 0:
-        return shape_prop_at(sh, h)
+    let hash_table = (usize)sh +% sizeof(Shape)
+    var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
+    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
+    while h != 0:
+        let pr = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
+        if pr.atom == atom:
+            return pr
+        h = pr.hash_next
     return none
 
 ## The shape property of `p`'s own property `atom`, or none; `*ppr` receives its storage
 ## (none when not found).
 func find_own_property(ppr: Property*?*, p: Object*, atom: Atom) -> ShapeProperty*?:
     let sh = p.shape
-    let h = shape_find_own(sh, atom)
-    if h != 0:
-        *ppr = p.prop + (usize)(h -% 1)
-        # the compiler should be able to assume that pr != NULL here
-        return shape_prop_at(sh, h)
+    let hash_table = (usize)sh +% sizeof(Shape)
+    var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
+    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
+    while h != 0:
+        let pr = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
+        if pr.atom == atom:
+            *ppr = p.prop + (usize)(h -% 1)
+            # the compiler should be able to assume that pr != NULL here
+            return pr
+        h = pr.hash_next
     *ppr = none
     return none
 
