@@ -22,8 +22,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LJS = os.path.join(ROOT, "build", "ljs")
 
-# (file, extra ljs options), in the order of upstream's Makefile. test_worker.js needs
-# os.Worker, which the host does not port.
+# (file, extra ljs options), in the order of upstream's Makefile.
 TESTS = [
     ("test_closure.js", []),
     ("test_language.js", []),
@@ -31,10 +30,13 @@ TESTS = [
     ("test_loop.js", []),
     ("test_bigint.js", []),
     ("test_cyclic_import.js", []),
+    ("test_worker.js", []),
     ("test_std.js", []),
     ("test_rw_handler.js", []),
     # not upstream: regressions found by test262 (tests/test262.py)
     ("test_conformance.js", []),
+    # not upstream: Atomics.wait/notify between a worker and the main thread
+    ("test_worker_atomics.js", []),
 ]
 
 # file -> why it cannot pass. Keep the classification: (a) a port bug, (b) a compiler bug,
