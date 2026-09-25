@@ -86,12 +86,6 @@ struct ParsePos:
 struct ParseState:
     var unported: i32
 
-struct PrintValueOptions:
-    var unported: i32
-
-struct PrintValueState:
-    var unported: i32
-
 struct PromiseData:
     var unported: i32
 
@@ -144,10 +138,8 @@ enum StrictEqMode as i32:
     unported = 0
 
 enum ToNumberHint as i32:
-    unported = 0
+    number = 0
+    numeric = 1
 
 enum VarDefKind as i32:
     unported = 0
-
-type PrintValueWrite = func() -> unit
-

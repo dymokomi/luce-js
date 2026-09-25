@@ -203,3 +203,7 @@ func js_reflect_set_prototype_of(ctx: Context*, this_val: Value, argc: i32, argv
 ## Ported from quickjs.c:50547 js_reflect_ownKeys.
 func js_reflect_own_keys(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     trap("unported: js_reflect_ownKeys")
+## Stands in for luce_js.regexp's lre_get_flags (libregexp.c:3377) until the engine
+## imports the regexp module (added by r12 for js_print_regexp).
+func lre_get_flags(bc_buf: const u8*) -> i32:
+    trap("unported: lre_get_flags")

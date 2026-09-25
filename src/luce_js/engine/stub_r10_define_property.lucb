@@ -116,3 +116,14 @@ func skip_spaces(pc: const u8*) -> i32:
 ## Ported from quickjs.c:11252 to_digit.
 func to_digit(c: i32) -> i32:
     trap("unported: to_digit")
+
+# Placeholders for quickjs.c's HINT_* values of JS_ToPrimitive (line 1244); added by r12,
+# whose ToString, ToNumber and ToBigInt pass them.
+## HINT_STRING.
+let hint_string: i32 = 0
+## HINT_NUMBER.
+let hint_number: i32 = 1
+## HINT_NONE.
+let hint_none: i32 = 2
+## HINT_FORCE_ORDINARY: don't try Symbol.toPrimitive.
+let hint_force_ordinary: i32 = 1 << 4

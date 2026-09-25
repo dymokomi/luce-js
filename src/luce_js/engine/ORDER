@@ -27,7 +27,12 @@ stub_r08_property_get.lucb
 stub_r09_property_set.lucb
 stub_r10_define_property.lucb
 stub_r11_bigint.lucb
-stub_r12_conversions.lucb
+conversions_number.lucb
+conversions_string.lucb
+print_value.lucb
+print_object.lucb
+conversions_bigint.lucb
+arith_slow.lucb
 stub_r13_operators.lucb
 stub_r14_interpreter.lucb
 stub_r15_async_generators.lucb
@@ -49,3 +54,4 @@ tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
+tests_r12.lucb

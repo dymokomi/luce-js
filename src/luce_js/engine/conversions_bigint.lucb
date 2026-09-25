@@ -1,0 +1,126 @@
+#==============================================================================================
+#
+#   conversions_bigint - JS_IsArray, js_pow, and conversions to and from BigInt
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 14555-14718: JS_IsArray, js_pow (Math.pow and `**` on
+#       numbers), JS_NewBigInt64 and JS_NewBigUint64, BigInt literals in strings
+#       (JS_StringToBigInt, JS_StringToBigIntErr) and ToBigInt (JS_ToBigIntFree,
+#       JS_ToBigInt, JS_ToBigInt64Free, JS_ToBigInt64). A short BigInt holds 32 bits in this
+#       port (JS_SHORT_BIG_INT_BITS == 32).
+#
+#==============================================================================================
+
+# return -1 if exception (proxy case) or TRUE/FALSE
+# TODO (upstream): should take flags to make proxy resolution and exceptions optional
+## Whether `val` is an array, looking through proxies (JS_IsArray).
+pub func js_is_array(ctx: Context*, val: Value) -> bool!:
+    var v = val
+    try js_resolve_proxy(ctx, &v, true)
+    if v.tag == Tag.object:
+        let p = js_value_get_obj(v)
+        return p.class_id == ClassId.array
+    else:
+        return false
+
+## `a` to the power `b`, with JavaScript's NaN for (+-1) ** +-Infinity (js_pow).
+func js_pow(a: f64, b: f64) -> f64:
+    if not math.is_finite(b) and math.abs(a) == 1.0:
+        # not compatible with IEEE 754
+        return math.nan
+    else:
+        return math.pow(a, b)
+
+# mark: Making BigInts ==========================================================================
+
+## A BigInt of the value `v` (JS_NewBigInt64).
+pub func js_new_bigint64(ctx: Context*, v: i64) -> Value!:
+    if v >= -2147483648 and v <= 2147483647:
+        return js_new_short_big_int_raw((i32)v)
+    else:
+        let p = try js_bigint_new_si64(ctx, v)
+        return js_mkptr(Tag.big_int, p)
+
+## A BigInt of the value `v` (JS_NewBigUint64).
+pub func js_new_big_uint64(ctx: Context*, v: u64) -> Value!:
+    if v <= 2147483647:
+        return js_new_short_big_int_raw((i32)v)
+    else:
+        let p = try js_bigint_new_ui64(ctx, v)
+        return js_mkptr(Tag.big_int, p)
+
+# return NaN if bad bigint literal
+func js_string_to_bigint(ctx: Context*, val: Value) -> Value!:
+    var len: usize = 0
+    let text = js_to_c_string_len(ctx, &len, val) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, val)
+    defer js_free_c_string(ctx, text)
+    var p = text
+    p = p + (usize)skip_spaces(p)
+    if (usize)(p - text) == len:
+        return try js_new_bigint64(ctx, 0)
+    let flags = atod_int_only | atod_accept_bin_oct | atod_type_big_int
+    var ret = try js_atof(ctx, p, &p, 0, flags)
+    p = p + (usize)skip_spaces(p)
+    if (usize)(p - text) != len:
+        js_free_value(ctx, ret)
+        ret = js_nan()
+    return ret
+
+## The BigInt literal in the string `val`, which is freed; a SyntaxError when it is not
+## one (JS_StringToBigIntErr).
+func js_string_to_bigint_err(ctx: Context*, val: Value) -> Value!:
+    let ret = try js_string_to_bigint(ctx, val)
+    if js_value_is_nan(ret):
+        try js_throw_syntax_error(ctx, "invalid bigint literal")
+    return ret
+
+# mark: ToBigInt ================================================================================
+
+# JS Numbers are not allowed
+func js_to_bigint_free(ctx: Context*, val0: Value) -> Value!:
+    var val = val0
+    # redo:
+    while true:
+        match val.tag:
+            .short_big_int, .big_int:
+                return val
+            .boolean:
+                return js_new_short_big_int_raw(js_value_get_int(val))
+            .string, .string_rope:
+                val = try js_string_to_bigint_err(ctx, val)
+            .object:
+                val = try js_to_primitive_free(ctx, val, hint_number)
+            _:
+                # int, null, undefined, float64 and the other tags
+                js_free_value(ctx, val)
+                try js_throw_type_error(ctx, "cannot convert to bigint")
+
+## ToBigInt of `val` (JS_ToBigInt).
+func js_to_bigint(ctx: Context*, val: Value) -> Value!:
+    return try js_to_bigint_free(ctx, js_dup_value(ctx, val))
+
+# XXX: merge with JS_ToInt64Free with a specific flag ?
+func js_to_bigint64_free(ctx: Context*, pres: i64*, val0: Value) -> !:
+    let val = js_to_bigint_free(ctx, val0) catch failure:
+        *pres = 0
+        error(failure.code, failure.message)
+    var res: u64 = 0
+    if val.tag == Tag.short_big_int:
+        res = (u64)(i64)js_value_get_short_big_int(val)
+    else:
+        let p = val.u.big_int
+        # the limbs follow the header (JSBigInt.tab)
+        let tab = (u32*)((u8*)p + sizeof(BigInt))
+        # return the value mod 2^64
+        res = tab[0]
+        if p.len >= 2:
+            res |= (u64)tab[1] << 32
+        js_free_value(ctx, val)
+    *pres = (i64)res
+
+## ToBigInt of `val` modulo 2^64 in `*pres`; a TypeError for a Number (JS_ToBigInt64).
+pub func js_to_bigint64(ctx: Context*, pres: i64*, val: Value) -> !:
+    try js_to_bigint64_free(ctx, pres, js_dup_value(ctx, val))

@@ -320,3 +320,7 @@ func js_atomics_store(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -
 ## Ported from quickjs.c:60797 js_atomics_isLockFree.
 func js_atomics_is_lock_free(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
     trap("unported: js_atomics_isLockFree")
+## Ported from quickjs.c:193 typed_array_size_log2, the macro over the table at 56733
+## (added by r12: the generator skipped it).
+func typed_array_size_log2(classid: ClassId) -> i32:
+    trap("unported: typed_array_size_log2")

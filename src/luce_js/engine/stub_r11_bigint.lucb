@@ -78,13 +78,13 @@ func js_bigint_dump(ctx: Context*, str_: const u8*, p: const BigInt*):
 func js_bigint_new_si(ctx: Context*, a: i32) -> BigInt*?:
     trap("unported: js_bigint_new_si")
 ## Ported from quickjs.c:11669 js_bigint_new_si64.
-func js_bigint_new_si64(ctx: Context*, a: i64) -> BigInt*?:
+func js_bigint_new_si64(ctx: Context*, a: i64) -> BigInt*!:
     trap("unported: js_bigint_new_si64")
 ## Ported from quickjs.c:11688 js_bigint_new_ui64.
-func js_bigint_new_ui64(ctx: Context*, a: u64) -> BigInt*?:
+func js_bigint_new_ui64(ctx: Context*, a: u64) -> BigInt*!:
     trap("unported: js_bigint_new_ui64")
 ## Ported from quickjs.c:11709 js_bigint_new_di.
-func js_bigint_new_di(ctx: Context*, a: i64) -> BigInt*?:
+func js_bigint_new_di(ctx: Context*, a: i64) -> BigInt*!:
     trap("unported: js_bigint_new_di")
 ## Ported from quickjs.c:11730 js_bigint_normalize1.
 func js_bigint_normalize1(ctx: Context*, a: BigInt*, l: i32) -> BigInt*!:
@@ -102,13 +102,13 @@ func js_bigint_get_si_sat(a: const BigInt*) -> i32:
 func js_bigint_extend(ctx: Context*, r: BigInt*, op1: u32) -> BigInt*!:
     trap("unported: js_bigint_extend")
 ## Ported from quickjs.c:11811 js_bigint_add.
-func js_bigint_add(ctx: Context*, a: const BigInt*, b: const BigInt*, b_neg: i32) -> BigInt*?:
+func js_bigint_add(ctx: Context*, a: const BigInt*, b: const BigInt*, b_neg: bool) -> BigInt*!:
     trap("unported: js_bigint_add")
 ## Ported from quickjs.c:11852 js_bigint_neg.
-func js_bigint_neg(ctx: Context*, a: const BigInt*) -> BigInt*:
+func js_bigint_neg(ctx: Context*, a: const BigInt*) -> BigInt*!:
     trap("unported: js_bigint_neg")
 ## Ported from quickjs.c:11860 js_bigint_mul.
-func js_bigint_mul(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*?:
+func js_bigint_mul(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*!:
     trap("unported: js_bigint_mul")
 ## Ported from quickjs.c:11880 js_bigint_divrem.
 func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem: bool) -> BigInt*!:
@@ -117,7 +117,7 @@ func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem:
 func js_bigint_logic(ctx: Context*, a: const BigInt*, b: const BigInt*, op: Op) -> BigInt*?:
     trap("unported: js_bigint_logic")
 ## Ported from quickjs.c:12034 js_bigint_not.
-func js_bigint_not(ctx: Context*, a: const BigInt*) -> BigInt*?:
+func js_bigint_not(ctx: Context*, a: const BigInt*) -> BigInt*!:
     trap("unported: js_bigint_not")
 ## Ported from quickjs.c:12049 js_bigint_shl.
 func js_bigint_shl(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*?:
@@ -126,7 +126,7 @@ func js_bigint_shl(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*?:
 func js_bigint_shr(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*?:
     trap("unported: js_bigint_shr")
 ## Ported from quickjs.c:12105 js_bigint_pow.
-func js_bigint_pow(ctx: Context*, a: const BigInt*, b: BigInt*) -> BigInt*!:
+func js_bigint_pow(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*!:
     trap("unported: js_bigint_pow")
 ## Ported from quickjs.c:12190 js_bigint_get_mant_exp.
 func js_bigint_get_mant_exp(ctx: Context*, pexp: i32*, a: const BigInt*) -> u64:
@@ -159,11 +159,20 @@ func limb_to_a(q: u8*, n: u32, radix: u32, len: i32) -> u8*:
 func js_bigint_to_string1(ctx: Context*, val: Value, radix: i32) -> Value!:
     trap("unported: js_bigint_to_string1")
 ## Ported from quickjs.c:12732 JS_CompactBigInt.
-func js_compact_bigint(ctx: Context*, p: BigInt*) -> Value!:
+func js_compact_bigint(ctx: Context*, p: BigInt*) -> Value:
     trap("unported: JS_CompactBigInt")
 ## Ported from quickjs.c:12763 js_atof.
-func js_atof(ctx: Context*, str_: const u8*, pp: const u8**, radix: i32, flags: i32) -> Value!:
+func js_atof(ctx: Context*, str_: const u8*, pp: const u8**?, radix: i32, flags: i32) -> Value!:
     trap("unported: js_atof")
 ## Ported from quickjs.c:12946 JS_ToNumberHintFree.
 func js_to_number_hint_free(ctx: Context*, val: Value, flag: ToNumberHint) -> Value!:
     trap("unported: JS_ToNumberHintFree")
+
+# Placeholders for quickjs.c's ATOD_* flags (lines 12744-12758), declared by this region's
+# port; added by r12, whose JS_StringToBigInt uses them.
+## ATOD_INT_ONLY.
+let atod_int_only: i32 = 1 << 0
+## ATOD_ACCEPT_BIN_OCT.
+let atod_accept_bin_oct: i32 = 1 << 2
+## ATOD_TYPE_BIG_INT.
+let atod_type_big_int: i32 = 1 << 7

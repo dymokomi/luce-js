@@ -1,0 +1,321 @@
+#==============================================================================================
+#
+#   arith_slow - The slow paths of the interpreter's arithmetic operators
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 14720-15085: js_unary_arith_slow (+x, -x, ++, --, and ~
+#       on BigInts), js_post_inc_slow (x++ and x--), js_not_slow (~x) and
+#       js_binary_arith_slow (-, *, /, %, ** and the BigInt additions). The operands are
+#       on the interpreter stack below `sp` and the result replaces them. On an exception
+#       the operands' slots are set to undefined, as QuickJS's `exception:` labels do; here
+#       each entry point wraps its body in a `catch` that does it.
+#
+#==============================================================================================
+
+# mark: Unary operators =========================================================================
+
+# The BigInt part of js_unary_arith_slow: `op` on `p1`, the BigInt of `op1`, which is freed.
+func js_unary_arith_bigint(ctx: Context*, sp: Value*, op: Op, op1: Value, p1: const BigInt*) -> !:
+    var r: BigInt* = ---
+    match op:
+        .plus:
+            js_free_value(ctx, op1)
+            try js_throw_type_error(ctx, "bigint argument with unary +")
+        .inc, .dec:
+            var buf2: BigIntBuf = ---
+            let p2 = js_bigint_set_si(&buf2, 2 * ((i32)op - (i32)Op.dec) - 1)
+            r = js_bigint_add(ctx, p1, p2, false) catch failure:
+                js_free_value(ctx, op1)
+                error(failure.code, failure.message)
+        .neg:
+            r = js_bigint_neg(ctx, p1) catch failure:
+                js_free_value(ctx, op1)
+                error(failure.code, failure.message)
+        .not_:
+            r = js_bigint_not(ctx, p1) catch failure:
+                js_free_value(ctx, op1)
+                error(failure.code, failure.message)
+        _:
+            trap("js_unary_arith_bigint: unexpected operator")
+    js_free_value(ctx, op1)
+    *(sp - 1) = js_compact_bigint(ctx, r)
+
+# `op` on a float: the handle_float64 part of js_unary_arith_slow.
+func js_unary_arith_float64(op: Op, d0: f64) -> f64:
+    var d = d0
+    match op:
+        .inc, .dec:
+            let v = 2 * ((i32)op - (i32)Op.dec) - 1
+            d += f64(v)
+        .plus:
+            discard(0)
+        .neg:
+            d = -d
+        _:
+            trap("js_unary_arith_float64: unexpected operator")
+    return d
+
+func js_unary_arith_slow1(ctx: Context*, sp: Value*, op: Op) -> !:
+    var op1 = *(sp - 1)
+    # fast path for float64
+    if js_tag_is_float64(op1.tag):
+        *(sp - 1) = js_new_float64_raw(js_unary_arith_float64(op, js_value_get_float64(op1)))
+        return
+    op1 = try js_to_numeric_free(ctx, op1)
+    match op1.tag:
+        .int:
+            var v64 = (i64)js_value_get_int(op1)
+            match op:
+                .inc, .dec:
+                    let v = 2 * ((i32)op - (i32)Op.dec) - 1
+                    v64 += v
+                .plus:
+                    discard(0)
+                .neg:
+                    if v64 == 0:
+                        *(sp - 1) = js_new_float64_raw(-0.0)
+                        return
+                    else:
+                        v64 = -v64
+                _:
+                    trap("js_unary_arith_slow: unexpected operator")
+            *(sp - 1) = js_new_int64(v64)
+        .short_big_int:
+            let v = (i64)js_value_get_short_big_int(op1)
+            var slow_case = false
+            match op:
+                .plus:
+                    try js_throw_type_error(ctx, "bigint argument with unary +")
+                .inc:
+                    if v == 2147483647:
+                        slow_case = true
+                    else:
+                        *(sp - 1) = js_new_short_big_int_raw((i32)(v + 1))
+                .dec:
+                    if v == -2147483648:
+                        slow_case = true
+                    else:
+                        *(sp - 1) = js_new_short_big_int_raw((i32)(v - 1))
+                .neg:
+                    if v == -2147483648:
+                        slow_case = true
+                    else:
+                        *(sp - 1) = js_new_short_big_int_raw((i32)-v)
+                _:
+                    trap("js_unary_arith_slow: unexpected operator")
+            if slow_case:
+                # bigint_slow_case:
+                var buf1: BigIntBuf = ---
+                let p1 = js_bigint_set_short(&buf1, op1)
+                try js_unary_arith_bigint(ctx, sp, op, op1, p1)
+        .big_int:
+            try js_unary_arith_bigint(ctx, sp, op, op1, op1.u.big_int)
+        _:
+            # handle_float64:
+            *(sp - 1) = js_new_float64_raw(js_unary_arith_float64(op, js_value_get_float64(op1)))
+
+## +x, -x, ++x and --x (and ~x on a BigInt) on the value below `sp`, when it is not an
+## integer (js_unary_arith_slow).
+func js_unary_arith_slow(ctx: Context*, sp: Value*, op: Op) -> !:
+    js_unary_arith_slow1(ctx, sp, op) catch failure:
+        # exception:
+        *(sp - 1) = js_undefined()
+        error(failure.code, failure.message)
+
+## x++ and x-- on the value below `sp`: ToNumeric of it stays, its update is pushed
+## (js_post_inc_slow).
+func js_post_inc_slow(ctx: Context*, sp: Value*, op: Op) -> !:
+    # XXX: allow custom operators
+    let op1 = js_to_numeric_free(ctx, *(sp - 1)) catch failure:
+        *(sp - 1) = js_undefined()
+        error(failure.code, failure.message)
+    *(sp - 1) = op1
+    *sp = js_dup_value(ctx, op1)
+    try js_unary_arith_slow(ctx, sp + 1, (Op)(u8)((i32)op - (i32)Op.post_dec + (i32)Op.dec))
+
+func js_not_slow1(ctx: Context*, sp: Value*) -> !:
+    let op1 = try js_to_numeric_free(ctx, *(sp - 1))
+    if op1.tag == Tag.short_big_int:
+        *(sp - 1) = js_new_short_big_int_raw(~js_value_get_short_big_int(op1))
+    elif op1.tag == Tag.big_int:
+        let r = js_bigint_not(ctx, op1.u.big_int) catch failure:
+            js_free_value(ctx, op1)
+            error(failure.code, failure.message)
+        js_free_value(ctx, op1)
+        *(sp - 1) = js_compact_bigint(ctx, r)
+    else:
+        var v1: i32 = 0
+        try js_to_int32_free(ctx, &v1, op1)
+        *(sp - 1) = js_new_int32(~v1)
+
+## ~x on the value below `sp`, when it is not an integer (js_not_slow).
+func js_not_slow(ctx: Context*, sp: Value*) -> !:
+    js_not_slow1(ctx, sp) catch failure:
+        # exception:
+        *(sp - 1) = js_undefined()
+        error(failure.code, failure.message)
+
+# mark: Binary operators ========================================================================
+
+# `op` on two floats: the handle_float64 part of js_binary_arith_slow.
+func js_binary_arith_float64(op: Op, d1: f64, d2: f64) -> f64:
+    match op:
+        .sub:
+            return d1 - d2
+        .mul:
+            return d1 * d2
+        .div:
+            return d1 / d2
+        .mod:
+            return math.mod(d1, d2)
+        .pow:
+            return js_pow(d1, d2)
+        _:
+            trap("js_binary_arith_float64: unexpected operator")
+
+# `op` on two BigInts.
+func js_binary_arith_bigint_op(ctx: Context*, op: Op, p1: const BigInt*, p2: const BigInt*) -> BigInt*!:
+    match op:
+        .add:
+            return try js_bigint_add(ctx, p1, p2, false)
+        .sub:
+            return try js_bigint_add(ctx, p1, p2, true)
+        .mul:
+            return try js_bigint_mul(ctx, p1, p2)
+        .div:
+            return try js_bigint_divrem(ctx, p1, p2, false)
+        .mod:
+            return try js_bigint_divrem(ctx, p1, p2, true)
+        .pow:
+            return try js_bigint_pow(ctx, p1, p2)
+        _:
+            trap("js_binary_arith_bigint_op: unexpected operator")
+
+# slow_big_int: `op` on the BigInts `op1` and `op2`, which are freed; the result goes
+# in *(sp - 2).
+func js_binary_arith_bigint(ctx: Context*, sp: Value*, op: Op, op1: Value, op2: Value) -> !:
+    var buf1: BigIntBuf = ---
+    var buf2: BigIntBuf = ---
+    # bigint result
+    var p1: BigInt* = ---
+    var p2: BigInt* = ---
+    if op1.tag == Tag.short_big_int:
+        p1 = js_bigint_set_short(&buf1, op1)
+    else:
+        p1 = op1.u.big_int
+    if op2.tag == Tag.short_big_int:
+        p2 = js_bigint_set_short(&buf2, op2)
+    else:
+        p2 = op2.u.big_int
+    let r = js_binary_arith_bigint_op(ctx, op, p1, p2) catch failure:
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+        error(failure.code, failure.message)
+    js_free_value(ctx, op1)
+    js_free_value(ctx, op2)
+    *(sp - 2) = js_compact_bigint(ctx, r)
+
+func js_binary_arith_slow1(ctx: Context*, sp: Value*, op: Op) -> !:
+    var op1 = *(sp - 2)
+    var op2 = *(sp - 1)
+    var tag1 = op1.tag
+    var tag2 = op2.tag
+    # fast path for float operations
+    if tag1 == Tag.float64 and tag2 == Tag.float64:
+        let d1 = js_value_get_float64(op1)
+        let d2 = js_value_get_float64(op2)
+        *(sp - 2) = js_new_float64_raw(js_binary_arith_float64(op, d1, d2))
+        return
+    # fast path for short big int operations
+    if tag1 == Tag.short_big_int and tag2 == Tag.short_big_int:
+        let v1 = js_value_get_short_big_int(op1)
+        let v2 = js_value_get_short_big_int(op2)
+        var v: i64 = 0
+        var slow_big_int = false
+        match op:
+            .sub:
+                v = (i64)v1 - (i64)v2
+            .mul:
+                v = (i64)v1 * (i64)v2
+            .div:
+                if v2 == 0 or ((u32)v1 == (u32)1 << 31 and v2 == -1):
+                    slow_big_int = true
+                else:
+                    *(sp - 2) = js_new_short_big_int_raw(v1 // v2)
+                    return
+            .mod:
+                if v2 == 0 or ((u32)v1 == (u32)1 << 31 and v2 == -1):
+                    slow_big_int = true
+                else:
+                    *(sp - 2) = js_new_short_big_int_raw(v1 % v2)
+                    return
+            .pow:
+                slow_big_int = true
+            _:
+                trap("js_binary_arith_slow: unexpected operator")
+        if slow_big_int:
+            try js_binary_arith_bigint(ctx, sp, op, op1, op2)
+            return
+        if v >= -2147483648 and v <= 2147483647:
+            *(sp - 2) = js_new_short_big_int_raw((i32)v)
+        else:
+            let r = try js_bigint_new_di(ctx, v)
+            *(sp - 2) = js_mkptr(Tag.big_int, r)
+        return
+    op1 = js_to_numeric_free(ctx, op1) catch failure:
+        js_free_value(ctx, op2)
+        error(failure.code, failure.message)
+    op2 = js_to_numeric_free(ctx, op2) catch failure:
+        js_free_value(ctx, op1)
+        error(failure.code, failure.message)
+    tag1 = op1.tag
+    tag2 = op2.tag
+
+    if tag1 == Tag.int and tag2 == Tag.int:
+        let v1 = js_value_get_int(op1)
+        let v2 = js_value_get_int(op2)
+        var v: i64 = 0
+        match op:
+            .sub:
+                v = (i64)v1 - (i64)v2
+            .mul:
+                v = (i64)v1 * (i64)v2
+                if v == 0 and (v1 | v2) < 0:
+                    *(sp - 2) = js_new_float64_raw(-0.0)
+                    return
+            .div:
+                *(sp - 2) = js_new_float64(f64(v1) / f64(v2))
+                return
+            .mod:
+                if v1 < 0 or v2 <= 0:
+                    *(sp - 2) = js_new_float64(math.mod(f64(v1), f64(v2)))
+                    return
+                else:
+                    v = (i64)v1 % (i64)v2
+            .pow:
+                *(sp - 2) = js_new_float64(js_pow(f64(v1), f64(v2)))
+                return
+            _:
+                trap("js_binary_arith_slow: unexpected operator")
+        *(sp - 2) = js_new_int64(v)
+    elif ((tag1 == Tag.short_big_int or tag1 == Tag.big_int) and
+          (tag2 == Tag.short_big_int or tag2 == Tag.big_int)):
+        try js_binary_arith_bigint(ctx, sp, op, op1, op2)
+    else:
+        var d1: f64 = 0.0
+        var d2: f64 = 0.0
+        # float64 result
+        js_to_float64_free(ctx, &d1, op1) catch failure:
+            js_free_value(ctx, op2)
+            error(failure.code, failure.message)
+        try js_to_float64_free(ctx, &d2, op2)
+        *(sp - 2) = js_new_float64_raw(js_binary_arith_float64(op, d1, d2))
+
+## `op1 op op2` for -, *, /, % and ** on the two values below `sp`, when they are not both
+## integers; the result replaces them (js_binary_arith_slow).
+func js_binary_arith_slow(ctx: Context*, sp: Value*, op: Op) -> !:
+    js_binary_arith_slow1(ctx, sp, op) catch failure:
+        # exception:
+        *(sp - 2) = js_undefined()
+        *(sp - 1) = js_undefined()
+        error(failure.code, failure.message)

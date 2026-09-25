@@ -122,3 +122,7 @@ func js_get_prototype_primitive(ctx: Context*, val: Value) -> Value!:
 ## Ported from quickjs.c:8027 JS_GetPrototype.
 func js_get_prototype(ctx: Context*, obj: Value) -> Value!:
     trap("unported: JS_GetPrototype")
+## Ported from quickjs.c:7504 get_prop_string (added by r12: the generator skipped
+## functions returning `const char *`).
+func get_prop_string(ctx: Context*, obj: Value, prop: Atom) -> const u8*?:
+    trap("unported: get_prop_string")

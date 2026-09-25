@@ -9,6 +9,7 @@
 #
 #==============================================================================================
 
+import math
 import memory
 import luce_js.cutils as cutils
 import luce_js.dtoa as dtoa
