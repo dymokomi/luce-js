@@ -76,6 +76,10 @@ module_load.lucb
 module_eval.lucb
 function_def.lucb
 module_parse.lucb
+parser_postfix.lucb
+parser_expr.lucb
+parser_statements.lucb
+parser_statement_or_decl.lucb
 stub_r19_resolve.lucb
 bytecode_writer.lucb
 object_writer.lucb
@@ -122,3 +126,4 @@ tests_r22.lucb
 tests_interpreter.lucb
 tests_r29.lucb
 tests_r20.lucb
+tests_r17b.lucb

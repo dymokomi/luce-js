@@ -1,0 +1,614 @@
+#==============================================================================================
+#
+#   parser_expr - Unary, binary, logical, conditional, assignment and comma expressions
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 27500-28316: 'delete', the unary operators and
+#       increments, the binary operators by precedence level, '&&' '||' '??', the
+#       conditional operator, 'yield' and 'yield*', the assignments (plain, compound
+#       and logical), and the comma expression.
+#
+#       A parser function that answers -1 on a syntax error in QuickJS is fallible here
+#       (`-> !`); the SyntaxError is pending in the context, as in C.
+#
+#==============================================================================================
+
+# mark: delete ==================================================================================
+
+func js_parse_delete(s: ParseState*) -> !:
+    let fd = s.fd()
+    try next_token(s)
+    try js_parse_unary(s, pf_pow_forbidden)
+    let opcode = get_prev_opcode(fd)
+    var ret_true = false
+    if opcode == (u8)Op.get_field or opcode == (u8)TempOp.get_field_opt_chain:
+        var opt_chain_label: i32 = -1
+        if opcode == (u8)TempOp.get_field_opt_chain:
+            opt_chain_label = (i32)cutils.get_u32(bytecode_at(fd, fd.last_opcode_pos + 1 + 4 + 1))
+        let name = cutils.get_u32(bytecode_at(fd, fd.last_opcode_pos + 1))
+        fd.byte_code.size = (usize)fd.last_opcode_pos
+        let val = js_atom_to_value(s.ctx, name) catch failure:
+            js_free_atom(s.ctx, name)
+            error(failure.code, failure.message)
+        emit_push_const(s, val, true) catch failure:
+            js_free_value(s.ctx, val)
+            js_free_atom(s.ctx, name)
+            error(failure.code, failure.message)
+        js_free_value(s.ctx, val)
+        js_free_atom(s.ctx, name)
+        emit_op(s, (u8)Op.delete)
+        if opt_chain_label >= 0:
+            let next_label = emit_goto(s, (i32)Op.goto_, -1)
+            discard(emit_label(s, opt_chain_label))
+            # if the optional chain is not taken, return 'true'
+            emit_op(s, (u8)Op.drop)
+            emit_op(s, (u8)Op.push_true)
+            discard(emit_label(s, next_label))
+        fd.last_opcode_pos = -1
+    elif opcode == (u8)Op.get_array_el:
+        fd.byte_code.size = (usize)fd.last_opcode_pos
+        fd.last_opcode_pos = -1
+        emit_op(s, (u8)Op.delete)
+    elif opcode == (u8)TempOp.get_array_el_opt_chain:
+        let opt_chain_label = (i32)cutils.get_u32(bytecode_at(fd, fd.last_opcode_pos + 1 + 1))
+        fd.byte_code.size = (usize)fd.last_opcode_pos
+        emit_op(s, (u8)Op.delete)
+        let next_label = emit_goto(s, (i32)Op.goto_, -1)
+        discard(emit_label(s, opt_chain_label))
+        # if the optional chain is not taken, return 'true'
+        emit_op(s, (u8)Op.drop)
+        emit_op(s, (u8)Op.push_true)
+        discard(emit_label(s, next_label))
+        fd.last_opcode_pos = -1
+    elif opcode == (u8)TempOp.scope_get_var:
+        # 'delete this': this is not a reference
+        let name = cutils.get_u32(bytecode_at(fd, fd.last_opcode_pos + 1))
+        if name == atom_this or name == atom_new_target:
+            ret_true = true
+        elif ((i32)fd.js_mode & js_mode_strict) != 0:
+            try js_parse_error(s, "cannot delete a direct reference in strict mode")
+        else:
+            set_last_opcode(fd, (u8)TempOp.scope_delete_var)
+    elif opcode == (u8)TempOp.scope_get_private_field:
+        try js_parse_error(s, "cannot delete a private class field")
+    elif opcode == (u8)Op.get_super_value:
+        fd.byte_code.size = (usize)fd.last_opcode_pos
+        fd.last_opcode_pos = -1
+        emit_op(s, (u8)Op.throw_error)
+        emit_atom(s, no_atom)
+        emit_u8(s, (u8)throw_error_delete_super)
+    else:
+        ret_true = true
+    if ret_true:
+        emit_op(s, (u8)Op.drop)
+        emit_op(s, (u8)Op.push_true)
+
+# mark: Unary operators =========================================================================
+
+## allowed parse_flags: PF_POW_ALLOWED, PF_POW_FORBIDDEN
+func js_parse_unary(s: ParseState*, parse_flags0: i32) -> !:
+    var parse_flags = parse_flags0
+    match s.token.val:
+        .plus, .minus, .bang, .tilde, .void_:
+            let op_token_ptr = s.token.ptr
+            let op = s.token.val
+            try next_token(s)
+            try js_parse_unary(s, pf_pow_forbidden)
+            match op:
+                .minus:
+                    emit_source_pos(s, op_token_ptr)
+                    emit_op(s, (u8)Op.neg)
+                .plus:
+                    emit_source_pos(s, op_token_ptr)
+                    emit_op(s, (u8)Op.plus)
+                .bang:
+                    emit_op(s, (u8)Op.lnot)
+                .tilde:
+                    emit_source_pos(s, op_token_ptr)
+                    emit_op(s, (u8)Op.not_)
+                .void_:
+                    emit_op(s, (u8)Op.drop)
+                    emit_op(s, (u8)Op.undefined)
+                _:
+                    trap("js_parse_unary: unexpected operator")
+            parse_flags = 0
+        .dec, .inc:
+            let op = s.token.val
+            let op_token_ptr = s.token.ptr
+            try next_token(s)
+            try js_parse_unary(s, 0)
+            var opcode: i32 = 0
+            var scope: i32 = 0
+            var name = no_atom
+            var label: i32 = 0
+            var depth_unused: i32 = 0
+            try get_lvalue(s, &opcode, &scope, &name, &label, &depth_unused, true, op)
+            emit_source_pos(s, op_token_ptr)
+            emit_op(s, (u8)((i32)Op.dec + (i32)op - (i32)TokenType.dec))
+            put_lvalue(s, opcode, scope, name, label, PutLValueKind.keep_top, false)
+        .typeof:
+            try next_token(s)
+            try js_parse_unary(s, pf_pow_forbidden)
+            # reference access should not return an exception, so we patch the get_var
+            let fd = s.fd()
+            if get_prev_opcode(fd) == (u8)TempOp.scope_get_var:
+                set_last_opcode(fd, (u8)TempOp.scope_get_var_undef)
+            emit_op(s, (u8)Op.typeof)
+            parse_flags = 0
+        .delete:
+            try js_parse_delete(s)
+            parse_flags = 0
+        .await:
+            if (s.fd().func_kind & js_func_async) == 0:
+                try js_parse_error(s, "unexpected 'await' keyword")
+            if not s.fd().in_function_body:
+                try js_parse_error(s, "await in default expression")
+            try next_token(s)
+            try js_parse_unary(s, pf_pow_forbidden)
+            s.fd().has_await = true
+            emit_op(s, (u8)Op.await)
+            parse_flags = 0
+        _:
+            try js_parse_postfix_expr(s, pf_postfix_call)
+            if not s.got_lf and (s.token.val == TokenType.dec or s.token.val == TokenType.inc):
+                let op = s.token.val
+                let op_token_ptr = s.token.ptr
+                var opcode: i32 = 0
+                var scope: i32 = 0
+                var name = no_atom
+                var label: i32 = 0
+                var depth_unused: i32 = 0
+                try get_lvalue(s, &opcode, &scope, &name, &label, &depth_unused, true, op)
+                emit_source_pos(s, op_token_ptr)
+                emit_op(s, (u8)((i32)Op.post_dec + (i32)op - (i32)TokenType.dec))
+                put_lvalue(s, opcode, scope, name, label, PutLValueKind.keep_second, false)
+                try next_token(s)
+    if (parse_flags & (pf_pow_allowed | pf_pow_forbidden)) != 0:
+        if s.token.val == TokenType.pow:
+            # Strict ES7 exponentiation syntax rules: To solve conficting semantics between
+            # different implementations regarding the precedence of prefix operators and
+            # the postifx exponential, ES7 specifies that -2**2 is a syntax error.
+            if (parse_flags & pf_pow_forbidden) != 0:
+                try js_throw_syntax_error(s.ctx, "unparenthesized unary expression can't appear on the left-hand side of '**'")
+            let op_token_ptr = s.token.ptr
+            try next_token(s)
+            try js_parse_unary(s, pf_pow_allowed)
+            emit_source_pos(s, op_token_ptr)
+            emit_op(s, (u8)Op.pow)
+
+# mark: Binary operators ========================================================================
+
+# The opcode of the binary operator `op` at precedence `level` (1: multiplicative to 8:
+# '|'), or none if `op` is not one of that level ('in' only with PF_IN_ACCEPTED).
+func binary_opcode(level: i32, op: TokenType, parse_flags: i32) -> Op?:
+    match level:
+        1:
+            match op:
+                .star: return Op.mul
+                .slash: return Op.div
+                .percent: return Op.mod
+                _: return none
+        2:
+            match op:
+                .plus: return Op.add
+                .minus: return Op.sub
+                _: return none
+        3:
+            match op:
+                .shl: return Op.shl
+                .sar: return Op.sar
+                .shr: return Op.shr
+                _: return none
+        4:
+            match op:
+                .less: return Op.lt
+                .greater: return Op.gt
+                .lte: return Op.lte
+                .gte: return Op.gte
+                .instanceof: return Op.instanceof
+                .in_:
+                    if (parse_flags & pf_in_accepted) != 0:
+                        return Op.in_
+                    return none
+                _: return none
+        5:
+            match op:
+                .eq: return Op.eq
+                .neq: return Op.neq
+                .strict_eq: return Op.strict_eq
+                .strict_neq: return Op.strict_neq
+                _: return none
+        6:
+            if op == TokenType.ampersand:
+                return Op.and_
+            return none
+        7:
+            if op == TokenType.caret:
+                return Op.xor
+            return none
+        8:
+            if op == TokenType.pipe:
+                return Op.or_
+            return none
+        _:
+            trap("js_parse_expr_binary: invalid level")
+
+## allowed parse_flags: PF_IN_ACCEPTED
+func js_parse_expr_binary(s: ParseState*, level: i32, parse_flags: i32) -> !:
+    if level == 0:
+        try js_parse_unary(s, pf_pow_allowed)
+        return
+    elif (s.token.val == TokenType.private_name and (parse_flags & pf_in_accepted) != 0 and
+          level == 4 and peek_token(s, false) == TokenType.in_):
+        let atom = js_dup_atom(s.ctx, s.token.u.ident.atom)
+        errdefer js_free_atom(s.ctx, atom)
+        try next_token(s)
+        if s.token.val != TokenType.in_:
+            # QuickJS fails here without throwing (peek_token saw 'in')
+            error(exception, "")
+        try next_token(s)
+        try js_parse_expr_binary(s, level - 1, parse_flags)
+        emit_op(s, (u8)TempOp.scope_in_private_field)
+        emit_atom(s, atom)
+        emit_u16(s, (u16)s.fd().scope_level)
+        js_free_atom(s.ctx, atom)
+        return
+    else:
+        try js_parse_expr_binary(s, level - 1, parse_flags)
+    while true:
+        let op = s.token.val
+        let op_token_ptr = s.token.ptr
+        let opcode = binary_opcode(level, op, parse_flags) else return
+        try next_token(s)
+        try js_parse_expr_binary(s, level - 1, parse_flags)
+        emit_source_pos(s, op_token_ptr)
+        emit_op(s, (u8)opcode)
+
+# mark: Logical and conditional operators =======================================================
+
+## allowed parse_flags: PF_IN_ACCEPTED
+func js_parse_logical_and_or(s: ParseState*, op: TokenType, parse_flags: i32) -> !:
+    if op == TokenType.land:
+        try js_parse_expr_binary(s, 8, parse_flags)
+    else:
+        try js_parse_logical_and_or(s, TokenType.land, parse_flags)
+    if s.token.val == op:
+        let label1 = new_label(s)
+
+        while true:
+            try next_token(s)
+            emit_op(s, (u8)Op.dup)
+            let jump = (i32)Op.if_false if op == TokenType.land else (i32)Op.if_true
+            discard(emit_goto(s, jump, label1))
+            emit_op(s, (u8)Op.drop)
+
+            if op == TokenType.land:
+                try js_parse_expr_binary(s, 8, parse_flags)
+            else:
+                try js_parse_logical_and_or(s, TokenType.land, parse_flags)
+            if s.token.val != op:
+                if s.token.val == TokenType.double_question_mark:
+                    try js_parse_error(s, "cannot mix ?? with && or ||")
+                break
+
+        discard(emit_label(s, label1))
+
+func js_parse_coalesce_expr(s: ParseState*, parse_flags: i32) -> !:
+    try js_parse_logical_and_or(s, TokenType.lor, parse_flags)
+    if s.token.val == TokenType.double_question_mark:
+        let label1 = new_label(s)
+        while true:
+            try next_token(s)
+
+            emit_op(s, (u8)Op.dup)
+            emit_op(s, (u8)Op.is_undefined_or_null)
+            discard(emit_goto(s, (i32)Op.if_false, label1))
+            emit_op(s, (u8)Op.drop)
+
+            try js_parse_expr_binary(s, 8, parse_flags)
+            if s.token.val != TokenType.double_question_mark:
+                break
+        discard(emit_label(s, label1))
+
+## allowed parse_flags: PF_IN_ACCEPTED
+func js_parse_cond_expr(s: ParseState*, parse_flags: i32) -> !:
+    try js_parse_coalesce_expr(s, parse_flags)
+    if s.token.val == TokenType.question:
+        try next_token(s)
+        let label1 = emit_goto(s, (i32)Op.if_false, -1)
+
+        try js_parse_assign_expr(s)
+        try js_parse_expect(s, TokenType.colon)
+
+        let label2 = emit_goto(s, (i32)Op.goto_, -1)
+
+        discard(emit_label(s, label1))
+
+        try js_parse_assign_expr2(s, parse_flags & pf_in_accepted)
+
+        discard(emit_label(s, label2))
+
+# mark: yield ===================================================================================
+
+# 'yield' and 'yield*' (the TOK_YIELD case of js_parse_assign_expr2).
+func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
+    var is_star = false
+    if (s.fd().func_kind & js_func_generator) == 0:
+        try js_parse_error(s, "unexpected 'yield' keyword")
+    if not s.fd().in_function_body:
+        try js_parse_error(s, "yield in default expression")
+    try next_token(s)
+    # XXX: is there a better method to detect 'yield' without parameters ?
+    let tok = s.token.val
+    if (tok != TokenType.semicolon and tok != TokenType.rparen and tok != TokenType.rbracket and
+        tok != TokenType.rbrace and tok != TokenType.comma and tok != TokenType.colon and
+        not s.got_lf):
+        if s.token.val == TokenType.star:
+            is_star = true
+            try next_token(s)
+        try js_parse_assign_expr2(s, parse_flags)
+    else:
+        emit_op(s, (u8)Op.undefined)
+    let is_async = s.fd().func_kind == js_func_async_generator
+
+    if is_star:
+        let label_loop = new_label(s)
+        let label_yield = new_label(s)
+
+        emit_op(s, (u8)Op.for_await_of_start if is_async else (u8)Op.for_of_start)
+
+        # remove the catch offset (XXX: could avoid pushing back undefined)
+        emit_op(s, (u8)Op.drop)
+        emit_op(s, (u8)Op.undefined)
+
+        # initial value
+        emit_op(s, (u8)Op.undefined)
+
+        discard(emit_label(s, label_loop))
+        emit_op(s, (u8)Op.iterator_next)
+        if is_async:
+            emit_op(s, (u8)Op.await)
+        emit_op(s, (u8)Op.iterator_check_object)
+        emit_op(s, (u8)Op.get_field2)
+        emit_atom(s, atom_done)
+        # end of loop
+        let label_next = emit_goto(s, (i32)Op.if_true, -1)
+        discard(emit_label(s, label_yield))
+        if is_async:
+            # OP_async_yield_star takes the value as parameter
+            emit_op(s, (u8)Op.get_field)
+            emit_atom(s, atom_value)
+            emit_op(s, (u8)Op.async_yield_star)
+        else:
+            # OP_yield_star takes (value, done) as parameter
+            emit_op(s, (u8)Op.yield_star)
+        emit_op(s, (u8)Op.dup)
+        let label_return = emit_goto(s, (i32)Op.if_true, -1)
+        emit_op(s, (u8)Op.drop)
+        discard(emit_goto(s, (i32)Op.goto_, label_loop))
+
+        discard(emit_label(s, label_return))
+        emit_op(s, (u8)Op.push_i32)
+        emit_u32(s, 2)
+        emit_op(s, (u8)Op.strict_eq)
+        let label_throw = emit_goto(s, (i32)Op.if_true, -1)
+
+        # return handling
+        if is_async:
+            emit_op(s, (u8)Op.await)
+        emit_op(s, (u8)Op.iterator_call)
+        emit_u8(s, 0)
+        let label_return1 = emit_goto(s, (i32)Op.if_true, -1)
+        if is_async:
+            emit_op(s, (u8)Op.await)
+        emit_op(s, (u8)Op.iterator_check_object)
+        emit_op(s, (u8)Op.get_field2)
+        emit_atom(s, atom_done)
+        discard(emit_goto(s, (i32)Op.if_false, label_yield))
+
+        emit_op(s, (u8)Op.get_field)
+        emit_atom(s, atom_value)
+
+        discard(emit_label(s, label_return1))
+        emit_op(s, (u8)Op.nip)
+        emit_op(s, (u8)Op.nip)
+        emit_op(s, (u8)Op.nip)
+        emit_return(s, true)
+
+        # throw handling
+        discard(emit_label(s, label_throw))
+        emit_op(s, (u8)Op.iterator_call)
+        emit_u8(s, 1)
+        let label_throw1 = emit_goto(s, (i32)Op.if_true, -1)
+        if is_async:
+            emit_op(s, (u8)Op.await)
+        emit_op(s, (u8)Op.iterator_check_object)
+        emit_op(s, (u8)Op.get_field2)
+        emit_atom(s, atom_done)
+        discard(emit_goto(s, (i32)Op.if_false, label_yield))
+        discard(emit_goto(s, (i32)Op.goto_, label_next))
+        # close the iterator and throw a type error exception
+        discard(emit_label(s, label_throw1))
+        emit_op(s, (u8)Op.iterator_call)
+        emit_u8(s, 2)
+        let label_throw2 = emit_goto(s, (i32)Op.if_true, -1)
+        if is_async:
+            emit_op(s, (u8)Op.await)
+        discard(emit_label(s, label_throw2))
+
+        emit_op(s, (u8)Op.throw_error)
+        emit_atom(s, no_atom)
+        emit_u8(s, (u8)throw_error_iterator_throw)
+
+        discard(emit_label(s, label_next))
+        emit_op(s, (u8)Op.get_field)
+        emit_atom(s, atom_value)
+        # keep the value associated with done = true
+        emit_op(s, (u8)Op.nip)
+        emit_op(s, (u8)Op.nip)
+        emit_op(s, (u8)Op.nip)
+    else:
+        if is_async:
+            emit_op(s, (u8)Op.await)
+        emit_op(s, (u8)Op.yield)
+        let label_next = emit_goto(s, (i32)Op.if_false, -1)
+        emit_return(s, true)
+        discard(emit_label(s, label_next))
+
+# mark: Assignment ==============================================================================
+
+# The binary opcode of each compound assignment, from TOK_MUL_ASSIGN to TOK_POW_ASSIGN.
+let assign_opcodes: u8[12] = [
+    (u8)Op.mul, (u8)Op.div, (u8)Op.mod, (u8)Op.add, (u8)Op.sub,
+    (u8)Op.shl, (u8)Op.sar, (u8)Op.shr, (u8)Op.and_, (u8)Op.xor, (u8)Op.or_,
+    (u8)Op.pow,
+]
+
+# Whether an arrow function, an async arrow function or a destructuring assignment
+# starts here: if so it is parsed and the answer is true. An 'async' that starts none
+# of them is left current.
+func js_parse_assign_special(s: ParseState*) -> bool!:
+    var bits_unused: i32 = 0
+    if (s.token.val == TokenType.lparen and
+        (try js_parse_skip_parens_token(s, &bits_unused, true)) == TokenType.arrow):
+        try js_parse_function_decl(s, ParseFunctionKind.arrow, js_func_normal, no_atom,
+                                   s.token.ptr)
+        return true
+    elif token_is_pseudo_keyword(s, atom_async):
+        # fast test
+        let tok = peek_token(s, true)
+        if tok == TokenType.function or tok == TokenType.newline:
+            return false
+
+        let source_ptr = s.token.ptr
+        var pos: ParsePos = ---
+        discard(js_parse_get_pos(s, &pos))
+        try next_token(s)
+        if ((s.token.val == TokenType.lparen and
+             (try js_parse_skip_parens_token(s, &bits_unused, true)) == TokenType.arrow) or
+            (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved and
+             peek_token(s, true) == TokenType.arrow)):
+            try js_parse_function_decl(s, ParseFunctionKind.arrow, js_func_async, no_atom,
+                                       source_ptr)
+            return true
+        else:
+            # undo the token parsing
+            try js_parse_seek_token(s, &pos)
+    elif s.token.val == TokenType.ident and peek_token(s, true) == TokenType.arrow:
+        try js_parse_function_decl(s, ParseFunctionKind.arrow, js_func_normal, no_atom,
+                                   s.token.ptr)
+        return true
+    elif s.token.val == TokenType.lbrace or s.token.val == TokenType.lbracket:
+        var skip_bits: i32 = 0
+        if (try js_parse_skip_parens_token(s, &skip_bits, false)) == TokenType.assign:
+            discard(try js_parse_destructuring_element(s, (TokenType)0, false, false, skip_bits & skip_has_ellipsis,
+                                                       true, false))
+            return true
+    return false
+
+## allowed parse_flags: PF_IN_ACCEPTED
+func js_parse_assign_expr2(s: ParseState*, parse_flags: i32) -> !:
+    var name0 = no_atom
+
+    if s.token.val == TokenType.yield:
+        try js_parse_yield_expr(s, parse_flags)
+        return
+    if try js_parse_assign_special(s):
+        return
+    # next:
+    if s.token.val == TokenType.ident:
+        # name0 is used to check for OP_set_name pattern, not duplicated
+        name0 = s.token.u.ident.atom
+    try js_parse_cond_expr(s, parse_flags)
+
+    let op = s.token.val
+    var opcode: i32 = 0
+    var scope: i32 = 0
+    var name = no_atom
+    var label: i32 = 0
+    if (op == TokenType.assign or
+        ((i32)op >= (i32)TokenType.mul_assign and (i32)op <= (i32)TokenType.pow_assign)):
+        let op_token_ptr = s.token.ptr
+        try next_token(s)
+        var depth_unused: i32 = 0
+        try get_lvalue(s, &opcode, &scope, &name, &label, &depth_unused, op != TokenType.assign,
+                       op)
+
+        js_parse_assign_expr2(s, parse_flags) catch failure:
+            js_free_atom(s.ctx, name)
+            error(failure.code, failure.message)
+
+        if op == TokenType.assign:
+            if ((opcode == (i32)Op.get_ref_value or opcode == (i32)TempOp.scope_get_var) and
+                name == name0):
+                set_object_name(s, name)
+        else:
+            let assign_op = assign_opcodes[(usize)((i32)op - (i32)TokenType.mul_assign)]
+            emit_source_pos(s, op_token_ptr)
+            emit_op(s, assign_op)
+        put_lvalue(s, opcode, scope, name, label, PutLValueKind.keep_top, false)
+    elif ((i32)op >= (i32)TokenType.land_assign and
+          (i32)op <= (i32)TokenType.double_question_mark_assign):
+        try next_token(s)
+        var depth_lvalue: i32 = 0
+        try get_lvalue(s, &opcode, &scope, &name, &label, &depth_lvalue, true, op)
+
+        emit_op(s, (u8)Op.dup)
+        if op == TokenType.double_question_mark_assign:
+            emit_op(s, (u8)Op.is_undefined_or_null)
+        let jump = (i32)Op.if_true if op == TokenType.lor_assign else (i32)Op.if_false
+        let label1 = emit_goto(s, jump, -1)
+        emit_op(s, (u8)Op.drop)
+
+        js_parse_assign_expr2(s, parse_flags) catch failure:
+            js_free_atom(s.ctx, name)
+            error(failure.code, failure.message)
+
+        if ((opcode == (i32)Op.get_ref_value or opcode == (i32)TempOp.scope_get_var) and
+            name == name0):
+            set_object_name(s, name)
+
+        match depth_lvalue:
+            0: emit_op(s, (u8)Op.dup)
+            1: emit_op(s, (u8)Op.insert2)
+            2: emit_op(s, (u8)Op.insert3)
+            3: emit_op(s, (u8)Op.insert4)
+            _: trap("js_parse_assign_expr2: invalid lvalue depth")
+
+        # XXX: we disable the OP_put_ref_value optimization by not using put_lvalue()
+        # otherwise depth_lvalue is not correct
+        put_lvalue(s, opcode, scope, name, label, PutLValueKind.nokeep_depth, false)
+        let label2 = emit_goto(s, (i32)Op.goto_, -1)
+
+        discard(emit_label(s, label1))
+
+        # remove the lvalue stack entries
+        while depth_lvalue != 0:
+            emit_op(s, (u8)Op.nip)
+            depth_lvalue -= 1
+
+        discard(emit_label(s, label2))
+
+func js_parse_assign_expr(s: ParseState*) -> !:
+    try js_parse_assign_expr2(s, pf_in_accepted)
+
+# mark: Comma expressions =======================================================================
+
+## allowed parse_flags: PF_IN_ACCEPTED
+func js_parse_expr2(s: ParseState*, parse_flags: i32) -> !:
+    var comma = false
+    while true:
+        try js_parse_assign_expr2(s, parse_flags)
+        if comma:
+            # prevent get_lvalue from using the last expression as an lvalue. This also
+            # prevents the conversion of of get_var to get_ref for method lookup in
+            # function call inside `with` statement.
+            s.fd().last_opcode_pos = -1
+        if s.token.val != TokenType.comma:
+            break
+        comma = true
+        try next_token(s)
+        emit_op(s, (u8)Op.drop)
+
+func js_parse_expr(s: ParseState*) -> !:
+    try js_parse_expr2(s, pf_in_accepted)

@@ -1,0 +1,182 @@
+#==============================================================================================
+#
+#   tests_r17b - Unit tests of the expression and statement parser helpers
+#
+#   DESCRIPTION:
+#       What the second half of the parser (parser_postfix, parser_expr,
+#       parser_statements, parser_statement_or_decl) holds that runs without a runtime:
+#       the operator tables, the break/continue stack, and the bytecode emit_break and
+#       emit_return produce on a FunctionDef laid out by hand (test_function_def of
+#       tests_tokenizer.lucb). The context is never read by the paths tested.
+#
+#==============================================================================================
+
+# mark: Operator tables =========================================================================
+
+test "binary operators by precedence level":
+    assert(binary_opcode(1, TokenType.star, 0) == Op.mul)
+    assert(binary_opcode(1, TokenType.percent, 0) == Op.mod)
+    assert(binary_opcode(1, TokenType.plus, 0) == none)
+    assert(binary_opcode(2, TokenType.minus, 0) == Op.sub)
+    assert(binary_opcode(3, TokenType.shr, 0) == Op.shr)
+    assert(binary_opcode(4, TokenType.less, 0) == Op.lt)
+    assert(binary_opcode(4, TokenType.gte, 0) == Op.gte)
+    assert(binary_opcode(4, TokenType.instanceof, 0) == Op.instanceof)
+    # 'in' only where it is accepted (not in the head of a for loop)
+    assert(binary_opcode(4, TokenType.in_, 0) == none)
+    assert(binary_opcode(4, TokenType.in_, pf_in_accepted) == Op.in_)
+    assert(binary_opcode(5, TokenType.strict_neq, 0) == Op.strict_neq)
+    assert(binary_opcode(6, TokenType.ampersand, 0) == Op.and_)
+    assert(binary_opcode(7, TokenType.caret, 0) == Op.xor)
+    assert(binary_opcode(8, TokenType.pipe, 0) == Op.or_)
+    assert(binary_opcode(8, TokenType.lor, 0) == none)
+
+test "compound assignments map to their binary opcodes in token order":
+    assert((i32)TokenType.pow_assign - (i32)TokenType.mul_assign == 11)
+    assert(assign_opcodes[0] == (u8)Op.mul)
+    let first = (i32)TokenType.mul_assign
+    assert(assign_opcodes[(usize)((i32)TokenType.plus_assign - first)] == (u8)Op.add)
+    assert(assign_opcodes[(usize)((i32)TokenType.shr_assign - first)] == (u8)Op.shr)
+    assert(assign_opcodes[(usize)((i32)TokenType.or_assign - first)] == (u8)Op.or_)
+    assert(assign_opcodes[11] == (u8)Op.pow)
+
+test "increment opcodes follow the token order":
+    assert((i32)Op.dec + (i32)TokenType.inc - (i32)TokenType.dec == (i32)Op.inc)
+    assert((i32)Op.post_dec + (i32)TokenType.inc - (i32)TokenType.dec == (i32)Op.post_inc)
+
+test "method call opcodes and declaration masks":
+    assert(is_method_call_opcode((i32)Op.get_field))
+    assert(is_method_call_opcode((i32)TempOp.scope_get_ref))
+    assert(not is_method_call_opcode((i32)Op.eval))
+    assert(not is_method_call_opcode((i32)Op.invalid))
+    assert(decl_mask_all == 7)
+
+# mark: The break/continue stack ================================================================
+
+test "break entries link and unlink in order":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    fd.top_break = none
+    fd.scope_level = 3
+    var outer: BlockEnv = ---
+    var inner: BlockEnv = ---
+    push_break_entry(fd, &outer, atom_value, 1, 2, 0)
+    fd.scope_level = 5
+    push_break_entry(fd, &inner, no_atom, 3, -1, 1)
+    let top = fd.top_break else trap("no break entry")
+    assert(top == &inner)
+    assert(inner.prev == &outer and outer.prev == none)
+    assert(outer.scope_level == 3 and inner.scope_level == 5)
+    assert(inner.label_finally == -1 and not inner.has_iterator and not inner.is_regular_stmt)
+    assert(outer.label_name == atom_value and outer.label_cont == 2 and inner.drop_count == 1)
+    pop_break_entry(fd)
+    let top2 = fd.top_break else trap("no break entry")
+    assert(top2 == &outer)
+    pop_break_entry(fd)
+    assert(fd.top_break == none)
+
+# mark: emit_break and emit_return ==============================================================
+
+# A parse state over `fd` whose context is never read, with `count` unresolved labels in
+# `slots`; the caller frees it with cutils.c_free.
+func test_parse_state(fd: FunctionDef*, slots: LabelSlot*, count: i32) -> ParseState*:
+    cutils.dbuf_init(&fd.byte_code)
+    fd.last_opcode_pos = -1
+    fd.top_break = none
+    for i in 0..<count:
+        let ls = slots + (isize)i
+        ls.ref_count = 0
+        ls.pos = -1
+        ls.pos2 = -1
+        ls.addr = -1
+        ls.first_reloc = none
+    fd.label_slots = slots
+    fd.label_count = count
+    fd.label_size = count
+    let raw = cutils.malloc(sizeof(ParseState)) else trap("out of memory")
+    discard(cutils.memset(raw, 0, sizeof(ParseState)))
+    let s = (ParseState*)raw
+    s.cur_func = fd
+    return s
+
+test "break and continue close what they leave":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    var slots: LabelSlot[6] = ---
+    let s = test_parse_state(fd, &slots[0], 6)
+    defer cutils.c_free(s)
+    defer cutils.dbuf_free(&fd.byte_code)
+
+    # outer: a loop labelled 'value'; inner: a for-of loop (iterator and 3 stack values)
+    var outer: BlockEnv = ---
+    var inner: BlockEnv = ---
+    push_break_entry(fd, &outer, atom_value, 0, 1, 0)
+    push_break_entry(fd, &inner, no_atom, 2, 3, 3)
+    inner.has_iterator = true
+
+    # break: the inner loop
+    try emit_break(s, no_atom, false)
+    var buf = fd.byte_code.buf else trap("no bytecode")
+    assert(fd.byte_code.size == 5 and buf[0] == (u8)Op.goto_ and cutils.get_u32(buf + 1) == 2)
+    assert(slots[2].ref_count == 1)
+
+    # break value: close the iterator (its 3 values), then the outer loop
+    emit_op(s, (u8)Op.nop)
+    let start = fd.byte_code.size
+    try emit_break(s, atom_value, false)
+    buf = fd.byte_code.buf else trap("no bytecode")
+    assert(fd.byte_code.size == start + 6)
+    assert(buf[start] == (u8)Op.iterator_close and buf[start + 1] == (u8)Op.goto_)
+    assert(cutils.get_u32(buf + start + 2) == 0)
+
+    # continue from a switch (1 value) and a finally block (label 4) in the loop
+    emit_op(s, (u8)Op.nop)
+    pop_break_entry(fd)
+    var switch_entry: BlockEnv = ---
+    push_break_entry(fd, &switch_entry, no_atom, 2, -1, 1)
+    var finally_entry: BlockEnv = ---
+    push_break_entry(fd, &finally_entry, no_atom, -1, -1, 0)
+    finally_entry.label_finally = 4
+    let start2 = fd.byte_code.size
+    try emit_break(s, no_atom, true)
+    buf = fd.byte_code.buf else trap("no bytecode")
+    # undefined, gosub 4, drop (the finally), drop (the switch value), goto 1
+    assert(fd.byte_code.size == start2 + 13)
+    assert(buf[start2] == (u8)Op.undefined and buf[start2 + 1] == (u8)Op.gosub)
+    assert(cutils.get_u32(buf + start2 + 2) == 4)
+    assert(buf[start2 + 6] == (u8)Op.drop and buf[start2 + 7] == (u8)Op.drop)
+    assert(buf[start2 + 8] == (u8)Op.goto_ and cutils.get_u32(buf + start2 + 9) == 1)
+
+test "return runs the finally blocks":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    var slots: LabelSlot[2] = ---
+    let s = test_parse_state(fd, &slots[0], 2)
+    defer cutils.c_free(s)
+    defer cutils.dbuf_free(&fd.byte_code)
+    fd.func_kind = js_func_normal
+
+    var finally_entry: BlockEnv = ---
+    push_break_entry(fd, &finally_entry, no_atom, -1, -1, 1)
+    finally_entry.label_finally = 1
+
+    # a return without a value pushes undefined for the finally block
+    emit_return(s, false)
+    let buf = fd.byte_code.buf else trap("no bytecode")
+    assert(fd.byte_code.size == 8)
+    assert(buf[0] == (u8)Op.undefined and buf[1] == (u8)Op.nip_catch)
+    assert(buf[2] == (u8)Op.gosub and cutils.get_u32(buf + 3) == 1)
+    assert(buf[7] == (u8)Op.return_)
+
+    # nothing to close: return_undef
+    pop_break_entry(fd)
+    emit_return(s, false)
+    let buf2 = fd.byte_code.buf else trap("no bytecode")
+    assert(fd.byte_code.size == 9 and buf2[8] == (u8)Op.return_undef)
+
+    # a generator returns asynchronously, with a value
+    fd.func_kind = js_func_generator
+    emit_return(s, false)
+    let buf3 = fd.byte_code.buf else trap("no bytecode")
+    assert(fd.byte_code.size == 11)
+    assert(buf3[9] == (u8)Op.undefined and buf3[10] == (u8)Op.return_async)

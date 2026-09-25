@@ -12,34 +12,34 @@
 func define_var(s: ParseState*, fd: FunctionDef*, name: Atom, var_def_type: VarDefKind) -> i32!:
     trap("unported: define_var")
 ## Ported from quickjs.c:24432 add_private_class_field.
-func add_private_class_field(s: ParseState*, fd: FunctionDef*, name: Atom, var_kind: VarKind, is_static: bool) -> i32:
+func add_private_class_field(s: ParseState*, fd: FunctionDef*, name: Atom, var_kind: VarKind, is_static: bool) -> i32!:
     trap("unported: add_private_class_field")
 ## Ported from quickjs.c:24475 seal_template_obj.
-func seal_template_obj(ctx: Context*, obj: Value) -> i32!:
+func seal_template_obj(ctx: Context*, obj: Value) -> !:
     trap("unported: seal_template_obj")
 ## Ported from quickjs.c:24491 js_parse_template.
-func js_parse_template(s: ParseState*, call: i32, argc: i32*) -> i32:
+func js_parse_template(s: ParseState*, call: bool, argc: i32*?) -> !:
     trap("unported: js_parse_template")
 ## Ported from quickjs.c:24612 token_is_ident.
 func token_is_ident(tok: TokenType) -> bool:
     trap("unported: token_is_ident")
 ## Ported from quickjs.c:24621 js_parse_property_name.
-func js_parse_property_name(s: ParseState*, pname: Atom*, allow_method: bool, allow_var: bool, allow_private: bool) -> i32:
+func js_parse_property_name(s: ParseState*, pname: Atom*, allow_method: bool, allow_var: bool, allow_private: bool) -> i32!:
     trap("unported: js_parse_property_name")
 ## Ported from quickjs.c:24745 js_parse_get_pos.
-func js_parse_get_pos(s: ParseState*, sp: ParsePos*) -> i32:
+func js_parse_get_pos(s: ParseState*, sp: ParsePos*):
     trap("unported: js_parse_get_pos")
 ## Ported from quickjs.c:24752 js_parse_seek_token.
 func js_parse_seek_token(s: ParseState*, sp: const ParsePos*) -> !:
     trap("unported: js_parse_seek_token")
 ## Ported from quickjs.c:24760 is_regexp_allowed.
-func is_regexp_allowed(tok: i32) -> bool:
+func is_regexp_allowed(tok: TokenType) -> bool:
     trap("unported: is_regexp_allowed")
 ## Ported from quickjs.c:24786 has_lf_in_range.
 func has_lf_in_range(p1: const u8*, p2: const u8*) -> bool:
     trap("unported: has_lf_in_range")
 ## Ported from quickjs.c:24800 js_parse_skip_parens_token.
-func js_parse_skip_parens_token(s: ParseState*, pbits: i32*, no_line_terminator: bool) -> TokenType!:
+func js_parse_skip_parens_token(s: ParseState*, pbits: i32*?, no_line_terminator: bool) -> TokenType!:
     trap("unported: js_parse_skip_parens_token")
 ## Ported from quickjs.c:24918 set_object_name.
 func set_object_name(s: ParseState*, name: Atom):
@@ -48,25 +48,25 @@ func set_object_name(s: ParseState*, name: Atom):
 func set_object_name_computed(s: ParseState*):
     trap("unported: set_object_name_computed")
 ## Ported from quickjs.c:24967 js_parse_object_literal.
-func js_parse_object_literal(s: ParseState*) -> i32:
+func js_parse_object_literal(s: ParseState*) -> !:
     trap("unported: js_parse_object_literal")
 ## Ported from quickjs.c:25104 js_parse_left_hand_side_expr.
-func js_parse_left_hand_side_expr(s: ParseState*) -> i32:
+func js_parse_left_hand_side_expr(s: ParseState*) -> !:
     trap("unported: js_parse_left_hand_side_expr")
 ## Ported from quickjs.c:25109 js_parse_class_default_ctor.
-func js_parse_class_default_ctor(s: ParseState*, has_super: bool, pfd: FunctionDef**) -> i32:
+func js_parse_class_default_ctor(s: ParseState*, has_super: bool, pfd: FunctionDef*?*?) -> !:
     trap("unported: js_parse_class_default_ctor")
 ## Ported from quickjs.c:25166 find_private_class_field.
-func find_private_class_field(ctx: Context*, fd: FunctionDef*, name: Atom, scope_level: i32) -> i32!:
+func find_private_class_field(ctx: Context*, fd: FunctionDef*, name: Atom, scope_level: i32) -> i32:
     trap("unported: find_private_class_field")
 ## Ported from quickjs.c:25184 emit_class_field_init.
 func emit_class_field_init(s: ParseState*):
     trap("unported: emit_class_field_init")
 ## Ported from quickjs.c:25210 get_private_setter_name.
-func get_private_setter_name(ctx: Context*, name: Atom) -> Atom:
+func get_private_setter_name(ctx: Context*, name: Atom) -> Atom!:
     trap("unported: get_private_setter_name")
 ## Ported from quickjs.c:25223 emit_class_init_start.
-func emit_class_init_start(s: ParseState*, cf: ClassFieldsDef*) -> i32:
+func emit_class_init_start(s: ParseState*, cf: ClassFieldsDef*) -> !:
     trap("unported: emit_class_init_start")
 ## Ported from quickjs.c:25258 emit_class_init_end.
 func emit_class_init_end(s: ParseState*, cf: ClassFieldsDef*):
@@ -75,25 +75,25 @@ func emit_class_init_end(s: ParseState*, cf: ClassFieldsDef*):
 func js_parse_class(s: ParseState*, is_class_expr: bool, export_flag: ParseExportKind) -> !:
     trap("unported: js_parse_class")
 ## Ported from quickjs.c:25786 js_parse_array_literal.
-func js_parse_array_literal(s: ParseState*) -> i32:
+func js_parse_array_literal(s: ParseState*) -> !:
     trap("unported: js_parse_array_literal")
 ## Ported from quickjs.c:25913 has_with_scope.
-func has_with_scope(s: FunctionDef*, scope_level: i32) -> bool:
+func has_with_scope(s: FunctionDef*, scope_level0: i32) -> bool:
     trap("unported: has_with_scope")
 ## Ported from quickjs.c:25933 get_lvalue.
-func get_lvalue(s: ParseState*, popcode: i32*, pscope: i32*, pname: Atom*, plabel: i32*, pdepth: i32*, keep: bool, tok: i32) -> i32:
+func get_lvalue(s: ParseState*, popcode: i32*, pscope: i32*, pname: Atom*, plabel: i32*, pdepth: i32*?, keep: bool, tok: TokenType) -> !:
     trap("unported: get_lvalue")
 ## Ported from quickjs.c:26077 put_lvalue.
 func put_lvalue(s: ParseState*, opcode: i32, scope: i32, name: Atom, label: i32, special: PutLValueKind, is_let_: bool):
     trap("unported: put_lvalue")
 ## Ported from quickjs.c:26195 js_parse_expr_paren.
-func js_parse_expr_paren(s: ParseState*) -> i32:
+func js_parse_expr_paren(s: ParseState*) -> !:
     trap("unported: js_parse_expr_paren")
 ## Ported from quickjs.c:26206 js_unsupported_keyword.
-func js_unsupported_keyword(s: ParseState*, atom: Atom) -> i32:
+func js_unsupported_keyword(s: ParseState*, atom: Atom) -> never!:
     trap("unported: js_unsupported_keyword")
 ## Ported from quickjs.c:26213 js_define_var.
-func js_define_var(s: ParseState*, name: Atom, tok: i32) -> i32:
+func js_define_var(s: ParseState*, name: Atom, tok: TokenType) -> !:
     trap("unported: js_define_var")
 ## Ported from quickjs.c:26250 js_emit_spread_code.
 func js_emit_spread_code(s: ParseState*, depth: i32):
@@ -102,89 +102,14 @@ func js_emit_spread_code(s: ParseState*, depth: i32):
 func js_parse_check_duplicate_parameter(s: ParseState*, name: Atom) -> !:
     trap("unported: js_parse_check_duplicate_parameter")
 ## Ported from quickjs.c:26300 need_var_reference.
-func need_var_reference(s: ParseState*, tok: i32) -> bool:
+func need_var_reference(s: ParseState*, tok: TokenType) -> bool:
     trap("unported: need_var_reference")
 ## Ported from quickjs.c:26314 js_parse_destructuring_var.
-func js_parse_destructuring_var(s: ParseState*, tok: i32, is_arg: i32) -> Atom:
+func js_parse_destructuring_var(s: ParseState*, tok: TokenType, is_arg: bool) -> Atom!:
     trap("unported: js_parse_destructuring_var")
 ## Ported from quickjs.c:26338 js_parse_destructuring_element.
-func js_parse_destructuring_element(s: ParseState*, tok: i32, is_arg: i32, hasval: i32, has_ellipsis: i32, allow_initializer: bool, export_flag: bool) -> i32!:
+func js_parse_destructuring_element(s: ParseState*, tok: TokenType, is_arg: bool, hasval: bool, has_ellipsis0: i32, allow_initializer: bool, export_flag: bool) -> bool!:
     trap("unported: js_parse_destructuring_element")
 ## Ported from quickjs.c:26814 optional_chain_test.
 func optional_chain_test(s: ParseState*, poptional_chaining_label: i32*, drop_count: i32):
     trap("unported: optional_chain_test")
-## Ported from quickjs.c:26832 js_parse_postfix_expr.
-func js_parse_postfix_expr(s: ParseState*, parse_flags: i32) -> i32:
-    trap("unported: js_parse_postfix_expr")
-## Ported from quickjs.c:27500 js_parse_delete.
-func js_parse_delete(s: ParseState*) -> i32:
-    trap("unported: js_parse_delete")
-## Ported from quickjs.c:27593 js_parse_unary.
-func js_parse_unary(s: ParseState*, parse_flags: i32) -> i32:
-    trap("unported: js_parse_unary")
-## Ported from quickjs.c:27733 js_parse_expr_binary.
-func js_parse_expr_binary(s: ParseState*, level: i32, parse_flags: i32) -> i32:
-    trap("unported: js_parse_expr_binary")
-## Ported from quickjs.c:27900 js_parse_logical_and_or.
-func js_parse_logical_and_or(s: ParseState*, op: i32, parse_flags: i32) -> i32:
-    trap("unported: js_parse_logical_and_or")
-## Ported from quickjs.c:27942 js_parse_coalesce_expr.
-func js_parse_coalesce_expr(s: ParseState*, parse_flags: i32) -> i32:
-    trap("unported: js_parse_coalesce_expr")
-## Ported from quickjs.c:27970 js_parse_cond_expr.
-func js_parse_cond_expr(s: ParseState*, parse_flags: i32) -> i32:
-    trap("unported: js_parse_cond_expr")
-## Ported from quickjs.c:27999 js_parse_assign_expr2.
-func js_parse_assign_expr2(s: ParseState*, parse_flags: i32) -> i32:
-    trap("unported: js_parse_assign_expr2")
-## Ported from quickjs.c:28283 js_parse_assign_expr.
-func js_parse_assign_expr(s: ParseState*) -> !:
-    trap("unported: js_parse_assign_expr")
-## Ported from quickjs.c:28289 js_parse_expr2.
-func js_parse_expr2(s: ParseState*, parse_flags: i32) -> i32:
-    trap("unported: js_parse_expr2")
-## Ported from quickjs.c:28313 js_parse_expr.
-func js_parse_expr(s: ParseState*) -> i32:
-    trap("unported: js_parse_expr")
-## Ported from quickjs.c:28318 push_break_entry.
-func push_break_entry(fd: FunctionDef*, be: BlockEnv*, label_name: Atom, label_break: i32, label_cont: i32, drop_count: i32):
-    trap("unported: push_break_entry")
-## Ported from quickjs.c:28335 pop_break_entry.
-func pop_break_entry(fd: FunctionDef*):
-    trap("unported: pop_break_entry")
-## Ported from quickjs.c:28342 emit_break.
-func emit_break(s: ParseState*, name: Atom, is_cont: i32) -> i32:
-    trap("unported: emit_break")
-## Ported from quickjs.c:28392 emit_return.
-func emit_return(s: ParseState*, hasval: bool):
-    trap("unported: emit_return")
-## Ported from quickjs.c:28490 js_parse_statement.
-func js_parse_statement(s: ParseState*) -> i32:
-    trap("unported: js_parse_statement")
-## Ported from quickjs.c:28495 js_parse_block.
-func js_parse_block(s: ParseState*) -> i32:
-    trap("unported: js_parse_block")
-## Ported from quickjs.c:28515 js_parse_var.
-func js_parse_var(s: ParseState*, parse_flags: i32, tok: TokenType, export_flag: bool) -> !:
-    trap("unported: js_parse_var")
-## Ported from quickjs.c:28612 is_label.
-func is_label(s: ParseState*) -> bool:
-    trap("unported: is_label")
-## Ported from quickjs.c:28619 is_let.
-func is_let(s: ParseState*, decl_mask: i32) -> i32:
-    trap("unported: is_let")
-## Ported from quickjs.c:28665 js_parse_for_in_of.
-func js_parse_for_in_of(s: ParseState*, label_name: i32, is_async: bool) -> i32:
-    trap("unported: js_parse_for_in_of")
-## Ported from quickjs.c:28892 set_eval_ret_undefined.
-func set_eval_ret_undefined(s: ParseState*):
-    trap("unported: set_eval_ret_undefined")
-## Ported from quickjs.c:28901 js_parse_statement_or_decl.
-# quickjs.c:28481 (signatures assumed by r18's module_parse.lucb; r17 owns these)
-let decl_mask_func: i32 = 1 << 0 # allow normal function declaration
-# ored with decl_mask_func if function declarations are allowed with a label
-let decl_mask_func_with_label: i32 = 1 << 1
-let decl_mask_other: i32 = 1 << 2 # all other declarations
-let decl_mask_all: i32 = decl_mask_func | decl_mask_func_with_label | decl_mask_other
-func js_parse_statement_or_decl(s: ParseState*, decl_mask: i32) -> !:
-    trap("unported: js_parse_statement_or_decl")

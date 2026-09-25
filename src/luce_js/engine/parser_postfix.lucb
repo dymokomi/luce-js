@@ -1,0 +1,561 @@
+#==============================================================================================
+#
+#   parser_postfix - Primary and postfix expressions: literals, names, calls and members
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 26806-27498: FuncCallType and js_parse_postfix_expr.
+#
+#       QuickJS writes js_parse_postfix_expr as one function whose cases jump into each
+#       other (parse_regexp, large_number, do_get_var, parse_func_call,
+#       parse_func_call2, emit_func_call, parse_property, parse_array_access). Here the
+#       primary expression, the regular expression literal, the identifier, the call,
+#       the call emission and the two member accesses are helpers, called from the same
+#       places the gotos lead from. The bytecode they emit is the same.
+#
+#==============================================================================================
+
+# mark: Call kinds and bytecode patching ========================================================
+
+## How the call being parsed is made (FuncCallType).
+enum FuncCallType as i32:
+    normal = 0
+    new_ = 1
+    super_ctor = 2
+    template = 3
+
+# The byte at offset `pos` of the bytecode of `fd` (fd->byte_code.buf + pos).
+func bytecode_at(fd: FunctionDef*, pos: i32) -> u8*:
+    let buf = fd.byte_code.buf else trap("parser: no bytecode")
+    return buf + (isize)pos
+
+# Replace the last opcode emitted (fd->byte_code.buf[fd->last_opcode_pos] = op).
+func set_last_opcode(fd: FunctionDef*, op: u8):
+    *bytecode_at(fd, fd.last_opcode_pos) = op
+
+# mark: Primary expressions =====================================================================
+
+# The primary expression that starts a postfix expression (the first switch of
+# js_parse_postfix_expr). 'new' and 'super' update the call kind and whether a '('
+# starts a call.
+func js_parse_primary_expr(s: ParseState*, pcall_type: FuncCallType*, paccept_lparen: bool*) -> !:
+    match s.token.val:
+        .number:
+            let val = s.token.u.num.val
+            var large_number = false
+            if val.tag == Tag.int:
+                emit_op(s, (u8)Op.push_i32)
+                emit_u32(s, (u32)js_value_get_int(val))
+            elif val.tag == Tag.short_big_int:
+                let v: i64 = js_value_get_short_big_int(val)
+                if v >= -2147483648 and v <= 2147483647:
+                    emit_op(s, (u8)Op.push_bigint_i32)
+                    emit_u32(s, (u32)v)
+                else:
+                    large_number = true
+            else:
+                large_number = true
+            if large_number:
+                try emit_push_const(s, val, false)
+            try next_token(s)
+        .template:
+            var argc_unused: i32 = 0
+            try js_parse_template(s, false, &argc_unused)
+        .string:
+            try emit_push_const(s, s.token.u.str_.str, true)
+            try next_token(s)
+        .div_assign:
+            s.buf_ptr = s.buf_ptr - 2
+            try js_parse_regexp_literal(s)
+        .slash:
+            s.buf_ptr = s.buf_ptr - 1
+            try js_parse_regexp_literal(s)
+        .lparen:
+            try js_parse_expr_paren(s)
+        .function:
+            try js_parse_function_decl(s, ParseFunctionKind.expr, js_func_normal, no_atom,
+                                       s.token.ptr)
+        .class_:
+            try js_parse_class(s, true, ParseExportKind.none_)
+        .null:
+            try next_token(s)
+            emit_op(s, (u8)Op.null)
+        .this:
+            try next_token(s)
+            emit_op(s, (u8)TempOp.scope_get_var)
+            emit_atom(s, atom_this)
+            emit_u16(s, 0)
+        .false_:
+            try next_token(s)
+            emit_op(s, (u8)Op.push_false)
+        .true_:
+            try next_token(s)
+            emit_op(s, (u8)Op.push_true)
+        .ident:
+            try js_parse_ident_expr(s)
+        .lbrace:
+            try js_parse_object_literal(s)
+        .lbracket:
+            try js_parse_array_literal(s)
+        .new_:
+            try js_parse_new_expr(s, pcall_type, paccept_lparen)
+        .super:
+            try next_token(s)
+            if s.token.val == TokenType.lparen:
+                if not s.fd().super_call_allowed:
+                    try js_parse_error(s, "super() is only valid in a derived class constructor")
+                *pcall_type = FuncCallType.super_ctor
+            elif s.token.val == TokenType.dot or s.token.val == TokenType.lbracket:
+                if not s.fd().super_allowed:
+                    try js_parse_error(s, "'super' is only valid in a method")
+                emit_op(s, (u8)TempOp.scope_get_var)
+                emit_atom(s, atom_this)
+                emit_u16(s, 0)
+                emit_op(s, (u8)TempOp.scope_get_var)
+                emit_atom(s, atom_home_object)
+                emit_u16(s, 0)
+                emit_op(s, (u8)Op.get_super)
+            else:
+                try js_parse_error(s, "invalid use of 'super'")
+        .import_:
+            try js_parse_import_expr(s, *paccept_lparen)
+        _:
+            let bytes: const u8[] = u8[]((u8*)s.token.ptr, (usize)(s.buf_ptr - s.token.ptr))
+            try js_parse_error(s, f"unexpected token in expression: '{(str)bytes}'")
+
+# A regular expression literal (parse_regexp): the previous token is '/' or '/=', and
+# s.buf_ptr was moved back to its '/'.
+func js_parse_regexp_literal(s: ParseState*) -> !:
+    let ctx = s.ctx
+    if let compile_regexp = ctx.compile_regexp:
+        # the previous token is '/' or '/=', so no need to free
+        try js_parse_regexp(s)
+        # QuickJS overwrites the status of this push with the next one: a failure here
+        # is not reported.
+        emit_push_const(s, s.token.u.regexp.body, false) catch failure:
+            recover ()
+        let text = compile_regexp(ctx, s.token.u.regexp.body, s.token.u.regexp.flags) catch failure:
+            # add the line number info
+            var col_num: i32 = 0
+            let line_num = get_line_col(&col_num, s.buf_start, (usize)(s.token.ptr - s.buf_start))
+            build_backtrace(ctx, ctx.rt.current_exception, s.filename, line_num + 1,
+                            col_num + 1, 0)
+            error(failure.code, failure.message)
+        emit_push_const(s, text, false) catch failure:
+            js_free_value(ctx, text)
+            error(failure.code, failure.message)
+        js_free_value(ctx, text)
+        # we use a specific opcode to be sure the correct function is called (otherwise
+        # the bytecode would have to be verified by the RegExp constructor)
+        emit_op(s, (u8)Op.regexp)
+        try next_token(s)
+    else:
+        try js_parse_error(s, "RegExp are not supported")
+
+# An identifier in an expression: a variable reference (do_get_var), or an async
+# function expression.
+func js_parse_ident_expr(s: ParseState*) -> !:
+    if s.token.u.ident.is_reserved:
+        try js_parse_error_reserved_identifier(s)
+    let source_ptr = s.token.ptr
+    var name = no_atom
+    if token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) != TokenType.newline:
+        try next_token(s)
+        if s.token.val == TokenType.function:
+            try js_parse_function_decl(s, ParseFunctionKind.expr, js_func_async, no_atom,
+                                       source_ptr)
+            return
+        name = js_dup_atom(s.ctx, atom_async)
+    else:
+        if s.token.u.ident.atom == atom_arguments and not s.fd().arguments_allowed:
+            try js_parse_error(s, "'arguments' identifier is not allowed in class field initializer")
+        name = js_dup_atom(s.ctx, s.token.u.ident.atom)
+        next_token(s) catch failure:
+            js_free_atom(s.ctx, name)
+            error(failure.code, failure.message)
+    # do_get_var: the reference to `name` moves into the bytecode
+    emit_source_pos(s, source_ptr)
+    emit_op(s, (u8)TempOp.scope_get_var)
+    emit_u32(s, name)
+    emit_u16(s, (u16)s.fd().scope_level)
+
+# 'new.target', or 'new' and its constructor (the TOK_NEW case).
+func js_parse_new_expr(s: ParseState*, pcall_type: FuncCallType*, paccept_lparen: bool*) -> !:
+    try next_token(s)
+    if s.token.val == TokenType.dot:
+        try next_token(s)
+        if not token_is_pseudo_keyword(s, atom_target):
+            try js_parse_error(s, "expecting target")
+        if not s.fd().new_target_allowed:
+            try js_parse_error(s, "new.target only allowed within functions")
+        try next_token(s)
+        emit_op(s, (u8)TempOp.scope_get_var)
+        emit_atom(s, atom_new_target)
+        emit_u16(s, 0)
+    else:
+        try js_parse_postfix_expr(s, 0)
+        *paccept_lparen = true
+        if s.token.val != TokenType.lparen:
+            # new operator on an object
+            emit_source_pos(s, s.token.ptr)
+            emit_op(s, (u8)Op.dup)
+            emit_op(s, (u8)Op.call_constructor)
+            emit_u16(s, 0)
+        else:
+            *pcall_type = FuncCallType.new_
+
+# 'import.meta', or the dynamic 'import()' call (the TOK_IMPORT case).
+func js_parse_import_expr(s: ParseState*, accept_lparen: bool) -> !:
+    try next_token(s)
+    if s.token.val == TokenType.dot:
+        try next_token(s)
+        if not token_is_pseudo_keyword(s, atom_meta):
+            try js_parse_error(s, "meta expected")
+        if not s.is_module:
+            try js_parse_error(s, "import.meta only valid in module code")
+        try next_token(s)
+        emit_op(s, (u8)Op.special_object)
+        emit_u8(s, (u8)OpSpecialObject.import_meta)
+    else:
+        try js_parse_expect(s, TokenType.lparen)
+        if not accept_lparen:
+            try js_parse_error(s, "invalid use of 'import()'")
+        try js_parse_assign_expr(s)
+        if s.token.val == TokenType.comma:
+            try next_token(s)
+            if s.token.val != TokenType.rparen:
+                try js_parse_assign_expr(s)
+                # accept a trailing comma
+                if s.token.val == TokenType.comma:
+                    try next_token(s)
+            else:
+                emit_op(s, (u8)Op.undefined)
+        else:
+            emit_op(s, (u8)Op.undefined)
+        try js_parse_expect(s, TokenType.rparen)
+        emit_op(s, (u8)Op.import_)
+
+# mark: Postfix expressions =====================================================================
+
+## allowed parse_flags: PF_POSTFIX_CALL
+func js_parse_postfix_expr(s: ParseState*, parse_flags: i32) -> !:
+    var call_type = FuncCallType.normal
+    var accept_lparen = (parse_flags & pf_postfix_call) != 0
+    try js_parse_primary_expr(s, &call_type, &accept_lparen)
+
+    var optional_chaining_label: i32 = -1
+    while true:
+        if s.token.val == TokenType.question_mark_dot:
+            if (parse_flags & pf_postfix_call) == 0:
+                try js_parse_error(s, "new keyword cannot be used with an optional chain")
+            let op_token_ptr = s.token.ptr
+            # optional chaining
+            try next_token(s)
+            if s.token.val == TokenType.lparen and accept_lparen:
+                # parse_func_call
+                let call_ptr = s.token.ptr
+                try next_token(s)
+                try js_parse_call(s, call_ptr, &call_type, true, &optional_chaining_label)
+            elif s.token.val == TokenType.lbracket:
+                try js_parse_member_index(s, op_token_ptr, true, &optional_chaining_label)
+            else:
+                try js_parse_member_name(s, op_token_ptr, true, &optional_chaining_label)
+        elif s.token.val == TokenType.template and call_type == FuncCallType.normal:
+            if optional_chaining_label >= 0:
+                try js_parse_error(s, "template literal cannot appear in an optional chain")
+            call_type = FuncCallType.template
+            # XXX: check if right position
+            try js_parse_call(s, s.token.ptr, &call_type, false, &optional_chaining_label)
+        elif s.token.val == TokenType.lparen and accept_lparen:
+            # function call
+            let op_token_ptr = s.token.ptr
+            try next_token(s)
+            try js_parse_call(s, op_token_ptr, &call_type, false, &optional_chaining_label)
+        elif s.token.val == TokenType.dot:
+            let op_token_ptr = s.token.ptr
+            try next_token(s)
+            try js_parse_member_name(s, op_token_ptr, false, &optional_chaining_label)
+        elif s.token.val == TokenType.lbracket:
+            try js_parse_member_index(s, s.token.ptr, false, &optional_chaining_label)
+        else:
+            break
+
+    if optional_chaining_label >= 0:
+        let fd = s.fd()
+        emit_label_raw(s, optional_chaining_label)
+        # modify the last opcode so that it is an indicator of an optional chain
+        let opcode = get_prev_opcode(fd)
+        if opcode == (u8)Op.get_field:
+            set_last_opcode(fd, (u8)TempOp.get_field_opt_chain)
+        elif opcode == (u8)Op.get_array_el:
+            set_last_opcode(fd, (u8)TempOp.get_array_el_opt_chain)
+        else:
+            fd.last_opcode_pos = -1
+
+# mark: Calls ===================================================================================
+
+# The callee of a call just parsed, from the last opcode (the switch at parse_func_call2):
+# answers the call opcode to use and how many values an optional chain test drops. The
+# last opcode is patched to keep the object of a method call on the stack.
+func js_parse_callee(s: ParseState*, call_type: FuncCallType,
+                     has_optional_chain: bool) -> (i32, i32):
+    let fd = s.fd()
+    var opcode = (i32)get_prev_opcode(fd)
+    var drop_count: i32 = 1
+    if opcode == (i32)Op.get_field:
+        # keep the object on the stack
+        set_last_opcode(fd, (u8)Op.get_field2)
+        drop_count = 2
+    elif opcode == (i32)TempOp.get_field_opt_chain:
+        let opt_chain_label = (i32)cutils.get_u32(bytecode_at(fd, fd.last_opcode_pos + 1 + 4 + 1))
+        # keep the object on the stack
+        set_last_opcode(fd, (u8)Op.get_field2)
+        fd.byte_code.size = (usize)(fd.last_opcode_pos + 1 + 4)
+        let next_label = emit_goto(s, (i32)Op.goto_, -1)
+        discard(emit_label(s, opt_chain_label))
+        # need an additional undefined value for the case where the optional field does
+        # not exists
+        emit_op(s, (u8)Op.undefined)
+        discard(emit_label(s, next_label))
+        drop_count = 2
+        opcode = (i32)Op.get_field
+    elif opcode == (i32)TempOp.scope_get_private_field:
+        # keep the object on the stack
+        set_last_opcode(fd, (u8)TempOp.scope_get_private_field2)
+        drop_count = 2
+    elif opcode == (i32)Op.get_array_el:
+        # keep the object on the stack
+        set_last_opcode(fd, (u8)Op.get_array_el2)
+        drop_count = 2
+    elif opcode == (i32)TempOp.get_array_el_opt_chain:
+        let opt_chain_label = (i32)cutils.get_u32(bytecode_at(fd, fd.last_opcode_pos + 1 + 1))
+        # keep the object on the stack
+        set_last_opcode(fd, (u8)Op.get_array_el2)
+        fd.byte_code.size = (usize)(fd.last_opcode_pos + 1)
+        let next_label = emit_goto(s, (i32)Op.goto_, -1)
+        discard(emit_label(s, opt_chain_label))
+        # need an additional undefined value for the case where the optional field does
+        # not exists
+        emit_op(s, (u8)Op.undefined)
+        discard(emit_label(s, next_label))
+        drop_count = 2
+        opcode = (i32)Op.get_array_el
+    elif opcode == (i32)TempOp.scope_get_var:
+        let name = cutils.get_u32(bytecode_at(fd, fd.last_opcode_pos + 1))
+        let scope = (i32)cutils.get_u16(bytecode_at(fd, fd.last_opcode_pos + 5))
+        if name == atom_eval and call_type == FuncCallType.normal and not has_optional_chain:
+            # direct 'eval'
+            opcode = (i32)Op.eval
+        else:
+            # verify if function name resolves to a simple get_loc/get_arg: a function
+            # call inside a `with` statement can resolve to a method call of the `with`
+            # context object
+            # XXX: always generate the OP_scope_get_ref and remove it in variable
+            # resolution pass ?
+            if has_with_scope(fd, scope):
+                opcode = (i32)TempOp.scope_get_ref
+                set_last_opcode(fd, (u8)opcode)
+        drop_count = 1
+    elif opcode == (i32)Op.get_super_value:
+        set_last_opcode(fd, (u8)Op.get_array_el)
+        # on stack: this func_obj
+        opcode = (i32)Op.get_array_el
+        drop_count = 2
+    else:
+        opcode = (i32)Op.invalid
+        drop_count = 1
+    return (opcode, drop_count)
+
+# Whether a call with the callee opcode `opcode` is a method call (the object is on the
+# stack below the function).
+func is_method_call_opcode(opcode: i32) -> bool:
+    return (opcode == (i32)Op.get_field or opcode == (i32)TempOp.scope_get_private_field or
+            opcode == (i32)Op.get_array_el or opcode == (i32)TempOp.scope_get_ref)
+
+# The arguments of a call and the call (parse_func_call2 onwards). The token after the
+# '(' is current, or the template of a tagged template; `op_token_ptr` is the position
+# of the '(' or of the template. The call kind is normal again afterwards.
+func js_parse_call(s: ParseState*, op_token_ptr: const u8*, pcall_type: FuncCallType*,
+                   has_optional_chain: bool, poptional_chaining_label: i32*) -> !:
+    let fd = s.fd()
+    let call_type = *pcall_type
+    var opcode = (i32)Op.invalid
+    if call_type == FuncCallType.normal or call_type == FuncCallType.template:
+        let (callee_opcode, drop_count) = js_parse_callee(s, call_type, has_optional_chain)
+        opcode = callee_opcode
+        if has_optional_chain:
+            optional_chain_test(s, poptional_chaining_label, drop_count)
+
+    var arg_count: i32 = 0
+    if call_type == FuncCallType.template:
+        try js_parse_template(s, true, &arg_count)
+        emit_func_call(s, op_token_ptr, opcode, call_type, arg_count)
+        *pcall_type = FuncCallType.normal
+        return
+    elif call_type == FuncCallType.super_ctor:
+        emit_op(s, (u8)TempOp.scope_get_var)
+        emit_atom(s, atom_this_active_func)
+        emit_u16(s, 0)
+
+        emit_op(s, (u8)Op.get_super)
+
+        emit_op(s, (u8)TempOp.scope_get_var)
+        emit_atom(s, atom_new_target)
+        emit_u16(s, 0)
+    elif call_type == FuncCallType.new_:
+        # new.target = function
+        emit_op(s, (u8)Op.dup)
+
+    # parse arguments
+    while s.token.val != TokenType.rparen:
+        if arg_count >= 65535:
+            try js_parse_error(s, "Too many call arguments")
+        if s.token.val == TokenType.ellipsis:
+            break
+        try js_parse_assign_expr(s)
+        arg_count += 1
+        if s.token.val == TokenType.rparen:
+            break
+        # accept a trailing comma before the ')'
+        try js_parse_expect(s, TokenType.comma)
+    if s.token.val == TokenType.ellipsis:
+        emit_op(s, (u8)Op.array_from)
+        emit_u16(s, (u16)arg_count)
+        emit_op(s, (u8)Op.push_i32)
+        emit_u32(s, (u32)arg_count)
+
+        # on stack: array idx
+        while s.token.val != TokenType.rparen:
+            if s.token.val == TokenType.ellipsis:
+                try next_token(s)
+                try js_parse_assign_expr(s)
+                # XXX: could pass is_last indicator?
+                emit_op(s, (u8)Op.append)
+            else:
+                try js_parse_assign_expr(s)
+                # array idx val
+                emit_op(s, (u8)Op.define_array_el)
+                emit_op(s, (u8)Op.inc)
+            if s.token.val == TokenType.rparen:
+                break
+            # accept a trailing comma before the ')'
+            try js_parse_expect(s, TokenType.comma)
+        try next_token(s)
+        # drop the index
+        emit_op(s, (u8)Op.drop)
+
+        emit_source_pos(s, op_token_ptr)
+        # apply function call
+        if is_method_call_opcode(opcode):
+            # obj func array -> func obj array
+            emit_op(s, (u8)Op.perm3)
+            emit_op(s, (u8)Op.apply)
+            emit_u16(s, (u16)(call_type == FuncCallType.new_))
+        elif opcode == (i32)Op.eval:
+            emit_op(s, (u8)Op.apply_eval)
+            emit_u16(s, (u16)fd.scope_level)
+            fd.has_eval_call = true
+        elif call_type == FuncCallType.super_ctor:
+            emit_op(s, (u8)Op.apply)
+            emit_u16(s, 1)
+            # set the 'this' value
+            emit_op(s, (u8)Op.dup)
+            emit_op(s, (u8)TempOp.scope_put_var_init)
+            emit_atom(s, atom_this)
+            emit_u16(s, 0)
+
+            emit_class_field_init(s)
+        elif call_type == FuncCallType.new_:
+            # obj func array -> func obj array
+            emit_op(s, (u8)Op.perm3)
+            emit_op(s, (u8)Op.apply)
+            emit_u16(s, 1)
+        else:
+            # func array -> func undef array
+            emit_op(s, (u8)Op.undefined)
+            emit_op(s, (u8)Op.swap)
+            emit_op(s, (u8)Op.apply)
+            emit_u16(s, 0)
+    else:
+        try next_token(s)
+        emit_func_call(s, op_token_ptr, opcode, call_type, arg_count)
+    *pcall_type = FuncCallType.normal
+
+# Emit a call of `arg_count` arguments already on the stack (emit_func_call).
+func emit_func_call(s: ParseState*, op_token_ptr: const u8*, opcode: i32, call_type: FuncCallType,
+                    arg_count: i32):
+    let fd = s.fd()
+    emit_source_pos(s, op_token_ptr)
+    if is_method_call_opcode(opcode):
+        emit_op(s, (u8)Op.call_method)
+        emit_u16(s, (u16)arg_count)
+    elif opcode == (i32)Op.eval:
+        emit_op(s, (u8)Op.eval)
+        emit_u16(s, (u16)arg_count)
+        emit_u16(s, (u16)fd.scope_level)
+        fd.has_eval_call = true
+    elif call_type == FuncCallType.super_ctor:
+        emit_op(s, (u8)Op.call_constructor)
+        emit_u16(s, (u16)arg_count)
+
+        # set the 'this' value
+        emit_op(s, (u8)Op.dup)
+        emit_op(s, (u8)TempOp.scope_put_var_init)
+        emit_atom(s, atom_this)
+        emit_u16(s, 0)
+
+        emit_class_field_init(s)
+    elif call_type == FuncCallType.new_:
+        emit_op(s, (u8)Op.call_constructor)
+        emit_u16(s, (u16)arg_count)
+    else:
+        emit_op(s, (u8)Op.call)
+        emit_u16(s, (u16)arg_count)
+
+# mark: Member accesses =========================================================================
+
+# A '.name' or '.#name' member access (parse_property); the token after the '.' or '?.'
+# is current.
+func js_parse_member_name(s: ParseState*, op_token_ptr: const u8*, has_optional_chain: bool,
+                          poptional_chaining_label: i32*) -> !:
+    let fd = s.fd()
+    emit_source_pos(s, op_token_ptr)
+    if s.token.val == TokenType.private_name:
+        # private class field
+        if get_prev_opcode(fd) == (u8)Op.get_super:
+            try js_parse_error(s, "private class field forbidden after super")
+        if has_optional_chain:
+            optional_chain_test(s, poptional_chaining_label, 1)
+        emit_op(s, (u8)TempOp.scope_get_private_field)
+        emit_atom(s, s.token.u.ident.atom)
+        emit_u16(s, (u16)fd.scope_level)
+    else:
+        if not token_is_ident(s.token.val):
+            try js_parse_error(s, "expecting field name")
+        if get_prev_opcode(fd) == (u8)Op.get_super:
+            let val = try js_atom_to_value(s.ctx, s.token.u.ident.atom)
+            emit_push_const(s, val, true) catch failure:
+                js_free_value(s.ctx, val)
+                error(failure.code, failure.message)
+            js_free_value(s.ctx, val)
+            emit_op(s, (u8)Op.get_super_value)
+        else:
+            if has_optional_chain:
+                optional_chain_test(s, poptional_chaining_label, 1)
+            emit_op(s, (u8)Op.get_field)
+            emit_atom(s, s.token.u.ident.atom)
+    try next_token(s)
+
+# A '[expr]' member access (parse_array_access); the '[' is current.
+func js_parse_member_index(s: ParseState*, op_token_ptr: const u8*, has_optional_chain: bool,
+                           poptional_chaining_label: i32*) -> !:
+    let prev_op = get_prev_opcode(s.fd())
+    if has_optional_chain:
+        optional_chain_test(s, poptional_chaining_label, 1)
+    try next_token(s)
+    try js_parse_expr(s)
+    try js_parse_expect(s, TokenType.rbracket)
+    emit_source_pos(s, op_token_ptr)
+    if prev_op == (u8)Op.get_super:
+        emit_op(s, (u8)Op.get_super_value)
+    else:
+        emit_op(s, (u8)Op.get_array_el)

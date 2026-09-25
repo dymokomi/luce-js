@@ -217,8 +217,8 @@ func js_parse_function_params(s: ParseState*, fd: FunctionDef*, func_type: Parse
                 var tok = TokenType.var_
                 if fd.has_parameter_expressions:
                     tok = TokenType.let_
-                let has_initializer = try js_parse_destructuring_element(s, (i32)tok, 1, 1, -1, true, false)
-                if has_initializer != 0:
+                let has_initializer = try js_parse_destructuring_element(s, tok, true, true, -1, true, false)
+                if has_initializer:
                     has_opt_arg = true
                 if not has_opt_arg:
                     fd.defined_arg_count += 1
