@@ -1,0 +1,277 @@
+#==============================================================================================
+#
+#   uint8array_base64 - Uint8Array.fromBase64, fromHex, and the prototype's toBase64,
+#                       toHex, setFromBase64 and setFromHex
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 59313-59757: JS_NewUint8ArrayCopy, the argument checks
+#       and option parsing of the base64 methods, and the six methods over the encoders
+#       and decoders of the base64 fragment.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## A new Uint8Array holding a copy of the `len` bytes at `buf` (JS_NewUint8ArrayCopy).
+func js_new_uint8_array_copy(ctx: Context*, buf: const u8*, len: usize) -> Value!:
+    let buffer = try js_array_buffer_constructor3(ctx, js_undefined(), (u64)len, none,
+                                                  (u32)ClassId.array_buffer,
+                                                  (u8*)buf,
+                                                  js_array_buffer_free, none,
+                                                  true)
+    let obj = js_create_from_ctor(ctx, js_undefined(), (u32)ClassId.uint8_array) catch failure:
+        js_free_value(ctx, buffer)
+        error(failure.code, failure.message)
+    errdefer js_free_value(ctx, obj)
+    let abuf = try js_get_array_buffer_internal(ctx, buffer)
+    # 'buffer' is freed on error by typed_array_init
+    try typed_array_init(ctx, obj, buffer, 0, (u64)abuf.byte_length, false)
+    return obj
+
+# Validate that this_val is a Uint8Array (type check only, no detach check).
+func check_uint8array(ctx: Context*, this_val: Value) -> Object*!:
+    if this_val.tag != Tag.object:
+        try js_throw_type_error(ctx, "not a Uint8Array")
+    let p = this_val.u.obj
+    if p.class_id != ClassId.uint8_array:
+        try js_throw_type_error(ctx, "not a Uint8Array")
+    return p
+
+# Get the data and length of a Uint8Array, checking for detached buffers. Must be called
+# after options are read (per spec ordering).
+## The elements of the Uint8Array `p` as a span (empty without storage).
+func get_uint8array_bytes(ctx: Context*, p: Object*) -> u8[]!:
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    var empty: u8[]
+    let data = p.u.array.u.ptr else return empty
+    return u8[]((u8*)data, (usize)p.u.array.count)
+
+# Validate options is undefined or an object (GetOptionsObject).
+func check_options_object(ctx: Context*, options: Value) -> !:
+    if js_is_undefined(options):
+        return
+    if not js_is_object(options):
+        try js_throw_type_error(ctx, "options must be an object")
+
+## Whether the NUL-terminated `p` is the text `text` (C's !strcmp).
+func c_string_is(p: const u8*, text: str) -> bool:
+    let n = cutils.strlen(p)
+    return n == text.length and cutils.memcmp(p, text.bytes.data, n) == 0
+
+# Parse the 'alphabet' option from an options object.
+## b64_alphabet_base64 or b64_alphabet_base64url.
+func parse_alphabet_option(ctx: Context*, options: Value) -> i32!:
+    if js_is_undefined(options):
+        return b64_alphabet_base64
+
+    let val = try js_get_property(ctx, options, atom_alphabet)
+    if js_is_undefined(val):
+        return b64_alphabet_base64
+    if not js_is_string(val):
+        js_free_value(ctx, val)
+        try js_throw_type_error(ctx, "expected string for alphabet")
+
+    let text = js_to_c_string(ctx, val) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, val)
+    defer js_free_c_string(ctx, text)
+
+    if c_string_is(text, "base64"):
+        return b64_alphabet_base64
+    elif c_string_is(text, "base64url"):
+        return b64_alphabet_base64url
+    try js_throw_type_error(ctx, "invalid alphabet")
+
+# Parse the 'lastChunkHandling' option.
+## b64_last_loose, b64_last_strict or b64_last_stop_before_partial.
+func parse_last_chunk_option(ctx: Context*, options: Value) -> i32!:
+    if js_is_undefined(options):
+        return b64_last_loose
+
+    let val = try js_get_property(ctx, options, atom_lastChunkHandling)
+    if js_is_undefined(val):
+        return b64_last_loose
+    if not js_is_string(val):
+        js_free_value(ctx, val)
+        try js_throw_type_error(ctx, "expected string for lastChunkHandling")
+
+    let text = js_to_c_string(ctx, val) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, val)
+    defer js_free_c_string(ctx, text)
+
+    if c_string_is(text, "loose"):
+        return b64_last_loose
+    elif c_string_is(text, "strict"):
+        return b64_last_strict
+    elif c_string_is(text, "stop-before-partial"):
+        return b64_last_stop_before_partial
+    try js_throw_type_error(ctx, "invalid lastChunkHandling option")
+
+## The decoding table of an alphabet option.
+func b64_dec_table(alphabet: i32) -> const u8[]:
+    if alphabet == b64_alphabet_base64url:
+        return b64url_dec
+    return b64_dec
+
+## The string argument of the decoders as UTF-8 bytes, which `js_free_c_string` releases.
+func base64_source_string(ctx: Context*, arg: Value, plen: usize*) -> const u8*!:
+    if not js_is_string(arg):
+        try js_throw_type_error(ctx, "expected string")
+    return try js_to_c_string_len(ctx, plen, arg)
+
+# mark: Encoding ================================================================================
+
+# Uint8Array.prototype.toBase64([options])
+func js_uint8array_to_base64(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try check_uint8array(ctx, this_val)
+
+    let options = argv[0] if argc > 0 else js_undefined()
+    try check_options_object(ctx, options)
+    let alphabet = try parse_alphabet_option(ctx, options)
+
+    var omit_padding = false
+    if not js_is_undefined(options):
+        let op_val = try js_get_property(ctx, options, atom_omitPadding)
+        omit_padding = js_to_bool(ctx, op_val) catch failure:
+            js_free_value(ctx, op_val)
+            error(failure.code, failure.message)
+        js_free_value(ctx, op_val)
+
+    let data = try get_uint8array_bytes(ctx, p)
+    let len = data.length
+
+    let out_len = 4 * ((len + 2) // 3)
+
+    if out_len > (usize)js_string_len_max:
+        try js_throw_range_error(ctx, "output too large")
+
+    let ostr = try js_alloc_string(ctx, (i32)out_len, false)
+
+    let dst = str8(ostr)
+    let alpha = b64url_enc if alphabet == b64_alphabet_base64url else b64_enc
+    var written = b64_encode(data, u8[](dst, out_len), alpha)
+    if omit_padding:
+        while written > 0 and dst[written - 1] == '=':
+            written -= 1
+    dst[written] = 0
+
+    ostr.len = (u32)written
+    return js_mkptr(Tag.string, ostr)
+
+# Uint8Array.prototype.toHex()
+func js_uint8array_to_hex(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try check_uint8array(ctx, this_val)
+    let data = try get_uint8array_bytes(ctx, p)
+
+    let out_len = data.length * 2
+    if out_len > (usize)js_string_len_max:
+        try js_throw_range_error(ctx, "output too large")
+
+    let ostr = try js_alloc_string(ctx, (i32)out_len, false)
+
+    discard(u8a_hex_encode(data, u8[](str8(ostr), out_len)))
+    str8(ostr)[out_len] = 0
+    return js_mkptr(Tag.string, ostr)
+
+# mark: Decoding ================================================================================
+
+# Uint8Array.fromBase64(string[, options])
+func js_uint8array_from_base64(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var str_len: usize = 0
+    let text = try base64_source_string(ctx, argv[0], &str_len)
+    defer js_free_c_string(ctx, text)
+
+    let options = argv[1] if argc > 1 else js_undefined()
+    try check_options_object(ctx, options)
+    let alphabet = try parse_alphabet_option(ctx, options)
+    let last_chunk = try parse_last_chunk_option(ctx, options)
+
+    let out_cap = (str_len // 4) * 3 + 3
+    let buf = (u8*)(try js_malloc(ctx, out_cap))
+    defer js_free(ctx, buf)
+
+    var read_pos: usize = 0
+    var err = false
+    let decoded_len = from_base64(u8[]((u8*)text, str_len), u8[](buf, out_cap),
+                                  b64_dec_table(alphabet), last_chunk, &read_pos, &err)
+
+    if err:
+        try js_throw_syntax_error(ctx, "invalid base64 string")
+
+    return try js_new_uint8_array_copy(ctx, buf, decoded_len)
+
+# Uint8Array.fromHex(string)
+func js_uint8array_from_hex(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var str_len: usize = 0
+    let text = try base64_source_string(ctx, argv[0], &str_len)
+    defer js_free_c_string(ctx, text)
+
+    let out_cap = str_len // 2 + 1
+    let buf = (u8*)(try js_malloc(ctx, out_cap))
+    defer js_free(ctx, buf)
+
+    var read_pos: usize = 0
+    var err = false
+    let decoded_len = u8a_hex_decode(u8[]((u8*)text, str_len), u8[](buf, out_cap), &read_pos, &err)
+
+    if err:
+        try js_throw_syntax_error(ctx, "invalid hex string")
+
+    # XXX: could avoid the copy
+    return try js_new_uint8_array_copy(ctx, buf, decoded_len)
+
+# Return a { read, written } result object
+func js_make_read_written(ctx: Context*, read: usize, written: usize) -> Value!:
+    let obj = try js_new_object(ctx)
+    errdefer js_free_value(ctx, obj)
+    discard(try js_define_property_value_str(ctx, obj, "read", js_new_uint32((u32)read), prop_c_w_e))
+    discard(try js_define_property_value_str(ctx, obj, "written", js_new_uint32((u32)written), prop_c_w_e))
+    return obj
+
+# Uint8Array.prototype.setFromBase64(string[, options])
+func js_uint8array_set_from_base64(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try check_uint8array(ctx, this_val)
+
+    var str_len: usize = 0
+    let text = try base64_source_string(ctx, argv[0], &str_len)
+    defer js_free_c_string(ctx, text)
+
+    let options = argv[1] if argc > 1 else js_undefined()
+    try check_options_object(ctx, options)
+    let alphabet = try parse_alphabet_option(ctx, options)
+    let last_chunk = try parse_last_chunk_option(ctx, options)
+
+    let data = try get_uint8array_bytes(ctx, p)
+
+    var read_pos: usize = 0
+    var err = false
+    let decoded_len = from_base64(u8[]((u8*)text, str_len), data,
+                                  b64_dec_table(alphabet), last_chunk, &read_pos, &err)
+
+    if err:
+        try js_throw_syntax_error(ctx, "invalid base64 string")
+
+    return try js_make_read_written(ctx, read_pos, decoded_len)
+
+# Uint8Array.prototype.setFromHex(string)
+func js_uint8array_set_from_hex(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try check_uint8array(ctx, this_val)
+
+    var str_len: usize = 0
+    let text = try base64_source_string(ctx, argv[0], &str_len)
+    defer js_free_c_string(ctx, text)
+
+    let data = try get_uint8array_bytes(ctx, p)
+
+    var read_pos: usize = 0
+    var err = false
+    let decoded_len = u8a_hex_decode(u8[]((u8*)text, str_len), data, &read_pos, &err)
+
+    if err:
+        try js_throw_syntax_error(ctx, "invalid hex string")
+
+    return try js_make_read_written(ctx, read_pos, decoded_len)

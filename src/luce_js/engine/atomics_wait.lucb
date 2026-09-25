@@ -212,17 +212,16 @@ func js_atomics_notify(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) 
 
 # mark: The Atomics object ======================================================================
 
-# The magic numbers of js_atomics_op are AtomicsOpEnum's (declared with js_atomics_op):
-# ATOMICS_OP_ADD 0, AND 1, OR 2, SUB 3, XOR 4, EXCHANGE 5, COMPARE_EXCHANGE 6, LOAD 7.
+# The magic numbers of js_atomics_op are AtomicsOp cases (atomics_ops.lucb).
 let js_atomics_funcs = [
-    CFunctionListEntry(name = "add", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 0),
-    CFunctionListEntry(name = "and", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 1),
-    CFunctionListEntry(name = "or", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 2),
-    CFunctionListEntry(name = "sub", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 3),
-    CFunctionListEntry(name = "xor", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 4),
-    CFunctionListEntry(name = "exchange", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 5),
-    CFunctionListEntry(name = "compareExchange", def_type = def_cfunc, length = 4, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 6),
-    CFunctionListEntry(name = "load", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = 7),
+    CFunctionListEntry(name = "add", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.add),
+    CFunctionListEntry(name = "and", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.and_),
+    CFunctionListEntry(name = "or", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.or_),
+    CFunctionListEntry(name = "sub", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.sub),
+    CFunctionListEntry(name = "xor", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.xor),
+    CFunctionListEntry(name = "exchange", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.exchange),
+    CFunctionListEntry(name = "compareExchange", def_type = def_cfunc, length = 4, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.compare_exchange),
+    CFunctionListEntry(name = "load", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_atomics_op, magic = (i16)AtomicsOp.load),
     CFunctionListEntry(name = "store", def_type = def_cfunc, length = 3, generic = js_atomics_store),
     CFunctionListEntry(name = "isLockFree", def_type = def_cfunc, length = 1, generic = js_atomics_is_lock_free),
     CFunctionListEntry(name = "pause", def_type = def_cfunc, length = 0, generic = js_atomics_pause),

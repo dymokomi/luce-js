@@ -1,0 +1,210 @@
+#==============================================================================================
+#
+#   tests_r28 - Tests of the typed array helpers that need no runtime
+#
+#   DESCRIPTION:
+#       The base64 and hex encoders and decoders (expected results from the C functions
+#       of quickjs.c compiled and run on the same inputs), the element sizes of the
+#       typed array classes, the sort comparisons, slice_memcpy, the element scans of
+#       indexOf and the atomic element operations.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# The result of one decoder run: its error flag, bytes written and characters read, and
+# the written bytes.
+struct TestDecoded:
+    var err: bool
+    var written: usize
+    var read: usize
+    var out: u8[64]
+
+    func bytes() -> const u8[]:
+        return self.out[0..<self.written]
+
+func test_b64_decode(text: str, cap: usize, last_chunk: i32, dec_table: const u8[]) -> TestDecoded:
+    var r = TestDecoded(err = false, written = 0, read = 0)
+    r.written = from_base64(text.bytes, r.out[0..<cap], dec_table, last_chunk, &r.read, &r.err)
+    if r.err:
+        r.read = 0
+    return r
+
+func test_hex_decode(text: str, cap: usize) -> TestDecoded:
+    var r = TestDecoded(err = false, written = 0, read = 0)
+    r.written = u8a_hex_decode(text.bytes, r.out[0..<cap], &r.read, &r.err)
+    if r.err:
+        r.read = 0
+    return r
+
+func test_b64_encode(buf: u8[], src: const u8[], alpha: const u8[]) -> str:
+    let n = b64_encode(src, buf, alpha)
+    return (str)buf[0..<n]
+
+# mark: Base64 ==================================================================================
+
+test "b64_encode pads with = and selects the alphabet":
+    var buf: u8[16]
+    assert(test_b64_encode(buf, "".bytes, b64_enc) == "")
+    assert(test_b64_encode(buf, "f".bytes, b64_enc) == "Zg==")
+    assert(test_b64_encode(buf, "fo".bytes, b64_enc) == "Zm8=")
+    assert(test_b64_encode(buf, "foo".bytes, b64_enc) == "Zm9v")
+    assert(test_b64_encode(buf, "foob".bytes, b64_enc) == "Zm9vYg==")
+    assert(test_b64_encode(buf, "fooba".bytes, b64_enc) == "Zm9vYmE=")
+    assert(test_b64_encode(buf, "foobar".bytes, b64_enc) == "Zm9vYmFy")
+    let high: u8[2] = [0xfb, 0xff]
+    assert(test_b64_encode(buf, high, b64url_enc) == "-_8=")
+    assert(test_b64_encode(buf, high, b64_enc) == "+/8=")
+
+test "from_base64 decodes groups and skips whitespace":
+    var r = test_b64_decode("Zm9vYmFy", 63, b64_last_loose, b64_dec)
+    assert(not r.err and r.written == 6 and r.read == 8)
+    assert((str)r.bytes() == "foobar")
+    r = test_b64_decode(" Zm9v\tYmFy\n", 63, b64_last_loose, b64_dec)
+    assert(not r.err and r.written == 6 and r.read == 11)
+    assert((str)r.bytes() == "foobar")
+
+test "from_base64 handles a partial last chunk by its mode":
+    var r = test_b64_decode("Zm9vYg", 63, b64_last_loose, b64_dec)
+    assert(not r.err and r.written == 4 and r.read == 6)
+    assert((str)r.bytes() == "foob")
+    r = test_b64_decode("Zm9vYg", 63, b64_last_strict, b64_dec)
+    assert(r.err and r.written == 0)
+    r = test_b64_decode("Zm9vYg", 63, b64_last_stop_before_partial, b64_dec)
+    assert(not r.err and r.written == 3 and r.read == 4)
+    assert((str)r.bytes() == "foo")
+
+test "from_base64 checks padding and the unused bits in strict mode":
+    var r = test_b64_decode("Zg==", 63, b64_last_strict, b64_dec)
+    assert(not r.err and r.written == 1 and r.read == 4 and r.out[0] == 'f')
+    r = test_b64_decode("Zh==", 63, b64_last_strict, b64_dec)
+    assert(r.err)
+    r = test_b64_decode("Zh==", 63, b64_last_loose, b64_dec)
+    assert(not r.err and r.written == 1 and r.read == 4 and r.out[0] == 'f')
+    r = test_b64_decode("Zg=", 63, b64_last_loose, b64_dec)
+    assert(r.err)
+    r = test_b64_decode("Zg=", 63, b64_last_stop_before_partial, b64_dec)
+    assert(not r.err and r.written == 0 and r.read == 0)
+    r = test_b64_decode("Zg==Zg==", 63, b64_last_loose, b64_dec)
+    assert(r.err)
+
+test "from_base64 rejects characters outside the alphabet":
+    assert(test_b64_decode("Zm9v!", 63, b64_last_loose, b64_dec).err)
+    assert(test_b64_decode("Z", 63, b64_last_loose, b64_dec).err)
+    assert(test_b64_decode("-_8=", 63, b64_last_loose, b64_dec).err)
+    let r = test_b64_decode("-_8=", 63, b64_last_loose, b64url_dec)
+    assert(not r.err and r.written == 2 and r.read == 4 and r.out[0] == 0xfb and r.out[1] == 0xff)
+
+test "from_base64 stops before a group that does not fit":
+    var r = test_b64_decode("Zm9v", 2, b64_last_loose, b64_dec)
+    assert(not r.err and r.written == 0 and r.read == 0)
+    r = test_b64_decode("Zm9vYmFy", 4, b64_last_loose, b64_dec)
+    assert(not r.err and r.written == 3 and r.read == 4)
+    r = test_b64_decode("Zm9vYmFy", 0, b64_last_loose, b64_dec)
+    assert(not r.err and r.written == 0 and r.read == 0)
+
+# mark: Hex =====================================================================================
+
+test "u8a_hex_encode writes lowercase digits":
+    var buf: u8[8]
+    let src: u8[3] = [0x00, 0xab, 0xff]
+    let n = u8a_hex_encode(src, buf)
+    assert((str)buf[0..<n] == "00abff")
+
+test "u8a_hex_decode reads both cases and stops at the capacity":
+    var r = test_hex_decode("00abFF", 63)
+    assert(not r.err and r.written == 3 and r.read == 6)
+    assert(r.out[0] == 0 and r.out[1] == 0xab and r.out[2] == 0xff)
+    assert(test_hex_decode("abc", 63).err)
+    assert(test_hex_decode("zz", 63).err)
+    r = test_hex_decode("abcd", 1)
+    assert(not r.err and r.written == 1 and r.read == 2 and r.out[0] == 0xab)
+
+# mark: Elements ================================================================================
+
+test "typed_array_size_log2 gives each class its element size":
+    assert(typed_array_size_log2(ClassId.uint8c_array) == 0)
+    assert(typed_array_size_log2(ClassId.int8_array) == 0)
+    assert(typed_array_size_log2(ClassId.uint16_array) == 1)
+    assert(typed_array_size_log2(ClassId.int32_array) == 2)
+    assert(typed_array_size_log2(ClassId.big_int64_array) == 3)
+    assert(typed_array_size_log2(ClassId.big_uint64_array) == 3)
+    assert(typed_array_size_log2(ClassId.float16_array) == 1)
+    assert(typed_array_size_log2(ClassId.float32_array) == 2)
+    assert(typed_array_size_log2(ClassId.float64_array) == 3)
+    assert(is_typed_array_class(ClassId.float64_array))
+    assert(not is_typed_array_class(ClassId.dataview))
+    assert(not is_typed_array_class(ClassId.array_buffer))
+
+test "js_cmp_doubles orders NaN last and -0 before +0":
+    assert(js_cmp_doubles(1.0, 2.0) == -1)
+    assert(js_cmp_doubles(2.0, 1.0) == 1)
+    assert(js_cmp_doubles(math.nan, 1.0) == 1)
+    assert(js_cmp_doubles(1.0, math.nan) == -1)
+    assert(js_cmp_doubles(math.nan, math.nan) == 0)
+    assert(js_cmp_doubles(-0.0, 0.0) == -1)
+    assert(js_cmp_doubles(0.0, -0.0) == 1)
+    assert(js_cmp_doubles(-0.0, -0.0) == 0)
+    assert(js_cmp_doubles(3.5, 3.5) == 0)
+
+test "the element comparisons of sort":
+    var a: i8 = -5
+    var b: i8 = 3
+    assert(js_ta_cmp_int8(&a, &b, none) < 0)
+    var ua: u32 = 0xffffffff
+    var ub: u32 = 1
+    assert(js_ta_cmp_uint32(&ua, &ub, none) == 1)
+    assert(js_ta_cmp_uint32(&ub, &ua, none) == -1)
+    var ia: i64 = -1
+    var ib: i64 = 1
+    assert(js_ta_cmp_int64(&ia, &ib, none) == -1)
+    var ha = cutils.tofp16(-0.0)
+    var hb = cutils.tofp16(0.0)
+    assert(js_ta_cmp_float16(&ha, &hb, none) == -1)
+    var fa: f32 = 2.5
+    var fb: f32 = 2.5
+    assert(js_ta_cmp_float32(&fa, &fb, none) == 0)
+
+test "slice_memcpy copies byte by byte when the ranges overlap":
+    var buf: u8[5] = [1, 2, 3, 4, 5]
+    slice_memcpy(&buf[1], &buf[0], 4)
+    assert(buf[0] == 1 and buf[1] == 1 and buf[2] == 1 and buf[3] == 1 and buf[4] == 1)
+    var dst: u8[3]
+    let src: u8[3] = [7, 8, 9]
+    slice_memcpy(&dst[0], &src[0], 3)
+    assert(dst[0] == 7 and dst[1] == 8 and dst[2] == 9)
+
+test "the element scans of indexOf go forward and backward":
+    var bytes: u8[5] = [1, 2, 3, 2, 1]
+    assert(typed_array_scan8(&bytes[0], 0, 5, 1, 5, 2) == 1)
+    assert(typed_array_scan8(&bytes[0], 2, 5, 1, 5, 2) == 3)
+    assert(typed_array_scan8(&bytes[0], 4, -1, -1, 5, 2) == 3)
+    assert(typed_array_scan8(&bytes[0], 0, 5, 1, 5, 7) == -1)
+    assert(typed_array_scan8(none, 0, 5, 1, 5, 1) == -1)
+    var halves: u16[3] = [10, 20, 30]
+    assert(typed_array_scan16(&halves[0], 2, -1, -1, 10) == 0)
+    var words: u32[3] = [10, 20, 30]
+    assert(typed_array_scan32(&words[0], 0, 3, 1, 30) == 2)
+    var longs: u64[2] = [18446744073709551615, 5]
+    assert(typed_array_scan64(&longs[0], 0, 2, 1, 18446744073709551615) == 0)
+
+test "the atomic element operations answer the previous value":
+    var x: u8 = 250
+    let p = (AtomicU8Ptr)(void*)&x
+    assert(atomics_op_u8(p, AtomicsOp.add, 10, 0) == 250)
+    assert(x == 4)
+    assert(atomics_op_u8(p, AtomicsOp.or_, 0xf0, 0) == 4)
+    assert(atomics_op_u8(p, AtomicsOp.and_, 0x0f, 0) == 0xf4)
+    assert(x == 4)
+    assert(atomics_op_u8(p, AtomicsOp.xor, 0xff, 0) == 4)
+    assert(x == 0xfb)
+    assert(atomics_op_u8(p, AtomicsOp.compare_exchange, 1, 2) == 0xfb)
+    assert(x == 0xfb)
+    assert(atomics_op_u8(p, AtomicsOp.compare_exchange, 0xfb, 2) == 0xfb)
+    assert(x == 2)
+    var y: u64 = 1
+    let q = (AtomicU64Ptr)(void*)&y
+    assert(atomics_op_u64(q, AtomicsOp.sub, 2, 0) == 1)
+    assert(y == 18446744073709551615)
+    assert(atomics_op_u64(q, AtomicsOp.exchange, 7, 0) == 18446744073709551615)
+    assert(atomics_op_u64(q, AtomicsOp.load, 0, 0) == 7)

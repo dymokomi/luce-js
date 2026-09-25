@@ -1,0 +1,229 @@
+#==============================================================================================
+#
+#   atomics_ops - The Atomics read-modify-write operations, load, store and isLockFree
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Atomics" (CONFIG_ATOMICS, lines 60513-60806): AtomicsOpEnum,
+#       js_atomics_get_buf (validating the typed array and index), js_atomics_op (add,
+#       and, or, sub, xor, exchange, compareExchange and load), js_atomics_store and
+#       js_atomics_isLockFree. C's _Atomic accesses are luce-base atomic types: the
+#       element's address is cast to a pointer to `@u8` ... `@u64`, whose methods are the
+#       sequentially consistent C11 operations.
+#
+#==============================================================================================
+
+# mark: Validation ==============================================================================
+
+## The operations of js_atomics_op, its magic (AtomicsOpEnum).
+enum AtomicsOp as i32:
+    add = 0
+    and_ = 1
+    or_ = 2
+    sub = 3
+    xor = 4
+    exchange = 5
+    compare_exchange = 6
+    load = 7
+
+## The integer typed array `obj` (Int32Array or BigInt64Array when `is_waitable`) and, in
+## `*pidx`, the checked element index `idx_val`. `is_waitable` 2 also requires a
+## SharedArrayBuffer; with 1 the index is not revalidated after its conversion.
+func js_atomics_get_buf(ctx: Context*, obj: Value, idx_val: Value, pidx: u64*, is_waitable: i32) -> Object*!:
+    if obj.tag != Tag.object:
+        try js_throw_type_error(ctx, "integer TypedArray expected")
+    let p = obj.u.obj
+    var err = false
+    if is_waitable != 0:
+        err = (p.class_id != ClassId.int32_array and
+               p.class_id != ClassId.big_int64_array)
+    else:
+        err = not ((u16)p.class_id >= (u16)ClassId.int8_array and
+                   (u16)p.class_id <= (u16)ClassId.big_uint64_array)
+    if err:
+        try js_throw_type_error(ctx, "integer TypedArray expected")
+    let ta = p.u.typed_array
+    let abuf = ta.buffer.u.array_buffer
+    if abuf.shared == 0:
+        if is_waitable == 2:
+            try js_throw_type_error(ctx, "not a SharedArrayBuffer TypedArray")
+        if abuf.detached != 0:
+            try js_throw_type_error_detached_array_buffer(ctx)
+    let old_len = (i32)p.u.array.count
+
+    var idx: u64 = 0
+    try js_to_index(ctx, &idx, idx_val)
+
+    if idx >= (u64)old_len:
+        try js_throw_range_error(ctx, "out-of-bound access")
+
+    if is_waitable != 1:
+        # RevalidateAtomicAccess()
+        if typed_array_is_oob(p):
+            try js_throw_type_error_array_buffer_oob(ctx)
+        if idx >= (u64)p.u.array.count:
+            try js_throw_range_error(ctx, "out-of-bound access")
+
+    *pidx = idx
+    return p
+
+# mark: Atomic accesses =========================================================================
+
+type AtomicU8Ptr = (@u8)*
+type AtomicU16Ptr = (@u16)*
+type AtomicU32Ptr = (@u32)*
+type AtomicU64Ptr = (@u64)*
+
+## Apply `op` to the byte at `ptr`; answer its previous value.
+func atomics_op_u8(ptr: AtomicU8Ptr, op: AtomicsOp, v: u8, rep_val: u8) -> u8:
+    match op:
+        .add: return ptr.add(v)
+        .and_: return ptr.clear(~v)
+        .or_: return ptr.set(v)
+        .sub: return ptr.sub(v)
+        .xor: return ptr.flip(v)
+        .exchange: return ptr.swap(v)
+        .load: return ptr.load()
+        .compare_exchange:
+            let (exchanged, observed) = ptr.cas(v, rep_val)
+            return observed
+        _: trap("abort")
+
+## Apply `op` to the 16-bit element at `ptr`; answer its previous value.
+func atomics_op_u16(ptr: AtomicU16Ptr, op: AtomicsOp, v: u16, rep_val: u16) -> u16:
+    match op:
+        .add: return ptr.add(v)
+        .and_: return ptr.clear(~v)
+        .or_: return ptr.set(v)
+        .sub: return ptr.sub(v)
+        .xor: return ptr.flip(v)
+        .exchange: return ptr.swap(v)
+        .load: return ptr.load()
+        .compare_exchange:
+            let (exchanged, observed) = ptr.cas(v, rep_val)
+            return observed
+        _: trap("abort")
+
+## Apply `op` to the 32-bit element at `ptr`; answer its previous value.
+func atomics_op_u32(ptr: AtomicU32Ptr, op: AtomicsOp, v: u32, rep_val: u32) -> u32:
+    match op:
+        .add: return ptr.add(v)
+        .and_: return ptr.clear(~v)
+        .or_: return ptr.set(v)
+        .sub: return ptr.sub(v)
+        .xor: return ptr.flip(v)
+        .exchange: return ptr.swap(v)
+        .load: return ptr.load()
+        .compare_exchange:
+            let (exchanged, observed) = ptr.cas(v, rep_val)
+            return observed
+        _: trap("abort")
+
+## Apply `op` to the 64-bit element at `ptr`; answer its previous value.
+func atomics_op_u64(ptr: AtomicU64Ptr, op: AtomicsOp, v: u64, rep_val: u64) -> u64:
+    match op:
+        .add: return ptr.add(v)
+        .and_: return ptr.clear(~v)
+        .or_: return ptr.set(v)
+        .sub: return ptr.sub(v)
+        .xor: return ptr.flip(v)
+        .exchange: return ptr.swap(v)
+        .load: return ptr.load()
+        .compare_exchange:
+            let (exchanged, observed) = ptr.cas(v, rep_val)
+            return observed
+        _: trap("abort")
+
+# mark: Operations ==============================================================================
+
+## Atomics.add, and, or, sub, xor, exchange, compareExchange and load (`op` is an
+## AtomicsOp).
+func js_atomics_op(ctx: Context*, this_obj: Value, argc: i32, argv: Value*, op: i32) -> Value!:
+    var idx: u64 = 0
+    let p = try js_atomics_get_buf(ctx, argv[0], argv[1], &idx, 0)
+    let size_log2 = typed_array_size_log2(p.class_id)
+    let kind = (AtomicsOp)op
+    var rep_val: u64 = 0
+    var v: u64 = 0
+    if kind == AtomicsOp.load:
+        v = 0
+    else:
+        if size_log2 == 3:
+            var v64: i64 = 0
+            try js_to_bigint64(ctx, &v64, argv[2])
+            v = (u64)v64
+            if kind == AtomicsOp.compare_exchange:
+                try js_to_bigint64(ctx, &v64, argv[3])
+                rep_val = (u64)v64
+        else:
+            var v32: u32 = 0
+            try js_to_uint32(ctx, &v32, argv[2])
+            v = v32
+            if kind == AtomicsOp.compare_exchange:
+                try js_to_uint32(ctx, &v32, argv[3])
+                rep_val = v32
+        if typed_array_is_oob(p):
+            try js_throw_type_error_detached_array_buffer(ctx)
+        if idx >= (u64)p.u.array.count:
+            try js_throw_range_error(ctx, "out-of-bound access")
+    let ptr = (void*)(p.u.array.u.uint8_ptr + ((usize)idx << (usize)size_log2))
+
+    var a: u64 = 0
+    match size_log2:
+        0: a = (u64)atomics_op_u8((AtomicU8Ptr)ptr, kind, (u8)v, (u8)rep_val)
+        1: a = (u64)atomics_op_u16((AtomicU16Ptr)ptr, kind, (u16)v, (u16)rep_val)
+        2: a = (u64)atomics_op_u32((AtomicU32Ptr)ptr, kind, (u32)v, (u32)rep_val)
+        3: a = atomics_op_u64((AtomicU64Ptr)ptr, kind, v, rep_val)
+        _: trap("abort")
+
+    match p.class_id:
+        .int8_array: return js_new_int32((i32)(i8)a)
+        .uint8_array: return js_new_int32((i32)(u8)a)
+        .int16_array: return js_new_int32((i32)(i16)a)
+        .uint16_array: return js_new_int32((i32)(u16)a)
+        .int32_array: return js_new_int32((i32)a)
+        .uint32_array: return js_new_uint32((u32)a)
+        .big_int64_array: return try js_new_bigint64(ctx, (i64)a)
+        .big_uint64_array: return try js_new_big_uint64(ctx, a)
+        _: trap("abort")
+
+func js_atomics_store(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    var idx: u64 = 0
+    let p = try js_atomics_get_buf(ctx, argv[0], argv[1], &idx, 0)
+    let size_log2 = typed_array_size_log2(p.class_id)
+    var v: i64 = 0
+    var ret = js_undefined()
+    if size_log2 == 3:
+        ret = try js_to_bigint_free(ctx, js_dup_value(ctx, argv[2]))
+        js_to_bigint64(ctx, &v, ret) catch failure:
+            js_free_value(ctx, ret)
+            error(failure.code, failure.message)
+    else:
+        var v32: u32 = 0
+        # XXX: spec, would be simpler to return the written value
+        ret = try js_to_integer_free(ctx, js_dup_value(ctx, argv[2]))
+        js_to_uint32(ctx, &v32, ret) catch failure:
+            js_free_value(ctx, ret)
+            error(failure.code, failure.message)
+        v = (i64)v32
+    # (C leaks `ret` when these checks throw)
+    errdefer js_free_value(ctx, ret)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_detached_array_buffer(ctx)
+    if idx >= (u64)p.u.array.count:
+        try js_throw_range_error(ctx, "out-of-bound access")
+
+    let ptr = (void*)(p.u.array.u.uint8_ptr + ((usize)idx << (usize)size_log2))
+
+    match size_log2:
+        0: ((AtomicU8Ptr)ptr).store((u8)v)
+        1: ((AtomicU16Ptr)ptr).store((u16)v)
+        2: ((AtomicU32Ptr)ptr).store((u32)v)
+        3: ((AtomicU64Ptr)ptr).store((u64)v)
+        _: trap("abort")
+    return ret
+
+func js_atomics_is_lock_free(ctx: Context*, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    var v: i32 = 0
+    try js_to_int32_sat(ctx, &v, argv[0])
+    let ret = v == 1 or v == 2 or v == 4 or v == 8
+    return js_new_bool(ret)

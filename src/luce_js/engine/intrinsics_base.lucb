@@ -1,0 +1,271 @@
+#==============================================================================================
+#
+#   intrinsics_base - The first intrinsics of a context: Object, Function, Error, Array,
+#                     the iterators, Number, Boolean, String, Math, Reflect, Symbol and the
+#                     generators
+#
+#   DESCRIPTION:
+#       Port of quickjs.c JS_AddIntrinsicBasicObjects and JS_AddIntrinsicBaseObjects
+#       (lines 56379-56729). The builtin tables named here belong to the regions that port
+#       each class.
+#
+#==============================================================================================
+
+# mark: Basic objects ===========================================================================
+
+# Minimum amount of objects to be able to compile code and display error messages.
+## Add Object.prototype, Function.prototype, the global objects, the Error constructors
+## and Array, and the shapes of arrays and arguments objects (JS_AddIntrinsicBasicObjects).
+func js_add_intrinsic_basic_objects(ctx: Context*) -> !:
+    let protos = context_class_proto(ctx)
+
+    # warning: ordering is tricky
+    let object_proto = try js_new_object_proto_class_alloc(ctx, js_null(), (u32)ClassId.object,
+                                                           (i32)js_object_proto_funcs.length + 1)
+    protos[(usize)ClassId.object] = object_proto
+    js_set_immutable_prototype(ctx, protos[(usize)ClassId.object])
+
+    # 2 more properties: caller and arguments
+    ctx.function_proto = try js_new_c_function3(ctx, js_function_proto, &empty_c_string[0], 0,
+                                                CFunctionEnum.generic, 0,
+                                                protos[(usize)ClassId.object],
+                                                (i32)js_function_proto_funcs.length + 3 + 2)
+    protos[(usize)ClassId.bytecode_function] = js_dup_value(ctx, ctx.function_proto)
+
+    ctx.global_obj = try js_new_object_proto_class_alloc(ctx, protos[(usize)ClassId.object],
+                                                         (u32)ClassId.global_object, 64)
+    # (C stores the value unchecked; a failure is reported here)
+    let uninitialized_vars = try js_new_object_proto_class_alloc(ctx, js_null(), (u32)ClassId.object, 4)
+    let global_p = ctx.global_obj.u.obj
+    global_p.u.global_object.uninitialized_vars = uninitialized_vars
+    ctx.global_var_obj = try js_new_object_proto_class_alloc(ctx, js_null(), (u32)ClassId.object, 16)
+
+    # Error
+    var ft: CFunctionType = ---
+    ft.generic_magic = js_error_constructor
+    let obj = try js_new_c_constructor(ctx, (i32)ClassId.error_, "Error",
+                                       ft.generic, 1, CFunctionEnum.constructor_or_func_magic, -1,
+                                       js_undefined(),
+                                       js_error_funcs,
+                                       js_error_proto_funcs,
+                                       0)
+
+    for i in 0..<js_native_error_count:
+        var buf: u8[atom_get_str_buf_size] = ---
+        let name = js_atom_get_str(ctx, buf, atom_EvalError + (u32)i)
+        let n_args = 1 + (i32)(i == (usize)ErrorKind.aggregate_error)
+        let funcs = js_native_error_proto_funcs[2 * i..<2 * i + 2]
+        let func_obj = js_new_c_constructor(ctx, -1, name,
+                                            ft.generic, n_args, CFunctionEnum.constructor_or_func_magic,
+                                            (i32)i, obj,
+                                            funcs[0..<0], # no constructor fields (NULL, 0)
+                                            funcs,
+                                            0) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        let proto = js_get_property(ctx, func_obj, atom_prototype) catch failure:
+            js_free_value(ctx, func_obj)
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        ctx.native_error_proto[i] = proto
+        js_free_value(ctx, func_obj)
+    js_free_value(ctx, obj)
+
+    # Array
+    ctx.array_ctor = try js_new_c_constructor(ctx, (i32)ClassId.array, "Array",
+                                              js_array_constructor, 1, CFunctionEnum.constructor_or_func, 0,
+                                              js_undefined(),
+                                              js_array_funcs,
+                                              js_array_proto_funcs,
+                                              js_new_ctor_proto_class)
+
+    let array_proto = protos[(usize)ClassId.array].u.obj
+    array_proto.is_std_array_prototype = true
+
+    var sh = try js_new_shape2(ctx, get_proto_obj(protos[(usize)ClassId.array]),
+                               js_prop_initial_hash_size, 1)
+    ctx.array_shape = sh
+    try add_shape_property(ctx, &sh, none, atom_length, prop_writable | prop_length)
+    ctx.array_shape = sh
+
+    sh = try js_new_shape2(ctx, get_proto_obj(protos[(usize)ClassId.object]),
+                           js_prop_initial_hash_size, 3)
+    ctx.arguments_shape = sh
+    try add_shape_property(ctx, &sh, none, atom_length, prop_writable | prop_configurable)
+    ctx.arguments_shape = sh
+    try add_shape_property(ctx, &sh, none, atom_Symbol_iterator, prop_writable | prop_configurable)
+    ctx.arguments_shape = sh
+    try add_shape_property(ctx, &sh, none, atom_callee, prop_getset)
+    ctx.arguments_shape = sh
+
+    sh = try js_new_shape2(ctx, get_proto_obj(protos[(usize)ClassId.object]),
+                           js_prop_initial_hash_size, 3)
+    ctx.mapped_arguments_shape = sh
+    try add_shape_property(ctx, &sh, none, atom_length, prop_writable | prop_configurable)
+    ctx.mapped_arguments_shape = sh
+    try add_shape_property(ctx, &sh, none, atom_Symbol_iterator, prop_writable | prop_configurable)
+    ctx.mapped_arguments_shape = sh
+    try add_shape_property(ctx, &sh, none, atom_callee, prop_writable | prop_configurable)
+    ctx.mapped_arguments_shape = sh
+
+## A new object whose prototype is Iterator.prototype, with the properties of `tab`.
+func new_iterator_proto(ctx: Context*, tab: const CFunctionListEntry[]) -> Value!:
+    let protos = context_class_proto(ctx)
+    return try js_new_object_proto_list(ctx, protos[(usize)ClassId.iterator], tab)
+
+# mark: Base objects ============================================================================
+
+## Add the standard objects every context has: %ThrowTypeError%, Object, Function,
+## Iterator, the iterator prototypes, the global functions, Number, Boolean, String,
+## Math, Reflect, Symbol, the generators, globalThis and BigInt
+## (JS_AddIntrinsicBaseObjects).
+pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
+    let protos = context_class_proto(ctx)
+
+    ctx.throw_type_error = try js_new_c_function2(ctx, js_throw_type_error_internal, none, 0,
+                                                  CFunctionEnum.generic, 0)
+    # add caller and arguments properties to throw a TypeError
+    discard(try js_define_property(ctx, ctx.function_proto, atom_caller, js_undefined(),
+                                   ctx.throw_type_error, ctx.throw_type_error,
+                                   prop_has_get | prop_has_set |
+                                   prop_has_configurable | prop_configurable))
+    discard(try js_define_property(ctx, ctx.function_proto, atom_arguments, js_undefined(),
+                                   ctx.throw_type_error, ctx.throw_type_error,
+                                   prop_has_get | prop_has_set |
+                                   prop_has_configurable | prop_configurable))
+    # (C ignores a failure of the seal)
+    let sealed = js_object_seal(ctx, js_undefined(), 1, &ctx.throw_type_error, 1) catch failure:
+        recover js_exception()
+    js_free_value(ctx, sealed)
+
+    # Object
+    var obj1 = try js_new_c_constructor(ctx, (i32)ClassId.object, "Object",
+                                        js_object_constructor, 1, CFunctionEnum.constructor_or_func, 0,
+                                        js_undefined(),
+                                        js_object_funcs,
+                                        js_object_proto_funcs,
+                                        js_new_ctor_proto_exist)
+    js_free_value(ctx, obj1)
+
+    # Function
+    var ft: CFunctionType = ---
+    ft.generic_magic = js_function_constructor
+    ctx.function_ctor = try js_new_c_constructor(ctx, (i32)ClassId.bytecode_function, "Function",
+                                                 ft.generic, 1, CFunctionEnum.constructor_or_func_magic,
+                                                 (i32)js_func_normal,
+                                                 js_undefined(),
+                                                 js_function_proto_funcs[0..<0], # (NULL, 0)
+                                                 js_function_proto_funcs,
+                                                 js_new_ctor_proto_exist)
+
+    # Iterator
+    var obj2 = try js_new_c_constructor(ctx, (i32)ClassId.iterator, "Iterator",
+                                        js_iterator_constructor, 0, CFunctionEnum.constructor_or_func, 0,
+                                        js_undefined(),
+                                        js_iterator_funcs,
+                                        js_iterator_proto_funcs,
+                                        0)
+    # quirk: Iterator.prototype.constructor is an accessor property
+    # TODO(bnoordhuis) mildly inefficient because JS_NewGlobalCConstructor
+    # first creates a .constructor value property that we then replace with
+    # an accessor
+    obj1 = js_new_c_function_data(ctx, js_iterator_constructor_getset, 0, 0, 1, &obj2) catch failure:
+        js_free_value(ctx, obj2)
+        error(failure.code, failure.message)
+    let defined = js_define_property(ctx, protos[(usize)ClassId.iterator],
+                                     atom_constructor, js_undefined(),
+                                     obj1, obj1,
+                                     prop_has_get | prop_has_set | prop_configurable) catch failure:
+        js_free_value(ctx, obj2)
+        js_free_value(ctx, obj1)
+        error(failure.code, failure.message)
+    discard(defined)
+    js_free_value(ctx, obj1)
+    ctx.iterator_ctor = obj2
+
+    protos[(usize)ClassId.iterator_concat] = try new_iterator_proto(ctx, js_iterator_concat_proto_funcs)
+    protos[(usize)ClassId.iterator_helper] = try new_iterator_proto(ctx, js_iterator_helper_proto_funcs)
+    protos[(usize)ClassId.iterator_wrap] = try new_iterator_proto(ctx, js_iterator_wrap_proto_funcs)
+
+    # needed to initialize arguments[Symbol.iterator]
+    ctx.array_proto_values = try js_get_property(ctx, protos[(usize)ClassId.array], atom_values)
+
+    protos[(usize)ClassId.array_iterator] = try new_iterator_proto(ctx, js_array_iterator_proto_funcs)
+
+    # parseFloat and parseInteger must be defined before Number because of the
+    # Number.parseFloat and Number.parseInteger aliases
+    try js_set_property_function_list(ctx, ctx.global_obj, js_global_funcs)
+
+    # Number
+    obj1 = try js_new_c_constructor(ctx, (i32)ClassId.number, "Number",
+                                    js_number_constructor, 1, CFunctionEnum.constructor_or_func, 0,
+                                    js_undefined(),
+                                    js_number_funcs,
+                                    js_number_proto_funcs,
+                                    js_new_ctor_proto_class)
+    js_free_value(ctx, obj1)
+    try js_set_object_data(ctx, protos[(usize)ClassId.number], js_new_int32(0))
+
+    # Boolean
+    obj1 = try js_new_c_constructor(ctx, (i32)ClassId.boolean, "Boolean",
+                                    js_boolean_constructor, 1, CFunctionEnum.constructor_or_func, 0,
+                                    js_undefined(),
+                                    js_boolean_proto_funcs[0..<0], # (NULL, 0)
+                                    js_boolean_proto_funcs,
+                                    js_new_ctor_proto_class)
+    js_free_value(ctx, obj1)
+    try js_set_object_data(ctx, protos[(usize)ClassId.boolean], js_new_bool(false))
+
+    # String
+    obj1 = try js_new_c_constructor(ctx, (i32)ClassId.string, "String",
+                                    js_string_constructor, 1, CFunctionEnum.constructor_or_func, 0,
+                                    js_undefined(),
+                                    js_string_funcs,
+                                    js_string_proto_funcs,
+                                    js_new_ctor_proto_class)
+    js_free_value(ctx, obj1)
+    try js_set_object_data(ctx, protos[(usize)ClassId.string], try js_atom_to_string(ctx, atom_empty_string))
+
+    protos[(usize)ClassId.string_iterator] = try new_iterator_proto(ctx, js_string_iterator_proto_funcs)
+
+    # Math: create as autoinit object
+    js_random_init(ctx)
+    try js_set_property_function_list(ctx, ctx.global_obj, js_math_obj)
+
+    # ES6 Reflect: create as autoinit object
+    try js_set_property_function_list(ctx, ctx.global_obj, js_reflect_obj)
+
+    # ES6 Symbol
+    obj1 = try js_new_c_constructor(ctx, (i32)ClassId.symbol, "Symbol",
+                                    js_symbol_constructor, 0, CFunctionEnum.constructor_or_func, 0,
+                                    js_undefined(),
+                                    js_symbol_funcs,
+                                    js_symbol_proto_funcs,
+                                    0)
+    js_free_value(ctx, obj1)
+
+    # ES6 Generator
+    protos[(usize)ClassId.generator] = try new_iterator_proto(ctx, js_generator_proto_funcs)
+
+    ft.generic_magic = js_function_constructor
+    obj1 = try js_new_c_constructor(ctx, (i32)ClassId.generator_function, "GeneratorFunction",
+                                    ft.generic, 1, CFunctionEnum.constructor_or_func_magic,
+                                    (i32)js_func_generator,
+                                    ctx.function_ctor,
+                                    js_generator_function_proto_funcs[0..<0], # (NULL, 0)
+                                    js_generator_function_proto_funcs,
+                                    js_new_ctor_no_global | js_new_ctor_readonly)
+    js_free_value(ctx, obj1)
+    discard(try js_set_constructor2(ctx, protos[(usize)ClassId.generator_function],
+                                    protos[(usize)ClassId.generator],
+                                    prop_configurable, prop_configurable))
+
+    # global properties
+    ctx.eval_obj = try js_get_property(ctx, ctx.global_obj, atom_eval)
+
+    discard(try js_define_property_value(ctx, ctx.global_obj, atom_globalThis,
+                                         js_dup_value(ctx, ctx.global_obj),
+                                         prop_configurable | prop_writable))
+
+    # BigInt
+    try js_add_intrinsic_bigint(ctx)

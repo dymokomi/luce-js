@@ -1,0 +1,335 @@
+#==============================================================================================
+#
+#   typed_arrays - Typed array checks, accessors, set, at, with and creation from a
+#                  constructor
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 57359-57871: get_typed_array, typed_array_is_oob, the
+#       length, buffer, byteLength, byteOffset and toStringTag getters, JS_NewTypedArray,
+#       JS_GetTypedArrayBuffer, %TypedArray%.prototype.set, at and with, the iterators,
+#       TypedArrayCreate and TypedArraySpeciesCreate, and %TypedArray%.from and of.
+#       A typed array object keeps its element storage and count in `u.array` and its
+#       view (TypedArray) in `u.typed_array`, which share the first word.
+#
+#==============================================================================================
+
+# mark: Checks ==================================================================================
+
+## The typed array object `this_val`, or a TypeError.
+func get_typed_array(ctx: Context*, this_val: Value) -> Object*!:
+    if this_val.tag != Tag.object:
+        try js_throw_type_error(ctx, "not a TypedArray")
+    let p = this_val.u.obj
+    if not is_typed_array_class(p.class_id):
+        try js_throw_type_error(ctx, "not a TypedArray")
+    return p
+
+# is the typed array detached or out of bounds relative to its RAB?
+# |p| must be a typed array, *not* a DataView
+func typed_array_is_oob(p: Object*) -> bool:
+    assert((u16)p.class_id >= (u16)ClassId.uint8c_array)
+    assert((u16)p.class_id <= (u16)ClassId.float64_array)
+
+    let ta = p.u.typed_array
+    let abuf = ta.buffer.u.array_buffer
+    if abuf.detached != 0:
+        return true
+    let len = abuf.byte_length
+    if (i64)ta.offset > (i64)len:
+        return true
+    if ta.track_rab:
+        return false
+    if (i64)len < (i64)ta.offset + (i64)ta.length:
+        return true
+    let size_elem = (i64)1 << (i64)typed_array_size_log2(p.class_id)
+    let end = (i64)ta.offset + (i64)p.u.array.count * size_elem
+    return end > (i64)len
+
+# Be *very* careful if you touch the typed array's memory directly:
+# the length is only valid until the next call into JS land because
+# JS code can detach or resize the backing array buffer. Functions
+# like js_get_property and js_to_index call JS code.
+#
+# Exclusively reading or writing elements with js_get_property,
+# js_get_property_int64, js_set_property, etc. is safe because they
+# perform bounds checks, as does js_get_fast_array_element.
+## The element count of the typed array `obj`; fails if it is not a typed array or is
+## out of bounds.
+func js_typed_array_get_length_unsafe(ctx: Context*, obj: Value) -> i32!:
+    let p = try get_typed_array(ctx, obj)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    return (i32)p.u.array.count
+
+## Fail unless `this_val` is a typed array within the bounds of its buffer.
+func validate_typed_array(ctx: Context*, this_val: Value) -> !:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+
+# mark: Accessors ===============================================================================
+
+func js_typed_array_get_length(ctx: Context*, this_val: Value) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    return js_new_int32((i32)p.u.array.count)
+
+func js_typed_array_get_buffer(ctx: Context*, this_val: Value) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    let ta = p.u.typed_array
+    return js_dup_value(ctx, js_mkptr(Tag.object, ta.buffer))
+
+func js_typed_array_get_byte_length(ctx: Context*, this_val: Value) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        return js_new_int32(0)
+    let ta = p.u.typed_array
+    if not ta.track_rab:
+        return js_new_uint32(ta.length)
+    let size_log2 = typed_array_size_log2(p.class_id)
+    return js_new_int64((i64)p.u.array.count << (i64)size_log2)
+
+func js_typed_array_get_byte_offset(ctx: Context*, this_val: Value) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        return js_new_int32(0)
+    let ta = p.u.typed_array
+    return js_new_uint32(ta.offset)
+
+## A new typed array of the kind `type_`, built from the constructor arguments `argv`
+## (JS_NewTypedArray).
+pub func js_new_typed_array(ctx: Context*, argc: i32, argv: Value*, type_: TypedArrayEnum) -> Value!:
+    if (i32)type_ < (i32)TypedArrayEnum.uint8c or (i32)type_ > (i32)TypedArrayEnum.float64:
+        try js_throw_range_error(ctx, "invalid typed array type")
+
+    return try js_typed_array_constructor(ctx, js_undefined(), argc, argv,
+                                          (i32)ClassId.uint8c_array + (i32)type_)
+
+# Return the buffer associated to the typed array or an exception if it is not a typed
+# array or if the buffer is detached. pbyte_offset, pbyte_length or pbytes_per_element
+# can be none.
+## The ArrayBuffer of the typed array `obj`, with its byte offset, byte length and
+## element size (JS_GetTypedArrayBuffer).
+pub func js_get_typed_array_buffer(ctx: Context*, obj: Value, pbyte_offset: usize*?,
+                                   pbyte_length: usize*?, pbytes_per_element: usize*?) -> Value!:
+    let p = try get_typed_array(ctx, obj)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let ta = p.u.typed_array
+    if let q = pbyte_offset:
+        *q = (usize)ta.offset
+    if let q = pbyte_length:
+        *q = (usize)ta.length
+    if let q = pbytes_per_element:
+        *q = (usize)1 << (usize)typed_array_size_log2(p.class_id)
+    return js_dup_value(ctx, js_mkptr(Tag.object, ta.buffer))
+
+func js_typed_array_get_to_string_tag(ctx: Context*, this_val: Value) -> Value!:
+    if this_val.tag != Tag.object:
+        return js_undefined()
+    let p = this_val.u.obj
+    if not is_typed_array_class(p.class_id):
+        return js_undefined()
+    let class_array = ctx.rt.class_array else trap("runtime without classes")
+    return try js_atom_to_string(ctx, class_array[(usize)p.class_id].class_name)
+
+# mark: set, at and with ========================================================================
+
+## Copy the elements of the array-like `src` into the typed array `dst` from the index
+## `off` (%TypedArray%.prototype.set).
+func js_typed_array_set_internal(ctx: Context*, dst: Value, src: Value, off: Value) -> Value!:
+    let p = try get_typed_array(ctx, dst)
+    var offset: i64 = 0
+    try js_to_int64_sat(ctx, &offset, off)
+    if offset < 0:
+        try js_throw_range_error(ctx, "invalid array length")
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let dst_len = (i64)p.u.array.count
+    let src_obj = try js_to_object(ctx, src)
+    defer js_free_value(ctx, src_obj)
+    let src_p = src_obj.u.obj
+    var src_len: i64 = 0
+    if is_typed_array_class(src_p.class_id):
+        let dest_ta = p.u.typed_array
+        let dest_abuf = dest_ta.buffer.u.array_buffer
+        let src_ta = src_p.u.typed_array
+        let src_abuf = src_ta.buffer.u.array_buffer
+        let shift = (i64)typed_array_size_log2(p.class_id)
+
+        if typed_array_is_oob(src_p):
+            try js_throw_type_error_array_buffer_oob(ctx)
+
+        src_len = (i64)src_p.u.array.count
+        if offset > dst_len - src_len:
+            try js_throw_range_error(ctx, "invalid array length")
+
+        # copying between typed objects
+        if src_p.class_id == p.class_id:
+            # same type, use memmove
+            discard(cutils.memmove(array_buffer_data_at(dest_abuf.data, dest_ta.offset + (u32)(offset << shift)),
+                                   array_buffer_const_data_at(src_abuf.data, src_ta.offset),
+                                   (usize)(src_len << shift)))
+            return js_undefined()
+        # if dest_abuf.data == src_abuf.data: copying between the same buffer using
+        # different types of mappings would require a temporary buffer
+        # otherwise, default behavior is slow but correct
+    else:
+        # can change |dst| as a side effect; per spec,
+        # perform the range check against its old length
+        discard(try js_get_length64(ctx, &src_len, src_obj))
+        if offset > dst_len - src_len:
+            try js_throw_range_error(ctx, "invalid array length")
+    for i in 0..<(u32)src_len:
+        let val = try js_get_property_uint32(ctx, src_obj, i)
+        discard(try js_set_property_uint32(ctx, dst, (u32)(offset + (i64)i), val))
+    return js_undefined()
+
+func js_typed_array_at(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+
+    if typed_array_is_oob(p):
+        try js_throw_type_error_detached_array_buffer(ctx)
+    var len = (i64)p.u.array.count
+
+    # note: can change p.u.array.count
+    var idx: i64 = 0
+    try js_to_int64_sat(ctx, &idx, argv[0])
+
+    if idx < 0:
+        idx = len + idx
+
+    len = (i64)p.u.array.count
+    if idx < 0 or idx >= len:
+        return js_undefined()
+    return try js_get_property_int64(ctx, this_val, idx)
+
+func js_typed_array_with(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_detached_array_buffer(ctx)
+
+    let len = (i64)p.u.array.count
+    var idx: i64 = 0
+    try js_to_int64_sat(ctx, &idx, argv[0])
+
+    if idx < 0:
+        idx = len + idx
+
+    let val = try js_to_primitive(ctx, argv[1], hint_number)
+
+    if typed_array_is_oob(p) or idx < 0 or idx >= (i64)p.u.array.count:
+        try js_throw_range_error(ctx, "invalid array index")
+
+    # warning: 'this_val' may have been resized, so 'len' may be larger than its length
+    let arr = js_typed_array_constructor_ta(ctx, js_undefined(), this_val,
+                                            (i32)p.class_id, (u32)len) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    errdefer js_free_value(ctx, arr)
+    discard(try js_set_property_int64(ctx, arr, idx, val))
+    return arr
+
+func js_typed_array_set(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var offset = js_undefined()
+    if argc > 1:
+        offset = argv[1]
+    return try js_typed_array_set_internal(ctx, this_val, argv[0], offset)
+
+## values(), keys() and entries() (`magic` is the IteratorKind).
+func js_create_typed_array_iterator(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    try validate_typed_array(ctx, this_val)
+    return try js_create_array_iterator(ctx, this_val, argc, argv, magic)
+
+# mark: Creation ================================================================================
+
+## TypedArrayCreate: a typed array made by the constructor `ctor` with `argv`, checked
+## to be one, and at least as long as a single length argument asks.
+func js_typed_array_create(ctx: Context*, ctor: Value, argc: i32, argv: Value*) -> Value!:
+    let ret = try js_call_constructor(ctx, ctor, argc, argv)
+    errdefer js_free_value(ctx, ret)
+    # validate the typed array
+    let new_len = try js_typed_array_get_length_unsafe(ctx, ret)
+    if argc == 1:
+        # ensure that it is large enough
+        var len: i64 = 0
+        try js_to_length_free(ctx, &len, js_dup_value(ctx, argv[0]))
+        if (i64)new_len < len:
+            try js_throw_type_error(ctx, "TypedArray length is too small")
+    return ret
+
+## TypedArraySpeciesCreate: `argv[0]` is the exemplar, the rest the constructor
+## arguments.
+func js_typed_array__species_create(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = argv[0]
+    let p = try get_typed_array(ctx, obj)
+    let ctor = try js_species_constructor(ctx, obj, js_undefined())
+    let argc1 = cutils.max_int(argc - 1, 0)
+    if js_is_undefined(ctor):
+        return try js_typed_array_constructor(ctx, js_undefined(), argc1, argv + 1, (i32)p.class_id)
+    defer js_free_value(ctx, ctor)
+    return try js_typed_array_create(ctx, ctor, argc1, argv + 1)
+
+## The source of %TypedArray%.from: the values of the iterator method `iter` of `items`
+## collected in an array, else `items` as an object; `*plen` receives its length.
+func typed_array_from_source(ctx: Context*, items: Value, iter: Value, plen: i64*) -> Value!:
+    if not js_is_undefined(iter) and not js_is_null(iter):
+        if not js_is_function(ctx, iter):
+            try js_throw_type_error(ctx, "value is not iterable")
+        var len1: u32 = 0
+        let arr = try js_array_from_iterator(ctx, &len1, items, iter)
+        *plen = (i64)len1
+        return arr
+    let arr = try js_to_object(ctx, items)
+    errdefer js_free_value(ctx, arr)
+    discard(try js_get_length64(ctx, plen, arr))
+    return arr
+
+# from(items, mapfn = void 0, this_arg = void 0)
+func js_typed_array_from(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let items = argv[0]
+    var mapping = false
+    var mapfn = js_undefined()
+    var this_arg = js_undefined()
+
+    if argc > 1:
+        mapfn = argv[1]
+        if not js_is_undefined(mapfn):
+            discard(try check_function(ctx, mapfn))
+            mapping = true
+            if argc > 2:
+                this_arg = argv[2]
+    let iter = try js_get_property(ctx, items, atom_Symbol_iterator)
+    defer js_free_value(ctx, iter)
+    var len: i64 = 0
+    let arr = try typed_array_from_source(ctx, items, iter, &len)
+    defer js_free_value(ctx, arr)
+    var args: Value[2] = ---
+    var v = js_new_int64(len)
+    args[0] = v
+    let r = js_typed_array_create(ctx, this_val, 1, &args[0]) catch failure:
+        js_free_value(ctx, v)
+        error(failure.code, failure.message)
+    js_free_value(ctx, v)
+    errdefer js_free_value(ctx, r)
+    for k in 0..<len:
+        v = try js_get_property_int64(ctx, arr, k)
+        if mapping:
+            args[0] = v
+            args[1] = js_new_int32((i32)k)
+            let v2 = js_call(ctx, mapfn, this_arg, 2, &args[0]) catch failure:
+                js_free_value(ctx, v)
+                error(failure.code, failure.message)
+            js_free_value(ctx, v)
+            v = v2
+        discard(try js_set_property_int64(ctx, r, k, v))
+    return r
+
+func js_typed_array_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var args: Value[1] = ---
+    args[0] = js_new_int32(argc)
+    let obj = try js_typed_array_create(ctx, this_val, 1, &args[0])
+    errdefer js_free_value(ctx, obj)
+
+    for i in 0..<(u32)argc:
+        discard(try js_set_property_uint32(ctx, obj, i, js_dup_value(ctx, argv[(usize)i])))
+    return obj
