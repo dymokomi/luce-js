@@ -24,7 +24,7 @@ func js_set_constructor2(ctx: Context*, func_obj: Value, proto: Value, proto_fla
 func js_set_constructor(ctx: Context*, func_obj: Value, proto: Value) -> i32:
     trap("unported: JS_SetConstructor")
 ## Ported from quickjs.c:39811 JS_NewCConstructor.
-func js_new_c_constructor(ctx: Context*, class_id: i32, name: const u8*, func_: CFunction, length: i32, cproto: CFunctionEnum, magic: i32, parent_ctor: Value, ctor_fields: const CFunctionListEntry*, n_ctor_fields: i32, proto_fields: const CFunctionListEntry*, n_proto_fields: i32, flags: i32) -> Value!:
+func js_new_c_constructor(ctx: Context*, class_id: i32, name: const u8*, func_: CFunction, length: i32, cproto: CFunctionEnum, magic: i32, parent_ctor: Value, ctor_fields: const CFunctionListEntry*?, n_ctor_fields: i32, proto_fields: const CFunctionListEntry*?, n_proto_fields: i32, flags: i32) -> Value!:
     trap("unported: JS_NewCConstructor")
 ## Ported from quickjs.c:39880 js_global_eval.
 func js_global_eval(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:

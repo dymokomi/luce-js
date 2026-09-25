@@ -1,0 +1,125 @@
+#==============================================================================================
+#
+#   tests_r29 - Tests of the Atomics waiter list and the WeakRef tables
+#
+#   DESCRIPTION:
+#       Unit tests for the parts of region r29 (quickjs.c 60820-end) that run without a
+#       JavaScript runtime: the timeout arithmetic of Atomics.wait, the waiter list of
+#       Atomics.wait / Atomics.notify driven by real threads, and the builtin tables.
+#
+#==============================================================================================
+
+# mark: Timeouts ================================================================================
+
+test "Atomics.wait timeouts: NaN and 2^63 or more wait forever, negatives do not wait":
+    let forever: i64 = 9223372036854775807
+    assert(atomics_wait_timeout(math.nan) == forever)
+    assert(atomics_wait_timeout(math.infinity) == forever)
+    assert(atomics_wait_timeout(9223372036854775808.0) == forever)
+    assert(atomics_wait_timeout(9223372036854774784.0) == 9223372036854774784)
+    assert(atomics_wait_timeout(-1.0) == 0)
+    assert(atomics_wait_timeout(-math.infinity) == 0)
+    assert(atomics_wait_timeout(0.0) == 0)
+    assert(atomics_wait_timeout(1.9) == 1)
+    assert(atomics_wait_timeout(250.0) == 250)
+
+test "Atomics.wait deadlines saturate instead of overflowing":
+    assert(atomics_wait_deadline(5, 0) == 5)
+    assert(atomics_wait_deadline(5, 2) == 2000005)
+    assert(atomics_wait_deadline(0, 9223372036854775806) == 0xffffffffffffffff)
+    assert(atomics_wait_deadline(0xfffffffffffffff0, 1) == 0xffffffffffffffff)
+
+# mark: The waiter list =========================================================================
+
+test "Atomics.wait answers not-equal at once when the cell differs":
+    var cell32: i32 = 3
+    var cell64: i64 = -4
+    assert(atomics_wait_raw(&cell32, 2, 4, 0) == atom_not_equal)
+    assert(atomics_wait_raw(&cell64, 3, 4, 9223372036854775807) == atom_not_equal)
+    assert(cutils.list_empty(atomics_waiter_list()))
+
+test "Atomics.wait times out when nobody notifies":
+    var cell: i32 = 7
+    assert(atomics_wait_raw(&cell, 2, 7, 0) == atom_timed_out)
+    let start = clock.now()
+    assert(atomics_wait_raw(&cell, 2, 7, 20) == atom_timed_out)
+    assert(clock.since(start) >= 20000000)
+    assert(cutils.list_empty(atomics_waiter_list()))
+    assert(atomics_notify_raw(&cell, 5) == 0)
+
+# One thread blocked in atomics_wait_raw.
+struct WaitJob:
+    var cell: i64*
+    var timeout: i64
+    var result: @u32
+
+func wait_job(context: void*?):
+    let job = (WaitJob*)(context else trap("wait_job: no job"))
+    job.result.store(atomics_wait_raw(job.cell, 3, 0, job.timeout), .release)
+
+# Notify `cell` until `count` waiters were woken in total.
+func notify_until(cell: i64*, count: i32):
+    var woken: i32 = 0
+    while woken < count:
+        woken += atomics_notify_raw(cell, count - woken)
+        thread.sleep(1)
+
+test "Atomics.notify wakes a waiter blocked forever, and one with a timeout":
+    var cell: i64 = 0
+    var jobs: WaitJob[2] = ---
+    var handles: thread.Handle[2] = ---
+    jobs[0] = WaitJob(cell = &cell, timeout = 9223372036854775807)
+    jobs[1] = WaitJob(cell = &cell, timeout = 60000)
+    for i in 0..<2:
+        jobs[i].result.store(0, .relaxed)
+        handles[i] = try thread.spawn(wait_job, &jobs[i])
+    notify_until(&cell, 2)
+    for i in 0..<2:
+        try handles[i].join()
+        assert(jobs[i].result.load(.acquire) == atom_ok)
+    assert(cutils.list_empty(atomics_waiter_list()))
+
+test "Atomics.notify wakes at most count waiters, on the notified cell only":
+    var cell: i64 = 0
+    var other: i64 = 0
+    var jobs: WaitJob[3] = ---
+    var handles: thread.Handle[3] = ---
+    jobs[0] = WaitJob(cell = &cell, timeout = 60000)
+    jobs[1] = WaitJob(cell = &cell, timeout = 60000)
+    jobs[2] = WaitJob(cell = &other, timeout = 60000)
+    for i in 0..<3:
+        jobs[i].result.store(0, .relaxed)
+        handles[i] = try thread.spawn(wait_job, &jobs[i])
+    notify_until(&cell, 1)
+    # exactly one waiter of 'cell' was woken
+    while jobs[0].result.load(.acquire) == 0 and jobs[1].result.load(.acquire) == 0:
+        thread.sleep(1)
+    thread.sleep(20)
+    assert((jobs[0].result.load(.acquire) == 0) != (jobs[1].result.load(.acquire) == 0))
+    assert(jobs[2].result.load(.acquire) == 0)
+    notify_until(&cell, 1)
+    notify_until(&other, 1)
+    for i in 0..<3:
+        try handles[i].join()
+        assert(jobs[i].result.load(.acquire) == atom_ok)
+    assert(cutils.list_empty(atomics_waiter_list()))
+
+# mark: Tables ==================================================================================
+
+test "the Atomics table has QuickJS's entries in order":
+    assert(js_atomics_funcs.length == 14)
+    assert(js_atomics_funcs[0].name == "add" and js_atomics_funcs[0].magic == 0)
+    assert(js_atomics_funcs[6].name == "compareExchange" and js_atomics_funcs[6].length == 4)
+    assert(js_atomics_funcs[7].name == "load" and js_atomics_funcs[7].magic == 7)
+    assert(js_atomics_funcs[12].name == "notify" and js_atomics_funcs[12].length == 3)
+    assert(js_atomics_funcs[13].def_type == def_prop_string and js_atomics_funcs[13].string_value == "Atomics")
+    assert(js_atomics_funcs[13].prop_flags == (u8)prop_configurable)
+    assert(js_atomics_obj[0].def_type == def_object)
+    assert(js_atomics_obj[0].prop_flags == (u8)(prop_writable | prop_configurable))
+
+test "the WeakRef and FinalizationRegistry tables":
+    assert(js_weakref_proto_funcs.length == 2 and js_weakref_proto_funcs[0].name == "deref")
+    assert(js_finrec_proto_funcs.length == 3 and js_finrec_proto_funcs[1].name == "unregister")
+    assert(js_finrec_proto_funcs[2].string_value == "FinalizationRegistry")
+    assert(js_weakref_class_def[0].class_name == atom_WeakRef)
+    assert(js_finrec_class_def[0].class_name == atom_FinalizationRegistry)

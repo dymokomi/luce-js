@@ -72,7 +72,9 @@ stub_r25_regexp_json_reflect.lucb
 stub_r26_proxy_symbol_map.lucb
 stub_r27_promise_date.lucb
 stub_r28_typed_arrays.lucb
-stub_r29_atomics_weakref.lucb
+atomics_wait.lucb
+typed_arrays_intrinsic.lucb
+weakref.lucb
 tests_bigint.lucb
 tests_bigint_vectors.lucb
 tests_gc_exceptions.lucb
@@ -85,3 +87,4 @@ tests_r10.lucb
 tests_r09.lucb
 tests_tokenizer.lucb
 tests_r12.lucb
+tests_r29.lucb

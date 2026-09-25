@@ -110,3 +110,22 @@ enum VarDefKind as i32:
 # quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
 let global_var_offset: i32 = 0x40000000
 let argument_var_offset: i32 = 0x20000000
+
+# mark: Declared by other regions ===============================================================
+
+# Placeholders for the builtin tables of the typed arrays region (r28) that
+# js_add_intrinsic_typed_arrays (r29) installs; delete them when r28's real tables arrive.
+let js_array_buffer_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_array_buffer_proto_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_shared_array_buffer_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_shared_array_buffer_proto_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_typed_array_base_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_typed_array_base_proto_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_uint8array_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_uint8array_proto_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_typed_array_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+let js_dataview_proto_funcs: CFunctionListEntry[1] = [CFunctionListEntry(name = "unported", def_type = def_prop_undefined)]
+
+# Placeholder for JS_NEW_CTOR_NO_GLOBAL of the Object/Function region (r22), used by
+# js_add_intrinsic_typed_arrays (r29); delete it when r22's constant arrives.
+let new_ctor_no_global: i32 = 1 << 0
