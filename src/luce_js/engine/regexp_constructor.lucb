@@ -128,8 +128,7 @@ func js_regexp_compile(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
             js_free_value(ctx, pattern)
             error(failure.code, failure.message)
     js_free_value(ctx, js_mkptr(Tag.string, re.pattern))
-    if let old_program = re.program:
-        regex.free_ecmascript(old_program)
+    js_regexp_free_program(ctx.rt, re)
     re.pattern = pattern.u.string
     re.program = program
     discard(try js_set_property(ctx, this_val, atom_lastIndex, js_new_int32(0)))

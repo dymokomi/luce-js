@@ -406,7 +406,7 @@ noinline func interp_apply_eval(st: InterpState*) -> bool:
 
 ## The body of OP_regexp in JS_CallInternal.
 noinline func interp_regexp(st: InterpState*) -> bool:
-    st.sp[-2] = js_new_regexp(st.ctx, st.sp[-2], st.sp[-1]) catch: recover js_exception()
+    st.sp[-2] = js_new_regexp(st.ctx, st.b, st.sp[-2], st.sp[-1]) catch: recover js_exception()
     st.sp -= 1
     if js_is_exception(st.sp[-1]):
         return false

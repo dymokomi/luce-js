@@ -11,11 +11,15 @@
 #       JSString, and lre_parse_escape for the JavaScript tokenizer.
 #
 #       One design change against QuickJS: a RegExp object holds its compiled program
-#       (`regex.Regex*`, RegExp.program) instead of a bytecode JSString, and owns it. A
-#       regular expression literal therefore keeps its pattern and flags strings in the
-#       constant pool (so the bytecode writer and reader see only strings), and OP_regexp
-#       compiles them (js_new_regexp); the parser compiles the literal once to report
-#       syntax errors early. The Host's opaque pointer is the Runtime, not the Context as
+#       (`regex.Regex*`, RegExp.program) instead of a bytecode JSString. A regular
+#       expression literal therefore keeps its pattern and flags strings in the constant
+#       pool (so the bytecode writer and reader see only strings); the first evaluation of
+#       the literal compiles them (js_new_regexp) into a RegExpShared that the function
+#       keeps (FunctionBytecode.regexp_cache) and every object the literal makes shares,
+#       as QuickJS's share the bytecode string (a program is only scratch state while it
+#       runs, and a match never runs another one). The objects of the RegExp constructor
+#       own their programs. The parser compiles the literal once to report syntax errors
+#       early. The Host's opaque pointer is the Runtime, not the Context as
 #       in QuickJS: a program lives as long as its RegExp object, which may outlive the
 #       context that created it, and every callback needs only the runtime.
 #
@@ -57,6 +61,35 @@ let lre_group_name_trailer_len: usize = 2
 func js_regexp_host(rt: Runtime*) -> regex.Host:
     return regex.Host(opaque = rt, check_stack_overflow = lre_check_stack_overflow,
                       check_timeout = lre_check_timeout, realloc_func = lre_realloc)
+
+# mark: Shared programs =========================================================================
+
+## Release a reference to the literal program `shared`; the last one frees it.
+func regexp_shared_free(rt: Runtime*, shared: RegExpShared*):
+    shared.ref_count -= 1
+    if shared.ref_count == 0:
+        regex.free_ecmascript(shared.program)
+        js_free_rt(rt, shared)
+
+## Release the literal programs of `b`, when the function is freed.
+func free_regexp_cache(rt: Runtime*, b: FunctionBytecode*):
+    var next = b.regexp_cache
+    b.regexp_cache = none
+    while let shared = next:
+        next = shared.next
+        regexp_shared_free(rt, shared)
+
+## Release the program of a RegExp record: its reference to a literal's program, or the
+## program it owns.
+func js_regexp_free_program(rt: Runtime*, re: RegExp*):
+    if let shared = re.shared:
+        regexp_shared_free(rt, shared)
+    elif let program = re.program:
+        regex.free_ecmascript(program)
+    re.shared = none
+    re.program = none
+
+# mark: Programs ================================================================================
 
 # The program of a RegExp record; every RegExp the builtins see has one.
 func js_regexp_program(re: const RegExp*) -> regex.Regex*:

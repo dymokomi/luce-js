@@ -4,10 +4,11 @@
 #
 #   DESCRIPTION:
 #       Tests of the parts of quickjs.c lines 15090-17746 that work on plain values
-#       without a runtime: the tag classes of the slow operators, the short big integer
-#       range, number comparison (relational, strict, SameValue, SameValueZero), the
-#       stack slot clearing of the exception path, the class of a closure by function
-#       kind, and the frame-to-async-state container arithmetic.
+#       without a runtime: the float-to-int conversion of JS_NewFloat64, the tag classes of
+#       the slow operators, the short big integer range, number comparison (relational,
+#       strict, SameValue, SameValueZero), the stack slot clearing of the exception path,
+#       the class of a closure by function kind, and the frame-to-async-state container
+#       arithmetic.
 #
 #==============================================================================================
 
@@ -16,6 +17,30 @@
 ## A NaN whose payload is not the canonical one ("NaN is not always normalized").
 func test_other_nan() -> f64:
     return f64.bits(0x7ff8000000000123)
+
+# mark: Numbers =================================================================================
+
+test "f64_to_i32_small truncates as C's (int32_t) cast does":
+    assert(f64_to_i32_small(0.0) == 0 and f64_to_i32_small(-0.0) == 0)
+    assert(f64_to_i32_small(0.75) == 0 and f64_to_i32_small(-0.75) == 0)
+    assert(f64_to_i32_small(1.0) == 1 and f64_to_i32_small(-1.0) == -1)
+    assert(f64_to_i32_small(2.5) == 2 and f64_to_i32_small(-2.5) == -2)
+    assert(f64_to_i32_small(1e-310) == 0)
+    assert(f64_to_i32_small(123456789.9) == 123456789)
+    assert(f64_to_i32_small(2147483647.0) == 2147483647)
+    assert(f64_to_i32_small(2147483646.5) == 2147483646)
+    assert(f64_to_i32_small(-2147483647.5) == -2147483647)
+    assert(f64_to_i32_small(-2147483648.0) == -2147483648)
+
+test "JS_NewFloat64 answers an int exactly for the integers of the int range":
+    assert(js_new_float64(5.0).tag == Tag.int and js_value_get_int(js_new_float64(5.0)) == 5)
+    assert(js_value_get_int(js_new_float64(-2147483648.0)) == -2147483648)
+    assert(js_value_get_int(js_new_float64(2147483647.0)) == 2147483647)
+    assert(js_new_float64(-0.0).tag == Tag.float64)
+    assert(js_new_float64(0.5).tag == Tag.float64)
+    assert(js_new_float64(2147483648.0).tag == Tag.float64)
+    assert(js_new_float64(-2147483649.0).tag == Tag.float64)
+    assert(js_new_float64(test_other_nan()).tag == Tag.float64)
 
 # mark: Tags ====================================================================================
 

@@ -5,13 +5,20 @@ Each benchmark runs `--runs` times with each engine; the best wall time is repor
 ljs/qjs as the ratio. `--save FILE` writes the times as JSON, `--compare FILE` adds a
 column with the ljs times of an earlier run and the speed-up since.
 
+`--micro` runs upstream's tests/bench/microbench.js (QuickJS's tests/microbench.js) with
+each engine instead, and reports its time per operation of each microbenchmark (the names
+given select microbenchmarks by prefix, as microbench.js does), with the geometric mean of
+the ratios. A full run takes about four minutes.
+
 QJS names the qjs binary and LUCE_BASE the compiler (defaults: qjs, luce-base on the PATH).
 
 Usage: tests/bench.py [--no-build] [--qjs PATH] [--runs N] [--save F] [--compare F] [bench ...]
+       tests/bench.py --micro [--no-build] [--qjs PATH] [--save F] [--compare F] [name ...]
 """
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -45,6 +52,45 @@ def best_time(cmd, runs):
     return best
 
 
+def micro_times(engine, names):
+    """The time per operation (ns) of each microbenchmark of microbench.js run by `engine`."""
+    cmd = [engine, "--std", "microbench.js", "-s", ""] + names
+    r = subprocess.run(cmd, cwd=BENCH, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode != 0:
+        sys.exit(f"FAIL: {' '.join(cmd)}: {r.stderr.decode(errors='replace').strip()}")
+    times = {}
+    for line in r.stdout.decode().splitlines()[1:]:
+        cols = line.split()
+        if len(cols) == 3 and cols[0] != "total":
+            times[cols[0]] = float(cols[2])
+    return times
+
+
+def micro(args, before):
+    q = micro_times(args.qjs, args.names)
+    l = micro_times(LJS, args.names)
+    head = f"{'microbenchmark':<24} {'qjs ns':>9} {'ljs ns':>9} {'ljs/qjs':>8}"
+    if before:
+        head += f" {'before ns':>10} {'speed-up':>9}"
+    print(head)
+    results = {}
+    logs = []
+    for name in q:
+        if name not in l:
+            continue
+        results[name] = {"qjs": q[name], "ljs": l[name]}
+        ratio = l[name] / q[name]
+        logs.append(math.log(ratio))
+        line = f"{name:<24} {q[name]:9.2f} {l[name]:9.2f} {ratio:8.1f}"
+        if name in before:
+            b = before[name]["ljs"]
+            line += f" {b:10.2f} {b / l[name]:9.2f}"
+        print(line)
+    if logs:
+        print(f"{'geometric mean':<24} {'':9} {'':9} {math.exp(sum(logs) / len(logs)):8.2f}")
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-build", action="store_true")
@@ -52,15 +98,26 @@ def main():
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--save")
     ap.add_argument("--compare")
+    ap.add_argument("--micro", action="store_true")
     ap.add_argument("names", nargs="*")
     args = ap.parse_args()
+    if os.sep in args.qjs:
+        # the benchmarks run in tests/bench
+        args.qjs = os.path.abspath(args.qjs)
     if not args.no_build:
         build()
-    names = args.names or sorted(f[:-3] for f in os.listdir(BENCH) if f.endswith(".js"))
     before = {}
     if args.compare:
         with open(args.compare) as f:
             before = json.load(f)
+    if args.micro:
+        results = micro(args, before)
+        if args.save:
+            with open(args.save, "w") as f:
+                json.dump(results, f, indent=1)
+        return
+    names = args.names or sorted(f[:-3] for f in os.listdir(BENCH)
+                                 if f.endswith(".js") and f != "microbench.js")
     results = {}
     head = f"{'benchmark':<18} {'qjs s':>7} {'ljs s':>7} {'ljs/qjs':>8}"
     if before:

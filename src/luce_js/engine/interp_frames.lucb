@@ -31,16 +31,21 @@ func interp_call_argc(st: InterpState*) -> i32:
     return call_argc
 
 ## After a call returned st.ret_val: release the function (and `this`, or new.target,
-## when `extra` is 2) and the arguments, and push the result in their place.
+## when `extra` is 2) and the arguments, and push the result in their place. It runs after
+## every call the dispatch loop makes, so values are released in place (as the loop's
+## fast paths do) and the result is copied as its tag and payload.
 func interp_call_done(st: InterpState*, call_argc: i32, extra: i32):
-    let call_argv = st.sp - (usize)call_argc
-    var i: isize = -(isize)extra
-    while i < (isize)call_argc:
-        js_free_value(st.ctx, call_argv[i])
-        i += 1
-    st.sp -= (usize)(call_argc + extra)
-    *st.sp = st.ret_val
-    st.sp += 1
+    var pv = st.sp - (usize)(call_argc + extra)
+    let base = pv
+    while pv < st.sp:
+        if (i64)pv.tag < 0:
+            *(i32*)((usize)pv.u.uint64 -% 4) -%= 1
+            if *(i32*)((usize)pv.u.uint64 -% 4) <= 0:
+                free_counted(st.ctx, pv.tag, pv.u.uint64)
+        pv += 1
+    base.u.uint64 = st.ret_val.u.uint64
+    base.tag = st.ret_val.tag
+    st.sp = base + 1
 
 ## The body of OP_call0 to OP_call3 (SHORT_OPCODES), OP_call and OP_tail_call. After a
 ## tail call the stack is left as it is: the frame returns st.ret_val (C: goto done).
@@ -103,27 +108,29 @@ func enter_failed(st: InterpState*, code: ErrorCode, message: str) -> InterpEntr
 func enter_not_a_function(st: InterpState*) -> InterpEntry:
     js_throw_type_error(st.caller_ctx, "not a function") catch failure: return enter_failed(st, failure.code, failure.message)
 
-## The start of JS_CallInternal: fill `st` from the call, then set up the frame of a
-## bytecode function (its arguments, variables, stack and variable references in
-## `frame_space`, or on the heap when they do not fit), or take the suspended frame of a
-## generator, and make it the runtime's current frame.
-noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Value, this_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32, frame_space: Value*) -> InterpEntry:
-    st.caller_ctx = caller_ctx
-    st.rt = caller_ctx.rt
+## The start of JS_CallInternal: js_call_internal has stored the call in `st`
+## (caller_ctx, func_obj, this_obj, new_target, argc, argv); fill in the rest, then set up
+## the frame of a bytecode function (its arguments, variables, stack and variable
+## references in `frame_space`, or on the heap when they do not fit), or take the suspended
+## frame of a generator, and make it the runtime's current frame.
+##
+## Every JavaScript call runs it, so the common path is written for the native code it
+## becomes: the frame's values are written as tag and payload, the size arithmetic wraps
+## as C's does (the operands are u16 counts), and the loops walk pointers.
+noinline func interp_enter(st: InterpState*, flags: i32, frame_space: Value*) -> InterpEntry:
+    let caller_ctx = st.caller_ctx
+    let rt = caller_ctx.rt
+    st.rt = rt
     st.ctx = caller_ctx
-    st.func_obj = func_obj
-    st.this_obj = this_obj
-    st.new_target = new_target
-    st.argc = argc
-    st.argv = argv
     st.opcode = Op.invalid
-    st.ret_val = js_undefined()
+    st.ret_val.u.uint64 = 0
+    st.ret_val.tag = Tag.undefined
     st.var_refs = none
     st.heap_frame = none
     # js_poll_interrupts, whose countdown is taken here while the handler's call is more
     # than one step away (it is not expanded inline: it calls)
     if caller_ctx.interrupt_counter > 1:
-        caller_ctx.interrupt_counter -= 1
+        caller_ctx.interrupt_counter -%= 1
     else:
         js_poll_interrupts(caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
     if st.func_obj.tag != Tag.object:
@@ -145,66 +152,86 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
         st.sp = st.sf.cur_sp else trap("generator frame is running")
         st.sf.cur_sp = none # cur_sp is NULL if the function is running
         st.pc = st.sf.cur_pc else trap("generator frame without pc")
-        st.sf.prev_frame = st.rt.current_stack_frame
-        st.rt.current_stack_frame = st.sf
+        st.sf.prev_frame = rt.current_stack_frame
+        rt.current_stack_frame = st.sf
         if s.throw_flag:
             return InterpEntry.throwing
-    else:
-        st.p = st.func_obj.u.obj
-        if st.p.class_id != ClassId.bytecode_function:
-            let class_array = st.rt.class_array else trap("the class array is not allocated")
-            let call_func = class_array[(usize)(u16)st.p.class_id].call else return enter_not_a_function(st)
-            st.ret_val = call_func(st.caller_ctx, st.func_obj, st.this_obj, st.argc, st.argv, flags) catch failure: return enter_failed(st, failure.code, failure.message)
-            return InterpEntry.returned
-        st.b = st.p.u.func_.function_bytecode
-        st.bc_buf = st.b.byte_code_buf
+        return InterpEntry.run
+    let p = st.func_obj.u.obj
+    st.p = p
+    if p.class_id != ClassId.bytecode_function:
+        let class_array = rt.class_array else trap("the class array is not allocated")
+        let call_func = class_array[(usize)(u16)p.class_id].call else return enter_not_a_function(st)
+        st.ret_val = call_func(caller_ctx, st.func_obj, st.this_obj, st.argc, st.argv, flags) catch failure: return enter_failed(st, failure.code, failure.message)
+        return InterpEntry.returned
+    let b = p.u.func_.function_bytecode
+    st.b = b
+    st.bc_buf = b.byte_code_buf
 
-        var arg_allocated_size: i32 = 0
-        if st.argc < (i32)st.b.arg_count or (flags & call_flag_copy_argv) != 0:
-            arg_allocated_size = (i32)st.b.arg_count
+    let argc = st.argc
+    let arg_count = (usize)b.arg_count
+    var arg_allocated_size: usize = 0
+    if argc < (i32)b.arg_count or (flags & call_flag_copy_argv) != 0:
+        arg_allocated_size = arg_count
 
-        let alloca_size = sizeof(Value) * ((usize)arg_allocated_size + (usize)st.b.var_count + (usize)st.b.stack_size) + sizeof(VarRef*) * (usize)st.b.var_ref_count
-        if js_check_stack_overflow(st.rt, alloca_size):
-            js_throw_stack_overflow(st.caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
+    let var_count = (usize)b.var_count
+    let alloca_size = (arg_allocated_size +% var_count +% (usize)b.stack_size) *% sizeof(Value) +% (usize)b.var_ref_count *% sizeof(VarRef*)
+    if js_check_stack_overflow(rt, alloca_size):
+        js_throw_stack_overflow(caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
 
-        st.sf.js_mode = (i32)st.b.js_mode
-        st.arg_buf = st.argv
-        st.sf.arg_count = st.argc
-        st.sf.cur_func = st.func_obj
-        st.var_refs = st.p.u.func_.var_refs
+    let sf = st.sf
+    sf.js_mode = (i32)b.js_mode
+    sf.arg_count = argc
+    sf.cur_func = st.func_obj
+    st.var_refs = p.u.func_.var_refs
 
-        if alloca_size <= sizeof(Value) * js_call_inline_frame_values:
-            st.local_buf = frame_space
-        else:
-            let block = js_malloc(st.caller_ctx, alloca_size) catch failure: return enter_failed(st, failure.code, failure.message)
-            st.heap_frame = block
-            st.local_buf = (Value*)block
-        if arg_allocated_size != 0:
-            let n = cutils.min_int(st.argc, (i32)st.b.arg_count)
-            st.arg_buf = st.local_buf
-            for i in 0..<(usize)n:
-                st.arg_buf[i] = js_dup_value(st.caller_ctx, st.argv[i])
-            for i in (usize)n..<(usize)st.b.arg_count:
-                st.arg_buf[i] = js_undefined()
-            st.sf.arg_count = (i32)st.b.arg_count
-        st.var_buf = st.local_buf + (usize)arg_allocated_size
-        st.sf.var_buf = st.var_buf
-        st.sf.arg_buf = st.arg_buf
+    var local_buf = frame_space
+    if alloca_size > sizeof(Value) * js_call_inline_frame_values:
+        let block = js_malloc(caller_ctx, alloca_size) catch failure: return enter_failed(st, failure.code, failure.message)
+        st.heap_frame = block
+        local_buf = (Value*)block
+    st.local_buf = local_buf
+    var arg_buf = st.argv
+    if arg_allocated_size != 0:
+        # the arguments, then undefined for the missing ones
+        let n = (usize)cutils.min_int(argc, (i32)b.arg_count)
+        let argv = st.argv
+        arg_buf = local_buf
+        var i: usize = 0
+        while i < n:
+            arg_buf[i] = argv[i]
+            if (i64)arg_buf[i].tag < 0:
+                *(i32*)((usize)arg_buf[i].u.uint64 -% 4) +%= 1
+            i +%= 1
+        while i < arg_count:
+            arg_buf[i].u.uint64 = 0
+            arg_buf[i].tag = Tag.undefined
+            i +%= 1
+        sf.arg_count = (i32)b.arg_count
+    st.arg_buf = arg_buf
+    let var_buf = local_buf + arg_allocated_size
+    st.var_buf = var_buf
+    sf.var_buf = var_buf
+    sf.arg_buf = arg_buf
 
-        for i in 0..<(usize)st.b.var_count:
-            st.var_buf[i] = js_undefined()
-
-        st.stack_buf = st.var_buf + (usize)st.b.var_count
-        let frame_var_refs = (VarRef*?*)(st.stack_buf + (usize)st.b.stack_size)
-        st.sf.var_refs = frame_var_refs
-        for i in 0..<(usize)st.b.var_ref_count:
-            frame_var_refs[i] = none
-        st.sp = st.stack_buf
-        st.pc = st.b.byte_code_buf
-        st.sf.prev_frame = st.rt.current_stack_frame
-        st.rt.current_stack_frame = st.sf
-        st.ctx = st.b.realm # set the current realm
-
+    var pv = var_buf
+    let stack_buf = var_buf + var_count
+    while pv < stack_buf:
+        pv.u.uint64 = 0
+        pv.tag = Tag.undefined
+        pv += 1
+    st.stack_buf = stack_buf
+    var frame_var_refs = (VarRef*?*)(stack_buf + (usize)b.stack_size)
+    sf.var_refs = frame_var_refs
+    let var_refs_end = frame_var_refs + (usize)b.var_ref_count
+    while frame_var_refs < var_refs_end:
+        *frame_var_refs = none
+        frame_var_refs += 1
+    st.sp = stack_buf
+    st.pc = b.byte_code_buf
+    sf.prev_frame = rt.current_stack_frame
+    rt.current_stack_frame = sf
+    st.ctx = b.realm # set the current realm
     return InterpEntry.run
 
 ## The `exception:` label of JS_CallInternal: record the backtrace, then unwind the stack
@@ -245,20 +272,25 @@ noinline func interp_leave(st: InterpState*, exit: FrameExit):
     # the local variables are freed by the caller in the generator
     # case. Hence the label 'done' should never be reached in a
     # generator function.
+    let sf = st.sf
     if exit == FrameExit.done_generator or (exit == FrameExit.exception and st.b.func_kind != js_func_normal):
         # done_generator:
-        st.sf.cur_pc = st.pc
-        st.sf.cur_sp = st.sp
+        sf.cur_pc = st.pc
+        sf.cur_sp = st.sp
     else:
         # done:
         if st.b.var_ref_count != 0:
             # variable references reference the stack: must close them
-            close_var_refs(st.rt, st.b, st.sf)
-        # free the local variables and stack
+            close_var_refs(st.rt, st.b, sf)
+        # free the local variables and stack (released in place, as the dispatch loop does)
         var pval = st.local_buf
-        while pval < st.sp:
-            js_free_value(st.ctx, *pval)
+        let end = st.sp
+        while pval < end:
+            if (i64)pval.tag < 0:
+                *(i32*)((usize)pval.u.uint64 -% 4) -%= 1
+                if *(i32*)((usize)pval.u.uint64 -% 4) <= 0:
+                    free_counted(st.ctx, pval.tag, pval.u.uint64)
             pval += 1
-    st.rt.current_stack_frame = st.sf.prev_frame
+    st.rt.current_stack_frame = sf.prev_frame
     if let block = st.heap_frame:
         js_free_rt(st.rt, block)

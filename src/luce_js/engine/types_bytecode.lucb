@@ -26,8 +26,8 @@ enum AtomKind as i32:
     symbol = 1
     private = 2
 
-let js_atom_hash_mask: u32 = (1 << 30) - 1
-let js_atom_hash_private: u32 = js_atom_hash_mask
+let js_atom_hash_mask: u32 = 0x3fffffff    # (1 << 30) - 1
+let js_atom_hash_private: u32 = 0x3fffffff    # js_atom_hash_mask
 
 ## A flat string (JSString), also the storage of an atom (JSAtomStruct). Its characters
 ## follow the header: `len` bytes plus a NUL when 8-bit, `len` u16 units when wide.
@@ -138,13 +138,13 @@ struct BytecodeVarDef:
 let pc2line_base: i32 = -1
 let pc2line_range: i32 = 5
 let pc2line_op_first: i32 = 1
-let pc2line_diff_pc_max: i32 = (255 - pc2line_op_first) // pc2line_range
+let pc2line_diff_pc_max: i32 = 50    # (255 - pc2line_op_first) // pc2line_range
 
 ## The kinds of functions (JSFunctionKindEnum), a bit set.
 let js_func_normal: u8 = 0
-let js_func_generator: u8 = 1 << 0
-let js_func_async: u8 = 1 << 1
-let js_func_async_generator: u8 = js_func_generator | js_func_async
+let js_func_generator: u8 = 0x1    # 1 << 0
+let js_func_async: u8 = 0x2    # 1 << 1
+let js_func_async_generator: u8 = 3    # js_func_generator | js_func_async
 
 ## A compiled function's debug information (the debug struct of JSFunctionBytecode).
 struct FunctionBytecodeDebug:
@@ -196,6 +196,10 @@ struct FunctionBytecode:
     var cpool: Value*?
     var cpool_count: i32
     var closure_var_count: i32
+    ## The compiled programs of the function's regular expression literals, by first
+    ## evaluation (the port's; see RegExpShared). Before `debug`, which a function without
+    ## debug information does not allocate.
+    var regexp_cache: RegExpShared*?
     var debug: FunctionBytecodeDebug
 
 ## A bound function's target and arguments (JSBoundFunction); `argc` values follow it.
@@ -222,11 +226,27 @@ struct ForInIterator:
 
 ## A regular expression's pattern and compiled program (JSRegExp). QuickJS keeps the
 ## program as a bytecode JSString; the port holds luce-regex's program, which the object
-## owns (see regexp_bridge.lucb).
+## owns, or shares with the other objects of one regular expression literal (see
+## regexp_bridge.lucb).
 struct RegExp:
     var pattern: String*
     ## Also contains the flags; none until the object is set.
     var program: regex.Regex*?
+    ## The literal's shared program when `program` is it (the object holds a reference to
+    ## it), else none (the object owns `program`).
+    var shared: RegExpShared*?
+
+## The program of a regular expression literal, compiled when the literal is first
+## evaluated and shared by the RegExp objects it makes, as QuickJS's objects share the
+## bytecode string compiled with the function. The literal's function (its regexp_cache
+## list) and each of the objects hold a reference.
+struct RegExpShared:
+    var ref_count: i32
+    var program: regex.Regex*
+    ## The literal's pattern and flags strings, constants of the function: the cache key.
+    var pattern: String*
+    var flags: String*
+    var next: RegExpShared*?
 
 ## A proxy's target and handler (JSProxyData).
 struct ProxyData:

@@ -88,10 +88,13 @@ inline func cpool_at(b: FunctionBytecode*, idx: u32) -> Value:
     let cpool = b.cpool else trap("bytecode refers to a missing constant pool")
     return cpool[(usize)idx]
 
-## `var_refs[idx]` of a closure: every closure variable of a created closure is set.
+## `var_refs[idx]` of a closure: every closure variable of a created closure is set. It
+## reads the array as C does (the nullable pointers are read through their address as
+## plain ones), so that it is expanded inline: a trap on a missing array or variable would
+## make it a call.
 inline func var_ref_at(var_refs: VarRef*?*?, idx: usize) -> VarRef*:
-    let refs = var_refs else trap("bytecode refers to missing closure variables")
-    return refs[idx] else trap("closure variable not set")
+    var refs = var_refs
+    return (*(VarRef***)&refs)[idx]
 
 ## `&b->closure_var[idx]`.
 func closure_var_at(b: FunctionBytecode*, idx: i32) -> ClosureVar*:

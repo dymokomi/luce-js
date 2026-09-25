@@ -38,6 +38,24 @@ noinline func interp_get_length(st: InterpState*) -> bool:
     st.sp[-1] = val
     return true
 
+## The slow path of GET_FIELD_INLINE for OP_get_field, OP_get_field2 and OP_get_length
+## (st.opcode; st.pc is past the atom): JS_GetPropertyInternal from the exotic object
+## `exotic` the prototype walk stopped at, or else from the operand. The dispatch loop
+## comes here directly when its walk does not find a data property.
+noinline func interp_get_field_slow(st: InterpState*, exotic: Object*?, atom: Atom) -> bool:
+    var obj = st.sp[-1]
+    if let p = exotic:
+        obj = js_mkptr(Tag.object, p)
+    st.sf.cur_pc = st.pc
+    let val = js_get_property_internal(st.ctx, obj, atom, st.sp[-1], false) catch: return false
+    if st.opcode == Op.get_field2:
+        *st.sp = val
+        st.sp += 1
+    else:
+        js_free_value(st.ctx, st.sp[-1])
+        st.sp[-1] = val
+    return true
+
 ## The body of OP_put_field in JS_CallInternal.
 noinline func interp_put_field(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
@@ -56,14 +74,19 @@ noinline func interp_put_field(st: InterpState*) -> bool:
     if fast:
         js_free_value(st.ctx, obj)
         st.sp -= 2
-    else:
-        # put_field_slow_path
-        st.sf.cur_pc = st.pc
-        let ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[-1], obj, prop_throw_strict) catch: recover none)
-        js_free_value(st.ctx, obj)
-        st.sp -= 2
-        if ret < 0:
-            return false
+        return true
+    return interp_put_field_slow(st, atom)
+
+## put_field_slow_path of OP_put_field (st.pc is past the atom): JS_SetPropertyInternal.
+## The dispatch loop's put_field comes here directly when its own-property search misses.
+noinline func interp_put_field_slow(st: InterpState*, atom: Atom) -> bool:
+    let obj = st.sp[-2]
+    st.sf.cur_pc = st.pc
+    let ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[-1], obj, prop_throw_strict) catch: recover none)
+    js_free_value(st.ctx, obj)
+    st.sp -= 2
+    if ret < 0:
+        return false
     return true
 
 # mark: Private fields, names, methods and classes ==============================================

@@ -14,9 +14,9 @@
 
 # mark: Tagged integers =========================================================================
 
-let js_atom_tag_int: u32 = 1 << 31
-let js_atom_max_int: u32 = js_atom_tag_int - 1
-let js_atom_max: u32 = (1 << 30) - 1
+let js_atom_tag_int: u32 = 0x80000000    # 1 << 31
+let js_atom_max_int: u32 = 0x7fffffff    # js_atom_tag_int - 1
+let js_atom_max: u32 = 0x3fffffff    # (1 << 30) - 1
 
 ## The max count from the hash size (JS_ATOM_COUNT_RESIZE).
 func js_atom_count_resize(n: i32) -> i32:

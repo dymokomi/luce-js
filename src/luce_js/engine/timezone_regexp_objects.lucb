@@ -94,8 +94,7 @@ func js_regexp_finalizer(rt: Runtime*, val: Value):
     let re = &p.u.regexp
     # the fields are zero when the object was created but never set (a failed
     # construction), although the shared type declares the pattern non-null
-    if let program = re.program:
-        regex.free_ecmascript(program)
+    js_regexp_free_program(rt, re)
     if (usize)re.pattern != 0:
         js_free_value_rt(rt, js_mkptr(Tag.string, re.pattern))
 
@@ -152,9 +151,31 @@ func js_compile_regexp(ctx: Context*, pattern: Value, flags: Value) -> regex.Reg
 
     return try js_compile_regexp_flags(ctx, pattern, re_flags)
 
-# fast regexp creation: the pattern and flags strings (the constants of a literal) are
-# compiled here, where QuickJS gets the bytecode string. Takes both values.
-func js_new_regexp(ctx: Context*, pattern: Value, flags: Value) -> Value!:
+# The program of the literal of `b` whose constants are the strings `pattern` and `flags`:
+# compiled at its first evaluation and kept in the function's regexp_cache.
+func js_regexp_literal_program(ctx: Context*, b: FunctionBytecode*, pattern: Value, flags: Value) -> RegExpShared*!:
+    var next = b.regexp_cache
+    while let shared = next:
+        if shared.pattern == pattern.u.string and shared.flags == flags.u.string:
+            return shared
+        next = shared.next
+    let program = try js_compile_regexp(ctx, pattern, flags)
+    let block = js_malloc(ctx, sizeof(RegExpShared)) catch failure:
+        regex.free_ecmascript(program)
+        error(failure.code, failure.message)
+    let shared = (RegExpShared*)block
+    shared.ref_count = 1    # the function's
+    shared.program = program
+    shared.pattern = pattern.u.string
+    shared.flags = flags.u.string
+    shared.next = b.regexp_cache
+    b.regexp_cache = shared
+    return shared
+
+# fast regexp creation: the pattern and flags strings (the constants of a literal of the
+# function `b`) give the literal's program, where QuickJS gets the bytecode string. Takes
+# both values.
+func js_new_regexp(ctx: Context*, b: FunctionBytecode*, pattern: Value, flags: Value) -> Value!:
     var props: Property[1] = ---
 
     errdefer js_free_value(ctx, pattern)
@@ -162,16 +183,16 @@ func js_new_regexp(ctx: Context*, pattern: Value, flags: Value) -> Value!:
     # sanity check
     if flags.tag != Tag.string or pattern.tag != Tag.string:
         try js_throw_type_error(ctx, "string expected")
-    let program = try js_compile_regexp(ctx, pattern, flags)
+    let shared = try js_regexp_literal_program(ctx, b, pattern, flags)
     props[0].u.value = js_new_int32(0) # lastIndex
     let regexp_shape = ctx.regexp_shape else trap("js_new_regexp: no regexp shape")
-    let obj = js_new_object_from_shape(ctx, js_dup_shape(regexp_shape), (u32)ClassId.regexp, &props[0]) catch failure:
-        regex.free_ecmascript(program)
-        error(failure.code, failure.message)
+    let obj = try js_new_object_from_shape(ctx, js_dup_shape(regexp_shape), (u32)ClassId.regexp, &props[0])
     let p = obj.u.obj
     let re = &p.u.regexp
     re.pattern = pattern.u.string
-    re.program = program
+    shared.ref_count += 1
+    re.shared = shared
+    re.program = shared.program
     return obj
 
 # set the RegExp fields; takes the object, the pattern and the program, also on failure

@@ -47,6 +47,8 @@ TESTS = [
     ("examples/hello_module.js", []),
     ("examples/test_fib.js", []),
     ("examples/pi_bigint.js", []),
+    # not upstream: both sides of the interpreter's fast paths
+    ("test_fast_paths.js", []),
 ]
 
 # The files upstream's Makefile does not run on Windows (CONFIG_WIN32).

@@ -47,13 +47,20 @@ func free_property(rt: Runtime*, pr: Property*, prop_flags: i32):
 
 # mark: Own property lookup =====================================================================
 
+# find_own_property1 and find_own_property are force_inline in C, and every property access
+# runs them. The hash-chain walk is larger than the native inliner expands (32 instructions),
+# so each walks the chain itself (as in C) rather than through a shared helper: one call per
+# lookup. The walk is written in integer addressing with wrapping arithmetic and no traps,
+# as C reads the table: prop[h - 1] lies at `prop_base + h * sizeof(ShapeProperty)`.
+
 ## The shape property of `p`'s own property `atom`, or none.
 func find_own_property1(p: Object*, atom: Atom) -> ShapeProperty*?:
     let sh = p.shape
-    var h = get_shape_hash_table(sh)[(usize)(atom & sh.prop_hash_mask)]
-    let prop = get_shape_prop(sh)
+    let hash_table = (usize)sh +% sizeof(Shape)
+    var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
+    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
     while h != 0:
-        let pr = prop + (usize)(h - 1)
+        let pr = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
         if pr.atom == atom:
             return pr
         h = pr.hash_next
@@ -63,12 +70,13 @@ func find_own_property1(p: Object*, atom: Atom) -> ShapeProperty*?:
 ## (none when not found).
 func find_own_property(ppr: Property*?*, p: Object*, atom: Atom) -> ShapeProperty*?:
     let sh = p.shape
-    var h = get_shape_hash_table(sh)[(usize)(atom & sh.prop_hash_mask)]
-    let prop = get_shape_prop(sh)
+    let hash_table = (usize)sh +% sizeof(Shape)
+    var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
+    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
     while h != 0:
-        let pr = prop + (usize)(h - 1)
+        let pr = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
         if pr.atom == atom:
-            *ppr = p.prop + (usize)(h - 1)
+            *ppr = p.prop + (usize)(h -% 1)
             # the compiler should be able to assume that pr != NULL here
             return pr
         h = pr.hash_next
