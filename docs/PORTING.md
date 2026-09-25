@@ -19,7 +19,7 @@ reference is `../luce-base/docs/LIBRARY.md`.
 | `libunicode.c`, `libunicode-table.h` | `libunicode` (luce-regex package) | `../luce-regex/src/luce_regex/unicode/` |
 | `libregexp.c`, `libregexp-opcode.h` | not ported: the `regex` module of the luce-regex dependency (engine `regexp_bridge.lucb`) | `../luce-regex` |
 | `quickjs.c`, `quickjs.h`, `quickjs-atom.h`, `quickjs-opcode.h` | `luce_js.engine` (exported as `js`) | `src/luce_js/engine/` |
-| `quickjs-libc.c` (POSIX, without workers) | `luce_js.host` (exported as `host`) | `src/luce_js/host/` |
+| `quickjs-libc.c` (POSIX) | `luce_js.host` (exported as `host`) | `src/luce_js/host/` |
 | `qjs.c` (without the REPL) | the `ljs` program | `tests/ljs.lucb` |
 | `run-test262.c` | the `run-test262` program | `tests/run_test262/` |
 | `tests/bjson.c` | the `bjson` native module of `ljs` | `tests/bjson.lucb` |

@@ -80,9 +80,15 @@ pub func js_std_init_handlers(rt: Runtime*):
     cutils.init_list_head(&ts.os_rw_handlers)
     cutils.init_list_head(&ts.os_signal_handlers)
     cutils.init_list_head(&ts.os_timers)
+    cutils.init_list_head(&ts.port_list)
     cutils.init_list_head(&ts.rejected_promise_list)
     ts.next_timer_id = 1
     js.js_set_runtime_opaque(rt, ts)
+
+    # set the SharedArrayBuffer memory handlers
+    let sf = js.SharedArrayBufferFunctions(sab_alloc = js_sab_alloc, sab_free = js_sab_free,
+                                           sab_dup = js_sab_dup)
+    js.js_set_shared_array_buffer_functions(rt, &sf)
 
 ## The rejected-promise entry whose list link is `el`.
 func rejected_promise_of(el: ListHead*) -> RejectedPromiseEntry*:
@@ -108,6 +114,19 @@ pub func js_std_free_handlers(rt: Runtime*):
         js.js_free_value_rt(rt, rp.reason)
         cutils.list_del(el)
         cutils.c_free(rp)
+
+    js_free_message_pipe(ts.recv_pipe)
+    js_free_message_pipe(ts.send_pipe)
+
+    var el = ts.port_list.next else trap("js_std_free_handlers: unlinked port list")
+    while el != &ts.port_list:
+        let el1 = el.next else trap("js_std_free_handlers: unlinked port list")
+        let port = message_handler_of(el)
+        # unlink the message ports. They are freed by the Worker object
+        port.link.prev = none
+        port.link.next = none
+        el = el1
+
     if let poll_fds = ts.poll_fds:
         cutils.c_free(poll_fds)
     cutils.c_free(ts)

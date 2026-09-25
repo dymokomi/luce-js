@@ -22,8 +22,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LJS = os.path.join(ROOT, "build", "ljs")
 
-# (file, extra ljs options), in the order of upstream's Makefile. test_worker.js needs
-# os.Worker, which the host does not port.
+# (file, extra ljs options), in the order of upstream's Makefile.
 TESTS = [
     ("test_closure.js", []),
     ("test_language.js", []),
@@ -31,6 +30,7 @@ TESTS = [
     ("test_loop.js", []),
     ("test_bigint.js", []),
     ("test_cyclic_import.js", []),
+    ("test_worker.js", []),
     ("test_std.js", []),
     ("test_rw_handler.js", []),
     # the native modules qjs loads as shared libraries are linked into ljs
@@ -38,6 +38,8 @@ TESTS = [
     ("examples/test_point.js", []),
     # not upstream: regressions found by test262 (tests/test262.py)
     ("test_conformance.js", []),
+    # not upstream: Atomics.wait/notify between a worker and the main thread
+    ("test_worker_atomics.js", []),
     # the other examples (upstream compiles them with qjsc), checked against their output
     ("examples/hello.js", []),
     ("examples/hello_module.js", []),

@@ -47,6 +47,7 @@ extern func unsetenv(name: const u8*) -> i32
 extern func strerror(errnum: i32) -> const u8*
 extern func strchr(s: const u8*, ch: i32) -> const u8*?
 extern func strspn(s: const u8*, accept: const u8*) -> usize
+extern func strdup(s: const u8*) -> u8*?
 extern func getpid() -> i32
 
 # mark: Files and directories ===================================================================
@@ -105,6 +106,8 @@ let seek_cur: i32 = 1
 let seek_end: i32 = 2
 
 let e_perm: i32 = 1
+let e_intr: i32 = 4
+let e_again: i32 = is_mac * 35 + is_linux * 11
 let e_noent: i32 = 2
 let e_io: i32 = 5
 let e_badf: i32 = 9
