@@ -95,6 +95,30 @@ func closure_var_at(b: FunctionBytecode*, idx: i32) -> ClosureVar*:
     let cvs = b.closure_var else trap("bytecode refers to missing closure variables")
     return cvs + (usize)idx
 
+# mark: The dispatch loop's fast paths ==========================================================
+
+# What the fast paths of the dispatch loop (interpreter.lucb) use. They write a value's tag
+# and payload in place and test the reference count where it lies rather than through
+# js_new_int32, js_dup_value, js_free_value or small helpers of their own: each expanded
+# call of a function with parameters or a result keeps a frame slot of js_call_internal
+# for them, and that frame is the stack one level of JavaScript recursion takes.
+
+## A 16-bit and a 32-bit operand of an opcode, read in place at any alignment (cutils'
+## get_u16 and get_u32).
+packed struct Operand16:
+    var v: u16
+
+packed struct Operand32:
+    var v: u32
+
+## Free the value of tag `tag` and payload `bits`, whose last reference the caller released
+## (__JS_FreeValue): the one call of a fast path's JS_FreeValue.
+noinline func free_counted(ctx: Context*, tag: Tag, bits: u64):
+    var v: Value = ---
+    v.u.uint64 = bits
+    v.tag = tag
+    js_free_value_raw(ctx, v)
+
 # mark: Interpreter macros ======================================================================
 
 ## GET_FIELD_INLINE: the property `atom` of `this_obj`. Plain objects are searched along

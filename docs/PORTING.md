@@ -196,7 +196,8 @@ C lines it ports; in broad groups:
   `property_add_delete`, `fast_arrays`), conversions, the value printer, BigInt
   (`bigint_*`), and the slow paths of the operators.
 - **The interpreter**: `interpreter_support` (InterpState and the macros of
-  JS_CallInternal), `interpreter` (js_call_internal and its dispatch loop), `interp_frames`
+  JS_CallInternal), `interpreter` (js_call_internal and its dispatch loop), `interp_outlined` (the match
+  over the other opcodes), `interp_frames`
   (frame setup, the call opcodes, unwinding and release), the opcode bodies
   (`interp_ops_*`), `call_entry` (JS_Call and friends), generators and async functions.
 - **The compiler**: the tokenizer, the emitter, the parser (`parser_*`, `parse_function*`,
@@ -236,9 +237,9 @@ Engine idioms:
 - Class tables and exotic method tables are `let` values of `ClassExoticMethods(...)` etc.
 - Port code under `#ifdef CONFIG_*` options that are on by default (check the top of
   quickjs.c); leave out the `DUMP_*` debug blocks.
-- The interpreter's structure (two nested loops instead of computed goto, one noinline
-  function per opcode body taking the InterpState) is explained in the header of
-  `interpreter.lucb`.
+- The interpreter's structure (two nested loops instead of computed goto, the frequent
+  opcodes' fast paths in the loop, one noinline function per other opcode body taking
+  the InterpState) is explained in the header of `interpreter.lucb`.
 
 ## Tests
 

@@ -14,12 +14,6 @@
 
 # mark: Constants and the stack =================================================================
 
-## The body of OP_push_i32 in JS_CallInternal.
-noinline func interp_push_i32(st: InterpState*):
-    *st.sp = js_new_int32((i32)cutils.get_u32(st.pc))
-    st.sp += 1
-    st.pc += 4
-
 ## The body of OP_push_bigint_i32 in JS_CallInternal.
 noinline func interp_push_bigint_i32(st: InterpState*):
     *st.sp = js_new_short_big_int_raw((i32)cutils.get_u32(st.pc))
@@ -31,23 +25,6 @@ noinline func interp_push_const(st: InterpState*):
     *st.sp = js_dup_value(st.ctx, cpool_at(st.b, cutils.get_u32(st.pc)))
     st.sp += 1
     st.pc += 4
-
-## The body of OP_push_minus1, OP_push_0, OP_push_1, OP_push_2, OP_push_3, OP_push_4, OP_push_5, OP_push_6, OP_push_7 in JS_CallInternal.
-noinline func interp_push_minus1(st: InterpState*):
-    *st.sp = js_new_int32((i32)(u8)st.opcode - (i32)(u8)Op.push_0)
-    st.sp += 1
-
-## The body of OP_push_i8 in JS_CallInternal.
-noinline func interp_push_i8(st: InterpState*):
-    *st.sp = js_new_int32(cutils.get_i8(st.pc))
-    st.sp += 1
-    st.pc += 1
-
-## The body of OP_push_i16 in JS_CallInternal.
-noinline func interp_push_i16(st: InterpState*):
-    *st.sp = js_new_int32(cutils.get_i16(st.pc))
-    st.sp += 1
-    st.pc += 2
 
 ## The body of OP_push_const8 in JS_CallInternal.
 noinline func interp_push_const8(st: InterpState*):
@@ -76,16 +53,6 @@ noinline func interp_push_atom_value(st: InterpState*) -> bool:
     st.pc += 4
     return true
 
-## The body of OP_undefined in JS_CallInternal.
-noinline func interp_undefined(st: InterpState*):
-    *st.sp = js_undefined()
-    st.sp += 1
-
-## The body of OP_null in JS_CallInternal.
-noinline func interp_null(st: InterpState*):
-    *st.sp = js_null()
-    st.sp += 1
-
 ## The body of OP_push_this in JS_CallInternal.
 noinline func interp_push_this(st: InterpState*) -> bool:
     # OP_push_this is only called at the start of a function
@@ -102,16 +69,6 @@ noinline func interp_push_this(st: InterpState*) -> bool:
     *st.sp = val
     st.sp += 1
     return true
-
-## The body of OP_push_false in JS_CallInternal.
-noinline func interp_push_false(st: InterpState*):
-    *st.sp = js_false()
-    st.sp += 1
-
-## The body of OP_push_true in JS_CallInternal.
-noinline func interp_push_true(st: InterpState*):
-    *st.sp = js_true()
-    st.sp += 1
 
 ## The body of OP_object in JS_CallInternal.
 noinline func interp_object(st: InterpState*) -> bool:
@@ -161,17 +118,6 @@ noinline func interp_rest(st: InterpState*) -> bool:
     st.sp += 1
     return true
 
-## The body of OP_drop in JS_CallInternal.
-noinline func interp_drop(st: InterpState*):
-    js_free_value(st.ctx, st.sp[-1])
-    st.sp -= 1
-
-## The body of OP_nip in JS_CallInternal.
-noinline func interp_nip(st: InterpState*):
-    js_free_value(st.ctx, st.sp[-2])
-    st.sp[-2] = st.sp[-1]
-    st.sp -= 1
-
 ## The body of OP_nip1 in JS_CallInternal.
 # a b c -> b c
 noinline func interp_nip1(st: InterpState*):
@@ -179,11 +125,6 @@ noinline func interp_nip1(st: InterpState*):
     st.sp[-3] = st.sp[-2]
     st.sp[-2] = st.sp[-1]
     st.sp -= 1
-
-## The body of OP_dup in JS_CallInternal.
-noinline func interp_dup(st: InterpState*):
-    st.sp[0] = js_dup_value(st.ctx, st.sp[-1])
-    st.sp += 1
 
 ## The body of OP_dup2 in JS_CallInternal.
 # a b -> a b a b
@@ -292,13 +233,6 @@ noinline func interp_perm5(st: InterpState*):
     st.sp[-3] = st.sp[-4]
     st.sp[-4] = st.sp[-5]
     st.sp[-5] = tmp
-
-## The body of OP_swap in JS_CallInternal.
-# a b -> b a
-noinline func interp_swap(st: InterpState*):
-    let tmp = st.sp[-2]
-    st.sp[-2] = st.sp[-1]
-    st.sp[-1] = tmp
 
 ## The body of OP_swap2 in JS_CallInternal.
 # a b c d -> c d a b

@@ -1,0 +1,393 @@
+#==============================================================================================
+#
+#   interp_outlined - The opcodes js_call_internal does not run in its own frame
+#
+#   DESCRIPTION:
+#       Part of the port of JS_CallInternal (quickjs.c lines 17746-20709). The dispatch
+#       loop of interpreter.lucb runs the frequent opcodes, and the fast cases of others,
+#       in place; every other opcode, and the slow cases it leaves, come here with pc and
+#       sp in `st`, and this match calls the body of the opcode from the interp_ops_*.lucb
+#       fragments. Kept out of js_call_internal, the bodies and the values they pass add
+#       nothing to its frame, which is the stack one level of JavaScript recursion takes.
+#
+#==============================================================================================
+
+## What an outlined opcode leaves the dispatch loop to do: the next opcode, or one of C's
+## `goto exception`, `goto done` and `goto done_generator`.
+enum OpResult:
+    next
+    ## the opcode raised: the exception is pending
+    exception
+    ## the frame returns st.ret_val (the returns and tail calls)
+    done
+    ## a generator frame suspends with st.ret_val
+    done_generator
+
+## Run the opcode st.opcode, whose operands start at st.pc, on the stack at st.sp.
+noinline func interp_outlined(st: InterpState*) -> OpResult:
+    match st.opcode:
+        .push_bigint_i32:
+            interp_push_bigint_i32(st)
+        .push_const:
+            interp_push_const(st)
+        # SHORT_OPCODES
+        .push_const8:
+            interp_push_const8(st)
+        .fclosure8:
+            if not interp_fclosure8(st): return OpResult.exception
+        .push_empty_string:
+            if not interp_push_empty_string(st): return OpResult.exception
+        # end SHORT_OPCODES
+        .push_atom_value:
+            if not interp_push_atom_value(st): return OpResult.exception
+        .push_this:
+            if not interp_push_this(st): return OpResult.exception
+        .object:
+            if not interp_object(st): return OpResult.exception
+        .special_object:
+            if not interp_special_object(st): return OpResult.exception
+        .rest:
+            if not interp_rest(st): return OpResult.exception
+        .nip1: # a b c -> b c
+            interp_nip1(st)
+        .dup2: # a b -> a b a b
+            interp_dup2(st)
+        .dup3: # a b c -> a b c a b c
+            interp_dup3(st)
+        .dup1: # a b -> a a b
+            interp_dup1(st)
+        .insert2: # obj a -> a obj a (dup_x1)
+            interp_insert2(st)
+        .insert3: # obj prop a -> a obj prop a (dup_x2)
+            interp_insert3(st)
+        .insert4: # this obj prop a -> a this obj prop a
+            interp_insert4(st)
+        .perm3: # obj a b -> a obj b (213)
+            interp_perm3(st)
+        .rot3l: # x a b -> a b x (231)
+            interp_rot3l(st)
+        .rot4l: # x a b c -> a b c x
+            interp_rot4l(st)
+        .rot5l: # x a b c d -> a b c d x
+            interp_rot5l(st)
+        .rot3r: # a b x -> x a b (312)
+            interp_rot3r(st)
+        .perm4: # obj prop a b -> a obj prop b
+            interp_perm4(st)
+        .perm5: # this obj prop a b -> a this obj prop b
+            interp_perm5(st)
+        .swap2: # a b c d -> c d a b
+            interp_swap2(st)
+        .fclosure:
+            if not interp_fclosure(st): return OpResult.exception
+        # call0 to call3 are SHORT_OPCODES (C: goto has_call_argc)
+        .tail_call:
+            if not interp_call(st): return OpResult.exception
+            return OpResult.done
+        .call_constructor:
+            if not interp_call_constructor(st): return OpResult.exception
+        .tail_call_method:
+            if not interp_call_method(st): return OpResult.exception
+            return OpResult.done
+        .array_from:
+            if not interp_array_from(st): return OpResult.exception
+        .apply:
+            if not interp_apply(st): return OpResult.exception
+        .check_ctor_return:
+            if not interp_check_ctor_return(st): return OpResult.exception
+        .check_ctor:
+            if not interp_check_ctor(st): return OpResult.exception
+        .init_ctor:
+            if not interp_init_ctor(st): return OpResult.exception
+        .check_brand:
+            if not interp_check_brand(st): return OpResult.exception
+        .add_brand:
+            if not interp_add_brand(st): return OpResult.exception
+        .throw:
+            if not interp_throw(st): return OpResult.exception
+        .throw_error:
+            if not interp_throw_error(st): return OpResult.exception
+        .eval:
+            if not interp_eval(st): return OpResult.exception
+        # could merge with OP_apply
+        .apply_eval:
+            if not interp_apply_eval(st): return OpResult.exception
+        .regexp:
+            if not interp_regexp(st): return OpResult.exception
+        .get_super:
+            if not interp_get_super(st): return OpResult.exception
+        .import_:
+            if not interp_import(st): return OpResult.exception
+        .get_var_undef, .get_var:
+            if not interp_get_var_undef(st): return OpResult.exception
+        .put_var, .put_var_init:
+            if not interp_put_var(st): return OpResult.exception
+        # SHORT_OPCODES
+        .put_var_ref0:
+            interp_put_var_ref0(st)
+        .put_var_ref1:
+            interp_put_var_ref1(st)
+        .put_var_ref2:
+            interp_put_var_ref2(st)
+        .put_var_ref3:
+            interp_put_var_ref3(st)
+        .set_var_ref0:
+            interp_set_var_ref0(st)
+        .set_var_ref1:
+            interp_set_var_ref1(st)
+        .set_var_ref2:
+            interp_set_var_ref2(st)
+        .set_var_ref3:
+            interp_set_var_ref3(st)
+        .set_var_ref:
+            interp_set_var_ref(st)
+        .get_var_ref_check:
+            if not interp_get_var_ref_check(st): return OpResult.exception
+        .put_var_ref_check:
+            if not interp_put_var_ref_check(st): return OpResult.exception
+        .put_var_ref_check_init:
+            if not interp_put_var_ref_check_init(st): return OpResult.exception
+        .set_loc_uninitialized:
+            interp_set_loc_uninitialized(st)
+        .get_loc_check:
+            if not interp_get_loc_check(st): return OpResult.exception
+        .get_loc_checkthis:
+            if not interp_get_loc_checkthis(st): return OpResult.exception
+        .put_loc_check:
+            if not interp_put_loc_check(st): return OpResult.exception
+        .set_loc_check:
+            if not interp_set_loc_check(st): return OpResult.exception
+        .put_loc_check_init:
+            if not interp_put_loc_check_init(st): return OpResult.exception
+        .close_loc:
+            interp_close_loc(st)
+        .make_loc_ref, .make_arg_ref, .make_var_ref_ref:
+            if not interp_make_loc_ref(st): return OpResult.exception
+        .make_var_ref:
+            if not interp_make_var_ref(st): return OpResult.exception
+        .goto_:
+            if not interp_goto(st): return OpResult.exception
+        # SHORT_OPCODES
+        .goto16:
+            if not interp_goto16(st): return OpResult.exception
+        .goto8:
+            if not interp_goto8(st): return OpResult.exception
+        # end SHORT_OPCODES
+        .if_true:
+            if not interp_if_true(st): return OpResult.exception
+        .if_false:
+            if not interp_if_false(st): return OpResult.exception
+        # SHORT_OPCODES
+        .if_true8:
+            if not interp_if_true8(st): return OpResult.exception
+        .if_false8:
+            if not interp_if_false8(st): return OpResult.exception
+        # end SHORT_OPCODES
+        .catch_:
+            interp_catch(st)
+        .gosub:
+            interp_gosub(st)
+        .ret:
+            if not interp_ret(st): return OpResult.exception
+        .for_in_start:
+            if not interp_for_in_start(st): return OpResult.exception
+        .for_in_next:
+            if not interp_for_in_next(st): return OpResult.exception
+        .for_of_start:
+            if not interp_for_of_start(st): return OpResult.exception
+        .for_of_next:
+            if not interp_for_of_next(st): return OpResult.exception
+        .for_await_of_next:
+            if not interp_for_await_of_next(st): return OpResult.exception
+        .for_await_of_start:
+            if not interp_for_await_of_start(st): return OpResult.exception
+        .iterator_get_value_done:
+            if not interp_iterator_get_value_done(st): return OpResult.exception
+        .iterator_check_object:
+            if not interp_iterator_check_object(st): return OpResult.exception
+        .iterator_close:
+            if not interp_iterator_close(st): return OpResult.exception
+        .nip_catch:
+            if not interp_nip_catch(st): return OpResult.exception
+        .iterator_next:
+            if not interp_iterator_next(st): return OpResult.exception
+        .iterator_call:
+            if not interp_iterator_call(st): return OpResult.exception
+        .lnot:
+            interp_lnot(st)
+        .get_field:
+            if not interp_get_field(st): return OpResult.exception
+        .get_field2:
+            if not interp_get_field2(st): return OpResult.exception
+        # SHORT_OPCODES
+        .get_length:
+            if not interp_get_length(st): return OpResult.exception
+        .put_field:
+            if not interp_put_field(st): return OpResult.exception
+        .private_symbol:
+            if not interp_private_symbol(st): return OpResult.exception
+        .get_private_field:
+            if not interp_get_private_field(st): return OpResult.exception
+        .put_private_field:
+            if not interp_put_private_field(st): return OpResult.exception
+        .define_private_field:
+            if not interp_define_private_field(st): return OpResult.exception
+        .define_field:
+            if not interp_define_field(st): return OpResult.exception
+        .set_name:
+            if not interp_set_name(st): return OpResult.exception
+        .set_name_computed:
+            if not interp_set_name_computed(st): return OpResult.exception
+        .set_proto:
+            if not interp_set_proto(st): return OpResult.exception
+        .set_home_object:
+            interp_set_home_object(st)
+        .define_method, .define_method_computed:
+            if not interp_define_method(st): return OpResult.exception
+        .define_class, .define_class_computed:
+            if not interp_define_class(st): return OpResult.exception
+        .get_array_el:
+            if not interp_get_array_el(st): return OpResult.exception
+        .get_array_el2:
+            if not interp_get_array_el2(st): return OpResult.exception
+        .get_array_el3:
+            if not interp_get_array_el3(st): return OpResult.exception
+        .get_ref_value:
+            if not interp_get_ref_value(st): return OpResult.exception
+        .get_super_value:
+            if not interp_get_super_value(st): return OpResult.exception
+        .put_array_el:
+            if not interp_put_array_el(st): return OpResult.exception
+        .put_ref_value:
+            if not interp_put_ref_value(st): return OpResult.exception
+        .put_super_value:
+            if not interp_put_super_value(st): return OpResult.exception
+        .define_array_el:
+            if not interp_define_array_el(st): return OpResult.exception
+        .append: # array pos enumobj -- array pos
+            if not interp_append(st): return OpResult.exception
+        .copy_data_properties: # target source excludeList
+            if not interp_copy_data_properties(st): return OpResult.exception
+        .add:
+            if not interp_add(st): return OpResult.exception
+        .add_loc:
+            if not interp_add_loc(st): return OpResult.exception
+        .sub:
+            if not interp_sub(st): return OpResult.exception
+        .mul:
+            if not interp_mul(st): return OpResult.exception
+        .div:
+            if not interp_div(st): return OpResult.exception
+        .mod:
+            if not interp_mod(st): return OpResult.exception
+        .pow:
+            if not interp_pow(st): return OpResult.exception
+        .plus:
+            if not interp_plus(st): return OpResult.exception
+        .neg:
+            if not interp_neg(st): return OpResult.exception
+        .inc:
+            if not interp_inc(st): return OpResult.exception
+        .dec:
+            if not interp_dec(st): return OpResult.exception
+        .post_inc:
+            if not interp_post_inc(st): return OpResult.exception
+        .post_dec:
+            if not interp_post_dec(st): return OpResult.exception
+        .inc_loc:
+            if not interp_inc_loc(st): return OpResult.exception
+        .dec_loc:
+            if not interp_dec_loc(st): return OpResult.exception
+        .not_:
+            if not interp_not(st): return OpResult.exception
+        .shl:
+            if not interp_shl(st): return OpResult.exception
+        .shr:
+            if not interp_shr(st): return OpResult.exception
+        .sar:
+            if not interp_sar(st): return OpResult.exception
+        .and_:
+            if not interp_and(st): return OpResult.exception
+        .or_:
+            if not interp_or(st): return OpResult.exception
+        .xor:
+            if not interp_xor(st): return OpResult.exception
+        # OP_CMP(OP_lt, <, js_relational_slow(ctx, sp, opcode))
+        .lt:
+            if not interp_lt(st): return OpResult.exception
+        # OP_CMP(OP_lte, <=, js_relational_slow(ctx, sp, opcode))
+        .lte:
+            if not interp_lte(st): return OpResult.exception
+        # OP_CMP(OP_gt, >, js_relational_slow(ctx, sp, opcode))
+        .gt:
+            if not interp_gt(st): return OpResult.exception
+        # OP_CMP(OP_gte, >=, js_relational_slow(ctx, sp, opcode))
+        .gte:
+            if not interp_gte(st): return OpResult.exception
+        # OP_CMP_EQ(OP_eq, 0)
+        .eq:
+            if not interp_eq(st): return OpResult.exception
+        # OP_CMP_EQ(OP_neq, 1)
+        .neq:
+            if not interp_neq(st): return OpResult.exception
+        # OP_CMP_STRICT_EQ(OP_strict_eq, 0)
+        .strict_eq:
+            interp_strict_eq(st)
+        # OP_CMP_STRICT_EQ(OP_strict_neq, 1)
+        .strict_neq:
+            interp_strict_neq(st)
+        .in_:
+            if not interp_in(st): return OpResult.exception
+        .private_in:
+            if not interp_private_in(st): return OpResult.exception
+        .instanceof:
+            if not interp_instanceof(st): return OpResult.exception
+        .typeof:
+            interp_typeof(st)
+        .delete:
+            if not interp_delete(st): return OpResult.exception
+        .delete_var:
+            if not interp_delete_var(st): return OpResult.exception
+        .to_object:
+            if not interp_to_object(st): return OpResult.exception
+        .to_propkey:
+            if not interp_to_propkey(st): return OpResult.exception
+        .with_get_var, .with_put_var, .with_delete_var, .with_make_ref, .with_get_ref:
+            if not interp_with_get_var(st): return OpResult.exception
+        # end SHORT_OPCODES
+        .await:
+            st.ret_val.u.uint64 = (u64)(u32)func_ret_await
+            st.ret_val.tag = Tag.int
+            return OpResult.done_generator
+        .yield:
+            st.ret_val.u.uint64 = (u64)(u32)func_ret_yield
+            st.ret_val.tag = Tag.int
+            return OpResult.done_generator
+        .yield_star, .async_yield_star:
+            st.ret_val.u.uint64 = (u64)(u32)func_ret_yield_star
+            st.ret_val.tag = Tag.int
+            return OpResult.done_generator
+        .return_async:
+            st.ret_val.u.uint64 = 0
+            st.ret_val.tag = Tag.undefined
+            return OpResult.done_generator
+        .initial_yield:
+            st.ret_val.u.uint64 = (u64)(u32)func_ret_initial_yield
+            st.ret_val.tag = Tag.int
+            return OpResult.done_generator
+        .is_undefined_or_null:
+            interp_is_undefined_or_null(st)
+        # SHORT_OPCODES
+        .is_undefined:
+            interp_is_undefined(st)
+        .is_null:
+            interp_is_null(st)
+        # XXX: could merge to a single opcode
+        .typeof_is_undefined:
+            interp_typeof_is_undefined(st)
+        .typeof_is_function:
+            interp_typeof_is_function(st)
+        # end SHORT_OPCODES
+        _:
+            if not interp_invalid(st): return OpResult.exception
+    return OpResult.next

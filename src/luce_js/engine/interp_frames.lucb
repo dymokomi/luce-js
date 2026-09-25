@@ -4,8 +4,9 @@
 #
 #   DESCRIPTION:
 #       Port of quickjs.c lines 17746-20709, the parts of JS_CallInternal around the
-#       dispatch loop of interpreter.lucb: the call opcodes (OP_call*, OP_tail_call*,
-#       OP_call_constructor, OP_call_method), the frame setup of a bytecode call or the
+#       dispatch loop of interpreter.lucb: the call opcodes the loop does not make itself
+#       (OP_tail_call*, OP_call_constructor) and interp_call_done, which the loop's calls
+#       share, the frame setup of a bytecode call or the
 #       resumption of a suspended generator frame (interp_enter), the `exception:` label's
 #       unwinding to the innermost catch offset (interp_unwind), and the exits that save a
 #       generator's frame or release the locals and stack (interp_leave). Each is a
@@ -15,8 +16,9 @@
 
 # mark: Calls ===================================================================================
 
-# The bodies of the call opcodes. The callee runs in js_call_internal, called from here:
-# the recursion of JavaScript calls then holds this small frame beside the dispatch loop's.
+# The bodies of the call opcodes. OP_call0 to OP_call and OP_call_method are made by the
+# dispatch loop itself, as in C, so that one level of JavaScript recursion is one frame of
+# js_call_internal; interp_call and interp_call_method run the tail calls.
 
 ## The argument count of a call opcode: the u16 operand of OP_call, OP_tail_call,
 ## OP_call_constructor, OP_call_method and OP_tail_call_method, or `opcode - OP_call0`

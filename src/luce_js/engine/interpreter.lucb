@@ -3,19 +3,27 @@
 #   interpreter - JS_CallInternal: the bytecode interpreter's dispatch loop
 #
 #   DESCRIPTION:
-#       Port of quickjs.c lines 17746-20709: js_call_internal and its dispatch loop over
-#       every opcode. The frame setup of a bytecode call (or the resumption of a suspended
-#       generator frame), the call opcodes, the exception unwinding and the frame's
-#       release are in interp_frames.lucb; the bodies of the other opcodes are in the
-#       interp_ops_*.lucb fragments that follow.
+#       Port of quickjs.c lines 17746-20709: js_call_internal and its dispatch loop. The
+#       frame setup of a bytecode call (or the resumption of a suspended generator frame),
+#       the exception unwinding and the frame's release are in interp_frames.lucb; the
+#       opcodes the loop does not run itself go through interp_outlined.lucb to their
+#       bodies in the interp_ops_*.lucb fragments.
 #
 #       State. C keeps pc, sp, the frame buffers, b, ctx, ... in locals of JS_CallInternal.
-#       Here they are the fields of one InterpState (interpreter_support.lucb), a local of
-#       js_call_internal, so that the body of each opcode can be a function taking a
-#       pointer to it. That keeps js_call_internal's native frame small (about 1 KB with
-#       the 256 bytes of frame_space, plus about 240 bytes for interp_call), which is the
-#       stack one level of JavaScript recursion takes: the native backend gives every
-#       temporary its own slot, and with the bodies inline the frame was 48 KB.
+#       Here pc and sp are locals of the dispatch loop, and the frame's constants (ctx, the
+#       variable and argument buffers, the closure variables) locals of js_call_internal;
+#       all of them are also fields of one InterpState (interpreter_support.lucb), which
+#       the outlined bodies take a pointer to. pc and sp are stored to it before an
+#       outlined body runs and read back after.
+#
+#       Frame. js_call_internal's native frame is the stack one level of JavaScript
+#       recursion takes (the call opcodes call it from the loop, as C does): about 1.3 KB
+#       with the 256 bytes of frame_space. So the loop runs in place only what C's loop
+#       runs most, and in a form that adds little to the frame: values are written as tag
+#       and payload where they lie and reference counts tested in place (no Value
+#       locals, no calls of helpers with parameters or results, whose expansions each keep
+#       a frame slot), and a case the fast path does not take falls through, unchanged, to
+#       the outlined body. With every body inline the frame was 48 KB.
 #
 #       Structure. C dispatches with computed goto (or a switch) and leaves each opcode
 #       with `BREAK`, `goto exception`, `goto done` or `goto done_generator`. Base has no
@@ -24,12 +32,18 @@
 #           frame: while true:                  # C: `restart:` + the `exception:` label
 #               if not throwing:
 #                   dispatch: while true:       # C: `for(;;) { SWITCH(pc) { ... } }`
-#                       st.opcode = (Op)*st.pc; st.pc = st.pc + 1
-#                       match st.opcode:        # every opcode, in C's order
-#                           .push_i32: interp_push_i32(&st)             # cannot raise
-#                           .add: if not interp_add(&st): break dispatch # goto exception
+#                       op = (Op)*pc; pc += 1
+#                       match op:               # the fast paths
+#                           .push_i32: ...; continue dispatch
+#                           .add: if both ints and no overflow: ...; continue dispatch
 #                           .return_: ... exit = .done; break frame      # goto done
-#                           _: ...              # OP_invalid and DEFAULT
+#                           _: ...
+#                       st.pc = pc; st.sp = sp  # everything else
+#                       match interp_outlined(&st):
+#                           .next: pc = st.pc; sp = st.sp
+#                           .exception: break dispatch                   # goto exception
+#                           .done: exit = .done; break frame
+#                           .done_generator: exit = .done_generator; break frame
 #               # exception: interp_unwind unwinds the stack to the innermost catch
 #               # offset; when one is found, `continue frame` runs its handler;
 #               # otherwise `exit = .exception; break frame`.
@@ -46,8 +60,8 @@
 #         callee, `catch: recover js_exception()` C's JS_EXCEPTION for a `Value!` one,
 #         and a unit callee sets `ret = -1` in its handler.
 #       - `goto done` and `goto done_generator` set `exit` (and st.ret_val) and leave with
-#         `break frame`: the returns, the tail calls and the generator suspensions stay
-#         in the loop. A generator resumed with `throw_flag` starts at the exception
+#         `break frame` (interp_outlined answers .done or .done_generator): the returns,
+#         the tail calls and the generator suspensions stay in the loop. A generator resumed with `throw_flag` starts at the exception
 #         handler (`throwing`).
 #       - Shared C labels inside an opcode (`add_slow_case`, `binary_arith_slow`,
 #         `mul_fp_res`, the `*_slow_path` labels, `set_true`, ...) are a local flag that
@@ -87,494 +101,626 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
     var throwing = entry == InterpEntry.throwing
     var exit = FrameExit.exception
 
+    # The frame's constants, which the fast paths read where the register allocator puts
+    # them (C's locals of JS_CallInternal).
+    let ctx = st.ctx
+    let var_buf = st.var_buf
+    let arg_buf = st.arg_buf
+    let var_refs = st.var_refs
+    # one address for the countdown of js_poll_interrupts, which the jumps take
+    let interrupt_counter = &ctx.interrupt_counter
+    # the `this` and new.target of plain calls: one slot rather than one per argument
+    let undefined_value = js_undefined()
+    let sf = st.sf
+
     # restart:
     frame: while true:
         if not throwing:
+            # C's pc and sp, which st holds while an outlined body runs
+            var pc = st.pc
+            var sp = st.sp
             dispatch: while true:
-                st.opcode = (Op)*st.pc
-                st.pc += 1
-                match st.opcode:
+                let op = (Op)*pc
+                pc += 1
+                # The fast paths: the opcodes C's loop runs most, on `pc`, `sp` and the
+                # frame's constants, with values written and counted in place (see the
+                # header: no Value locals and no helper calls, which would grow the
+                # frame). JS_FreeValue's last release calls free_counted. An arm that
+                # finishes leaves with `continue dispatch`; one that meets a case it does
+                # not handle has changed nothing and falls through to the outlined body
+                # below, which runs the opcode from its start (C's `*_slow_path` labels and
+                # the slow calls of its macros).
+                match op:
                     .push_i32:
-                        interp_push_i32(&st)
-                    .push_bigint_i32:
-                        interp_push_bigint_i32(&st)
-                    .push_const:
-                        interp_push_const(&st)
+                        sp.u.uint64 = (u64)(u32)((i32)((const Operand32*)pc).v)
+                        sp.tag = Tag.int
+                        sp += 1
+                        pc += 4
+                        continue dispatch
                     # SHORT_OPCODES
                     .push_minus1, .push_0, .push_1, .push_2, .push_3, .push_4, .push_5, .push_6, .push_7:
-                        interp_push_minus1(&st)
+                        sp.u.uint64 = (u64)(u32)((i32)(u8)op - (i32)(u8)Op.push_0)
+                        sp.tag = Tag.int
+                        sp += 1
+                        continue dispatch
                     .push_i8:
-                        interp_push_i8(&st)
+                        sp.u.uint64 = (u64)(u32)((i32)(i8)*pc)
+                        sp.tag = Tag.int
+                        sp += 1
+                        pc += 1
+                        continue dispatch
                     .push_i16:
-                        interp_push_i16(&st)
-                    .push_const8:
-                        interp_push_const8(&st)
-                    .fclosure8:
-                        if not interp_fclosure8(&st): break dispatch
-                    .push_empty_string:
-                        if not interp_push_empty_string(&st): break dispatch
+                        sp.u.uint64 = (u64)(u32)((i16)((const Operand16*)pc).v)
+                        sp.tag = Tag.int
+                        sp += 1
+                        pc += 2
+                        continue dispatch
                     # end SHORT_OPCODES
-                    .push_atom_value:
-                        if not interp_push_atom_value(&st): break dispatch
                     .undefined:
-                        interp_undefined(&st)
+                        sp.u.uint64 = 0
+                        sp.tag = Tag.undefined
+                        sp += 1
+                        continue dispatch
                     .null:
-                        interp_null(&st)
-                    .push_this:
-                        if not interp_push_this(&st): break dispatch
+                        sp.u.uint64 = 0
+                        sp.tag = Tag.null
+                        sp += 1
+                        continue dispatch
                     .push_false:
-                        interp_push_false(&st)
+                        sp.u.uint64 = 0
+                        sp.tag = Tag.boolean
+                        sp += 1
+                        continue dispatch
                     .push_true:
-                        interp_push_true(&st)
-                    .object:
-                        if not interp_object(&st): break dispatch
-                    .special_object:
-                        if not interp_special_object(&st): break dispatch
-                    .rest:
-                        if not interp_rest(&st): break dispatch
+                        sp.u.uint64 = 1
+                        sp.tag = Tag.boolean
+                        sp += 1
+                        continue dispatch
                     .drop:
-                        interp_drop(&st)
+                        sp -= 1
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) -%= 1
+                            if *(i32*)((usize)sp.u.uint64 -% 4) <= 0:
+                                free_counted(ctx, sp.tag, sp.u.uint64)
+                        continue dispatch
                     .nip:
-                        interp_nip(&st)
-                    .nip1: # a b c -> b c
-                        interp_nip1(&st)
+                        if (i64)sp[-2].tag < 0:
+                            *(i32*)((usize)sp[-2].u.uint64 -% 4) -%= 1
+                            if *(i32*)((usize)sp[-2].u.uint64 -% 4) <= 0:
+                                free_counted(ctx, sp[-2].tag, sp[-2].u.uint64)
+                        sp[-2] = sp[-1]
+                        sp -= 1
+                        continue dispatch
                     .dup:
-                        interp_dup(&st)
-                    .dup2: # a b -> a b a b
-                        interp_dup2(&st)
-                    .dup3: # a b c -> a b c a b c
-                        interp_dup3(&st)
-                    .dup1: # a b -> a a b
-                        interp_dup1(&st)
-                    .insert2: # obj a -> a obj a (dup_x1)
-                        interp_insert2(&st)
-                    .insert3: # obj prop a -> a obj prop a (dup_x2)
-                        interp_insert3(&st)
-                    .insert4: # this obj prop a -> a this obj prop a
-                        interp_insert4(&st)
-                    .perm3: # obj a b -> a obj b (213)
-                        interp_perm3(&st)
-                    .rot3l: # x a b -> a b x (231)
-                        interp_rot3l(&st)
-                    .rot4l: # x a b c -> a b c x
-                        interp_rot4l(&st)
-                    .rot5l: # x a b c d -> a b c d x
-                        interp_rot5l(&st)
-                    .rot3r: # a b x -> x a b (312)
-                        interp_rot3r(&st)
-                    .perm4: # obj prop a b -> a obj prop b
-                        interp_perm4(&st)
-                    .perm5: # this obj prop a b -> a this obj prop b
-                        interp_perm5(&st)
+                        *sp = sp[-1]
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        continue dispatch
                     .swap: # a b -> b a
-                        interp_swap(&st)
-                    .swap2: # a b c d -> c d a b
-                        interp_swap2(&st)
-                    .fclosure:
-                        if not interp_fclosure(&st): break dispatch
-                    # call0 to call3 are SHORT_OPCODES (C: goto has_call_argc)
-                    .call0, .call1, .call2, .call3, .call, .tail_call:
-                        if not interp_call(&st): break dispatch
-                        if st.opcode == Op.tail_call:
-                            exit = FrameExit.done
-                            break frame
-                    .call_constructor:
-                        if not interp_call_constructor(&st): break dispatch
-                    .call_method, .tail_call_method:
-                        if not interp_call_method(&st): break dispatch
-                        if st.opcode == Op.tail_call_method:
-                            exit = FrameExit.done
-                            break frame
-                    .array_from:
-                        if not interp_array_from(&st): break dispatch
-                    .apply:
-                        if not interp_apply(&st): break dispatch
+                        let tag = sp[-2].tag
+                        let bits = sp[-2].u.uint64
+                        sp[-2] = sp[-1]
+                        sp[-1].u.uint64 = bits
+                        sp[-1].tag = tag
+                        continue dispatch
                     .return_:
-                        st.sp -= 1
-                        st.ret_val = *st.sp
+                        sp -= 1
+                        st.ret_val = *sp
+                        st.pc = pc
+                        st.sp = sp
                         exit = FrameExit.done
                         break frame
                     .return_undef:
-                        st.ret_val = js_undefined()
+                        st.ret_val.u.uint64 = 0
+                        st.ret_val.tag = Tag.undefined
+                        st.pc = pc
+                        st.sp = sp
                         exit = FrameExit.done
-                        break frame
-                    .check_ctor_return:
-                        if not interp_check_ctor_return(&st): break dispatch
-                    .check_ctor:
-                        if not interp_check_ctor(&st): break dispatch
-                    .init_ctor:
-                        if not interp_init_ctor(&st): break dispatch
-                    .check_brand:
-                        if not interp_check_brand(&st): break dispatch
-                    .add_brand:
-                        if not interp_add_brand(&st): break dispatch
-                    .throw:
-                        if not interp_throw(&st): break dispatch
-                    .throw_error:
-                        if not interp_throw_error(&st): break dispatch
-                    .eval:
-                        if not interp_eval(&st): break dispatch
-                    # could merge with OP_apply
-                    .apply_eval:
-                        if not interp_apply_eval(&st): break dispatch
-                    .regexp:
-                        if not interp_regexp(&st): break dispatch
-                    .get_super:
-                        if not interp_get_super(&st): break dispatch
-                    .import_:
-                        if not interp_import(&st): break dispatch
-                    .get_var_undef, .get_var:
-                        if not interp_get_var_undef(&st): break dispatch
-                    .put_var, .put_var_init:
-                        if not interp_put_var(&st): break dispatch
-                    .get_loc:
-                        interp_get_loc(&st)
-                    .put_loc:
-                        interp_put_loc(&st)
-                    .set_loc:
-                        interp_set_loc(&st)
-                    .get_arg:
-                        interp_get_arg(&st)
-                    .put_arg:
-                        interp_put_arg(&st)
-                    .set_arg:
-                        interp_set_arg(&st)
-                    # SHORT_OPCODES
-                    .get_loc8:
-                        interp_get_loc8(&st)
-                    .put_loc8:
-                        interp_put_loc8(&st)
-                    .set_loc8:
-                        interp_set_loc8(&st)
-                    .get_loc0:
-                        interp_get_loc0(&st)
-                    .get_loc1:
-                        interp_get_loc1(&st)
-                    .get_loc2:
-                        interp_get_loc2(&st)
-                    .get_loc3:
-                        interp_get_loc3(&st)
-                    .put_loc0:
-                        interp_put_loc0(&st)
-                    .put_loc1:
-                        interp_put_loc1(&st)
-                    .put_loc2:
-                        interp_put_loc2(&st)
-                    .put_loc3:
-                        interp_put_loc3(&st)
-                    .set_loc0:
-                        interp_set_loc0(&st)
-                    .set_loc1:
-                        interp_set_loc1(&st)
-                    .set_loc2:
-                        interp_set_loc2(&st)
-                    .set_loc3:
-                        interp_set_loc3(&st)
-                    .get_arg0:
-                        interp_get_arg0(&st)
-                    .get_arg1:
-                        interp_get_arg1(&st)
-                    .get_arg2:
-                        interp_get_arg2(&st)
-                    .get_arg3:
-                        interp_get_arg3(&st)
-                    .put_arg0:
-                        interp_put_arg0(&st)
-                    .put_arg1:
-                        interp_put_arg1(&st)
-                    .put_arg2:
-                        interp_put_arg2(&st)
-                    .put_arg3:
-                        interp_put_arg3(&st)
-                    .set_arg0:
-                        interp_set_arg0(&st)
-                    .set_arg1:
-                        interp_set_arg1(&st)
-                    .set_arg2:
-                        interp_set_arg2(&st)
-                    .set_arg3:
-                        interp_set_arg3(&st)
-                    .get_var_ref0:
-                        interp_get_var_ref0(&st)
-                    .get_var_ref1:
-                        interp_get_var_ref1(&st)
-                    .get_var_ref2:
-                        interp_get_var_ref2(&st)
-                    .get_var_ref3:
-                        interp_get_var_ref3(&st)
-                    .put_var_ref0:
-                        interp_put_var_ref0(&st)
-                    .put_var_ref1:
-                        interp_put_var_ref1(&st)
-                    .put_var_ref2:
-                        interp_put_var_ref2(&st)
-                    .put_var_ref3:
-                        interp_put_var_ref3(&st)
-                    .set_var_ref0:
-                        interp_set_var_ref0(&st)
-                    .set_var_ref1:
-                        interp_set_var_ref1(&st)
-                    .set_var_ref2:
-                        interp_set_var_ref2(&st)
-                    .set_var_ref3:
-                        interp_set_var_ref3(&st)
-                    .get_var_ref:
-                        interp_get_var_ref(&st)
-                    .put_var_ref:
-                        interp_put_var_ref(&st)
-                    .set_var_ref:
-                        interp_set_var_ref(&st)
-                    .get_var_ref_check:
-                        if not interp_get_var_ref_check(&st): break dispatch
-                    .put_var_ref_check:
-                        if not interp_put_var_ref_check(&st): break dispatch
-                    .put_var_ref_check_init:
-                        if not interp_put_var_ref_check_init(&st): break dispatch
-                    .set_loc_uninitialized:
-                        interp_set_loc_uninitialized(&st)
-                    .get_loc_check:
-                        if not interp_get_loc_check(&st): break dispatch
-                    .get_loc_checkthis:
-                        if not interp_get_loc_checkthis(&st): break dispatch
-                    .put_loc_check:
-                        if not interp_put_loc_check(&st): break dispatch
-                    .set_loc_check:
-                        if not interp_set_loc_check(&st): break dispatch
-                    .put_loc_check_init:
-                        if not interp_put_loc_check_init(&st): break dispatch
-                    .close_loc:
-                        interp_close_loc(&st)
-                    .make_loc_ref, .make_arg_ref, .make_var_ref_ref:
-                        if not interp_make_loc_ref(&st): break dispatch
-                    .make_var_ref:
-                        if not interp_make_var_ref(&st): break dispatch
-                    .goto_:
-                        if not interp_goto(&st): break dispatch
-                    # SHORT_OPCODES
-                    .goto16:
-                        if not interp_goto16(&st): break dispatch
-                    .goto8:
-                        if not interp_goto8(&st): break dispatch
-                    # end SHORT_OPCODES
-                    .if_true:
-                        if not interp_if_true(&st): break dispatch
-                    .if_false:
-                        if not interp_if_false(&st): break dispatch
-                    # SHORT_OPCODES
-                    .if_true8:
-                        if not interp_if_true8(&st): break dispatch
-                    .if_false8:
-                        if not interp_if_false8(&st): break dispatch
-                    # end SHORT_OPCODES
-                    .catch_:
-                        interp_catch(&st)
-                    .gosub:
-                        interp_gosub(&st)
-                    .ret:
-                        if not interp_ret(&st): break dispatch
-                    .for_in_start:
-                        if not interp_for_in_start(&st): break dispatch
-                    .for_in_next:
-                        if not interp_for_in_next(&st): break dispatch
-                    .for_of_start:
-                        if not interp_for_of_start(&st): break dispatch
-                    .for_of_next:
-                        if not interp_for_of_next(&st): break dispatch
-                    .for_await_of_next:
-                        if not interp_for_await_of_next(&st): break dispatch
-                    .for_await_of_start:
-                        if not interp_for_await_of_start(&st): break dispatch
-                    .iterator_get_value_done:
-                        if not interp_iterator_get_value_done(&st): break dispatch
-                    .iterator_check_object:
-                        if not interp_iterator_check_object(&st): break dispatch
-                    .iterator_close:
-                        if not interp_iterator_close(&st): break dispatch
-                    .nip_catch:
-                        if not interp_nip_catch(&st): break dispatch
-                    .iterator_next:
-                        if not interp_iterator_next(&st): break dispatch
-                    .iterator_call:
-                        if not interp_iterator_call(&st): break dispatch
-                    .lnot:
-                        interp_lnot(&st)
-                    .get_field:
-                        if not interp_get_field(&st): break dispatch
-                    .get_field2:
-                        if not interp_get_field2(&st): break dispatch
-                    # SHORT_OPCODES
-                    .get_length:
-                        if not interp_get_length(&st): break dispatch
-                    .put_field:
-                        if not interp_put_field(&st): break dispatch
-                    .private_symbol:
-                        if not interp_private_symbol(&st): break dispatch
-                    .get_private_field:
-                        if not interp_get_private_field(&st): break dispatch
-                    .put_private_field:
-                        if not interp_put_private_field(&st): break dispatch
-                    .define_private_field:
-                        if not interp_define_private_field(&st): break dispatch
-                    .define_field:
-                        if not interp_define_field(&st): break dispatch
-                    .set_name:
-                        if not interp_set_name(&st): break dispatch
-                    .set_name_computed:
-                        if not interp_set_name_computed(&st): break dispatch
-                    .set_proto:
-                        if not interp_set_proto(&st): break dispatch
-                    .set_home_object:
-                        interp_set_home_object(&st)
-                    .define_method, .define_method_computed:
-                        if not interp_define_method(&st): break dispatch
-                    .define_class, .define_class_computed:
-                        if not interp_define_class(&st): break dispatch
-                    .get_array_el:
-                        if not interp_get_array_el(&st): break dispatch
-                    .get_array_el2:
-                        if not interp_get_array_el2(&st): break dispatch
-                    .get_array_el3:
-                        if not interp_get_array_el3(&st): break dispatch
-                    .get_ref_value:
-                        if not interp_get_ref_value(&st): break dispatch
-                    .get_super_value:
-                        if not interp_get_super_value(&st): break dispatch
-                    .put_array_el:
-                        if not interp_put_array_el(&st): break dispatch
-                    .put_ref_value:
-                        if not interp_put_ref_value(&st): break dispatch
-                    .put_super_value:
-                        if not interp_put_super_value(&st): break dispatch
-                    .define_array_el:
-                        if not interp_define_array_el(&st): break dispatch
-                    .append: # array pos enumobj -- array pos
-                        if not interp_append(&st): break dispatch
-                    .copy_data_properties: # target source excludeList
-                        if not interp_copy_data_properties(&st): break dispatch
-                    .add:
-                        if not interp_add(&st): break dispatch
-                    .add_loc:
-                        if not interp_add_loc(&st): break dispatch
-                    .sub:
-                        if not interp_sub(&st): break dispatch
-                    .mul:
-                        if not interp_mul(&st): break dispatch
-                    .div:
-                        if not interp_div(&st): break dispatch
-                    .mod:
-                        if not interp_mod(&st): break dispatch
-                    .pow:
-                        if not interp_pow(&st): break dispatch
-                    .plus:
-                        if not interp_plus(&st): break dispatch
-                    .neg:
-                        if not interp_neg(&st): break dispatch
-                    .inc:
-                        if not interp_inc(&st): break dispatch
-                    .dec:
-                        if not interp_dec(&st): break dispatch
-                    .post_inc:
-                        if not interp_post_inc(&st): break dispatch
-                    .post_dec:
-                        if not interp_post_dec(&st): break dispatch
-                    .inc_loc:
-                        if not interp_inc_loc(&st): break dispatch
-                    .dec_loc:
-                        if not interp_dec_loc(&st): break dispatch
-                    .not_:
-                        if not interp_not(&st): break dispatch
-                    .shl:
-                        if not interp_shl(&st): break dispatch
-                    .shr:
-                        if not interp_shr(&st): break dispatch
-                    .sar:
-                        if not interp_sar(&st): break dispatch
-                    .and_:
-                        if not interp_and(&st): break dispatch
-                    .or_:
-                        if not interp_or(&st): break dispatch
-                    .xor:
-                        if not interp_xor(&st): break dispatch
-                    # OP_CMP(OP_lt, <, js_relational_slow(ctx, sp, opcode))
-                    .lt:
-                        if not interp_lt(&st): break dispatch
-                    # OP_CMP(OP_lte, <=, js_relational_slow(ctx, sp, opcode))
-                    .lte:
-                        if not interp_lte(&st): break dispatch
-                    # OP_CMP(OP_gt, >, js_relational_slow(ctx, sp, opcode))
-                    .gt:
-                        if not interp_gt(&st): break dispatch
-                    # OP_CMP(OP_gte, >=, js_relational_slow(ctx, sp, opcode))
-                    .gte:
-                        if not interp_gte(&st): break dispatch
-                    # OP_CMP_EQ(OP_eq, 0)
-                    .eq:
-                        if not interp_eq(&st): break dispatch
-                    # OP_CMP_EQ(OP_neq, 1)
-                    .neq:
-                        if not interp_neq(&st): break dispatch
-                    # OP_CMP_STRICT_EQ(OP_strict_eq, 0)
-                    .strict_eq:
-                        interp_strict_eq(&st)
-                    # OP_CMP_STRICT_EQ(OP_strict_neq, 1)
-                    .strict_neq:
-                        interp_strict_neq(&st)
-                    .in_:
-                        if not interp_in(&st): break dispatch
-                    .private_in:
-                        if not interp_private_in(&st): break dispatch
-                    .instanceof:
-                        if not interp_instanceof(&st): break dispatch
-                    .typeof:
-                        interp_typeof(&st)
-                    .delete:
-                        if not interp_delete(&st): break dispatch
-                    .delete_var:
-                        if not interp_delete_var(&st): break dispatch
-                    .to_object:
-                        if not interp_to_object(&st): break dispatch
-                    .to_propkey:
-                        if not interp_to_propkey(&st): break dispatch
-                    .with_get_var, .with_put_var, .with_delete_var, .with_make_ref, .with_get_ref:
-                        if not interp_with_get_var(&st): break dispatch
-                    # end SHORT_OPCODES
-                    .await:
-                        st.ret_val = js_new_int32(func_ret_await)
-                        exit = FrameExit.done_generator
-                        break frame
-                    .yield:
-                        st.ret_val = js_new_int32(func_ret_yield)
-                        exit = FrameExit.done_generator
-                        break frame
-                    .yield_star, .async_yield_star:
-                        st.ret_val = js_new_int32(func_ret_yield_star)
-                        exit = FrameExit.done_generator
-                        break frame
-                    .return_async:
-                        st.ret_val = js_undefined()
-                        exit = FrameExit.done_generator
-                        break frame
-                    .initial_yield:
-                        st.ret_val = js_new_int32(func_ret_initial_yield)
-                        exit = FrameExit.done_generator
                         break frame
                     .nop:
                         continue dispatch
-                    .is_undefined_or_null:
-                        interp_is_undefined_or_null(&st)
+
+                    # Calls, from here as C makes them: one level of JavaScript recursion is
+                    # this frame alone. The stack is in st for the callee's backtrace and for
+                    # the unwinding of a failure; interp_call_done releases the function and
+                    # the arguments and pushes the result.
+                    # call0 to call3 are SHORT_OPCODES (C: goto has_call_argc)
+                    .call0, .call1, .call2, .call3, .call:
+                        var call_argc = (i32)(u8)op - (i32)(u8)Op.call0
+                        if op == Op.call:
+                            call_argc = (i32)((const Operand16*)pc).v
+                            pc += 2
+                        let call_argv = sp - (usize)call_argc
+                        st.pc = pc
+                        st.sp = sp
+                        sf.cur_pc = pc
+                        st.ret_val = js_call_internal(ctx, call_argv[-1], undefined_value, undefined_value, call_argc, call_argv, 0) catch: break dispatch
+                        interp_call_done(&st, call_argc, 1)
+                        sp = st.sp
+                        continue dispatch
+                    .call_method:
+                        let call_argc = (i32)((const Operand16*)pc).v
+                        pc += 2
+                        let call_argv = sp - (usize)call_argc
+                        st.pc = pc
+                        st.sp = sp
+                        sf.cur_pc = pc
+                        st.ret_val = js_call_internal(ctx, call_argv[-1], call_argv[-2], undefined_value, call_argc, call_argv, 0) catch: break dispatch
+                        interp_call_done(&st, call_argc, 2)
+                        sp = st.sp
+                        continue dispatch
+
+                    # Locals, arguments and closure variables. `put` moves the top of the
+                    # stack into the variable, `set` stores a new reference and keeps it;
+                    # the old value is released after the store (set_value).
+                    .get_loc:
+                        *sp = var_buf[(usize)((const Operand16*)pc).v]
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        pc += 2
+                        continue dispatch
+                    .put_loc:
+                        let pv = var_buf + (usize)((const Operand16*)pc).v
+                        pc += 2
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        sp -= 1
+                        *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .set_loc:
+                        let pv = var_buf + (usize)((const Operand16*)pc).v
+                        pc += 2
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        *pv = sp[-1]
+                        if (i64)pv.tag < 0:
+                            *(i32*)((usize)pv.u.uint64 -% 4) +%= 1
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .get_arg:
+                        *sp = arg_buf[(usize)((const Operand16*)pc).v]
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        pc += 2
+                        continue dispatch
+                    .put_arg:
+                        let pv = arg_buf + (usize)((const Operand16*)pc).v
+                        pc += 2
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        sp -= 1
+                        *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .set_arg:
+                        let pv = arg_buf + (usize)((const Operand16*)pc).v
+                        pc += 2
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        *pv = sp[-1]
+                        if (i64)pv.tag < 0:
+                            *(i32*)((usize)pv.u.uint64 -% 4) +%= 1
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
                     # SHORT_OPCODES
-                    .is_undefined:
-                        interp_is_undefined(&st)
-                    .is_null:
-                        interp_is_null(&st)
-                    # XXX: could merge to a single opcode
-                    .typeof_is_undefined:
-                        interp_typeof_is_undefined(&st)
-                    .typeof_is_function:
-                        interp_typeof_is_function(&st)
+                    .get_loc8:
+                        *sp = var_buf[(usize)*pc]
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        pc += 1
+                        continue dispatch
+                    .put_loc8:
+                        let pv = var_buf + (usize)*pc
+                        pc += 1
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        sp -= 1
+                        *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .set_loc8:
+                        let pv = var_buf + (usize)*pc
+                        pc += 1
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        *pv = sp[-1]
+                        if (i64)pv.tag < 0:
+                            *(i32*)((usize)pv.u.uint64 -% 4) +%= 1
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .get_loc0, .get_loc1, .get_loc2, .get_loc3:
+                        *sp = var_buf[(usize)((u8)op - (u8)Op.get_loc0)]
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        continue dispatch
+                    .put_loc0, .put_loc1, .put_loc2, .put_loc3:
+                        let pv = var_buf + (usize)((u8)op - (u8)Op.put_loc0)
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        sp -= 1
+                        *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .set_loc0, .set_loc1, .set_loc2, .set_loc3:
+                        let pv = var_buf + (usize)((u8)op - (u8)Op.set_loc0)
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        *pv = sp[-1]
+                        if (i64)pv.tag < 0:
+                            *(i32*)((usize)pv.u.uint64 -% 4) +%= 1
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .get_arg0, .get_arg1, .get_arg2, .get_arg3:
+                        *sp = arg_buf[(usize)((u8)op - (u8)Op.get_arg0)]
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        continue dispatch
+                    .put_arg0, .put_arg1, .put_arg2, .put_arg3:
+                        let pv = arg_buf + (usize)((u8)op - (u8)Op.put_arg0)
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        sp -= 1
+                        *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .set_arg0, .set_arg1, .set_arg2, .set_arg3:
+                        let pv = arg_buf + (usize)((u8)op - (u8)Op.set_arg0)
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        *pv = sp[-1]
+                        if (i64)pv.tag < 0:
+                            *(i32*)((usize)pv.u.uint64 -% 4) +%= 1
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .get_var_ref0, .get_var_ref1, .get_var_ref2, .get_var_ref3:
+                        *sp = *var_ref_at(var_refs, (usize)((u8)op - (u8)Op.get_var_ref0)).pvalue
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        continue dispatch
                     # end SHORT_OPCODES
+                    .get_var_ref:
+                        *sp = *var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        if (i64)sp.tag < 0:
+                            *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                        sp += 1
+                        pc += 2
+                        continue dispatch
+                    .put_var_ref:
+                        let pv = var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        pc += 2
+                        let old_tag = pv.tag
+                        let old_bits = pv.u.uint64
+                        sp -= 1
+                        *pv = *sp
+                        if (i64)old_tag < 0:
+                            *(i32*)((usize)old_bits -% 4) -%= 1
+                            if *(i32*)((usize)old_bits -% 4) <= 0:
+                                free_counted(ctx, old_tag, old_bits)
+                        continue dispatch
+                    .get_var_ref_check:
+                        # an uninitialized variable: the outlined body throws
+                        let pv = var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        if pv.tag != Tag.uninitialized:
+                            *sp = *pv
+                            if (i64)sp.tag < 0:
+                                *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                            sp += 1
+                            pc += 2
+                            continue dispatch
+                    .get_loc_check:
+                        let pv = var_buf + (usize)((const Operand16*)pc).v
+                        if pv.tag != Tag.uninitialized:
+                            *sp = *pv
+                            if (i64)sp.tag < 0:
+                                *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                            sp += 1
+                            pc += 2
+                            continue dispatch
+
+                    # Jumps. js_poll_interrupts counts down to the interrupt handler's call;
+                    # while that call is more than one step away the count is taken here,
+                    # and the step that reaches it runs the outlined body.
+                    .goto_:
+                        if *interrupt_counter > 1:
+                            *interrupt_counter -= 1
+                            pc += (isize)(i32)((const Operand32*)pc).v
+                            continue dispatch
+                    # SHORT_OPCODES
+                    .goto16:
+                        if *interrupt_counter > 1:
+                            *interrupt_counter -= 1
+                            pc += (isize)(i16)((const Operand16*)pc).v
+                            continue dispatch
+                    .goto8:
+                        if *interrupt_counter > 1:
+                            *interrupt_counter -= 1
+                            pc += (isize)(i8)*pc
+                            continue dispatch
+                    # end SHORT_OPCODES
+                    # An int, bool, null or undefined condition is its payload (C's quick and
+                    # dirty test); another value is converted by the outlined body.
+                    .if_true:
+                        if (u64)sp[-1].tag <= (u64)Tag.undefined and *interrupt_counter > 1:
+                            *interrupt_counter -= 1
+                            sp -= 1
+                            if (i32)sp.u.uint64 != 0:
+                                pc += (isize)(i32)((const Operand32*)pc).v
+                            else:
+                                pc += 4
+                            continue dispatch
+                    .if_false:
+                        if (u64)sp[-1].tag <= (u64)Tag.undefined and *interrupt_counter > 1:
+                            *interrupt_counter -= 1
+                            sp -= 1
+                            if (i32)sp.u.uint64 == 0:
+                                pc += (isize)(i32)((const Operand32*)pc).v
+                            else:
+                                pc += 4
+                            continue dispatch
+                    # SHORT_OPCODES
+                    .if_true8:
+                        if (u64)sp[-1].tag <= (u64)Tag.undefined and *interrupt_counter > 1:
+                            *interrupt_counter -= 1
+                            sp -= 1
+                            if (i32)sp.u.uint64 != 0:
+                                pc += (isize)(i8)*pc
+                            else:
+                                pc += 1
+                            continue dispatch
+                    .if_false8:
+                        if (u64)sp[-1].tag <= (u64)Tag.undefined and *interrupt_counter > 1:
+                            *interrupt_counter -= 1
+                            sp -= 1
+                            if (i32)sp.u.uint64 == 0:
+                                pc += (isize)(i8)*pc
+                            else:
+                                pc += 1
+                            continue dispatch
+                    # end SHORT_OPCODES
+                    .lnot:
+                        if (u64)sp[-1].tag <= (u64)Tag.undefined:
+                            sp[-1].u.uint64 = (u64)((i32)sp[-1].u.uint64 == 0)
+                            sp[-1].tag = Tag.boolean
+                            continue dispatch
+
+                    # Arithmetic, comparisons and bitwise operators on two ints; a result
+                    # outside the int range (or -0) and other operands take the outlined body.
+                    .add:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            let r = (i64)(i32)sp[-2].u.uint64 + (i64)(i32)sp[-1].u.uint64
+                            if r == (i64)(i32)r:
+                                sp[-2].u.uint64 = (u64)(u32)((i32)r)
+                                sp[-2].tag = Tag.int
+                                sp -= 1
+                                continue dispatch
+                    .add_loc:
+                        let pv = var_buf + (usize)*pc
+                        if ((i64)pv.tag | (i64)sp[-1].tag) == 0:
+                            let r = (i64)(i32)pv.u.uint64 + (i64)(i32)sp[-1].u.uint64
+                            if r == (i64)(i32)r:
+                                pv.u.uint64 = (u64)(u32)((i32)r)
+                                pv.tag = Tag.int
+                                sp -= 1
+                                pc += 1
+                                continue dispatch
+                    .sub:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            let r = (i64)(i32)sp[-2].u.uint64 - (i64)(i32)sp[-1].u.uint64
+                            if r == (i64)(i32)r:
+                                sp[-2].u.uint64 = (u64)(u32)((i32)r)
+                                sp[-2].tag = Tag.int
+                                sp -= 1
+                                continue dispatch
+                    .mul:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            let v1 = (i32)sp[-2].u.uint64
+                            let v2 = (i32)sp[-1].u.uint64
+                            let r = (i64)v1 * (i64)v2
+                            # a zero from a negative operand is -0, a float
+                            if r == (i64)(i32)r and (r != 0 or (v1 | v2) >= 0):
+                                sp[-2].u.uint64 = (u64)(u32)((i32)r)
+                                sp[-2].tag = Tag.int
+                                sp -= 1
+                                continue dispatch
+                    .inc:
+                        if sp[-1].tag == Tag.int and (i32)sp[-1].u.uint64 != 2147483647:
+                            sp[-1].u.uint64 = (u64)(u32)((i32)sp[-1].u.uint64 + 1)
+                            sp[-1].tag = Tag.int
+                            continue dispatch
+                    .dec:
+                        if sp[-1].tag == Tag.int and (i32)sp[-1].u.uint64 != -2147483648:
+                            sp[-1].u.uint64 = (u64)(u32)((i32)sp[-1].u.uint64 - 1)
+                            sp[-1].tag = Tag.int
+                            continue dispatch
+                    .post_inc:
+                        if sp[-1].tag == Tag.int and (i32)sp[-1].u.uint64 != 2147483647:
+                            sp.u.uint64 = (u64)(u32)((i32)sp[-1].u.uint64 + 1)
+                            sp.tag = Tag.int
+                            sp += 1
+                            continue dispatch
+                    .post_dec:
+                        if sp[-1].tag == Tag.int and (i32)sp[-1].u.uint64 != -2147483648:
+                            sp.u.uint64 = (u64)(u32)((i32)sp[-1].u.uint64 - 1)
+                            sp.tag = Tag.int
+                            sp += 1
+                            continue dispatch
+                    .inc_loc:
+                        let pv = var_buf + (usize)*pc
+                        if pv.tag == Tag.int and (i32)pv.u.uint64 != 2147483647:
+                            pv.u.uint64 = (u64)(u32)((i32)pv.u.uint64 + 1)
+                            pv.tag = Tag.int
+                            pc += 1
+                            continue dispatch
+                    .dec_loc:
+                        let pv = var_buf + (usize)*pc
+                        if pv.tag == Tag.int and (i32)pv.u.uint64 != -2147483648:
+                            pv.u.uint64 = (u64)(u32)((i32)pv.u.uint64 - 1)
+                            pv.tag = Tag.int
+                            pc += 1
+                            continue dispatch
+                    .shl:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            let v2 = (u32)(i32)sp[-1].u.uint64 & 0x1f
+                            sp[-2].u.uint64 = (u64)(u32)((i32)((u32)(i32)sp[-2].u.uint64 << v2))
+                            sp[-2].tag = Tag.int
+                            sp -= 1
+                            continue dispatch
+                    .sar:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            let v2 = (u32)(i32)sp[-1].u.uint64 & 0x1f
+                            sp[-2].u.uint64 = (u64)(u32)((i32)sp[-2].u.uint64 >> v2)
+                            sp[-2].tag = Tag.int
+                            sp -= 1
+                            continue dispatch
+                    .and_:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)(u32)((i32)sp[-2].u.uint64 & (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.int
+                            sp -= 1
+                            continue dispatch
+                    .or_:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)(u32)((i32)sp[-2].u.uint64 | (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.int
+                            sp -= 1
+                            continue dispatch
+                    .xor:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)(u32)((i32)sp[-2].u.uint64 ^ (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.int
+                            sp -= 1
+                            continue dispatch
+                    .lt:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 < (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                    .lte:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 <= (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                    .gt:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 > (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                    .gte:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 >= (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                    .eq, .strict_eq:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 == (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                    .neq, .strict_neq:
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
+                            sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 != (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+
+                    # Elements of fast arrays at an int index inside them
+                    # (GET_ARRAY_EL_INLINE, OP_put_array_el).
+                    .get_array_el:
+                        if sp[-2].tag == Tag.object and sp[-1].tag == Tag.int:
+                            let p = sp[-2].u.obj
+                            let idx = (u32)(i32)sp[-1].u.uint64
+                            if p.class_id == ClassId.array and idx < p.u.array.count:
+                                # the element's new reference is taken before the array's
+                                # is released
+                                let obj_bits = sp[-2].u.uint64
+                                sp[-2] = p.u.array.u.values[(usize)idx]
+                                if (i64)sp[-2].tag < 0:
+                                    *(i32*)((usize)sp[-2].u.uint64 -% 4) +%= 1
+                                *(i32*)((usize)obj_bits -% 4) -%= 1
+                                if *(i32*)((usize)obj_bits -% 4) <= 0:
+                                    free_counted(ctx, Tag.object, obj_bits)
+                                sp -= 1
+                                continue dispatch
+                    .put_array_el:
+                        if sp[-3].tag == Tag.object and sp[-2].tag == Tag.int:
+                            let p = sp[-3].u.obj
+                            let idx = (u32)(i32)sp[-2].u.uint64
+                            if p.class_id == ClassId.array and idx < p.u.array.count:
+                                let pv = p.u.array.u.values + (usize)idx
+                                let old_tag = pv.tag
+                                let old_bits = pv.u.uint64
+                                *pv = sp[-1]
+                                if (i64)old_tag < 0:
+                                    *(i32*)((usize)old_bits -% 4) -%= 1
+                                    if *(i32*)((usize)old_bits -% 4) <= 0:
+                                        free_counted(ctx, old_tag, old_bits)
+                                *(i32*)((usize)sp[-3].u.uint64 -% 4) -%= 1
+                                if *(i32*)((usize)sp[-3].u.uint64 -% 4) <= 0:
+                                    free_counted(ctx, Tag.object, sp[-3].u.uint64)
+                                sp -= 3
+                                continue dispatch
                     _:
-                        if not interp_invalid(&st): break dispatch
+                        discard(0)
+
+                # Every other opcode, and the cases the fast paths leave: the outlined bodies
+                # work on `st`, which holds pc and sp while they run.
+                st.pc = pc
+                st.sp = sp
+                st.opcode = op
+                match interp_outlined(&st):
+                    .next:
+                        pc = st.pc
+                        sp = st.sp
+                    .exception:
+                        break dispatch
+                    .done:
+                        exit = FrameExit.done
+                        break frame
+                    .done_generator:
+                        exit = FrameExit.done_generator
+                        break frame
 
         # exception:
         throwing = false
