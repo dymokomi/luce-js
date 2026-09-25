@@ -1,11 +1,20 @@
 #==============================================================================================
 #
-#   interpreter - JS_CallInternal: the bytecode interpreter
+#   interpreter - JS_CallInternal: the bytecode interpreter's dispatch loop and frames
 #
 #   DESCRIPTION:
 #       Port of quickjs.c lines 17746-20709: the frame setup of a bytecode call (or the
 #       resumption of a suspended generator frame), the dispatch loop over every opcode,
-#       the exception unwinding and the frame's release.
+#       the call opcodes, the exception unwinding and the frame's release. The bodies of
+#       the other opcodes are in the interp_ops_*.lucb fragments that follow.
+#
+#       State. C keeps pc, sp, the frame buffers, b, ctx, ... in locals of JS_CallInternal.
+#       Here they are the fields of one InterpState (interpreter_support.lucb), a local of
+#       js_call_internal, so that the body of each opcode can be a function taking a
+#       pointer to it. That keeps js_call_internal's native frame small (about 1 KB with
+#       the 256 bytes of frame_space, plus about 240 bytes for interp_call), which is the
+#       stack one level of JavaScript recursion takes: the native backend gives every
+#       temporary its own slot, and with the bodies inline the frame was 48 KB.
 #
 #       Structure. C dispatches with computed goto (or a switch) and leaves each opcode
 #       with `BREAK`, `goto exception`, `goto done` or `goto done_generator`. Base has no
@@ -14,40 +23,40 @@
 #           frame: while true:                  # C: `restart:` + the `exception:` label
 #               if not throwing:
 #                   dispatch: while true:       # C: `for(;;) { SWITCH(pc) { ... } }`
-#                       opcode = (Op)*pc; pc = pc + 1
-#                       match opcode:
-#                           .push_i32: ...      # an arm ends: the next opcode (BREAK)
-#                           .add: ... f(...) catch: break dispatch    # goto exception
-#                           .return_: ... exit = .done; break frame    # goto done
+#                       st.opcode = (Op)*st.pc; st.pc = st.pc + 1
+#                       match st.opcode:        # every opcode, in C's order
+#                           .push_i32: interp_push_i32(&st)             # cannot raise
+#                           .add: if not interp_add(&st): break dispatch # goto exception
+#                           .return_: ... exit = .done; break frame      # goto done
 #                           _: ...              # OP_invalid and DEFAULT
-#               # exception: unwind the stack to the innermost catch offset; when one is
-#               # found, push the exception, set pc to its handler and `continue frame`;
+#               # exception: interp_unwind unwinds the stack to the innermost catch
+#               # offset; when one is found, `continue frame` runs its handler;
 #               # otherwise `exit = .exception; break frame`.
-#           # the exits (done, done_generator, the exception return)
+#           interp_leave(&st, exit)             # done, done_generator or the exception
 #
-#       - An opcode that raises leaves with `break dispatch`: a fallible callee failed
-#         (`f(...) catch: break dispatch`), or a `js_throw_*` helper stored the exception.
-#         The stack pointer is left exactly where C leaves it at its `goto exception`, so
-#         the unwinding frees the same values; a C push of JS_EXCEPTION (`*sp++ = f();
-#         if (JS_IsException(sp[-1])) goto exception;`) pushes nothing, which the
-#         unwinding cannot tell apart. Where C does cleanup between the call and its
-#         exception test, the call recovers C's status and the C test follows unchanged:
+#       - An opcode body that raises answers false: a fallible callee failed (`f(...)
+#         catch: return false`), or a `js_throw_*` helper stored the exception. The stack
+#         pointer is left exactly where C leaves it at its `goto exception`, so the
+#         unwinding frees the same values; a C push of JS_EXCEPTION (`*sp++ = f(); if
+#         (JS_IsException(sp[-1])) goto exception;`) pushes nothing, which the unwinding
+#         cannot tell apart. Where C does cleanup between the call and its exception
+#         test, the call recovers C's status and the C test follows unchanged:
 #         `bool_status(f(...) catch: recover none)` gives C's -1/0/1 for a `bool!`
 #         callee, `catch: recover js_exception()` C's JS_EXCEPTION for a `Value!` one,
 #         and a unit callee sets `ret = -1` in its handler.
-#       - `goto done` and `goto done_generator` set `exit` (and `ret_val`) and leave with
-#         `break frame`. A generator resumed with `throw_flag` starts at the exception
+#       - `goto done` and `goto done_generator` set `exit` (and st.ret_val) and leave with
+#         `break frame`: the returns, the tail calls and the generator suspensions stay
+#         in the loop. A generator resumed with `throw_flag` starts at the exception
 #         handler (`throwing`).
 #       - Shared C labels inside an opcode (`add_slow_case`, `binary_arith_slow`,
 #         `mul_fp_res`, the `*_slow_path` labels, `set_true`, ...) are a local flag that
-#         selects the shared tail of the arm. The opcodes that share a body (call0 to
+#         selects the shared tail of the body. The opcodes that share a body (call0 to
 #         call3 with call, get_var_undef with get_var, ...) are one arm, as in C.
-#       - The large macros are inline functions of interpreter_support.lucb; the rest is
-#         expanded in place so the fast paths (int + int, get_loc, ...) stay inline.
+#       - The large macros are inline functions of interpreter_support.lucb.
 #       - pc, sp and the frame buffers are pointers, exactly as in C; `sp[-1]` is written
 #         `sp[(isize)-1]` (workaround: compiler-issues/negative-pointer-index).
 #       - C allocates the frame with alloca. Base has no alloca: a frame that fits
-#         `frame_space` (js_call_inline_frame_values values) lives in this function's
+#         `frame_space` (js_call_inline_frame_values values) lives in js_call_internal's
 #         frame, a larger one is js_malloc'ed and released when the call returns.
 #       - rt.current_stack_frame is set through js_push_stack_frame (workaround:
 #         compiler-issues/local_address_store).
@@ -55,8 +64,9 @@
 #==============================================================================================
 
 ## The number of values a bytecode call keeps in its own frame before it allocates the
-## locals, stack and variable references on the heap (C uses alloca for all of them).
-let js_call_inline_frame_values: usize = 32
+## locals, stack and variable references on the heap (C uses alloca for all of them). Small
+## functions fit; every value here adds 16 bytes to each level of JavaScript recursion.
+let js_call_inline_frame_values: usize = 16
 
 # mark: JS_CallInternal =========================================================================
 
@@ -66,2092 +76,746 @@ let js_call_inline_frame_values: usize = 32
 ## hook; with call_flag_generator, `func_obj` holds the AsyncFunctionState of a
 ## suspended generator frame, which is resumed (JS_CallInternal).
 func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
-    let rt = caller_ctx.rt
-    var ctx: Context* = caller_ctx
-    var p: Object* = ---
-    var b: FunctionBytecode* = ---
+    var st: InterpState = ---
     var sf_s: StackFrame = ---
-    var sf: StackFrame* = &sf_s
-    var pc: const u8* = ---
-    var opcode = Op.invalid
-    var local_buf: Value* = ---
-    var stack_buf: Value* = ---
-    var var_buf: Value* = ---
-    var arg_buf: Value* = ---
-    var sp: Value* = ---
-    var ret_val = js_undefined()
-    var var_refs: VarRef*?*? = none
     # the frame when it fits; C allocates it with alloca
     var frame_space: Value[js_call_inline_frame_values] = ---
-    # the frame when it does not fit frame_space
-    var heap_frame: void*? = none
+    st.sf = &sf_s
+    let entry = try interp_enter(&st, caller_ctx, func_obj, this_obj, new_target, argc, argv, flags, &frame_space[0])
+    if entry == InterpEntry.returned:
+        return st.ret_val
     # set when the frame starts at the exception handler
-    var throwing = false
-
-    try js_poll_interrupts(caller_ctx)
-    if func_obj.tag != Tag.object:
-        if (flags & call_flag_generator) == 0:
-            # not_a_function
-            try js_throw_type_error(caller_ctx, "not a function")
-        let s = (AsyncFunctionState*)func_obj.u.ptr
-        # func_obj get contains a pointer to JSFuncAsyncState
-        # the stack frame is already allocated
-        sf = &s.frame
-        p = sf.cur_func.u.obj
-        b = p.u.func_.function_bytecode
-        ctx = b.realm
-        var_refs = p.u.func_.var_refs
-        arg_buf = sf.arg_buf else trap("generator frame without arguments")
-        local_buf = arg_buf
-        var_buf = sf.var_buf else trap("generator frame without variables")
-        stack_buf = var_buf + (usize)b.var_count
-        sp = sf.cur_sp else trap("generator frame is running")
-        sf.cur_sp = none # cur_sp is NULL if the function is running
-        pc = sf.cur_pc else trap("generator frame without pc")
-        sf.prev_frame = rt.current_stack_frame
-        # workaround: compiler-issues/local_address_store
-        js_push_stack_frame(rt, sf)
-        throwing = s.throw_flag
-    else:
-        p = func_obj.u.obj
-        if p.class_id != ClassId.bytecode_function:
-            let class_array = rt.class_array else trap("the class array is not allocated")
-            let call_func = class_array[(usize)(u16)p.class_id].call else try js_throw_type_error(caller_ctx, "not a function")
-            return try call_func(caller_ctx, func_obj, this_obj, argc, argv, flags)
-        b = p.u.func_.function_bytecode
-
-        var arg_allocated_size: i32 = 0
-        if argc < (i32)b.arg_count or (flags & call_flag_copy_argv) != 0:
-            arg_allocated_size = (i32)b.arg_count
-
-        let alloca_size = sizeof(Value) * ((usize)arg_allocated_size + (usize)b.var_count + (usize)b.stack_size) + sizeof(VarRef*) * (usize)b.var_ref_count
-        if js_check_stack_overflow(rt, alloca_size):
-            try js_throw_stack_overflow(caller_ctx)
-
-        sf.js_mode = (i32)b.js_mode
-        arg_buf = argv
-        sf.arg_count = argc
-        sf.cur_func = func_obj
-        var_refs = p.u.func_.var_refs
-
-        if alloca_size <= sizeof(Value) * js_call_inline_frame_values:
-            local_buf = &frame_space[0]
-        else:
-            let block = try js_malloc(caller_ctx, alloca_size)
-            heap_frame = block
-            local_buf = (Value*)block
-        if arg_allocated_size != 0:
-            let n = cutils.min_int(argc, (i32)b.arg_count)
-            arg_buf = local_buf
-            for i in 0..<(usize)n:
-                arg_buf[i] = js_dup_value(caller_ctx, argv[i])
-            for i in (usize)n..<(usize)b.arg_count:
-                arg_buf[i] = js_undefined()
-            sf.arg_count = (i32)b.arg_count
-        var_buf = local_buf + (usize)arg_allocated_size
-        sf.var_buf = var_buf
-        sf.arg_buf = arg_buf
-
-        for i in 0..<(usize)b.var_count:
-            var_buf[i] = js_undefined()
-
-        stack_buf = var_buf + (usize)b.var_count
-        let frame_var_refs = (VarRef*?*)(stack_buf + (usize)b.stack_size)
-        sf.var_refs = frame_var_refs
-        for i in 0..<(usize)b.var_ref_count:
-            frame_var_refs[i] = none
-        sp = stack_buf
-        pc = b.byte_code_buf
-        sf.prev_frame = rt.current_stack_frame
-        # workaround: compiler-issues/local_address_store
-        js_push_stack_frame(rt, sf)
-        ctx = b.realm # set the current realm
-
-    let bc_buf: const u8* = b.byte_code_buf
+    var throwing = entry == InterpEntry.throwing
     var exit = FrameExit.exception
 
     # restart:
     frame: while true:
         if not throwing:
             dispatch: while true:
-                opcode = (Op)*pc
-                pc = pc + 1
-                match opcode:
+                st.opcode = (Op)*st.pc
+                st.pc = st.pc + 1
+                match st.opcode:
                     .push_i32:
-                        *sp = js_new_int32((i32)cutils.get_u32(pc))
-                        sp = sp + 1
-                        pc = pc + 4
+                        interp_push_i32(&st)
                     .push_bigint_i32:
-                        *sp = js_new_short_big_int_raw((i32)cutils.get_u32(pc))
-                        sp = sp + 1
-                        pc = pc + 4
+                        interp_push_bigint_i32(&st)
                     .push_const:
-                        *sp = js_dup_value(ctx, cpool_at(b, cutils.get_u32(pc)))
-                        sp = sp + 1
-                        pc = pc + 4
+                        interp_push_const(&st)
                     # SHORT_OPCODES
                     .push_minus1, .push_0, .push_1, .push_2, .push_3, .push_4, .push_5, .push_6, .push_7:
-                        *sp = js_new_int32((i32)(u8)opcode - (i32)(u8)Op.push_0)
-                        sp = sp + 1
+                        interp_push_minus1(&st)
                     .push_i8:
-                        *sp = js_new_int32(cutils.get_i8(pc))
-                        sp = sp + 1
-                        pc = pc + 1
+                        interp_push_i8(&st)
                     .push_i16:
-                        *sp = js_new_int32(cutils.get_i16(pc))
-                        sp = sp + 1
-                        pc = pc + 2
+                        interp_push_i16(&st)
                     .push_const8:
-                        *sp = js_dup_value(ctx, cpool_at(b, (u32)*pc))
-                        sp = sp + 1
-                        pc = pc + 1
+                        interp_push_const8(&st)
                     .fclosure8:
-                        let bfunc = js_dup_value(ctx, cpool_at(b, (u32)*pc))
-                        pc = pc + 1
-                        *sp = js_closure(ctx, bfunc, var_refs, sf, false) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_fclosure8(&st): break dispatch
                     .push_empty_string:
-                        *sp = js_atom_to_string(ctx, atom_empty_string) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_push_empty_string(&st): break dispatch
                     # end SHORT_OPCODES
                     .push_atom_value:
-                        *sp = js_atom_to_value(ctx, cutils.get_u32(pc)) catch: break dispatch
-                        sp = sp + 1
-                        pc = pc + 4
+                        if not interp_push_atom_value(&st): break dispatch
                     .undefined:
-                        *sp = js_undefined()
-                        sp = sp + 1
+                        interp_undefined(&st)
                     .null:
-                        *sp = js_null()
-                        sp = sp + 1
+                        interp_null(&st)
                     .push_this:
-                        # OP_push_this is only called at the start of a function
-                        var val = js_undefined()
-                        if ((i32)b.js_mode & js_mode_strict) == 0 and this_obj.tag != Tag.object:
-                            let tag = this_obj.tag
-                            if tag == Tag.null or tag == Tag.undefined:
-                                val = js_dup_value(ctx, ctx.global_obj)
-                            else:
-                                val = js_to_object(ctx, this_obj) catch: break dispatch
-                        else:
-                            # normal_this
-                            val = js_dup_value(ctx, this_obj)
-                        *sp = val
-                        sp = sp + 1
+                        if not interp_push_this(&st): break dispatch
                     .push_false:
-                        *sp = js_false()
-                        sp = sp + 1
+                        interp_push_false(&st)
                     .push_true:
-                        *sp = js_true()
-                        sp = sp + 1
+                        interp_push_true(&st)
                     .object:
-                        *sp = js_new_object(ctx) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_object(&st): break dispatch
                     .special_object:
-                        let arg = (OpSpecialObject)*pc
-                        pc = pc + 1
-                        match arg:
-                            .arguments:
-                                *sp = js_build_arguments(ctx, argc, argv) catch: break dispatch
-                                sp = sp + 1
-                            .mapped_arguments:
-                                *sp = js_build_mapped_arguments(ctx, argc, argv, sf, cutils.min_int(argc, (i32)b.arg_count)) catch: break dispatch
-                                sp = sp + 1
-                            .this_func:
-                                *sp = js_dup_value(ctx, sf.cur_func)
-                                sp = sp + 1
-                            .new_target:
-                                *sp = js_dup_value(ctx, new_target)
-                                sp = sp + 1
-                            .home_object:
-                                if let p1 = p.u.func_.home_object:
-                                    *sp = js_dup_value(ctx, js_mkptr(Tag.object, p1))
-                                else:
-                                    *sp = js_undefined()
-                                sp = sp + 1
-                            .var_object:
-                                *sp = js_new_object_proto(ctx, js_null()) catch: break dispatch
-                                sp = sp + 1
-                            .import_meta:
-                                *sp = js_import_meta(ctx) catch: break dispatch
-                                sp = sp + 1
-                            _:
-                                trap("invalid OP_special_object argument")
+                        if not interp_special_object(&st): break dispatch
                     .rest:
-                        var first = (i32)cutils.get_u16(pc)
-                        pc = pc + 2
-                        first = cutils.min_int(first, argc)
-                        *sp = js_create_array(ctx, argc - first, argv + (usize)first) catch: break dispatch
-                        sp = sp + 1
-
+                        if not interp_rest(&st): break dispatch
                     .drop:
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp = sp - 1
+                        interp_drop(&st)
                     .nip:
-                        js_free_value(ctx, sp[(isize)-2])
-                        sp[(isize)-2] = sp[(isize)-1]
-                        sp = sp - 1
+                        interp_nip(&st)
                     .nip1: # a b c -> b c
-                        js_free_value(ctx, sp[(isize)-3])
-                        sp[(isize)-3] = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-1]
-                        sp = sp - 1
+                        interp_nip1(&st)
                     .dup:
-                        sp[0] = js_dup_value(ctx, sp[(isize)-1])
-                        sp = sp + 1
+                        interp_dup(&st)
                     .dup2: # a b -> a b a b
-                        sp[0] = js_dup_value(ctx, sp[(isize)-2])
-                        sp[1] = js_dup_value(ctx, sp[(isize)-1])
-                        sp = sp + 2
+                        interp_dup2(&st)
                     .dup3: # a b c -> a b c a b c
-                        sp[0] = js_dup_value(ctx, sp[(isize)-3])
-                        sp[1] = js_dup_value(ctx, sp[(isize)-2])
-                        sp[2] = js_dup_value(ctx, sp[(isize)-1])
-                        sp = sp + 3
+                        interp_dup3(&st)
                     .dup1: # a b -> a a b
-                        sp[0] = sp[(isize)-1]
-                        sp[(isize)-1] = js_dup_value(ctx, sp[(isize)-2])
-                        sp = sp + 1
+                        interp_dup1(&st)
                     .insert2: # obj a -> a obj a (dup_x1)
-                        sp[0] = sp[(isize)-1]
-                        sp[(isize)-1] = sp[(isize)-2]
-                        sp[(isize)-2] = js_dup_value(ctx, sp[0])
-                        sp = sp + 1
+                        interp_insert2(&st)
                     .insert3: # obj prop a -> a obj prop a (dup_x2)
-                        sp[0] = sp[(isize)-1]
-                        sp[(isize)-1] = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-3]
-                        sp[(isize)-3] = js_dup_value(ctx, sp[0])
-                        sp = sp + 1
+                        interp_insert3(&st)
                     .insert4: # this obj prop a -> a this obj prop a
-                        sp[0] = sp[(isize)-1]
-                        sp[(isize)-1] = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-3]
-                        sp[(isize)-3] = sp[(isize)-4]
-                        sp[(isize)-4] = js_dup_value(ctx, sp[0])
-                        sp = sp + 1
+                        interp_insert4(&st)
                     .perm3: # obj a b -> a obj b (213)
-                        let tmp = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-3]
-                        sp[(isize)-3] = tmp
+                        interp_perm3(&st)
                     .rot3l: # x a b -> a b x (231)
-                        let tmp = sp[(isize)-3]
-                        sp[(isize)-3] = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-1]
-                        sp[(isize)-1] = tmp
+                        interp_rot3l(&st)
                     .rot4l: # x a b c -> a b c x
-                        let tmp = sp[(isize)-4]
-                        sp[(isize)-4] = sp[(isize)-3]
-                        sp[(isize)-3] = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-1]
-                        sp[(isize)-1] = tmp
+                        interp_rot4l(&st)
                     .rot5l: # x a b c d -> a b c d x
-                        let tmp = sp[(isize)-5]
-                        sp[(isize)-5] = sp[(isize)-4]
-                        sp[(isize)-4] = sp[(isize)-3]
-                        sp[(isize)-3] = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-1]
-                        sp[(isize)-1] = tmp
+                        interp_rot5l(&st)
                     .rot3r: # a b x -> x a b (312)
-                        let tmp = sp[(isize)-1]
-                        sp[(isize)-1] = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-3]
-                        sp[(isize)-3] = tmp
+                        interp_rot3r(&st)
                     .perm4: # obj prop a b -> a obj prop b
-                        let tmp = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-3]
-                        sp[(isize)-3] = sp[(isize)-4]
-                        sp[(isize)-4] = tmp
+                        interp_perm4(&st)
                     .perm5: # this obj prop a b -> a this obj prop b
-                        let tmp = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-3]
-                        sp[(isize)-3] = sp[(isize)-4]
-                        sp[(isize)-4] = sp[(isize)-5]
-                        sp[(isize)-5] = tmp
+                        interp_perm5(&st)
                     .swap: # a b -> b a
-                        let tmp = sp[(isize)-2]
-                        sp[(isize)-2] = sp[(isize)-1]
-                        sp[(isize)-1] = tmp
+                        interp_swap(&st)
                     .swap2: # a b c d -> c d a b
-                        let tmp1 = sp[(isize)-4]
-                        let tmp2 = sp[(isize)-3]
-                        sp[(isize)-4] = sp[(isize)-2]
-                        sp[(isize)-3] = sp[(isize)-1]
-                        sp[(isize)-2] = tmp1
-                        sp[(isize)-1] = tmp2
-
+                        interp_swap2(&st)
                     .fclosure:
-                        let bfunc = js_dup_value(ctx, cpool_at(b, cutils.get_u32(pc)))
-                        pc = pc + 4
-                        *sp = js_closure(ctx, bfunc, var_refs, sf, false) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_fclosure(&st): break dispatch
                     # call0 to call3 are SHORT_OPCODES (C: goto has_call_argc)
                     .call0, .call1, .call2, .call3, .call, .tail_call:
-                        var call_argc: i32 = 0
-                        if opcode == Op.call or opcode == Op.tail_call:
-                            call_argc = (i32)cutils.get_u16(pc)
-                            pc = pc + 2
-                        else:
-                            call_argc = (i32)(u8)opcode - (i32)(u8)Op.call0
-                        # has_call_argc:
-                        let call_argv = sp - (usize)call_argc
-                        sf.cur_pc = pc
-                        ret_val = js_call_internal(ctx, call_argv[(isize)-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: break dispatch
-                        if opcode == Op.tail_call:
+                        if not interp_call(&st): break dispatch
+                        if st.opcode == Op.tail_call:
                             exit = FrameExit.done
                             break frame
-                        var i: isize = -1
-                        while i < (isize)call_argc:
-                            js_free_value(ctx, call_argv[i])
-                            i += 1
-                        sp = sp - (usize)(call_argc + 1)
-                        *sp = ret_val
-                        sp = sp + 1
                     .call_constructor:
-                        let call_argc = (i32)cutils.get_u16(pc)
-                        pc = pc + 2
-                        let call_argv = sp - (usize)call_argc
-                        sf.cur_pc = pc
-                        ret_val = js_call_constructor_internal(ctx, call_argv[(isize)-2], call_argv[(isize)-1], call_argc, call_argv, 0) catch: break dispatch
-                        var i: isize = -2
-                        while i < (isize)call_argc:
-                            js_free_value(ctx, call_argv[i])
-                            i += 1
-                        sp = sp - (usize)(call_argc + 2)
-                        *sp = ret_val
-                        sp = sp + 1
+                        if not interp_call_constructor(&st): break dispatch
                     .call_method, .tail_call_method:
-                        let call_argc = (i32)cutils.get_u16(pc)
-                        pc = pc + 2
-                        let call_argv = sp - (usize)call_argc
-                        sf.cur_pc = pc
-                        ret_val = js_call_internal(ctx, call_argv[(isize)-1], call_argv[(isize)-2], js_undefined(), call_argc, call_argv, 0) catch: break dispatch
-                        if opcode == Op.tail_call_method:
+                        if not interp_call_method(&st): break dispatch
+                        if st.opcode == Op.tail_call_method:
                             exit = FrameExit.done
                             break frame
-                        var i: isize = -2
-                        while i < (isize)call_argc:
-                            js_free_value(ctx, call_argv[i])
-                            i += 1
-                        sp = sp - (usize)(call_argc + 2)
-                        *sp = ret_val
-                        sp = sp + 1
                     .array_from:
-                        let call_argc = (i32)cutils.get_u16(pc)
-                        pc = pc + 2
-                        ret_val = js_create_array_free(ctx, call_argc, sp - (usize)call_argc) catch:
-                            sp = sp - (usize)call_argc
-                            break dispatch
-                        sp = sp - (usize)call_argc
-                        *sp = ret_val
-                        sp = sp + 1
-
+                        if not interp_array_from(&st): break dispatch
                     .apply:
-                        let magic = (i32)cutils.get_u16(pc)
-                        pc = pc + 2
-                        sf.cur_pc = pc
-
-                        ret_val = js_function_apply(ctx, sp[(isize)-3], 2, sp - 2, magic) catch: break dispatch
-                        js_free_value(ctx, sp[(isize)-3])
-                        js_free_value(ctx, sp[(isize)-2])
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp = sp - 3
-                        *sp = ret_val
-                        sp = sp + 1
+                        if not interp_apply(&st): break dispatch
                     .return_:
-                        sp = sp - 1
-                        ret_val = *sp
+                        st.sp = st.sp - 1
+                        st.ret_val = *st.sp
                         exit = FrameExit.done
                         break frame
                     .return_undef:
-                        ret_val = js_undefined()
+                        st.ret_val = js_undefined()
                         exit = FrameExit.done
                         break frame
-
                     .check_ctor_return:
-                        # return TRUE if 'this' should be returned
-                        if not js_is_object(sp[(isize)-1]):
-                            if not js_is_undefined(sp[(isize)-1]):
-                                js_throw_type_error(caller_ctx, "derived class constructor must return an object or undefined") catch: break dispatch
-                            sp[0] = js_true()
-                        else:
-                            sp[0] = js_false()
-                        sp = sp + 1
+                        if not interp_check_ctor_return(&st): break dispatch
                     .check_ctor:
-                        if js_is_undefined(new_target):
-                            # non_ctor_call
-                            js_throw_type_error(ctx, "class constructors must be invoked with 'new'") catch: break dispatch
+                        if not interp_check_ctor(&st): break dispatch
                     .init_ctor:
-                        sf.cur_pc = pc
-                        if js_is_undefined(new_target):
-                            # non_ctor_call
-                            js_throw_type_error(ctx, "class constructors must be invoked with 'new'") catch: break dispatch
-                        let super_ = js_get_prototype(ctx, func_obj) catch: break dispatch
-                        let ret = js_call_constructor2(ctx, super_, new_target, argc, argv) catch: recover js_exception()
-                        js_free_value(ctx, super_)
-                        if js_is_exception(ret):
-                            break dispatch
-                        *sp = ret
-                        sp = sp + 1
+                        if not interp_init_ctor(&st): break dispatch
                     .check_brand:
-                        let ret = js_check_brand(ctx, sp[(isize)-2], sp[(isize)-1]) catch: break dispatch
-                        if not ret:
-                            js_throw_type_error(ctx, "invalid brand on object") catch: break dispatch
+                        if not interp_check_brand(&st): break dispatch
                     .add_brand:
-                        js_add_brand(ctx, sp[(isize)-2], sp[(isize)-1]) catch: break dispatch
-                        js_free_value(ctx, sp[(isize)-2])
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp = sp - 2
-
+                        if not interp_add_brand(&st): break dispatch
                     .throw:
-                        sp = sp - 1
-                        js_throw(ctx, *sp) catch: break dispatch
-
+                        if not interp_throw(&st): break dispatch
                     .throw_error:
-                        let atom = cutils.get_u32(pc)
-                        let type_ = (i32)pc[4]
-                        pc = pc + 5
-                        if type_ == throw_var_ro:
-                            discard(js_throw_type_error_read_only(ctx, prop_throw, atom) catch: break dispatch)
-                        elif type_ == throw_var_redecl:
-                            js_throw_syntax_error_var_redeclaration(ctx, atom) catch: break dispatch
-                        elif type_ == throw_var_uninitialized:
-                            js_throw_reference_error_uninitialized(ctx, atom) catch: break dispatch
-                        elif type_ == throw_error_delete_super:
-                            js_throw_reference_error(ctx, "unsupported reference to 'super'") catch: break dispatch
-                        elif type_ == throw_error_iterator_throw:
-                            js_throw_type_error(ctx, "iterator does not have a throw method") catch: break dispatch
-                        else:
-                            js_throw_internal_error(ctx, f"invalid throw var type {type_}") catch: break dispatch
-                        break dispatch
-
+                        if not interp_throw_error(&st): break dispatch
                     .eval:
-                        let call_argc = (i32)cutils.get_u16(pc)
-                        let scope_idx = (i32)cutils.get_u16(pc + 2) + arg_scope_end
-                        pc = pc + 4
-                        let call_argv = sp - (usize)call_argc
-                        sf.cur_pc = pc
-                        if js_same_value_internal(ctx, call_argv[(isize)-1], ctx.eval_obj):
-                            var obj = js_undefined()
-                            if call_argc >= 1:
-                                obj = call_argv[0]
-                            ret_val = js_eval_object(ctx, js_undefined(), obj, eval_type_direct, scope_idx) catch: break dispatch
-                        else:
-                            ret_val = js_call_internal(ctx, call_argv[(isize)-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: break dispatch
-                        var i: isize = -1
-                        while i < (isize)call_argc:
-                            js_free_value(ctx, call_argv[i])
-                            i += 1
-                        sp = sp - (usize)(call_argc + 1)
-                        *sp = ret_val
-                        sp = sp + 1
+                        if not interp_eval(&st): break dispatch
                     # could merge with OP_apply
                     .apply_eval:
-                        let scope_idx = (i32)cutils.get_u16(pc) + arg_scope_end
-                        pc = pc + 2
-                        sf.cur_pc = pc
-                        var len: u32 = 0
-                        let tab = build_arg_list(ctx, &len, sp[(isize)-1]) catch: break dispatch
-                        if js_same_value_internal(ctx, sp[(isize)-2], ctx.eval_obj):
-                            var obj = js_undefined()
-                            if len >= 1:
-                                obj = tab[0]
-                            ret_val = js_eval_object(ctx, js_undefined(), obj, eval_type_direct, scope_idx) catch: recover js_exception()
-                        else:
-                            ret_val = js_call(ctx, sp[(isize)-2], js_undefined(), (i32)len, tab) catch: recover js_exception()
-                        free_arg_list(ctx, tab, len)
-                        if js_is_exception(ret_val):
-                            break dispatch
-                        js_free_value(ctx, sp[(isize)-2])
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp = sp - 2
-                        *sp = ret_val
-                        sp = sp + 1
-
+                        if not interp_apply_eval(&st): break dispatch
                     .regexp:
-                        sp[(isize)-2] = js_new_regexp(ctx, sp[(isize)-2], sp[(isize)-1]) catch: recover js_exception()
-                        sp = sp - 1
-                        if js_is_exception(sp[(isize)-1]):
-                            break dispatch
-
+                        if not interp_regexp(&st): break dispatch
                     .get_super:
-                        sf.cur_pc = pc
-                        let proto = js_get_prototype(ctx, sp[(isize)-1]) catch: break dispatch
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp[(isize)-1] = proto
-
+                        if not interp_get_super(&st): break dispatch
                     .import_:
-                        sf.cur_pc = pc
-                        let val = js_dynamic_import(ctx, sp[(isize)-2], sp[(isize)-1]) catch: break dispatch
-                        js_free_value(ctx, sp[(isize)-2])
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp = sp - 1
-                        sp[(isize)-1] = val
-
+                        if not interp_import(&st): break dispatch
                     .get_var_undef, .get_var:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        let val = *var_ref_at(var_refs, idx).pvalue
-                        if js_is_uninitialized(val):
-                            let cv = closure_var_at(b, (i32)idx)
-                            if cv.is_lexical:
-                                js_throw_reference_error_uninitialized(ctx, cv.var_name) catch: break dispatch
-                            else:
-                                sf.cur_pc = pc
-                                # throw_ref_error is `opcode - OP_get_var_undef`
-                                sp[0] = js_get_property_internal(ctx, ctx.global_obj, cv.var_name, ctx.global_obj, opcode == Op.get_var) catch: break dispatch
-                        else:
-                            sp[0] = js_dup_value(ctx, val)
-                        sp = sp + 1
-
+                        if not interp_get_var_undef(&st): break dispatch
                     .put_var, .put_var_init:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        let var_ref = var_ref_at(var_refs, idx)
-                        if js_is_uninitialized(*var_ref.pvalue) or var_ref.is_const != 0:
-                            let cv = closure_var_at(b, (i32)idx)
-                            if var_ref.is_lexical != 0:
-                                if opcode == Op.put_var_init:
-                                    # put_var_ok
-                                    set_value(ctx, var_ref.pvalue, sp[(isize)-1])
-                                    sp = sp - 1
-                                else:
-                                    if js_is_uninitialized(*var_ref.pvalue):
-                                        js_throw_reference_error_uninitialized(ctx, cv.var_name) catch: break dispatch
-                                    else:
-                                        discard(js_throw_type_error_read_only(ctx, prop_throw, cv.var_name) catch: break dispatch)
-                                    break dispatch
-                            else:
-                                sf.cur_pc = pc
-                                var ret = bool_status(js_has_property(ctx, ctx.global_obj, cv.var_name) catch: recover none)
-                                if ret < 0:
-                                    break dispatch
-                                if ret == 0 and is_strict_mode(ctx):
-                                    js_throw_reference_error_not_defined(ctx, cv.var_name) catch: break dispatch
-                                ret = bool_status(js_set_property_internal(ctx, ctx.global_obj, cv.var_name, sp[(isize)-1], ctx.global_obj, prop_throw_strict) catch: recover none)
-                                sp = sp - 1
-                                if ret < 0:
-                                    break dispatch
-                        else:
-                            # put_var_ok
-                            set_value(ctx, var_ref.pvalue, sp[(isize)-1])
-                            sp = sp - 1
+                        if not interp_put_var(&st): break dispatch
                     .get_loc:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        sp[0] = js_dup_value(ctx, var_buf[idx])
-                        sp = sp + 1
+                        interp_get_loc(&st)
                     .put_loc:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        set_value(ctx, var_buf + idx, sp[(isize)-1])
-                        sp = sp - 1
+                        interp_put_loc(&st)
                     .set_loc:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        set_value(ctx, var_buf + idx, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_loc(&st)
                     .get_arg:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        sp[0] = js_dup_value(ctx, arg_buf[idx])
-                        sp = sp + 1
+                        interp_get_arg(&st)
                     .put_arg:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        set_value(ctx, arg_buf + idx, sp[(isize)-1])
-                        sp = sp - 1
+                        interp_put_arg(&st)
                     .set_arg:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        set_value(ctx, arg_buf + idx, js_dup_value(ctx, sp[(isize)-1]))
-
+                        interp_set_arg(&st)
                     # SHORT_OPCODES
                     .get_loc8:
-                        *sp = js_dup_value(ctx, var_buf[(usize)*pc])
-                        sp = sp + 1
-                        pc = pc + 1
+                        interp_get_loc8(&st)
                     .put_loc8:
-                        let idx = (usize)*pc
-                        pc = pc + 1
-                        sp = sp - 1
-                        set_value(ctx, var_buf + idx, *sp)
+                        interp_put_loc8(&st)
                     .set_loc8:
-                        let idx = (usize)*pc
-                        pc = pc + 1
-                        set_value(ctx, var_buf + idx, js_dup_value(ctx, sp[(isize)-1]))
-
+                        interp_set_loc8(&st)
                     .get_loc0:
-                        *sp = js_dup_value(ctx, var_buf[0])
-                        sp = sp + 1
+                        interp_get_loc0(&st)
                     .get_loc1:
-                        *sp = js_dup_value(ctx, var_buf[1])
-                        sp = sp + 1
+                        interp_get_loc1(&st)
                     .get_loc2:
-                        *sp = js_dup_value(ctx, var_buf[2])
-                        sp = sp + 1
+                        interp_get_loc2(&st)
                     .get_loc3:
-                        *sp = js_dup_value(ctx, var_buf[3])
-                        sp = sp + 1
+                        interp_get_loc3(&st)
                     .put_loc0:
-                        sp = sp - 1
-                        set_value(ctx, var_buf, *sp)
+                        interp_put_loc0(&st)
                     .put_loc1:
-                        sp = sp - 1
-                        set_value(ctx, var_buf + 1, *sp)
+                        interp_put_loc1(&st)
                     .put_loc2:
-                        sp = sp - 1
-                        set_value(ctx, var_buf + 2, *sp)
+                        interp_put_loc2(&st)
                     .put_loc3:
-                        sp = sp - 1
-                        set_value(ctx, var_buf + 3, *sp)
+                        interp_put_loc3(&st)
                     .set_loc0:
-                        set_value(ctx, var_buf, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_loc0(&st)
                     .set_loc1:
-                        set_value(ctx, var_buf + 1, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_loc1(&st)
                     .set_loc2:
-                        set_value(ctx, var_buf + 2, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_loc2(&st)
                     .set_loc3:
-                        set_value(ctx, var_buf + 3, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_loc3(&st)
                     .get_arg0:
-                        *sp = js_dup_value(ctx, arg_buf[0])
-                        sp = sp + 1
+                        interp_get_arg0(&st)
                     .get_arg1:
-                        *sp = js_dup_value(ctx, arg_buf[1])
-                        sp = sp + 1
+                        interp_get_arg1(&st)
                     .get_arg2:
-                        *sp = js_dup_value(ctx, arg_buf[2])
-                        sp = sp + 1
+                        interp_get_arg2(&st)
                     .get_arg3:
-                        *sp = js_dup_value(ctx, arg_buf[3])
-                        sp = sp + 1
+                        interp_get_arg3(&st)
                     .put_arg0:
-                        sp = sp - 1
-                        set_value(ctx, arg_buf, *sp)
+                        interp_put_arg0(&st)
                     .put_arg1:
-                        sp = sp - 1
-                        set_value(ctx, arg_buf + 1, *sp)
+                        interp_put_arg1(&st)
                     .put_arg2:
-                        sp = sp - 1
-                        set_value(ctx, arg_buf + 2, *sp)
+                        interp_put_arg2(&st)
                     .put_arg3:
-                        sp = sp - 1
-                        set_value(ctx, arg_buf + 3, *sp)
+                        interp_put_arg3(&st)
                     .set_arg0:
-                        set_value(ctx, arg_buf, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_arg0(&st)
                     .set_arg1:
-                        set_value(ctx, arg_buf + 1, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_arg1(&st)
                     .set_arg2:
-                        set_value(ctx, arg_buf + 2, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_arg2(&st)
                     .set_arg3:
-                        set_value(ctx, arg_buf + 3, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_arg3(&st)
                     .get_var_ref0:
-                        *sp = js_dup_value(ctx, *var_ref_at(var_refs, 0).pvalue)
-                        sp = sp + 1
+                        interp_get_var_ref0(&st)
                     .get_var_ref1:
-                        *sp = js_dup_value(ctx, *var_ref_at(var_refs, 1).pvalue)
-                        sp = sp + 1
+                        interp_get_var_ref1(&st)
                     .get_var_ref2:
-                        *sp = js_dup_value(ctx, *var_ref_at(var_refs, 2).pvalue)
-                        sp = sp + 1
+                        interp_get_var_ref2(&st)
                     .get_var_ref3:
-                        *sp = js_dup_value(ctx, *var_ref_at(var_refs, 3).pvalue)
-                        sp = sp + 1
+                        interp_get_var_ref3(&st)
                     .put_var_ref0:
-                        sp = sp - 1
-                        set_value(ctx, var_ref_at(var_refs, 0).pvalue, *sp)
+                        interp_put_var_ref0(&st)
                     .put_var_ref1:
-                        sp = sp - 1
-                        set_value(ctx, var_ref_at(var_refs, 1).pvalue, *sp)
+                        interp_put_var_ref1(&st)
                     .put_var_ref2:
-                        sp = sp - 1
-                        set_value(ctx, var_ref_at(var_refs, 2).pvalue, *sp)
+                        interp_put_var_ref2(&st)
                     .put_var_ref3:
-                        sp = sp - 1
-                        set_value(ctx, var_ref_at(var_refs, 3).pvalue, *sp)
+                        interp_put_var_ref3(&st)
                     .set_var_ref0:
-                        set_value(ctx, var_ref_at(var_refs, 0).pvalue, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_var_ref0(&st)
                     .set_var_ref1:
-                        set_value(ctx, var_ref_at(var_refs, 1).pvalue, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_var_ref1(&st)
                     .set_var_ref2:
-                        set_value(ctx, var_ref_at(var_refs, 2).pvalue, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_var_ref2(&st)
                     .set_var_ref3:
-                        set_value(ctx, var_ref_at(var_refs, 3).pvalue, js_dup_value(ctx, sp[(isize)-1]))
-                    # end SHORT_OPCODES
-
+                        interp_set_var_ref3(&st)
                     .get_var_ref:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        let val = *var_ref_at(var_refs, idx).pvalue
-                        sp[0] = js_dup_value(ctx, val)
-                        sp = sp + 1
+                        interp_get_var_ref(&st)
                     .put_var_ref:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        set_value(ctx, var_ref_at(var_refs, idx).pvalue, sp[(isize)-1])
-                        sp = sp - 1
+                        interp_put_var_ref(&st)
                     .set_var_ref:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        set_value(ctx, var_ref_at(var_refs, idx).pvalue, js_dup_value(ctx, sp[(isize)-1]))
+                        interp_set_var_ref(&st)
                     .get_var_ref_check:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        let val = *var_ref_at(var_refs, idx).pvalue
-                        if js_is_uninitialized(val):
-                            js_throw_reference_error_uninitialized2(ctx, b, (i32)idx, true) catch: break dispatch
-                        sp[0] = js_dup_value(ctx, val)
-                        sp = sp + 1
+                        if not interp_get_var_ref_check(&st): break dispatch
                     .put_var_ref_check:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        if js_is_uninitialized(*var_ref_at(var_refs, idx).pvalue):
-                            js_throw_reference_error_uninitialized2(ctx, b, (i32)idx, true) catch: break dispatch
-                        set_value(ctx, var_ref_at(var_refs, idx).pvalue, sp[(isize)-1])
-                        sp = sp - 1
+                        if not interp_put_var_ref_check(&st): break dispatch
                     .put_var_ref_check_init:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        if not js_is_uninitialized(*var_ref_at(var_refs, idx).pvalue):
-                            js_throw_reference_error_uninitialized2(ctx, b, (i32)idx, true) catch: break dispatch
-                        set_value(ctx, var_ref_at(var_refs, idx).pvalue, sp[(isize)-1])
-                        sp = sp - 1
+                        if not interp_put_var_ref_check_init(&st): break dispatch
                     .set_loc_uninitialized:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        set_value(ctx, var_buf + idx, js_uninitialized())
+                        interp_set_loc_uninitialized(&st)
                     .get_loc_check:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        if js_is_uninitialized(var_buf[idx]):
-                            js_throw_reference_error_uninitialized2(ctx, b, (i32)idx, false) catch: break dispatch
-                        sp[0] = js_dup_value(ctx, var_buf[idx])
-                        sp = sp + 1
+                        if not interp_get_loc_check(&st): break dispatch
                     .get_loc_checkthis:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        if js_is_uninitialized(var_buf[idx]):
-                            js_throw_reference_error_uninitialized2(caller_ctx, b, (i32)idx, false) catch: break dispatch
-                        sp[0] = js_dup_value(ctx, var_buf[idx])
-                        sp = sp + 1
+                        if not interp_get_loc_checkthis(&st): break dispatch
                     .put_loc_check:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        if js_is_uninitialized(var_buf[idx]):
-                            js_throw_reference_error_uninitialized2(ctx, b, (i32)idx, false) catch: break dispatch
-                        set_value(ctx, var_buf + idx, sp[(isize)-1])
-                        sp = sp - 1
+                        if not interp_put_loc_check(&st): break dispatch
                     .set_loc_check:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        if js_is_uninitialized(var_buf[idx]):
-                            js_throw_reference_error_uninitialized2(ctx, b, (i32)idx, false) catch: break dispatch
-                        set_value(ctx, var_buf + idx, js_dup_value(ctx, sp[(isize)-1]))
+                        if not interp_set_loc_check(&st): break dispatch
                     .put_loc_check_init:
-                        let idx = (usize)cutils.get_u16(pc)
-                        pc = pc + 2
-                        if not js_is_uninitialized(var_buf[idx]):
-                            js_throw_reference_error(ctx, "'this' can be initialized only once") catch: break dispatch
-                        set_value(ctx, var_buf + idx, sp[(isize)-1])
-                        sp = sp - 1
+                        if not interp_put_loc_check_init(&st): break dispatch
                     .close_loc:
-                        let idx = (i32)cutils.get_u16(pc)
-                        pc = pc + 2
-                        close_lexical_var(ctx, b, sf, idx)
-
+                        interp_close_loc(&st)
                     .make_loc_ref, .make_arg_ref, .make_var_ref_ref:
-                        let atom = cutils.get_u32(pc)
-                        let idx = (i32)cutils.get_u16(pc + 4)
-                        pc = pc + 6
-                        *sp = js_new_object_proto(ctx, js_null()) catch: break dispatch
-                        sp = sp + 1
-                        var var_ref: VarRef* = ---
-                        if opcode == Op.make_var_ref_ref:
-                            var_ref = var_ref_at(var_refs, (usize)idx)
-                            js_rc(var_ref).ref_count += 1
-                        else:
-                            var_ref = get_var_ref(ctx, sf, idx, opcode == Op.make_arg_ref) catch: break dispatch
-                        let pr = add_property(ctx, sp[(isize)-1].u.obj, atom, prop_writable | prop_varref) catch:
-                            free_var_ref(rt, var_ref)
-                            break dispatch
-                        pr.u.var_ref = var_ref
-                        *sp = js_atom_to_value(ctx, atom) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_make_loc_ref(&st): break dispatch
                     .make_var_ref:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-                        sf.cur_pc = pc
-
-                        js_get_global_var_ref(ctx, atom, sp) catch: break dispatch
-                        sp = sp + 2
-
+                        if not interp_make_var_ref(&st): break dispatch
                     .goto_:
-                        pc = pc + (isize)(i32)cutils.get_u32(pc)
-                        js_poll_interrupts(ctx) catch: break dispatch
+                        if not interp_goto(&st): break dispatch
                     # SHORT_OPCODES
                     .goto16:
-                        pc = pc + (isize)(i16)cutils.get_u16(pc)
-                        js_poll_interrupts(ctx) catch: break dispatch
+                        if not interp_goto16(&st): break dispatch
                     .goto8:
-                        pc = pc + (isize)(i8)pc[0]
-                        js_poll_interrupts(ctx) catch: break dispatch
+                        if not interp_goto8(&st): break dispatch
                     # end SHORT_OPCODES
                     .if_true:
-                        let op1 = sp[(isize)-1]
-                        pc = pc + 4
-                        var res = false
-                        if (u64)op1.tag <= (u64)Tag.undefined:
-                            res = js_value_get_int(op1) != 0
-                        else:
-                            res = js_to_bool_free(ctx, op1) catch: recover true # C: -1 is true
-                        sp = sp - 1
-                        if res:
-                            pc = pc + (isize)((i32)cutils.get_u32(pc - 4) - 4)
-                        js_poll_interrupts(ctx) catch: break dispatch
+                        if not interp_if_true(&st): break dispatch
                     .if_false:
-                        let op1 = sp[(isize)-1]
-                        pc = pc + 4
-                        var res = false
-                        # quick and dirty test for JS_TAG_INT, JS_TAG_BOOL, JS_TAG_NULL and
-                        # JS_TAG_UNDEFINED
-                        if (u64)op1.tag <= (u64)Tag.undefined:
-                            res = js_value_get_int(op1) != 0
-                        else:
-                            res = js_to_bool_free(ctx, op1) catch: recover true # C: -1 is true
-                        sp = sp - 1
-                        if not res:
-                            pc = pc + (isize)((i32)cutils.get_u32(pc - 4) - 4)
-                        js_poll_interrupts(ctx) catch: break dispatch
+                        if not interp_if_false(&st): break dispatch
                     # SHORT_OPCODES
                     .if_true8:
-                        let op1 = sp[(isize)-1]
-                        pc = pc + 1
-                        var res = false
-                        if (u64)op1.tag <= (u64)Tag.undefined:
-                            res = js_value_get_int(op1) != 0
-                        else:
-                            res = js_to_bool_free(ctx, op1) catch: recover true # C: -1 is true
-                        sp = sp - 1
-                        if res:
-                            pc = pc + (isize)((i32)(i8)pc[(isize)-1] - 1)
-                        js_poll_interrupts(ctx) catch: break dispatch
+                        if not interp_if_true8(&st): break dispatch
                     .if_false8:
-                        let op1 = sp[(isize)-1]
-                        pc = pc + 1
-                        var res = false
-                        if (u64)op1.tag <= (u64)Tag.undefined:
-                            res = js_value_get_int(op1) != 0
-                        else:
-                            res = js_to_bool_free(ctx, op1) catch: recover true # C: -1 is true
-                        sp = sp - 1
-                        if not res:
-                            pc = pc + (isize)((i32)(i8)pc[(isize)-1] - 1)
-                        js_poll_interrupts(ctx) catch: break dispatch
+                        if not interp_if_false8(&st): break dispatch
                     # end SHORT_OPCODES
                     .catch_:
-                        let diff = (i32)cutils.get_u32(pc)
-                        sp[0] = js_new_catch_offset((i32)(pc + (isize)diff - bc_buf))
-                        sp = sp + 1
-                        pc = pc + 4
+                        interp_catch(&st)
                     .gosub:
-                        let diff = (i32)cutils.get_u32(pc)
-                        # XXX: should have a different tag to avoid security flaw
-                        sp[0] = js_new_int32((i32)(pc + 4 - bc_buf))
-                        sp = sp + 1
-                        pc = pc + (isize)diff
+                        interp_gosub(&st)
                     .ret:
-                        let op1 = sp[(isize)-1]
-                        if op1.tag != Tag.int or (u32)js_value_get_int(op1) >= (u32)b.byte_code_len:
-                            # ret_fail
-                            js_throw_internal_error(ctx, "invalid ret value") catch: break dispatch
-                        let pos = (u32)js_value_get_int(op1)
-                        sp = sp - 1
-                        pc = bc_buf + (usize)pos
-
+                        if not interp_ret(&st): break dispatch
                     .for_in_start:
-                        sf.cur_pc = pc
-                        js_for_in_start(ctx, sp) catch: break dispatch
+                        if not interp_for_in_start(&st): break dispatch
                     .for_in_next:
-                        sf.cur_pc = pc
-                        js_for_in_next(ctx, sp) catch: break dispatch
-                        sp = sp + 2
+                        if not interp_for_in_next(&st): break dispatch
                     .for_of_start:
-                        sf.cur_pc = pc
-                        js_for_of_start(ctx, sp, false) catch: break dispatch
-                        sp = sp + 1
-                        *sp = js_new_catch_offset(0)
-                        sp = sp + 1
+                        if not interp_for_of_start(&st): break dispatch
                     .for_of_next:
-                        let offset = -3 - (i32)pc[0]
-                        pc = pc + 1
-                        sf.cur_pc = pc
-                        js_for_of_next(ctx, sp, offset) catch: break dispatch
-                        sp = sp + 2
+                        if not interp_for_of_next(&st): break dispatch
                     .for_await_of_next:
-                        sf.cur_pc = pc
-                        js_for_await_of_next(ctx, sp) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_for_await_of_next(&st): break dispatch
                     .for_await_of_start:
-                        sf.cur_pc = pc
-                        js_for_of_start(ctx, sp, true) catch: break dispatch
-                        sp = sp + 1
-                        *sp = js_new_catch_offset(0)
-                        sp = sp + 1
+                        if not interp_for_await_of_start(&st): break dispatch
                     .iterator_get_value_done:
-                        sf.cur_pc = pc
-                        js_iterator_get_value_done(ctx, sp) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_iterator_get_value_done(&st): break dispatch
                     .iterator_check_object:
-                        if not js_is_object(sp[(isize)-1]):
-                            js_throw_type_error(ctx, "iterator must return an object") catch: break dispatch
-
+                        if not interp_iterator_check_object(&st): break dispatch
                     .iterator_close:
-                        # iter_obj next catch_offset ->
-                        sp = sp - 1 # drop the catch offset to avoid getting caught by exception
-                        js_free_value(ctx, sp[(isize)-1]) # drop the next method
-                        sp = sp - 1
-                        if not js_is_undefined(sp[(isize)-1]):
-                            sf.cur_pc = pc
-                            js_iterator_close(ctx, sp[(isize)-1], false) catch: break dispatch
-                            js_free_value(ctx, sp[(isize)-1])
-                        sp = sp - 1
+                        if not interp_iterator_close(&st): break dispatch
                     .nip_catch:
-                        # catch_offset ... ret_val -> ret_eval
-                        sp = sp - 1
-                        let nip_val = *sp
-                        while sp > stack_buf and sp[(isize)-1].tag != Tag.catch_offset:
-                            sp = sp - 1
-                            js_free_value(ctx, *sp)
-                        if sp == stack_buf:
-                            js_throw_internal_error(ctx, "nip_catch") catch:
-                                js_free_value(ctx, nip_val)
-                                break dispatch
-                        sp[(isize)-1] = nip_val
-
+                        if not interp_nip_catch(&st): break dispatch
                     .iterator_next:
-                        # stack: iter_obj next catch_offset val
-                        sf.cur_pc = pc
-                        let ret = js_call(ctx, sp[(isize)-3], sp[(isize)-4], 1, sp - 1) catch: break dispatch
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp[(isize)-1] = ret
-
+                        if not interp_iterator_next(&st): break dispatch
                     .iterator_call:
-                        # stack: iter_obj next catch_offset val
-                        let iter_flags = (i32)*pc
-                        pc = pc + 1
-                        sf.cur_pc = pc
-                        let method = js_get_property(ctx, sp[(isize)-4], atom_throw if (iter_flags & 1) != 0 else atom_return) catch: break dispatch
-                        var ret_flag = false
-                        if js_is_undefined(method) or js_is_null(method):
-                            ret_flag = true
-                        else:
-                            var ret = js_undefined()
-                            if (iter_flags & 2) != 0:
-                                # no argument
-                                ret = js_call_free(ctx, method, sp[(isize)-4], 0, sp) catch: break dispatch
-                            else:
-                                ret = js_call_free(ctx, method, sp[(isize)-4], 1, sp - 1) catch: break dispatch
-                            js_free_value(ctx, sp[(isize)-1])
-                            sp[(isize)-1] = ret
-                            ret_flag = false
-                        sp[0] = js_new_bool(ret_flag)
-                        sp = sp + 1
-
+                        if not interp_iterator_call(&st): break dispatch
                     .lnot:
-                        let op1 = sp[(isize)-1]
-                        var res = false
-                        if (u64)op1.tag <= (u64)Tag.undefined:
-                            res = js_value_get_int(op1) != 0
-                        else:
-                            res = js_to_bool_free(ctx, op1) catch: recover true # C: -1 is true
-                        sp[(isize)-1] = js_new_bool(not res)
-
+                        interp_lnot(&st)
                     .get_field:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-                        let val = get_field_inline(ctx, sf, pc, sp[(isize)-1], atom) catch: break dispatch
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp[(isize)-1] = val
-
+                        if not interp_get_field(&st): break dispatch
                     .get_field2:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-                        let val = get_field_inline(ctx, sf, pc, sp[(isize)-1], atom) catch: break dispatch
-                        *sp = val
-                        sp = sp + 1
-
+                        if not interp_get_field2(&st): break dispatch
                     # SHORT_OPCODES
                     .get_length:
-                        let val = get_field_inline(ctx, sf, pc, sp[(isize)-1], atom_length) catch: break dispatch
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp[(isize)-1] = val
-
+                        if not interp_get_length(&st): break dispatch
                     .put_field:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-
-                        let obj = sp[(isize)-2]
-                        var fast = false
-                        if obj.tag == Tag.object:
-                            var pr: Property*? = none
-                            if let prs = find_own_property(&pr, obj.u.obj, atom):
-                                if ((i32)prs.flags & (prop_tmask | prop_writable | prop_length)) == prop_writable:
-                                    # fast path
-                                    let found = pr else trap("find_own_property found no property")
-                                    set_value(ctx, &found.u.value, sp[(isize)-1])
-                                    fast = true
-                        if fast:
-                            js_free_value(ctx, obj)
-                            sp = sp - 2
-                        else:
-                            # put_field_slow_path
-                            sf.cur_pc = pc
-                            let ret = bool_status(js_set_property_internal(ctx, obj, atom, sp[(isize)-1], obj, prop_throw_strict) catch: recover none)
-                            js_free_value(ctx, obj)
-                            sp = sp - 2
-                            if ret < 0:
-                                break dispatch
-
+                        if not interp_put_field(&st): break dispatch
                     .private_symbol:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-                        let val = js_new_symbol_from_atom(ctx, atom, js_atom_type_private) catch: break dispatch
-                        *sp = val
-                        sp = sp + 1
-
+                        if not interp_private_symbol(&st): break dispatch
                     .get_private_field:
-                        let val = js_get_private_field(ctx, sp[(isize)-2], sp[(isize)-1]) catch: recover js_exception()
-                        js_free_value(ctx, sp[(isize)-1])
-                        js_free_value(ctx, sp[(isize)-2])
-                        sp[(isize)-2] = val
-                        sp = sp - 1
-                        if js_is_exception(val):
-                            break dispatch
-
+                        if not interp_get_private_field(&st): break dispatch
                     .put_private_field:
-                        var ret: i32 = 0
-                        js_set_private_field(ctx, sp[(isize)-3], sp[(isize)-1], sp[(isize)-2]) catch:
-                            ret = -1
-                            recover ()
-                        js_free_value(ctx, sp[(isize)-3])
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp = sp - 3
-                        if ret < 0:
-                            break dispatch
-
+                        if not interp_put_private_field(&st): break dispatch
                     .define_private_field:
-                        var ret: i32 = 0
-                        js_define_private_field(ctx, sp[(isize)-3], sp[(isize)-2], sp[(isize)-1]) catch:
-                            ret = -1
-                            recover ()
-                        js_free_value(ctx, sp[(isize)-2])
-                        sp = sp - 2
-                        if ret < 0:
-                            break dispatch
-
+                        if not interp_define_private_field(&st): break dispatch
                     .define_field:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-
-                        discard(js_define_property_value(ctx, sp[(isize)-2], atom, sp[(isize)-1], prop_c_w_e | prop_throw) catch:
-                            sp = sp - 1
-                            break dispatch)
-                        sp = sp - 1
-
+                        if not interp_define_field(&st): break dispatch
                     .set_name:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-
-                        js_define_object_name(ctx, sp[(isize)-1], atom, prop_configurable) catch: break dispatch
+                        if not interp_set_name(&st): break dispatch
                     .set_name_computed:
-                        js_define_object_name_computed(ctx, sp[(isize)-1], sp[(isize)-2], prop_configurable) catch: break dispatch
+                        if not interp_set_name_computed(&st): break dispatch
                     .set_proto:
-                        sf.cur_pc = pc
-                        let proto = sp[(isize)-1]
-                        if js_is_object(proto) or js_is_null(proto):
-                            discard(js_set_prototype_internal(ctx, sp[(isize)-2], proto, true) catch: break dispatch)
-                        js_free_value(ctx, proto)
-                        sp = sp - 1
+                        if not interp_set_proto(&st): break dispatch
                     .set_home_object:
-                        js_method_set_home_object(ctx, sp[(isize)-1], sp[(isize)-2])
+                        interp_set_home_object(&st)
                     .define_method, .define_method_computed:
-                        let is_computed = opcode == Op.define_method_computed
-                        var atom: Atom = no_atom
-                        if is_computed:
-                            atom = js_value_to_atom(ctx, sp[(isize)-2]) catch: break dispatch
-                            # opcode += OP_define_method - OP_define_method_computed
-                            opcode = Op.define_method
-                        else:
-                            atom = cutils.get_u32(pc)
-                            pc = pc + 4
-                        var op_flags = (i32)*pc
-                        pc = pc + 1
-
-                        let obj = sp[(isize)(-2 - (i32)is_computed)]
-                        var prop_flags = prop_has_configurable | prop_configurable | prop_has_enumerable | prop_throw
-                        if (op_flags & op_define_method_enumerable) != 0:
-                            prop_flags |= prop_enumerable
-                        op_flags &= 3
-                        var value = js_undefined()
-                        var getter = js_undefined()
-                        var setter = js_undefined()
-                        if op_flags == op_define_method_method:
-                            value = sp[(isize)-1]
-                            prop_flags |= prop_has_value | prop_has_writable | prop_writable
-                        elif op_flags == op_define_method_getter:
-                            getter = sp[(isize)-1]
-                            prop_flags |= prop_has_get
-                        else:
-                            setter = sp[(isize)-1]
-                            prop_flags |= prop_has_set
-                        var ret: i32 = 0
-                        js_method_set_properties(ctx, sp[(isize)-1], atom, prop_flags, obj) catch:
-                            ret = -1
-                            recover ()
-                        if ret >= 0:
-                            ret = bool_status(js_define_property(ctx, obj, atom, value, getter, setter, prop_flags) catch: recover none)
-                        js_free_value(ctx, sp[(isize)-1])
-                        if is_computed:
-                            js_free_atom(ctx, atom)
-                            js_free_value(ctx, sp[(isize)-2])
-                        sp = sp - (usize)(1 + (i32)is_computed)
-                        if ret < 0:
-                            break dispatch
-
+                        if not interp_define_method(&st): break dispatch
                     .define_class, .define_class_computed:
-                        let atom = cutils.get_u32(pc)
-                        let class_flags = (i32)pc[4]
-                        pc = pc + 5
-                        js_op_define_class(ctx, sp, atom, class_flags, var_refs, sf, opcode == Op.define_class_computed) catch: break dispatch
-
+                        if not interp_define_class(&st): break dispatch
                     .get_array_el:
-                        # GET_ARRAY_EL_INLINE(get_array_el, 0)
-                        let val = get_array_el_inline(ctx, sf, pc, sp[(isize)-2], sp[(isize)-1]) catch:
-                            sp = sp - 1
-                            break dispatch
-                        js_free_value(ctx, sp[(isize)-2])
-                        sp[(isize)-2] = val
-                        sp = sp - 1
-
+                        if not interp_get_array_el(&st): break dispatch
                     .get_array_el2:
-                        # GET_ARRAY_EL_INLINE(get_array_el2, 1)
-                        let val = get_array_el_inline(ctx, sf, pc, sp[(isize)-2], sp[(isize)-1]) catch:
-                            sp[(isize)-1] = js_undefined()
-                            break dispatch
-                        sp[(isize)-1] = val
-
+                        if not interp_get_array_el2(&st): break dispatch
                     .get_array_el3:
-                        var val = js_undefined()
-                        var fast = false
-                        if sp[(isize)-2].tag == Tag.object and sp[(isize)-1].tag == Tag.int:
-                            let arr = sp[(isize)-2].u.obj
-                            let idx = (u32)js_value_get_int(sp[(isize)-1])
-                            if arr.class_id == ClassId.array and idx < arr.u.array.count:
-                                val = js_dup_value(ctx, arr.u.array.u.values[(usize)idx])
-                                fast = true
-                        if not fast:
-                            # get_array_el3_slow_path
-                            let key_tag = sp[(isize)-1].tag
-                            # for int, string and symbol keys, undefined and null are
-                            # tested in JS_GetPropertyValue()
-                            if not (key_tag == Tag.int or key_tag == Tag.string or key_tag == Tag.symbol):
-                                # must be tested before JS_ToPropertyKey
-                                if js_is_undefined(sp[(isize)-2]) or js_is_null(sp[(isize)-2]):
-                                    js_throw_type_error(ctx, "value has no property") catch: break dispatch
-                                sf.cur_pc = pc
-                                ret_val = js_to_property_key(ctx, sp[(isize)-1]) catch: break dispatch
-                                js_free_value(ctx, sp[(isize)-1])
-                                sp[(isize)-1] = ret_val
-                            sf.cur_pc = pc
-                            val = js_get_property_value(ctx, sp[(isize)-2], js_dup_value(ctx, sp[(isize)-1])) catch: break dispatch
-                        *sp = val
-                        sp = sp + 1
-
+                        if not interp_get_array_el3(&st): break dispatch
                     .get_ref_value:
-                        sf.cur_pc = pc
-                        let atom = js_value_to_atom(ctx, sp[(isize)-1]) catch: break dispatch
-                        if js_is_undefined(sp[(isize)-2]):
-                            js_throw_reference_error_not_defined(ctx, atom) catch:
-                                js_free_atom(ctx, atom)
-                                break dispatch
-                        let ret = bool_status(js_has_property(ctx, sp[(isize)-2], atom) catch: recover none)
-                        var val = js_undefined()
-                        if ret <= 0:
-                            if ret < 0:
-                                js_free_atom(ctx, atom)
-                                break dispatch
-                            if is_strict_mode(ctx):
-                                js_throw_reference_error_not_defined(ctx, atom) catch:
-                                    js_free_atom(ctx, atom)
-                                    break dispatch
-                            val = js_undefined()
-                        else:
-                            val = js_get_property(ctx, sp[(isize)-2], atom) catch: recover js_exception()
-                        js_free_atom(ctx, atom)
-                        if js_is_exception(val):
-                            break dispatch
-                        sp[0] = val
-                        sp = sp + 1
-
+                        if not interp_get_ref_value(&st): break dispatch
                     .get_super_value:
-                        sf.cur_pc = pc
-                        let atom = js_value_to_atom(ctx, sp[(isize)-1]) catch: break dispatch
-                        let val = js_get_property_internal(ctx, sp[(isize)-2], atom, sp[(isize)-3], false) catch: recover js_exception()
-                        js_free_atom(ctx, atom)
-                        if js_is_exception(val):
-                            break dispatch
-                        js_free_value(ctx, sp[(isize)-1])
-                        js_free_value(ctx, sp[(isize)-2])
-                        js_free_value(ctx, sp[(isize)-3])
-                        sp[(isize)-3] = val
-                        sp = sp - 2
-
+                        if not interp_get_super_value(&st): break dispatch
                     .put_array_el:
-                        var fast = false
-                        if sp[(isize)-3].tag == Tag.object and sp[(isize)-2].tag == Tag.int:
-                            let arr = sp[(isize)-3].u.obj
-                            let idx = (u32)js_value_get_int(sp[(isize)-2])
-                            if arr.class_id == ClassId.array:
-                                if idx >= arr.u.array.count:
-                                    if idx == arr.u.array.count and arr.fast_array and can_extend_fast_array(arr) and arr.prop[0].u.value.tag == Tag.int:
-                                        # cannot overflow otherwise the length would not be an integer
-                                        let new_len = idx + 1
-                                        if new_len <= arr.u.array.u1.size:
-                                            let array_len = (u32)js_value_get_int(arr.prop[0].u.value)
-                                            var length_ok = true
-                                            if new_len > array_len:
-                                                if ((i32)get_shape_prop(arr.shape).flags & prop_writable) == 0:
-                                                    length_ok = false
-                                                else:
-                                                    arr.prop[0].u.value = js_new_int32((i32)new_len)
-                                            if length_ok:
-                                                arr.u.array.count = new_len
-                                                arr.u.array.u.values[(usize)idx] = sp[(isize)-1]
-                                                fast = true
-                                else:
-                                    set_value(ctx, arr.u.array.u.values + (usize)idx, sp[(isize)-1])
-                                    fast = true
-                        if fast:
-                            js_free_value(ctx, sp[(isize)-3])
-                            sp = sp - 3
-                        else:
-                            # put_array_el_slow_path
-                            sf.cur_pc = pc
-                            let ret = bool_status(js_set_property_value(ctx, sp[(isize)-3], sp[(isize)-2], sp[(isize)-1], prop_throw_strict) catch: recover none)
-                            js_free_value(ctx, sp[(isize)-3])
-                            sp = sp - 3
-                            if ret < 0:
-                                break dispatch
-
+                        if not interp_put_array_el(&st): break dispatch
                     .put_ref_value:
-                        sf.cur_pc = pc
-                        let atom = js_value_to_atom(ctx, sp[(isize)-2]) catch: break dispatch
-                        if js_is_undefined(sp[(isize)-3]):
-                            if is_strict_mode(ctx):
-                                js_throw_reference_error_not_defined(ctx, atom) catch:
-                                    js_free_atom(ctx, atom)
-                                    break dispatch
-                            else:
-                                sp[(isize)-3] = js_dup_value(ctx, ctx.global_obj)
-                        var ret = bool_status(js_has_property(ctx, sp[(isize)-3], atom) catch: recover none)
-                        if ret <= 0:
-                            if ret < 0:
-                                js_free_atom(ctx, atom)
-                                break dispatch
-                            if is_strict_mode(ctx):
-                                js_throw_reference_error_not_defined(ctx, atom) catch:
-                                    js_free_atom(ctx, atom)
-                                    break dispatch
-                        ret = bool_status(js_set_property_internal(ctx, sp[(isize)-3], atom, sp[(isize)-1], sp[(isize)-3], prop_throw_strict) catch: recover none)
-                        js_free_atom(ctx, atom)
-                        js_free_value(ctx, sp[(isize)-2])
-                        js_free_value(ctx, sp[(isize)-3])
-                        sp = sp - 3
-                        if ret < 0:
-                            break dispatch
-
+                        if not interp_put_ref_value(&st): break dispatch
                     .put_super_value:
-                        sf.cur_pc = pc
-                        if sp[(isize)-3].tag != Tag.object:
-                            js_throw_type_error_not_an_object(ctx) catch: break dispatch
-                        let atom = js_value_to_atom(ctx, sp[(isize)-2]) catch: break dispatch
-                        let ret = bool_status(js_set_property_internal(ctx, sp[(isize)-3], atom, sp[(isize)-1], sp[(isize)-4], prop_throw_strict) catch: recover none)
-                        js_free_atom(ctx, atom)
-                        js_free_value(ctx, sp[(isize)-4])
-                        js_free_value(ctx, sp[(isize)-3])
-                        js_free_value(ctx, sp[(isize)-2])
-                        sp = sp - 4
-                        if ret < 0:
-                            break dispatch
-
+                        if not interp_put_super_value(&st): break dispatch
                     .define_array_el:
-                        let ret = bool_status(js_define_property_value_value(ctx, sp[(isize)-3], js_dup_value(ctx, sp[(isize)-2]), sp[(isize)-1], prop_c_w_e | prop_throw) catch: recover none)
-                        sp = sp - 1
-                        if ret < 0:
-                            break dispatch
-
+                        if not interp_define_array_el(&st): break dispatch
                     .append: # array pos enumobj -- array pos
-                        sf.cur_pc = pc
-                        js_append_enumerate(ctx, sp) catch: break dispatch
-                        sp = sp - 1
-                        js_free_value(ctx, *sp)
-
+                        if not interp_append(&st): break dispatch
                     .copy_data_properties: # target source excludeList
-                        # stack offsets (-1 based):
-                        # 2 bits for target,
-                        # 3 bits for source,
-                        # 2 bits for exclusionList
-                        let mask = (i32)*pc
-                        pc = pc + 1
-                        sf.cur_pc = pc
-                        js_copy_data_properties(ctx, sp[(isize)(-1 - (mask & 3))], sp[(isize)(-1 - ((mask >> 2) & 7))], sp[(isize)(-1 - ((mask >> 5) & 7))], false) catch: break dispatch
-
+                        if not interp_copy_data_properties(&st): break dispatch
                     .add:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = false
-                        if js_value_is_both_int(op1, op2):
-                            let r = (i64)js_value_get_int(op1) + (i64)js_value_get_int(op2)
-                            if (i64)(i32)r != r:
-                                sp[(isize)-2] = js_new_float64_raw(f64(r))
-                            else:
-                                sp[(isize)-2] = js_new_int32((i32)r)
-                            sp = sp - 1
-                        elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
-                            var d1: f64 = 0.0
-                            var d2: f64 = 0.0
-                            if js_tag_is_float64(op1.tag):
-                                d1 = js_value_get_float64(op1)
-                            elif op1.tag == Tag.int:
-                                d1 = f64(js_value_get_int(op1))
-                            else:
-                                slow = true
-                            if js_tag_is_float64(op2.tag):
-                                d2 = js_value_get_float64(op2)
-                            elif op2.tag == Tag.int:
-                                d2 = f64(js_value_get_int(op2))
-                            else:
-                                slow = true
-                            if not slow:
-                                sp[(isize)-2] = js_new_float64_raw(d1 + d2)
-                                sp = sp - 1
-                        elif js_is_string(op1) and js_is_string(op2):
-                            sp[(isize)-2] = js_concat_string(ctx, op1, op2) catch: recover js_exception()
-                            sp = sp - 1
-                            if js_is_exception(sp[(isize)-1]):
-                                break dispatch
-                        else:
-                            slow = true
-                        if slow:
-                            # add_slow_case
-                            sf.cur_pc = pc
-                            js_add_slow(ctx, sp) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_add(&st): break dispatch
                     .add_loc:
-                        let idx = (usize)*pc
-                        pc = pc + 1
-
-                        let op2 = sp[(isize)-1]
-                        let pv = var_buf + idx
-                        if js_value_is_both_int(*pv, op2):
-                            let r = (i64)js_value_get_int(*pv) + (i64)js_value_get_int(op2)
-                            if (i64)(i32)r != r:
-                                *pv = js_new_float64_raw(f64(r))
-                            else:
-                                *pv = js_new_int32((i32)r)
-                            sp = sp - 1
-                        elif js_value_is_both_float(*pv, op2):
-                            *pv = js_new_float64_raw(js_value_get_float64(*pv) + js_value_get_float64(op2))
-                            sp = sp - 1
-                        elif pv.tag == Tag.string and op2.tag == Tag.string:
-                            sp = sp - 1
-                            sf.cur_pc = pc
-                            if js_concat_string_in_place(ctx, js_value_get_string(*pv), op2):
-                                js_free_value(ctx, op2)
-                            else:
-                                let cat = js_concat_string(ctx, js_dup_value(ctx, *pv), op2) catch: break dispatch
-                                set_value(ctx, pv, cat)
-                        else:
-                            var ops: Value[2] = ---
-                            # In case of exception, js_add_slow frees ops[0]
-                            # and ops[1], so we must duplicate *pv
-                            sf.cur_pc = pc
-                            ops[0] = js_dup_value(ctx, *pv)
-                            ops[1] = op2
-                            sp = sp - 1
-                            js_add_slow(ctx, &ops[0] + 2) catch: break dispatch
-                            set_value(ctx, pv, ops[0])
+                        if not interp_add_loc(&st): break dispatch
                     .sub:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = false
-                        if js_value_is_both_int(op1, op2):
-                            let r = (i64)js_value_get_int(op1) - (i64)js_value_get_int(op2)
-                            if (i64)(i32)r != r:
-                                sp[(isize)-2] = js_new_float64_raw(f64(r))
-                            else:
-                                sp[(isize)-2] = js_new_int32((i32)r)
-                            sp = sp - 1
-                        elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
-                            var d1: f64 = 0.0
-                            var d2: f64 = 0.0
-                            if js_tag_is_float64(op1.tag):
-                                d1 = js_value_get_float64(op1)
-                            elif op1.tag == Tag.int:
-                                d1 = f64(js_value_get_int(op1))
-                            else:
-                                slow = true
-                            if js_tag_is_float64(op2.tag):
-                                d2 = js_value_get_float64(op2)
-                            elif op2.tag == Tag.int:
-                                d2 = f64(js_value_get_int(op2))
-                            else:
-                                slow = true
-                            if not slow:
-                                sp[(isize)-2] = js_new_float64_raw(d1 - d2)
-                                sp = sp - 1
-                        else:
-                            slow = true
-                        if slow:
-                            # binary_arith_slow
-                            sf.cur_pc = pc
-                            js_binary_arith_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_sub(&st): break dispatch
                     .mul:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = false
-                        var fp_res = false
-                        var d: f64 = 0.0
-                        if js_value_is_both_int(op1, op2):
-                            let v1 = js_value_get_int(op1)
-                            let v2 = js_value_get_int(op2)
-                            let r = (i64)v1 * (i64)v2
-                            if (i64)(i32)r != r:
-                                d = f64(r)
-                                fp_res = true
-                            elif r == 0 and (v1 | v2) < 0:
-                                # need to test zero case for -0 result
-                                d = f64.bits(0x8000000000000000) # -0.0
-                                fp_res = true
-                            else:
-                                sp[(isize)-2] = js_new_int32((i32)r)
-                                sp = sp - 1
-                        elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
-                            var d1: f64 = 0.0
-                            var d2: f64 = 0.0
-                            if js_tag_is_float64(op1.tag):
-                                d1 = js_value_get_float64(op1)
-                            elif op1.tag == Tag.int:
-                                d1 = f64(js_value_get_int(op1))
-                            else:
-                                slow = true
-                            if js_tag_is_float64(op2.tag):
-                                d2 = js_value_get_float64(op2)
-                            elif op2.tag == Tag.int:
-                                d2 = f64(js_value_get_int(op2))
-                            else:
-                                slow = true
-                            if not slow:
-                                d = d1 * d2
-                                fp_res = true
-                        else:
-                            slow = true
-                        if fp_res:
-                            # mul_fp_res
-                            sp[(isize)-2] = js_new_float64_raw(d)
-                            sp = sp - 1
-                        if slow:
-                            # binary_arith_slow
-                            sf.cur_pc = pc
-                            js_binary_arith_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_mul(&st): break dispatch
                     .div:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        if js_value_is_both_int(op1, op2):
-                            let v1 = js_value_get_int(op1)
-                            let v2 = js_value_get_int(op2)
-                            sp[(isize)-2] = js_new_float64(f64(v1) / f64(v2))
-                            sp = sp - 1
-                        else:
-                            # binary_arith_slow
-                            sf.cur_pc = pc
-                            js_binary_arith_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_div(&st): break dispatch
                     .mod:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = true
-                        if js_value_is_both_int(op1, op2):
-                            let v1 = js_value_get_int(op1)
-                            let v2 = js_value_get_int(op2)
-                            # We must avoid v2 = 0, v1 = INT32_MIN and v2 =
-                            # -1 and the cases where the result is -0.
-                            if not (v1 < 0 or v2 <= 0):
-                                let r = v1 % v2
-                                sp[(isize)-2] = js_new_int32(r)
-                                sp = sp - 1
-                                slow = false
-                        if slow:
-                            # binary_arith_slow
-                            sf.cur_pc = pc
-                            js_binary_arith_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_mod(&st): break dispatch
                     .pow:
-                        # binary_arith_slow
-                        sf.cur_pc = pc
-                        js_binary_arith_slow(ctx, sp, opcode) catch: break dispatch
-                        sp = sp - 1
-
+                        if not interp_pow(&st): break dispatch
                     .plus:
-                        let op1 = sp[(isize)-1]
-                        let tag = op1.tag
-                        if tag == Tag.int or js_tag_is_float64(tag):
-                            continue dispatch
-                        elif tag == Tag.null or tag == Tag.boolean:
-                            sp[(isize)-1] = js_new_int32(js_value_get_int(op1))
-                        else:
-                            sf.cur_pc = pc
-                            js_unary_arith_slow(ctx, sp, opcode) catch: break dispatch
+                        if not interp_plus(&st): break dispatch
                     .neg:
-                        let op1 = sp[(isize)-1]
-                        let tag = op1.tag
-                        var fp_res = false
-                        var d: f64 = 0.0
-                        if tag == Tag.int or tag == Tag.boolean or tag == Tag.null:
-                            let val = js_value_get_int(op1)
-                            # Note: -0 cannot be expressed as integer
-                            if val == 0:
-                                d = f64.bits(0x8000000000000000) # -0.0
-                                fp_res = true
-                            elif val == -2147483648:
-                                d = -f64(val)
-                                fp_res = true
-                            else:
-                                sp[(isize)-1] = js_new_int32(-val)
-                        elif js_tag_is_float64(tag):
-                            d = -js_value_get_float64(op1)
-                            fp_res = true
-                        else:
-                            sf.cur_pc = pc
-                            js_unary_arith_slow(ctx, sp, opcode) catch: break dispatch
-                        if fp_res:
-                            # neg_fp_res
-                            sp[(isize)-1] = js_new_float64_raw(d)
+                        if not interp_neg(&st): break dispatch
                     .inc:
-                        let op1 = sp[(isize)-1]
-                        if op1.tag == Tag.int and js_value_get_int(op1) != 2147483647:
-                            sp[(isize)-1] = js_new_int32(js_value_get_int(op1) + 1)
-                        else:
-                            # inc_slow
-                            sf.cur_pc = pc
-                            js_unary_arith_slow(ctx, sp, opcode) catch: break dispatch
+                        if not interp_inc(&st): break dispatch
                     .dec:
-                        let op1 = sp[(isize)-1]
-                        if op1.tag == Tag.int and js_value_get_int(op1) != -2147483648:
-                            sp[(isize)-1] = js_new_int32(js_value_get_int(op1) - 1)
-                        else:
-                            # dec_slow
-                            sf.cur_pc = pc
-                            js_unary_arith_slow(ctx, sp, opcode) catch: break dispatch
+                        if not interp_dec(&st): break dispatch
                     .post_inc:
-                        let op1 = sp[(isize)-1]
-                        if op1.tag == Tag.int and js_value_get_int(op1) != 2147483647:
-                            sp[0] = js_new_int32(js_value_get_int(op1) + 1)
-                        else:
-                            # post_inc_slow
-                            sf.cur_pc = pc
-                            js_post_inc_slow(ctx, sp, opcode) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_post_inc(&st): break dispatch
                     .post_dec:
-                        let op1 = sp[(isize)-1]
-                        if op1.tag == Tag.int and js_value_get_int(op1) != -2147483648:
-                            sp[0] = js_new_int32(js_value_get_int(op1) - 1)
-                        else:
-                            # post_dec_slow
-                            sf.cur_pc = pc
-                            js_post_inc_slow(ctx, sp, opcode) catch: break dispatch
-                        sp = sp + 1
+                        if not interp_post_dec(&st): break dispatch
                     .inc_loc:
-                        let idx = (usize)*pc
-                        pc = pc + 1
-
-                        var op1 = var_buf[idx]
-                        if op1.tag == Tag.int and js_value_get_int(op1) != 2147483647:
-                            var_buf[idx] = js_new_int32(js_value_get_int(op1) + 1)
-                        else:
-                            # inc_loc_slow
-                            sf.cur_pc = pc
-                            # must duplicate otherwise the variable value may
-                            # be destroyed before JS code accesses it
-                            op1 = js_dup_value(ctx, op1)
-                            js_unary_arith_slow(ctx, &op1 + 1, Op.inc) catch: break dispatch
-                            set_value(ctx, var_buf + idx, op1)
+                        if not interp_inc_loc(&st): break dispatch
                     .dec_loc:
-                        let idx = (usize)*pc
-                        pc = pc + 1
-
-                        var op1 = var_buf[idx]
-                        if op1.tag == Tag.int and js_value_get_int(op1) != -2147483648:
-                            var_buf[idx] = js_new_int32(js_value_get_int(op1) - 1)
-                        else:
-                            # dec_loc_slow
-                            sf.cur_pc = pc
-                            # must duplicate otherwise the variable value may
-                            # be destroyed before JS code accesses it
-                            op1 = js_dup_value(ctx, op1)
-                            js_unary_arith_slow(ctx, &op1 + 1, Op.dec) catch: break dispatch
-                            set_value(ctx, var_buf + idx, op1)
+                        if not interp_dec_loc(&st): break dispatch
                     .not_:
-                        let op1 = sp[(isize)-1]
-                        if op1.tag == Tag.int:
-                            sp[(isize)-1] = js_new_int32(~js_value_get_int(op1))
-                        else:
-                            sf.cur_pc = pc
-                            js_not_slow(ctx, sp) catch: break dispatch
-
+                        if not interp_not(&st): break dispatch
                     .shl:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        if js_value_is_both_int(op1, op2):
-                            let v1 = (u32)js_value_get_int(op1)
-                            let v2 = (u32)js_value_get_int(op2) & 0x1f
-                            sp[(isize)-2] = js_new_int32((i32)(v1 << v2))
-                            sp = sp - 1
-                        else:
-                            sf.cur_pc = pc
-                            js_binary_logic_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_shl(&st): break dispatch
                     .shr:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        if js_value_is_both_int(op1, op2):
-                            let v2 = (u32)js_value_get_int(op2) & 0x1f
-                            sp[(isize)-2] = js_new_uint32((u32)js_value_get_int(op1) >> v2)
-                            sp = sp - 1
-                        else:
-                            sf.cur_pc = pc
-                            js_shr_slow(ctx, sp) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_shr(&st): break dispatch
                     .sar:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        if js_value_is_both_int(op1, op2):
-                            let v2 = (u32)js_value_get_int(op2) & 0x1f
-                            sp[(isize)-2] = js_new_int32(js_value_get_int(op1) >> v2)
-                            sp = sp - 1
-                        else:
-                            sf.cur_pc = pc
-                            js_binary_logic_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_sar(&st): break dispatch
                     .and_:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        if js_value_is_both_int(op1, op2):
-                            sp[(isize)-2] = js_new_int32(js_value_get_int(op1) & js_value_get_int(op2))
-                            sp = sp - 1
-                        else:
-                            sf.cur_pc = pc
-                            js_binary_logic_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_and(&st): break dispatch
                     .or_:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        if js_value_is_both_int(op1, op2):
-                            sp[(isize)-2] = js_new_int32(js_value_get_int(op1) | js_value_get_int(op2))
-                            sp = sp - 1
-                        else:
-                            sf.cur_pc = pc
-                            js_binary_logic_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_or(&st): break dispatch
                     .xor:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        if js_value_is_both_int(op1, op2):
-                            sp[(isize)-2] = js_new_int32(js_value_get_int(op1) ^ js_value_get_int(op2))
-                            sp = sp - 1
-                        else:
-                            sf.cur_pc = pc
-                            js_binary_logic_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
-
+                        if not interp_xor(&st): break dispatch
                     # OP_CMP(OP_lt, <, js_relational_slow(ctx, sp, opcode))
                     .lt:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = false
-                        if js_value_is_both_int(op1, op2):
-                            sp[(isize)-2] = js_new_bool(js_value_get_int(op1) < js_value_get_int(op2))
-                            sp = sp - 1
-                        elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
-                            var d1: f64 = 0.0
-                            var d2: f64 = 0.0
-                            if js_tag_is_float64(op1.tag):
-                                d1 = js_value_get_float64(op1)
-                            elif op1.tag == Tag.int:
-                                d1 = f64(js_value_get_int(op1))
-                            else:
-                                slow = true
-                            if js_tag_is_float64(op2.tag):
-                                d2 = js_value_get_float64(op2)
-                            elif op2.tag == Tag.int:
-                                d2 = f64(js_value_get_int(op2))
-                            else:
-                                slow = true
-                            if not slow:
-                                sp[(isize)-2] = js_new_bool(d1 < d2)
-                                sp = sp - 1
-                        else:
-                            slow = true
-                        if slow:
-                            sf.cur_pc = pc
-                            js_relational_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_lt(&st): break dispatch
                     # OP_CMP(OP_lte, <=, js_relational_slow(ctx, sp, opcode))
                     .lte:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = false
-                        if js_value_is_both_int(op1, op2):
-                            sp[(isize)-2] = js_new_bool(js_value_get_int(op1) <= js_value_get_int(op2))
-                            sp = sp - 1
-                        elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
-                            var d1: f64 = 0.0
-                            var d2: f64 = 0.0
-                            if js_tag_is_float64(op1.tag):
-                                d1 = js_value_get_float64(op1)
-                            elif op1.tag == Tag.int:
-                                d1 = f64(js_value_get_int(op1))
-                            else:
-                                slow = true
-                            if js_tag_is_float64(op2.tag):
-                                d2 = js_value_get_float64(op2)
-                            elif op2.tag == Tag.int:
-                                d2 = f64(js_value_get_int(op2))
-                            else:
-                                slow = true
-                            if not slow:
-                                sp[(isize)-2] = js_new_bool(d1 <= d2)
-                                sp = sp - 1
-                        else:
-                            slow = true
-                        if slow:
-                            sf.cur_pc = pc
-                            js_relational_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_lte(&st): break dispatch
                     # OP_CMP(OP_gt, >, js_relational_slow(ctx, sp, opcode))
                     .gt:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = false
-                        if js_value_is_both_int(op1, op2):
-                            sp[(isize)-2] = js_new_bool(js_value_get_int(op1) > js_value_get_int(op2))
-                            sp = sp - 1
-                        elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
-                            var d1: f64 = 0.0
-                            var d2: f64 = 0.0
-                            if js_tag_is_float64(op1.tag):
-                                d1 = js_value_get_float64(op1)
-                            elif op1.tag == Tag.int:
-                                d1 = f64(js_value_get_int(op1))
-                            else:
-                                slow = true
-                            if js_tag_is_float64(op2.tag):
-                                d2 = js_value_get_float64(op2)
-                            elif op2.tag == Tag.int:
-                                d2 = f64(js_value_get_int(op2))
-                            else:
-                                slow = true
-                            if not slow:
-                                sp[(isize)-2] = js_new_bool(d1 > d2)
-                                sp = sp - 1
-                        else:
-                            slow = true
-                        if slow:
-                            sf.cur_pc = pc
-                            js_relational_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
+                        if not interp_gt(&st): break dispatch
                     # OP_CMP(OP_gte, >=, js_relational_slow(ctx, sp, opcode))
                     .gte:
-                        let op1 = sp[(isize)-2]
-                        let op2 = sp[(isize)-1]
-                        var slow = false
-                        if js_value_is_both_int(op1, op2):
-                            sp[(isize)-2] = js_new_bool(js_value_get_int(op1) >= js_value_get_int(op2))
-                            sp = sp - 1
-                        elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
-                            var d1: f64 = 0.0
-                            var d2: f64 = 0.0
-                            if js_tag_is_float64(op1.tag):
-                                d1 = js_value_get_float64(op1)
-                            elif op1.tag == Tag.int:
-                                d1 = f64(js_value_get_int(op1))
-                            else:
-                                slow = true
-                            if js_tag_is_float64(op2.tag):
-                                d2 = js_value_get_float64(op2)
-                            elif op2.tag == Tag.int:
-                                d2 = f64(js_value_get_int(op2))
-                            else:
-                                slow = true
-                            if not slow:
-                                sp[(isize)-2] = js_new_bool(d1 >= d2)
-                                sp = sp - 1
-                        else:
-                            slow = true
-                        if slow:
-                            sf.cur_pc = pc
-                            js_relational_slow(ctx, sp, opcode) catch: break dispatch
-                            sp = sp - 1
-
+                        if not interp_gte(&st): break dispatch
                     # OP_CMP_EQ(OP_eq, 0)
                     .eq:
-                        eq_inline(ctx, sf, pc, sp, false) catch: break dispatch
-                        sp = sp - 1
+                        if not interp_eq(&st): break dispatch
                     # OP_CMP_EQ(OP_neq, 1)
                     .neq:
-                        eq_inline(ctx, sf, pc, sp, true) catch: break dispatch
-                        sp = sp - 1
-
+                        if not interp_neq(&st): break dispatch
                     # OP_CMP_STRICT_EQ(OP_strict_eq, 0)
                     .strict_eq:
-                        strict_eq_inline(ctx, sp, false)
-                        sp = sp - 1
+                        interp_strict_eq(&st)
                     # OP_CMP_STRICT_EQ(OP_strict_neq, 1)
                     .strict_neq:
-                        strict_eq_inline(ctx, sp, true)
-                        sp = sp - 1
-
+                        interp_strict_neq(&st)
                     .in_:
-                        sf.cur_pc = pc
-                        js_operator_in(ctx, sp) catch: break dispatch
-                        sp = sp - 1
+                        if not interp_in(&st): break dispatch
                     .private_in:
-                        sf.cur_pc = pc
-                        js_operator_private_in(ctx, sp) catch: break dispatch
-                        sp = sp - 1
+                        if not interp_private_in(&st): break dispatch
                     .instanceof:
-                        sf.cur_pc = pc
-                        js_operator_instanceof(ctx, sp) catch: break dispatch
-                        sp = sp - 1
+                        if not interp_instanceof(&st): break dispatch
                     .typeof:
-                        let op1 = sp[(isize)-1]
-                        let atom = js_operator_typeof(ctx, op1)
-                        js_free_value(ctx, op1)
-                        # a predefined atom: C does not test for an exception
-                        sp[(isize)-1] = js_atom_to_string(ctx, atom) catch: recover js_exception()
+                        interp_typeof(&st)
                     .delete:
-                        sf.cur_pc = pc
-                        js_operator_delete(ctx, sp) catch: break dispatch
-                        sp = sp - 1
+                        if not interp_delete(&st): break dispatch
                     .delete_var:
-                        let atom = cutils.get_u32(pc)
-                        pc = pc + 4
-                        sf.cur_pc = pc
-
-                        let ret = js_delete_global_var(ctx, atom) catch: break dispatch
-                        *sp = js_new_bool(ret)
-                        sp = sp + 1
-
+                        if not interp_delete_var(&st): break dispatch
                     .to_object:
-                        if sp[(isize)-1].tag != Tag.object:
-                            sf.cur_pc = pc
-                            ret_val = js_to_object(ctx, sp[(isize)-1]) catch: break dispatch
-                            js_free_value(ctx, sp[(isize)-1])
-                            sp[(isize)-1] = ret_val
-
+                        if not interp_to_object(&st): break dispatch
                     .to_propkey:
-                        let tag = sp[(isize)-1].tag
-                        if not (tag == Tag.int or tag == Tag.string or tag == Tag.symbol):
-                            sf.cur_pc = pc
-                            ret_val = js_to_property_key(ctx, sp[(isize)-1]) catch: break dispatch
-                            js_free_value(ctx, sp[(isize)-1])
-                            sp[(isize)-1] = ret_val
-
+                        if not interp_to_propkey(&st): break dispatch
                     .with_get_var, .with_put_var, .with_delete_var, .with_make_ref, .with_get_ref:
-                        let atom = cutils.get_u32(pc)
-                        let diff = (i32)cutils.get_u32(pc + 4)
-                        let is_with = pc[8] != 0
-                        pc = pc + 9
-                        sf.cur_pc = pc
-
-                        let obj = sp[(isize)-1]
-                        var ret = js_has_property(ctx, obj, atom) catch: break dispatch
-                        var found = ret
-                        if found and is_with:
-                            ret = js_has_unscopable(ctx, obj, atom) catch: break dispatch
-                            if ret:
-                                found = false # goto no_with
-                        if found:
-                            match opcode:
-                                .with_get_var:
-                                    # in Object Environment Records, GetBindingValue() calls
-                                    # HasProperty()
-                                    ret = js_has_property(ctx, obj, atom) catch: break dispatch
-                                    var val = js_undefined()
-                                    if not ret:
-                                        if is_strict_mode(ctx):
-                                            js_throw_reference_error_not_defined(ctx, atom) catch: break dispatch
-                                        val = js_undefined()
-                                    else:
-                                        val = js_get_property(ctx, obj, atom) catch: break dispatch
-                                    set_value(ctx, sp - 1, val)
-                                .with_put_var: # used e.g. in for in/of
-                                    # in Object Environment Records, SetMutableBinding()
-                                    # calls HasProperty()
-                                    ret = js_has_property(ctx, obj, atom) catch: break dispatch
-                                    if not ret and is_strict_mode(ctx):
-                                        js_throw_reference_error_not_defined(ctx, atom) catch: break dispatch
-                                    let set_ret = bool_status(js_set_property_internal(ctx, obj, atom, sp[(isize)-2], obj, prop_throw_strict) catch: recover none)
-                                    js_free_value(ctx, sp[(isize)-1])
-                                    sp = sp - 2
-                                    if set_ret < 0:
-                                        break dispatch
-                                .with_delete_var:
-                                    ret = js_delete_property(ctx, obj, atom, 0) catch: break dispatch
-                                    js_free_value(ctx, sp[(isize)-1])
-                                    sp[(isize)-1] = js_new_bool(ret)
-                                .with_make_ref:
-                                    # produce a pair object/propname on the stack
-                                    *sp = js_atom_to_value(ctx, atom) catch: break dispatch
-                                    sp = sp + 1
-                                .with_get_ref:
-                                    # produce a pair object/method on the stack
-                                    # in Object Environment Records, GetBindingValue() calls
-                                    # HasProperty()
-                                    ret = js_has_property(ctx, obj, atom) catch: break dispatch
-                                    var val = js_undefined()
-                                    if not ret:
-                                        val = js_undefined()
-                                    else:
-                                        val = js_get_property(ctx, obj, atom) catch: break dispatch
-                                    *sp = val
-                                    sp = sp + 1
-                                _:
-                                    trap("not a with opcode")
-                            pc = pc + (isize)(diff - 5)
-                        else:
-                            # no_with: if not jumping, drop the object argument
-                            js_free_value(ctx, sp[(isize)-1])
-                            sp = sp - 1
-
+                        if not interp_with_get_var(&st): break dispatch
+                    # end SHORT_OPCODES
                     .await:
-                        ret_val = js_new_int32(func_ret_await)
+                        st.ret_val = js_new_int32(func_ret_await)
                         exit = FrameExit.done_generator
                         break frame
                     .yield:
-                        ret_val = js_new_int32(func_ret_yield)
+                        st.ret_val = js_new_int32(func_ret_yield)
                         exit = FrameExit.done_generator
                         break frame
                     .yield_star, .async_yield_star:
-                        ret_val = js_new_int32(func_ret_yield_star)
+                        st.ret_val = js_new_int32(func_ret_yield_star)
                         exit = FrameExit.done_generator
                         break frame
                     .return_async:
-                        ret_val = js_undefined()
+                        st.ret_val = js_undefined()
                         exit = FrameExit.done_generator
                         break frame
                     .initial_yield:
-                        ret_val = js_new_int32(func_ret_initial_yield)
+                        st.ret_val = js_new_int32(func_ret_initial_yield)
                         exit = FrameExit.done_generator
                         break frame
-
                     .nop:
                         continue dispatch
                     .is_undefined_or_null:
-                        if sp[(isize)-1].tag == Tag.undefined or sp[(isize)-1].tag == Tag.null:
-                            # set_true
-                            sp[(isize)-1] = js_true()
-                        else:
-                            # free_and_set_false
-                            js_free_value(ctx, sp[(isize)-1])
-                            sp[(isize)-1] = js_false()
+                        interp_is_undefined_or_null(&st)
                     # SHORT_OPCODES
                     .is_undefined:
-                        if sp[(isize)-1].tag == Tag.undefined:
-                            # set_true
-                            sp[(isize)-1] = js_true()
-                        else:
-                            # free_and_set_false
-                            js_free_value(ctx, sp[(isize)-1])
-                            sp[(isize)-1] = js_false()
+                        interp_is_undefined(&st)
                     .is_null:
-                        if sp[(isize)-1].tag == Tag.null:
-                            # set_true
-                            sp[(isize)-1] = js_true()
-                        else:
-                            # free_and_set_false
-                            js_free_value(ctx, sp[(isize)-1])
-                            sp[(isize)-1] = js_false()
+                        interp_is_null(&st)
                     # XXX: could merge to a single opcode
                     .typeof_is_undefined:
-                        # different from OP_is_undefined because of isHTMLDDA
-                        let res = js_operator_typeof(ctx, sp[(isize)-1]) == atom_undefined
-                        # free_and_set_true / free_and_set_false
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp[(isize)-1] = js_new_bool(res)
+                        interp_typeof_is_undefined(&st)
                     .typeof_is_function:
-                        let res = js_operator_typeof(ctx, sp[(isize)-1]) == atom_function
-                        # free_and_set_true / free_and_set_false
-                        js_free_value(ctx, sp[(isize)-1])
-                        sp[(isize)-1] = js_new_bool(res)
+                        interp_typeof_is_function(&st)
                     # end SHORT_OPCODES
                     _:
-                        # OP_invalid and DEFAULT
-                        let bad_pc = (i32)(pc - bc_buf - 1)
-                        let bad_op = (u8)opcode
-                        js_throw_internal_error(ctx, f"invalid opcode: pc={bad_pc} opcode=0x{hex_byte_prefix(bad_op)}{hex(bad_op)}") catch: break dispatch
+                        if not interp_invalid(&st): break dispatch
 
         # exception:
         throwing = false
-        if is_backtrace_needed(ctx, rt.current_exception):
-            # add the backtrace information now (it is not done
-            # before if the exception happens in a bytecode
-            # operation
-            sf.cur_pc = pc
-            build_backtrace(ctx, rt.current_exception, none, 0, 0, 0)
-        if not rt.current_exception_is_uncatchable:
-            while sp > stack_buf:
-                sp = sp - 1
-                let val = *sp
-                js_free_value(ctx, val)
-                if val.tag == Tag.catch_offset:
-                    let pos = js_value_get_int(val)
-                    if pos == 0:
-                        # enumerator: close it with a throw
-                        js_free_value(ctx, sp[(isize)-1]) # drop the next method
-                        sp = sp - 1
-                        js_iterator_close(ctx, sp[(isize)-1], true) catch: recover ()
-                    else:
-                        *sp = rt.current_exception
-                        sp = sp + 1
-                        rt.current_exception = js_uninitialized()
-                        pc = bc_buf + (usize)pos
-                        continue frame
+        if interp_unwind(&st):
+            continue frame
         exit = FrameExit.exception
         break frame
 
+    interp_leave(&st, exit)
+    if exit == FrameExit.exception:
+        error(exception, "")
+    return st.ret_val
+
+# mark: Calls =================================================================================
+
+# The bodies of the call opcodes. The callee runs in js_call_internal, called from here:
+# the recursion of JavaScript calls then holds this small frame beside the dispatch loop's.
+
+## The argument count of a call opcode: the u16 operand of OP_call, OP_tail_call,
+## OP_call_constructor, OP_call_method and OP_tail_call_method, or `opcode - OP_call0`
+## for the short forms (SHORT_OPCODES).
+func interp_call_argc(st: InterpState*) -> i32:
+    if st.opcode == Op.call0 or st.opcode == Op.call1 or st.opcode == Op.call2 or st.opcode == Op.call3:
+        return (i32)(u8)st.opcode - (i32)(u8)Op.call0
+    let call_argc = (i32)cutils.get_u16(st.pc)
+    st.pc = st.pc + 2
+    return call_argc
+
+## After a call returned st.ret_val: release the function (and `this`, or new.target,
+## when `extra` is 2) and the arguments, and push the result in their place.
+func interp_call_done(st: InterpState*, call_argc: i32, extra: i32):
+    let call_argv = st.sp - (usize)call_argc
+    var i: isize = -(isize)extra
+    while i < (isize)call_argc:
+        js_free_value(st.ctx, call_argv[i])
+        i += 1
+    st.sp = st.sp - (usize)(call_argc + extra)
+    *st.sp = st.ret_val
+    st.sp = st.sp + 1
+
+## The body of OP_call0 to OP_call3 (SHORT_OPCODES), OP_call and OP_tail_call. After a
+## tail call the stack is left as it is: the frame returns st.ret_val (C: goto done).
+noinline func interp_call(st: InterpState*) -> bool:
+    let call_argc = interp_call_argc(st)
+    # has_call_argc:
+    let call_argv = st.sp - (usize)call_argc
+    st.sf.cur_pc = st.pc
+    st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: return false
+    if st.opcode == Op.tail_call:
+        return true
+    interp_call_done(st, call_argc, 1)
+    return true
+
+## The body of OP_call_constructor.
+noinline func interp_call_constructor(st: InterpState*) -> bool:
+    let call_argc = interp_call_argc(st)
+    let call_argv = st.sp - (usize)call_argc
+    st.sf.cur_pc = st.pc
+    st.ret_val = js_call_constructor_internal(st.ctx, call_argv[(isize)-2], call_argv[(isize)-1], call_argc, call_argv, 0) catch: return false
+    interp_call_done(st, call_argc, 2)
+    return true
+
+## The body of OP_call_method and OP_tail_call_method; after a tail call the frame
+## returns st.ret_val (C: goto done).
+noinline func interp_call_method(st: InterpState*) -> bool:
+    let call_argc = interp_call_argc(st)
+    let call_argv = st.sp - (usize)call_argc
+    st.sf.cur_pc = st.pc
+    st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], call_argv[(isize)-2], js_undefined(), call_argc, call_argv, 0) catch: return false
+    if st.opcode == Op.tail_call_method:
+        return true
+    interp_call_done(st, call_argc, 2)
+    return true
+
+# mark: Entering and leaving a frame ============================================================
+
+## What interp_enter leaves js_call_internal to do.
+enum InterpEntry:
+    ## Run the frame from st.pc.
+    run
+    ## Resume a generator frame at the exception handler (its throw_flag is set).
+    throwing
+    ## The object was not a bytecode function: its class's call hook ran and st.ret_val
+    ## is its result.
+    returned
+
+## The start of JS_CallInternal: fill `st` from the call, then set up the frame of a
+## bytecode function (its arguments, variables, stack and variable references in
+## `frame_space`, or on the heap when they do not fit), or take the suspended frame of a
+## generator, and make it the runtime's current frame.
+noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Value, this_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32, frame_space: Value*) -> InterpEntry!:
+    st.caller_ctx = caller_ctx
+    st.rt = caller_ctx.rt
+    st.ctx = caller_ctx
+    st.func_obj = func_obj
+    st.this_obj = this_obj
+    st.new_target = new_target
+    st.argc = argc
+    st.argv = argv
+    st.opcode = Op.invalid
+    st.ret_val = js_undefined()
+    st.var_refs = none
+    st.heap_frame = none
+    try js_poll_interrupts(st.caller_ctx)
+    if st.func_obj.tag != Tag.object:
+        if (flags & call_flag_generator) == 0:
+            # not_a_function
+            try js_throw_type_error(st.caller_ctx, "not a function")
+        let s = (AsyncFunctionState*)st.func_obj.u.ptr
+        # func_obj get contains a pointer to JSFuncAsyncState
+        # the stack frame is already allocated
+        st.sf = &s.frame
+        st.p = st.sf.cur_func.u.obj
+        st.b = st.p.u.func_.function_bytecode
+        st.bc_buf = st.b.byte_code_buf
+        st.ctx = st.b.realm
+        st.var_refs = st.p.u.func_.var_refs
+        st.arg_buf = st.sf.arg_buf else trap("generator frame without arguments")
+        st.local_buf = st.arg_buf
+        st.var_buf = st.sf.var_buf else trap("generator frame without variables")
+        st.stack_buf = st.var_buf + (usize)st.b.var_count
+        st.sp = st.sf.cur_sp else trap("generator frame is running")
+        st.sf.cur_sp = none # cur_sp is NULL if the function is running
+        st.pc = st.sf.cur_pc else trap("generator frame without pc")
+        st.sf.prev_frame = st.rt.current_stack_frame
+        # workaround: compiler-issues/local_address_store
+        js_push_stack_frame(st.rt, st.sf)
+        if s.throw_flag:
+            return InterpEntry.throwing
+    else:
+        st.p = st.func_obj.u.obj
+        if st.p.class_id != ClassId.bytecode_function:
+            let class_array = st.rt.class_array else trap("the class array is not allocated")
+            let call_func = class_array[(usize)(u16)st.p.class_id].call else try js_throw_type_error(st.caller_ctx, "not a function")
+            st.ret_val = try call_func(st.caller_ctx, st.func_obj, st.this_obj, st.argc, st.argv, flags)
+            return InterpEntry.returned
+        st.b = st.p.u.func_.function_bytecode
+        st.bc_buf = st.b.byte_code_buf
+
+        var arg_allocated_size: i32 = 0
+        if st.argc < (i32)st.b.arg_count or (flags & call_flag_copy_argv) != 0:
+            arg_allocated_size = (i32)st.b.arg_count
+
+        let alloca_size = sizeof(Value) * ((usize)arg_allocated_size + (usize)st.b.var_count + (usize)st.b.stack_size) + sizeof(VarRef*) * (usize)st.b.var_ref_count
+        if js_check_stack_overflow(st.rt, alloca_size):
+            try js_throw_stack_overflow(st.caller_ctx)
+
+        st.sf.js_mode = (i32)st.b.js_mode
+        st.arg_buf = st.argv
+        st.sf.arg_count = st.argc
+        st.sf.cur_func = st.func_obj
+        st.var_refs = st.p.u.func_.var_refs
+
+        if alloca_size <= sizeof(Value) * js_call_inline_frame_values:
+            st.local_buf = frame_space
+        else:
+            let block = try js_malloc(st.caller_ctx, alloca_size)
+            st.heap_frame = block
+            st.local_buf = (Value*)block
+        if arg_allocated_size != 0:
+            let n = cutils.min_int(st.argc, (i32)st.b.arg_count)
+            st.arg_buf = st.local_buf
+            for i in 0..<(usize)n:
+                st.arg_buf[i] = js_dup_value(st.caller_ctx, st.argv[i])
+            for i in (usize)n..<(usize)st.b.arg_count:
+                st.arg_buf[i] = js_undefined()
+            st.sf.arg_count = (i32)st.b.arg_count
+        st.var_buf = st.local_buf + (usize)arg_allocated_size
+        st.sf.var_buf = st.var_buf
+        st.sf.arg_buf = st.arg_buf
+
+        for i in 0..<(usize)st.b.var_count:
+            st.var_buf[i] = js_undefined()
+
+        st.stack_buf = st.var_buf + (usize)st.b.var_count
+        let frame_var_refs = (VarRef*?*)(st.stack_buf + (usize)st.b.stack_size)
+        st.sf.var_refs = frame_var_refs
+        for i in 0..<(usize)st.b.var_ref_count:
+            frame_var_refs[i] = none
+        st.sp = st.stack_buf
+        st.pc = st.b.byte_code_buf
+        st.sf.prev_frame = st.rt.current_stack_frame
+        # workaround: compiler-issues/local_address_store
+        js_push_stack_frame(st.rt, st.sf)
+        st.ctx = st.b.realm # set the current realm
+
+    return InterpEntry.run
+
+## The `exception:` label of JS_CallInternal: record the backtrace, then unwind the stack
+## to the innermost catch offset, closing the iterators of for-of loops on the way. True
+## when a handler was found: the exception is pushed and st.pc is the handler.
+noinline func interp_unwind(st: InterpState*) -> bool:
+    if is_backtrace_needed(st.ctx, st.rt.current_exception):
+        # add the backtrace information now (it is not done
+        # before if the exception happens in a bytecode
+        # operation
+        st.sf.cur_pc = st.pc
+        build_backtrace(st.ctx, st.rt.current_exception, none, 0, 0, 0)
+    if not st.rt.current_exception_is_uncatchable:
+        while st.sp > st.stack_buf:
+            st.sp = st.sp - 1
+            let val = *st.sp
+            js_free_value(st.ctx, val)
+            if val.tag == Tag.catch_offset:
+                let pos = js_value_get_int(val)
+                if pos == 0:
+                    # enumerator: close it with a throw
+                    js_free_value(st.ctx, st.sp[(isize)-1]) # drop the next method
+                    st.sp = st.sp - 1
+                    js_iterator_close(st.ctx, st.sp[(isize)-1], true) catch: recover ()
+                else:
+                    *st.sp = st.rt.current_exception
+                    st.sp = st.sp + 1
+                    st.rt.current_exception = js_uninitialized()
+                    st.pc = st.bc_buf + (usize)pos
+                    return true
+    return false
+
+## The exits of JS_CallInternal: a suspended generator keeps its frame (pc and sp are
+## saved); otherwise the variable references are closed and the locals and stack are
+## released. Then the caller's frame becomes current again.
+noinline func interp_leave(st: InterpState*, exit: FrameExit):
     # ret_val = JS_EXCEPTION on the exception exit.
     # the local variables are freed by the caller in the generator
     # case. Hence the label 'done' should never be reached in a
     # generator function.
-    if exit == FrameExit.done_generator or (exit == FrameExit.exception and b.func_kind != js_func_normal):
+    if exit == FrameExit.done_generator or (exit == FrameExit.exception and st.b.func_kind != js_func_normal):
         # done_generator:
-        sf.cur_pc = pc
-        sf.cur_sp = sp
+        st.sf.cur_pc = st.pc
+        st.sf.cur_sp = st.sp
     else:
         # done:
-        if b.var_ref_count != 0:
+        if st.b.var_ref_count != 0:
             # variable references reference the stack: must close them
-            close_var_refs(rt, b, sf)
+            close_var_refs(st.rt, st.b, st.sf)
         # free the local variables and stack
-        var pval = local_buf
-        while pval < sp:
-            js_free_value(ctx, *pval)
+        var pval = st.local_buf
+        while pval < st.sp:
+            js_free_value(st.ctx, *pval)
             pval = pval + 1
-    rt.current_stack_frame = sf.prev_frame
-    if let block = heap_frame:
-        js_free_rt(rt, block)
-    if exit == FrameExit.exception:
-        error(exception, "")
-    return ret_val
+    st.rt.current_stack_frame = st.sf.prev_frame
+    if let block = st.heap_frame:
+        js_free_rt(st.rt, block)

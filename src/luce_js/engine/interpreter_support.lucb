@@ -5,7 +5,8 @@
 #   DESCRIPTION:
 #       The constants defined inside JS_CallInternal (quickjs.c lines 17746-20704): the
 #       OP_throw_error kinds and the OP_define_method flags, and how the dispatch loop
-#       leaves a frame. (The call flags, OPSpecialObjectEnum and FUNC_RET_*, which sit
+#       leaves a frame. The interpreter's state (InterpState), the record its opcode
+#       bodies share. (The call flags, OPSpecialObjectEnum and FUNC_RET_*, which sit
 #       just before the interpreter, are in calls.lucb.)
 #
 #       Then the bodies of QuickJS's interpreter macros that are too large to repeat in
@@ -41,6 +42,41 @@ enum FrameExit:
     done_generator
     ## `exception`: no handler caught the pending exception.
     exception
+
+# mark: Interpreter state =====================================================================
+
+## The locals of C's JS_CallInternal that its opcodes read and write: the interpreter keeps
+## them in one record so the bodies of the less frequent opcodes can be functions of their
+## own (interp_ops_*.lucb) that take a pointer to it. Keeping those bodies out of
+## js_call_internal keeps its native frame small, and so the depth of JavaScript recursion
+## the stack allows.
+struct InterpState:
+    var caller_ctx: Context*
+    ## The function's realm once the frame is set up.
+    var ctx: Context*
+    var rt: Runtime*
+    var func_obj: Value
+    var this_obj: Value
+    var new_target: Value
+    var argc: i32
+    var argv: Value*
+    ## The function object and its bytecode.
+    var p: Object*
+    var b: FunctionBytecode*
+    var sf: StackFrame*
+    var pc: const u8*
+    var sp: Value*
+    var opcode: Op
+    var ret_val: Value
+    var local_buf: Value*
+    var stack_buf: Value*
+    var var_buf: Value*
+    var arg_buf: Value*
+    var var_refs: VarRef*?*?
+    ## b.byte_code_buf.
+    var bc_buf: const u8*
+    ## The frame when it does not fit js_call_internal's frame_space.
+    var heap_frame: void*?
 
 # mark: Frame access ============================================================================
 
