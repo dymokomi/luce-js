@@ -6,10 +6,11 @@
 #       Port of the parts of quickjs-libc.c (QuickJS 2026-06-04) that run JavaScript files
 #       and QuickJS's own tests: the global helpers (print, console.log, scriptArgs), the
 #       default module loader reading files, the job and timer loop, and the `std` and `os`
-#       modules as far as the upstream tests use them. Workers, message ports, read/write
-#       handlers, signals, ttys, pipes, os.exec, urlGet, shared-library modules and bytecode
-#       loading are not ported. This fragment holds the module's imports and the per-runtime
-#       state (JSThreadState); the C library bindings are in `libc`.
+#       modules on POSIX targets (macOS and Linux), with their processes, pipes, signals,
+#       read/write handlers and ttys. Workers and their message ports, shared-library
+#       modules and bytecode loading are not ported. This fragment holds the module's
+#       imports and the per-runtime state (JSThreadState); the C library bindings are in
+#       `libc` and `libc_process`.
 #
 #       QuickJS C library
 #
@@ -39,6 +40,21 @@ from luce_js.engine import CFunctionEnum, ClassDef, PropertyEnum, PromiseState
 
 # mark: Per-runtime state =======================================================================
 
+## A read and/or write handler of a file descriptor (JSOSRWHandler).
+struct OSRWHandler:
+    var link: ListHead
+    var fd: i32
+    ## temporary use in js_os_poll()
+    var poll_fd_index: i32
+    ## the read (0) and write (1) handlers, null when unset
+    var rw_func: Value[2]
+
+## A JavaScript handler of a signal (JSOSSignalHandler).
+struct OSSignalHandler:
+    var link: ListHead
+    var sig_num: i32
+    var func_: Value
+
 ## A pending os.setTimeout or os.sleepAsync (JSOSTimer).
 struct OSTimer:
     var link: ListHead
@@ -53,20 +69,31 @@ struct RejectedPromiseEntry:
     var reason: Value
 
 ## The host state of one runtime, its opaque pointer (JSThreadState). QuickJS also keeps
-## the read/write handlers, the signal handlers and the worker ports here; this port has
-## none of them.
+## the worker ports and message pipes here; without workers every runtime is the main
+## thread.
 struct ThreadState:
+    ## list of OSRWHandler.link
+    var os_rw_handlers: ListHead
+    ## list of OSSignalHandler.link
+    var os_signal_handlers: ListHead
     ## list of OSTimer.link
     var os_timers: ListHead
     ## list of RejectedPromiseEntry.link
     var rejected_promise_list: ListHead
+    ## only used in the main thread
+    var eval_script_recurse: i32
     ## for setTimeout()
     var next_timer_id: i32
+    ## the descriptors js_os_poll waits for, poll_fds_size of them allocated
+    var poll_fds: PollFd*?
+    var poll_fds_size: i32
 
-## Waits for and runs one timer (js_os_poll); installed when the `os` module is
+## Waits for and runs one event (js_os_poll); installed when the `os` module is
 ## initialized. Answers -1 when there are no more events.
 type PollFunc = func(Context*) -> i32
 
+## One bit per signal received and not yet handled; set by os_signal_handler.
+var os_pending_signals: @u64
 var os_poll_func: PollFunc?
 
 ## The host state of the runtime of `ctx`, installed by js_std_init_handlers.

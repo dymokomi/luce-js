@@ -1,10 +1,15 @@
 module.lucb
 libc.lucb
+libc_process.lucb
 printf.lucb
 loader.lucb
 std_file.lucb
+url_get.lucb
 std_module.lucb
 os_module.lucb
+os_poll.lucb
+os_files.lucb
+os_process.lucb
 os_tables.lucb
 helpers.lucb
 tests.lucb

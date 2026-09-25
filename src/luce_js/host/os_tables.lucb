@@ -3,13 +3,13 @@
 #   os_tables - The `os` module's table, js_os_init and js_init_module_os
 #
 #   DESCRIPTION:
-#       Port of quickjs-libc.c lines 3915-4060 for the functions this port has. The
+#       Port of quickjs-libc.c lines 3915-4060, without the Worker class. The
 #       platform string, whose value depends on the target, is exported beside the table
 #       rather than in it, since a table entry is a constant.
 #
 #==============================================================================================
 
-let js_os_funcs: CFunctionListEntry[47] = [
+let js_os_funcs: CFunctionListEntry[70] = [
     CFunctionListEntry(name = "open", def_type = js.def_cfunc, length = 2, generic = js_os_open),
     CFunctionListEntry(name = "O_RDONLY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_rdonly),
     CFunctionListEntry(name = "O_WRONLY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_wronly),
@@ -25,14 +25,32 @@ let js_os_funcs: CFunctionListEntry[47] = [
     CFunctionListEntry(name = "write", def_type = js.def_cfunc, length = 4, cproto = CFunctionEnum.generic_magic,
                        generic_magic = js_os_read_write, magic = 1),
     CFunctionListEntry(name = "isatty", def_type = js.def_cfunc, length = 1, generic = js_os_isatty),
+    CFunctionListEntry(name = "ttyGetWinSize", def_type = js.def_cfunc, length = 1, generic = js_os_tty_get_win_size),
+    CFunctionListEntry(name = "ttySetRaw", def_type = js.def_cfunc, length = 1, generic = js_os_tty_set_raw),
     CFunctionListEntry(name = "remove", def_type = js.def_cfunc, length = 1, generic = js_os_remove),
     CFunctionListEntry(name = "rename", def_type = js.def_cfunc, length = 2, generic = js_os_rename),
-    CFunctionListEntry(name = "SIGINT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 2),
-    CFunctionListEntry(name = "SIGABRT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 6),
-    CFunctionListEntry(name = "SIGFPE", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 8),
-    CFunctionListEntry(name = "SIGILL", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 4),
-    CFunctionListEntry(name = "SIGSEGV", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 11),
-    CFunctionListEntry(name = "SIGTERM", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 15),
+    CFunctionListEntry(name = "setReadHandler", def_type = js.def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_os_set_read_handler, magic = 0),
+    CFunctionListEntry(name = "setWriteHandler", def_type = js.def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_os_set_read_handler, magic = 1),
+    CFunctionListEntry(name = "signal", def_type = js.def_cfunc, length = 2, generic = js_os_signal),
+    CFunctionListEntry(name = "SIGINT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_int),
+    CFunctionListEntry(name = "SIGABRT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_abrt),
+    CFunctionListEntry(name = "SIGFPE", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_fpe),
+    CFunctionListEntry(name = "SIGILL", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_ill),
+    CFunctionListEntry(name = "SIGSEGV", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_segv),
+    CFunctionListEntry(name = "SIGTERM", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_term),
+    CFunctionListEntry(name = "SIGQUIT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_quit),
+    CFunctionListEntry(name = "SIGPIPE", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_pipe),
+    CFunctionListEntry(name = "SIGALRM", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_alrm),
+    CFunctionListEntry(name = "SIGUSR1", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_usr1),
+    CFunctionListEntry(name = "SIGUSR2", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_usr2),
+    CFunctionListEntry(name = "SIGCHLD", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_chld),
+    CFunctionListEntry(name = "SIGCONT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_cont),
+    CFunctionListEntry(name = "SIGSTOP", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_stop),
+    CFunctionListEntry(name = "SIGTSTP", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_tstp),
+    CFunctionListEntry(name = "SIGTTIN", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_ttin),
+    CFunctionListEntry(name = "SIGTTOU", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_ttou),
     CFunctionListEntry(name = "now", def_type = js.def_cfunc, length = 0, generic = js_os_now),
     CFunctionListEntry(name = "setTimeout", def_type = js.def_cfunc, length = 2, generic = js_os_set_timeout),
     CFunctionListEntry(name = "clearTimeout", def_type = js.def_cfunc, length = 1, generic = js_os_clear_timeout),
@@ -61,7 +79,14 @@ let js_os_funcs: CFunctionListEntry[47] = [
                        generic_magic = js_os_stat, magic = 1),
     CFunctionListEntry(name = "symlink", def_type = js.def_cfunc, length = 2, generic = js_os_symlink),
     CFunctionListEntry(name = "readlink", def_type = js.def_cfunc, length = 1, generic = js_os_readlink),
+    CFunctionListEntry(name = "exec", def_type = js.def_cfunc, length = 1, generic = js_os_exec),
     CFunctionListEntry(name = "getpid", def_type = js.def_cfunc, length = 0, generic = js_os_getpid),
+    CFunctionListEntry(name = "waitpid", def_type = js.def_cfunc, length = 2, generic = js_os_waitpid),
+    CFunctionListEntry(name = "WNOHANG", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = wnohang),
+    CFunctionListEntry(name = "pipe", def_type = js.def_cfunc, length = 0, generic = js_os_pipe),
+    CFunctionListEntry(name = "kill", def_type = js.def_cfunc, length = 2, generic = js_os_kill),
+    CFunctionListEntry(name = "dup", def_type = js.def_cfunc, length = 1, generic = js_os_dup),
+    CFunctionListEntry(name = "dup2", def_type = js.def_cfunc, length = 2, generic = js_os_dup2),
 ]
 
 ## OS_PLATFORM.

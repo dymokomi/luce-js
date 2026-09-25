@@ -1,0 +1,163 @@
+#==============================================================================================
+#
+#   os_files - The `os` module's file system functions
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 2660-3033: getcwd, chdir, mkdir, readdir, stat and
+#       lstat, utimes, sleep, realpath, symlink and readlink.
+#
+#==============================================================================================
+
+# mark: The file system =========================================================================
+
+## `[obj, err]` (make_obj_error); takes `obj`.
+func make_obj_error(ctx: Context*, obj: Value, err: i32) -> Value!:
+    let arr = js.js_new_array(ctx) catch failure:
+        js.js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    discard(js.js_define_property_value_uint32(ctx, arr, 0, obj, js.prop_c_w_e) catch: recover false)
+    discard(js.js_define_property_value_uint32(ctx, arr, 1, js.js_new_int32(err), js.prop_c_w_e) catch: recover false)
+    return arr
+
+func make_string_error(ctx: Context*, buf: const u8*, err: i32) -> Value!:
+    return try make_obj_error(ctx, try js.js_new_string(ctx, buf), err)
+
+## return [cwd, errorcode]
+func js_os_getcwd(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var buf: u8[4096] = ---
+    var err: i32 = 0
+    if getcwd(&buf[0], path_max) == none:
+        buf[0] = 0
+        err = c.errno()
+    return try make_string_error(ctx, &buf[0], err)
+
+func js_os_chdir(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let target = try js.js_to_c_string(ctx, argv[0])
+    let err = js_get_errno((i64)chdir(target))
+    js.js_free_c_string(ctx, target)
+    return js.js_new_int32((i32)err)
+
+func js_os_mkdir(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var mode: i32 = 0o777
+    if argc >= 2:
+        try js.js_to_int32(ctx, &mode, argv[1])
+    let path = try js.js_to_c_string(ctx, argv[0])
+    let ret = js_get_errno((i64)mkdir(path, (u32)mode))
+    js.js_free_c_string(ctx, path)
+    return js.js_new_int32((i32)ret)
+
+## return [array, errorcode]
+func js_os_readdir(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let path = try js.js_to_c_string(ctx, argv[0])
+    let obj = js.js_new_array(ctx) catch failure:
+        js.js_free_c_string(ctx, path)
+        error(failure.code, failure.message)
+    let dir = opendir(path)
+    var err: i32 = 0
+    if dir == none:
+        err = c.errno()
+    js.js_free_c_string(ctx, path)
+    if let f = dir:
+        var len: u32 = 0
+        while true:
+            c.set_errno(0)
+            let entry = readdir(f)
+            if entry == none:
+                err = c.errno()
+                break
+            let d = entry else break
+            let name = js.js_new_string(ctx, dirent_name(d)) catch: recover js.js_undefined()
+            discard(js.js_define_property_value_uint32(ctx, obj, len, name, js.prop_c_w_e) catch: recover false)
+            len += 1
+        discard(closedir(f))
+    return try make_obj_error(ctx, obj, err)
+
+## return [obj, errcode]; os.stat (is_lstat 0) and os.lstat (1)
+func js_os_stat(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_lstat: i32) -> Value!:
+    let path = try js.js_to_c_string(ctx, argv[0])
+    var buf: u8[256] = ---
+    var res: i32 = 0
+    if is_lstat != 0:
+        res = lstat(path, &buf[0])
+    else:
+        res = stat(path, &buf[0])
+    var err: i32 = 0
+    if res < 0:
+        err = c.errno()
+    js.js_free_c_string(ctx, path)
+    if res < 0:
+        return try make_obj_error(ctx, js.js_null(), err)
+    let st = stat_info(&buf[0])
+    let obj = try js.js_new_object(ctx)
+    try define_stat_field(ctx, obj, "dev", js.js_new_int64(st.dev))
+    try define_stat_field(ctx, obj, "ino", js.js_new_int64(st.ino))
+    try define_stat_field(ctx, obj, "mode", js.js_new_int32(st.mode))
+    try define_stat_field(ctx, obj, "nlink", js.js_new_int64(st.nlink))
+    try define_stat_field(ctx, obj, "uid", js.js_new_int64(st.uid))
+    try define_stat_field(ctx, obj, "gid", js.js_new_int64(st.gid))
+    try define_stat_field(ctx, obj, "rdev", js.js_new_int64(st.rdev))
+    try define_stat_field(ctx, obj, "size", js.js_new_int64(st.size))
+    try define_stat_field(ctx, obj, "blocks", js.js_new_int64(st.blocks))
+    try define_stat_field(ctx, obj, "atime", js.js_new_int64(st.atime))
+    try define_stat_field(ctx, obj, "mtime", js.js_new_int64(st.mtime))
+    try define_stat_field(ctx, obj, "ctime", js.js_new_int64(st.ctime))
+    return try make_obj_error(ctx, obj, err)
+
+func define_stat_field(ctx: Context*, obj: Value, name: str, val: Value) -> !:
+    discard(try js.js_define_property_value_str(ctx, obj, name, val, js.prop_c_w_e))
+
+func js_os_utimes(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var atime: i64 = 0
+    try js.js_to_int64(ctx, &atime, argv[1])
+    var mtime: i64 = 0
+    try js.js_to_int64(ctx, &mtime, argv[2])
+    let path = try js.js_to_c_string(ctx, argv[0])
+    let times: Timeval[2] = [
+        Timeval(tv_sec = atime // 1000, tv_usec = (atime % 1000) * 1000),
+        Timeval(tv_sec = mtime // 1000, tv_usec = (mtime % 1000) * 1000),
+    ]
+    let ret = js_get_errno((i64)utimes(path, &times[0]))
+    js.js_free_c_string(ctx, path)
+    return js.js_new_int32((i32)ret)
+
+## sleep(delay_ms)
+func js_os_sleep(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var delay: i64 = 0
+    try js.js_to_int64(ctx, &delay, argv[0])
+    if delay < 0:
+        delay = 0
+    thread.sleep((u64)delay)
+    return js.js_new_int32(0)
+
+## return [path, errorcode]
+func js_os_realpath(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let path = try js.js_to_c_string(ctx, argv[0])
+    var buf: u8[4096] = ---
+    let res = realpath(path, &buf[0])
+    js.js_free_c_string(ctx, path)
+    var err: i32 = 0
+    if res == none:
+        buf[0] = 0
+        err = c.errno()
+    return try make_string_error(ctx, &buf[0], err)
+
+func js_os_symlink(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let target = try js.js_to_c_string(ctx, argv[0])
+    defer js.js_free_c_string(ctx, target)
+    let linkpath = try js.js_to_c_string(ctx, argv[1])
+    defer js.js_free_c_string(ctx, linkpath)
+    return js.js_new_int32((i32)js_get_errno((i64)symlink(target, linkpath)))
+
+## return [path, errorcode]
+func js_os_readlink(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let path = try js.js_to_c_string(ctx, argv[0])
+    var buf: u8[4096] = ---
+    let res = readlink(path, &buf[0], path_max - 1)
+    var err: i32 = 0
+    if res < 0:
+        buf[0] = 0
+        err = c.errno()
+    else:
+        buf[(usize)res] = 0
+    js.js_free_c_string(ctx, path)
+    return try make_string_error(ctx, &buf[0], err)

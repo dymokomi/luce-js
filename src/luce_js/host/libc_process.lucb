@@ -1,0 +1,157 @@
+#==============================================================================================
+#
+#   libc_process - The POSIX calls and constants of processes, signals, polling and ttys
+#
+#   DESCRIPTION:
+#       What the `os` module's process functions (exec, waitpid, pipe, kill, dup, dup2),
+#       its signal and read/write handlers, js_os_poll and its tty functions reach in the C
+#       library, beside the files and stdio of `libc`. Constants and layouts that differ
+#       between macOS and Linux (glibc, x86-64 and arm64) are chosen with the platform
+#       constants, as in `libc`.
+#
+#==============================================================================================
+
+# mark: Processes ===============================================================================
+
+## One entry of a NULL-terminated `char *[]` (argv, envp).
+type CStringEntry = const u8*?
+
+extern func fork() -> i32
+extern func execve(path: const u8*, argv: CStringEntry*, envp: CStringEntry*) -> i32
+extern func _exit(status: i32) -> never
+extern func waitpid(pid: i32, status: i32*, options: i32) -> i32
+extern func pipe(fds: i32*) -> i32
+extern func kill(pid: i32, sig: i32) -> i32
+extern func dup(fd: i32) -> i32
+extern func dup2(fd: i32, fd2: i32) -> i32
+extern func setuid(uid: u32) -> i32
+extern func setgid(gid: u32) -> i32
+extern func sysconf(name: i32) -> i64
+extern func atoi(text: const u8*) -> i32
+extern func strcmp(s1: const u8*, s2: const u8*) -> i32
+
+# The environment: `environ` on Linux; macOS executables reach it through _NSGetEnviron()
+# (quickjs-libc.c's `#define environ (*_NSGetEnviron())`).
+extern var environ: CStringEntry*
+extern func _NSGetEnviron() -> CStringEntry**
+
+## The process environment, `environ`.
+func environment() -> CStringEntry*:
+    if platform.macos:
+        return *_NSGetEnviron()
+    return environ
+
+let wnohang: i32 = 1
+let sc_open_max: i32 = is_mac * 5 + is_linux * 4
+let e_notdir: i32 = 20
+
+## WIFEXITED
+func w_if_exited(status: i32) -> bool:
+    return (status & 0x7f) == 0
+
+## WEXITSTATUS
+func w_exit_status(status: i32) -> i32:
+    return (status >> 8) & 0xff
+
+## WIFSIGNALED
+func w_if_signaled(status: i32) -> bool:
+    return (status & 0x7f) != 0x7f and (status & 0x7f) != 0
+
+## WTERMSIG
+func w_term_sig(status: i32) -> i32:
+    return status & 0x7f
+
+# mark: Signals =================================================================================
+
+# The handler is a `void (*)(int)`, or SIG_DFL (0) or SIG_IGN (1).
+extern func c_signal as "signal"(sig: i32, handler: void*?) -> void*?
+
+## SIG_IGN
+func sig_ign() -> void*?:
+    return (void*?)(usize)1
+
+let sig_int: i32 = 2
+let sig_quit: i32 = 3
+let sig_ill: i32 = 4
+let sig_abrt: i32 = 6
+let sig_fpe: i32 = 8
+let sig_segv: i32 = 11
+let sig_pipe: i32 = 13
+let sig_alrm: i32 = 14
+let sig_term: i32 = 15
+let sig_usr1: i32 = is_mac * 30 + is_linux * 10
+let sig_usr2: i32 = is_mac * 31 + is_linux * 12
+let sig_chld: i32 = is_mac * 20 + is_linux * 17
+let sig_cont: i32 = is_mac * 19 + is_linux * 18
+let sig_stop: i32 = is_mac * 17 + is_linux * 19
+let sig_tstp: i32 = is_mac * 18 + is_linux * 20
+let sig_ttin: i32 = 21
+let sig_ttou: i32 = 22
+
+# mark: poll ====================================================================================
+
+## struct pollfd, the same on every target.
+extern struct PollFd:
+    fd: i32
+    events: i16
+    revents: i16
+
+# nfds_t is 32 bits on macOS and 64 on Linux; a 64-bit argument serves both.
+extern func c_poll as "poll"(fds: PollFd*?, nfds: usize, timeout: i32) -> i32
+
+let poll_in: i16 = 0x1
+let poll_out: i16 = 0x4
+let poll_err: i16 = 0x8
+let poll_hup: i16 = 0x10
+let poll_nval: i16 = 0x20
+
+# mark: ttys ====================================================================================
+
+extern func ioctl(fd: i32, request: u64, ...) -> i32
+extern func tcgetattr(fd: i32, termios: void*) -> i32
+extern func tcsetattr(fd: i32, action: i32, termios: const void*) -> i32
+extern func atexit(function: func() -> unit) -> i32
+
+## struct winsize, the same on every target.
+extern struct WinSize:
+    ws_row: u16
+    ws_col: u16
+    ws_xpixel: u16
+    ws_ypixel: u16
+
+let tiocgwinsz: u64 = (u64)is_mac * 0x40087468 + (u64)is_linux * 0x5413
+let tcsanow: i32 = 0
+
+# struct termios: macOS has four 64-bit tcflag_t then c_cc[20] (72 bytes); glibc has four
+# 32-bit tcflag_t, c_line, then c_cc[32] (60 bytes). The flags this port changes all fit in
+# the low 32 bits, which is the first word of a flag on both little-endian targets.
+
+## A buffer that holds any target's `struct termios`.
+let termios_size: usize = 128
+
+## The byte offset of the tcflag_t `index` (0 c_iflag, 1 c_oflag, 2 c_cflag, 3 c_lflag).
+func termios_flag_offset(index: usize) -> usize:
+    if platform.macos:
+        return index * 8
+    return index * 4
+
+let termios_cc_offset: usize = (usize)is_mac * 32 + (usize)is_linux * 17
+
+let tc_ignbrk: u32 = 0x1
+let tc_brkint: u32 = 0x2
+let tc_parmrk: u32 = 0x8
+let tc_istrip: u32 = 0x20
+let tc_inlcr: u32 = 0x40
+let tc_igncr: u32 = 0x80
+let tc_icrnl: u32 = 0x100
+let tc_ixon: u32 = (u32)is_mac * 0x200 + (u32)is_linux * 0x400
+let tc_opost: u32 = 0x1
+let tc_echo: u32 = 0x8
+let tc_echonl: u32 = (u32)is_mac * 0x10 + (u32)is_linux * 0x40
+let tc_icanon: u32 = (u32)is_mac * 0x100 + (u32)is_linux * 0x2
+let tc_iexten: u32 = (u32)is_mac * 0x400 + (u32)is_linux * 0x8000
+let tc_csize: u32 = (u32)is_mac * 0x300 + (u32)is_linux * 0x30
+let tc_parenb: u32 = (u32)is_mac * 0x1000 + (u32)is_linux * 0x100
+let tc_cs8: u32 = (u32)is_mac * 0x300 + (u32)is_linux * 0x30
+let tc_vmin: usize = (usize)is_mac * 16 + (usize)is_linux * 6
+let tc_vtime: usize = (usize)is_mac * 17 + (usize)is_linux * 5

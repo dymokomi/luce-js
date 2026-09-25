@@ -1,0 +1,198 @@
+#==============================================================================================
+#
+#   os_poll - The `os` module's timers and the event loop's wait (js_os_poll)
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 2131-2277 (now, setTimeout, clearTimeout, sleepAsync,
+#       call_handler) and 2515-2658 (the POSIX js_os_poll): one call runs one pending
+#       signal handler, one expired timer, or waits in poll() for the nearest timer or a
+#       ready read/write handler and runs it. The worker message ports are not ported.
+#
+#==============================================================================================
+
+# mark: Time and timers =========================================================================
+
+func js_os_now(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return js.js_new_float64(f64(get_time_ns()) / 1e6)
+
+func free_timer(rt: Runtime*, th: OSTimer*):
+    cutils.list_del(&th.link)
+    js.js_free_value_rt(rt, th.func_)
+    js.js_free_rt(rt, th)
+
+## The timer whose list link is `el`.
+func timer_of(el: ListHead*) -> OSTimer*:
+    return (OSTimer*)((u8*)el - offsetof(OSTimer, link))
+
+func js_os_set_timeout(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let rt = js.js_get_runtime(ctx)
+    let ts = thread_state(rt)
+    let func_ = argv[0]
+    if not js.js_is_function(ctx, func_):
+        try js.js_throw_type_error(ctx, "not a function")
+    var delay: i64 = 0
+    try js.js_to_int64(ctx, &delay, argv[1])
+    let th = (OSTimer*)try js.js_mallocz(ctx, sizeof(OSTimer))
+    th.timer_id = ts.next_timer_id
+    if ts.next_timer_id == 0x7fffffff:
+        ts.next_timer_id = 1
+    else:
+        ts.next_timer_id += 1
+    th.timeout = get_time_ms() + delay
+    th.func_ = js.js_dup_value(ctx, func_)
+    cutils.list_add_tail(&th.link, &ts.os_timers)
+    return js.js_new_int32(th.timer_id)
+
+func find_timer_by_id(ts: ThreadState*, timer_id: i32) -> OSTimer*?:
+    if timer_id <= 0:
+        return none
+    var el = ts.os_timers.next else return none
+    while el != &ts.os_timers:
+        let th = timer_of(el)
+        if th.timer_id == timer_id:
+            return th
+        el = el.next else return none
+    return none
+
+func js_os_clear_timeout(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let rt = js.js_get_runtime(ctx)
+    let ts = thread_state(rt)
+    var timer_id: i32 = 0
+    try js.js_to_int32(ctx, &timer_id, argv[0])
+    let th = find_timer_by_id(ts, timer_id) else return js.js_undefined()
+    free_timer(rt, th)
+    return js.js_undefined()
+
+## return a promise
+func js_os_sleep_async(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let rt = js.js_get_runtime(ctx)
+    let ts = thread_state(rt)
+    var delay: i64 = 0
+    try js.js_to_int64(ctx, &delay, argv[0])
+    var resolving_funcs: Value[2] = [js.js_undefined(), js.js_undefined()]
+    let promise = try js.js_new_promise_capability(ctx, &resolving_funcs[0])
+    defer js.js_free_value(ctx, resolving_funcs[0])
+    defer js.js_free_value(ctx, resolving_funcs[1])
+
+    let th = (OSTimer*)(js.js_mallocz(ctx, sizeof(OSTimer)) catch failure:
+        js.js_free_value(ctx, promise)
+        error(failure.code, failure.message))
+    th.timer_id = -1
+    th.timeout = get_time_ms() + delay
+    th.func_ = js.js_dup_value(ctx, resolving_funcs[0])
+    cutils.list_add_tail(&th.link, &ts.os_timers)
+    return promise
+
+## Call `func_` without arguments and print what it throws.
+func call_handler(ctx: Context*, func_: Value):
+    # 'func' might be destroyed when calling itself (if it frees the handler), so must
+    # take extra care
+    let func1 = js.js_dup_value(ctx, func_)
+    var no_args = js.js_undefined()
+    let ret = js.js_call(ctx, func1, js.js_undefined(), 0, &no_args) catch:
+        js_std_dump_error(ctx)
+        recover js.js_undefined()
+    js.js_free_value(ctx, func1)
+    js.js_free_value(ctx, ret)
+
+# mark: The event loop's wait ==================================================================
+
+func js_poll_expand(ts: ThreadState*) -> i32:
+    let new_size = cutils.max_int(ts.poll_fds_size + ts.poll_fds_size // 2, 16)
+    var old_fds: void*? = none
+    if let fds = ts.poll_fds:
+        old_fds = fds
+    let new_fds = cutils.realloc(old_fds, (usize)new_size * sizeof(PollFd)) else return -1
+    ts.poll_fds = (PollFd*)new_fds
+    ts.poll_fds_size = new_size
+    return 0
+
+func js_poll_add_poll_fd(ts: ThreadState*, pnfds: i32*, fd: i32, events: i16) -> i32:
+    var nfds = *pnfds
+    if nfds >= ts.poll_fds_size:
+        if js_poll_expand(ts) != 0:
+            return -1
+    let poll_fds = ts.poll_fds else return -1
+    let fds = poll_fds + (usize)nfds
+    nfds += 1
+    fds.fd = fd
+    fds.events = events
+    fds.revents = 0
+    *pnfds = nfds
+    return 0
+
+## Run one pending signal handler, one expired timer or one ready read/write handler,
+## waiting for the nearest one; -1 when there are no more events (js_os_poll).
+func js_os_poll(ctx: Context*) -> i32:
+    let rt = js.js_get_runtime(ctx)
+    let ts = thread_state(rt)
+
+    # only check signals in the main thread (without workers, every runtime is)
+    if os_pending_signals != 0:
+        var el = ts.os_signal_handlers.next else return -1
+        while el != &ts.os_signal_handlers:
+            let sh = signal_handler_of(el)
+            let mask = (u64)1 << (u64)sh.sig_num
+            if (os_pending_signals & mask) != 0:
+                os_pending_signals &= ~mask
+                call_handler(ctx, sh.func_)
+                return 0
+            el = el.next else return -1
+
+    if cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers):
+        return -1 # no more events
+
+    var min_delay: i32 = 0
+    if not cutils.list_empty(&ts.os_timers):
+        let cur_time = get_time_ms()
+        min_delay = 10000
+        var el = ts.os_timers.next else return -1
+        while el != &ts.os_timers:
+            let th = timer_of(el)
+            let delay = th.timeout - cur_time
+            if delay <= 0:
+                # the timer expired
+                let func_ = th.func_
+                th.func_ = js.js_undefined()
+                free_timer(rt, th)
+                call_handler(ctx, func_)
+                js.js_free_value(ctx, func_)
+                return 0
+            elif delay < (i64)min_delay:
+                min_delay = (i32)delay
+            el = el.next else return -1
+    else:
+        min_delay = -1 # infinite
+
+    var nfds: i32 = 0
+    var el = ts.os_rw_handlers.next else return -1
+    while el != &ts.os_rw_handlers:
+        let rh = rw_handler_of(el)
+        var events: i16 = 0
+        if not js.js_is_null(rh.rw_func[0]):
+            events |= poll_in
+        if not js.js_is_null(rh.rw_func[1]):
+            events |= poll_out
+        if events != 0:
+            rh.poll_fd_index = nfds
+            if js_poll_add_poll_fd(ts, &nfds, rh.fd, events) != 0:
+                return -1
+        el = el.next else return -1
+
+    nfds = c_poll(ts.poll_fds, (usize)nfds, min_delay)
+    if nfds > 0:
+        let poll_fds = ts.poll_fds else return 0
+        el = ts.os_rw_handlers.next else return 0
+        while el != &ts.os_rw_handlers:
+            let rh = rw_handler_of(el)
+            let revents = poll_fds[(usize)rh.poll_fd_index].revents
+            if not js.js_is_null(rh.rw_func[0]) and (revents & (poll_err | poll_hup | poll_nval | poll_in)) != 0:
+                call_handler(ctx, rh.rw_func[0])
+                # must stop because the list may have been modified
+                return 0
+            if not js.js_is_null(rh.rw_func[1]) and (revents & (poll_err | poll_hup | poll_nval | poll_out)) != 0:
+                call_handler(ctx, rh.rw_func[1])
+                # must stop because the list may have been modified
+                return 0
+            el = el.next else return 0
+    return 0
