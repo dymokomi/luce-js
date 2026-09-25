@@ -10,7 +10,11 @@ stub_types.lucb
 stub_r01_malloc_runtime.lucb
 stub_r02_context.lucb
 stub_r03_atoms.lucb
-stub_r04_classes_strings.lucb
+classes.lucb
+strings.lucb
+strings_utf8.lucb
+strings_compare.lucb
+ropes.lucb
 stub_r05_shapes_objects.lucb
 stub_r06_gc.lucb
 stub_r07_exceptions.lucb
@@ -36,3 +40,4 @@ stub_r26_proxy_symbol_map.lucb
 stub_r27_promise_date.lucb
 stub_r28_typed_arrays.lucb
 stub_r29_atomics_weakref.lucb
+tests_r04.lucb

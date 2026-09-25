@@ -57,7 +57,7 @@ func js_malloc_rt(rt: Runtime*, size: usize) -> void*:
 func js_free_rt(rt: Runtime*, ptr: void*):
     trap("unported: js_free_rt")
 ## Ported from quickjs.c:1810 js_realloc_rt.
-func js_realloc_rt(rt: Runtime*, ptr: void*, size: usize) -> void*:
+func js_realloc_rt(rt: Runtime*, ptr: void*?, size: usize) -> void*?:
     trap("unported: js_realloc_rt")
 ## Ported from quickjs.c:1815 js_malloc_usable_size_rt.
 func js_malloc_usable_size_rt(rt: Runtime*, ptr: const void*) -> usize:

@@ -122,12 +122,6 @@ struct ResolveState:
 struct StackSizeState:
     var unported: i32
 
-struct StringBuffer:
-    var unported: i32
-
-struct StringRopeIter:
-    var unported: i32
-
 struct SumPreciseState:
     var unported: i32
 

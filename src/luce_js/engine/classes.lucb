@@ -1,0 +1,103 @@
+#==============================================================================================
+#
+#   classes - Registering classes: class ids and the runtime's class table
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "JSClass support" (lines 3816-3921): allocating class ids,
+#       registering a class in the runtime's class array, and growing that array together
+#       with every context's class prototype array.
+#
+#==============================================================================================
+
+import sync
+
+# CONFIG_ATOMICS is on: class ids are allocated under a process-wide lock.
+var js_class_id_mutex: sync.Mutex
+
+# The next class id JS_NewClassID hands out (quickjs.c:1414).
+var js_class_id_alloc: u32 = class_init_count
+
+## Allocate a new class id if `*pclass_id` is 0 and store it there; answer the class id
+## (JS_NewClassID).
+pub func js_new_class_id(pclass_id: u32*) -> u32:
+    js_class_id_mutex.lock()
+    var class_id = *pclass_id
+    if class_id == 0:
+        class_id = js_class_id_alloc
+        js_class_id_alloc += 1
+        *pclass_id = class_id
+    js_class_id_mutex.unlock()
+    return class_id
+
+## The class id of an object, or `invalid_class_id` for any other value (JS_GetClassID).
+pub func js_get_class_id(v: Value) -> u32:
+    if v.tag != Tag.object:
+        return invalid_class_id
+    let p = v.u.obj
+    return (u32)p.class_id
+
+## Whether `class_id` is registered in the runtime (JS_IsRegisteredClass).
+pub func js_is_registered_class(rt: Runtime*, class_id: u32) -> bool:
+    if class_id >= (u32)rt.class_count:
+        return false
+    let class_array = rt.class_array else trap("class_count without class_array")
+    return class_array[class_id].class_id != 0
+
+# Create a new object internal class. Return -1 if error, 0 if OK. The finalizer can be
+# none if none is needed.
+func js_new_class1(rt: Runtime*, class_id: u32, class_def: const ClassDef*, name: Atom) -> i32:
+    if class_id >= (1 << 16):
+        return -1
+    if js_is_registered_class(rt, class_id):
+        return -1
+
+    if class_id >= (u32)rt.class_count:
+        let new_size = cutils.max_int((i32)class_init_count,
+                                      cutils.max_int((i32)class_id + 1, rt.class_count * 3 // 2))
+
+        # reallocate the context class prototype array, if any
+        var el = rt.context_list.next else trap("unlinked context list")
+        while el != &rt.context_list:
+            let ctx = (Context*)((u8*)el - offsetof(Context, link))
+            let old_tab = ctx.class_proto else trap("context without class_proto")
+            let new_tab_raw = js_realloc_rt(rt, old_tab, sizeof(Value) * (usize)new_size)
+            let new_tab = (Value*)(new_tab_raw else return -1)
+            for i in rt.class_count..<new_size:
+                new_tab[i] = js_null()
+            ctx.class_proto = new_tab
+            el = el.next else trap("unlinked context list")
+
+        # reallocate the class array
+        var old_array: void*? = none
+        if let class_array = rt.class_array:
+            old_array = class_array
+        let new_array_raw = js_realloc_rt(rt, old_array, sizeof(Class) * (usize)new_size)
+        let new_class_array = (Class*)(new_array_raw else return -1)
+        discard(cutils.memset(new_class_array + rt.class_count, 0,
+                              (usize)(new_size - rt.class_count) * sizeof(Class)))
+        rt.class_array = new_class_array
+        rt.class_count = new_size
+
+    let class_array = rt.class_array else trap("class_count without class_array")
+    let cl = &class_array[class_id]
+    cl.class_id = class_id
+    cl.class_name = js_dup_atom_rt(rt, name)
+    cl.finalizer = class_def.finalizer
+    cl.gc_mark = class_def.gc_mark
+    cl.call = class_def.call
+    cl.exotic = class_def.exotic
+    return 0
+
+## Register the class `class_id` as `class_def` describes it. Answer -1 if the id is
+## already registered or out of range, or on memory exhaustion; 0 if OK (JS_NewClass).
+pub func js_new_class(rt: Runtime*, class_id: u32, class_def: const ClassDef*) -> i32:
+    let class_name = class_def.class_name.bytes
+    let len = (i32)class_name.length
+    var name = js_find_atom_raw(rt, class_name.data, (usize)len, (i32)js_atom_type_string)
+    if name == no_atom:
+        name = js_new_atom_init_raw(rt, class_name.data, len, (i32)js_atom_type_string)
+        if name == no_atom:
+            return -1
+    let ret = js_new_class1(rt, class_id, class_def, name)
+    js_free_atom_rt(rt, name)
+    return ret
