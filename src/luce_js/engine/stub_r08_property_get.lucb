@@ -48,16 +48,16 @@ func js_string_obj_get_length(ctx: Context*, obj: Value) -> u32:
 func num_keys_cmp(p1: const void*, p2: const void*, opaque: void*) -> i32:
     trap("unported: num_keys_cmp")
 ## Ported from quickjs.c:8586 JS_FreePropertyEnum.
-func js_free_property_enum(ctx: Context*, tab: PropertyEnum*, len: u32):
+func js_free_property_enum(ctx: Context*, tab: PropertyEnum*?, len: u32):
     trap("unported: JS_FreePropertyEnum")
 ## Ported from quickjs.c:8598 JS_GetOwnPropertyNamesInternal.
-func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum**, plen: u32*, p: Object*, flags: i32) -> i32!:
+func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum*?*, plen: u32*, p: Object*, flags: i32) -> i32!:
     trap("unported: JS_GetOwnPropertyNamesInternal")
 ## Ported from quickjs.c:8803 JS_GetOwnPropertyNames.
 func js_get_own_property_names(ctx: Context*, ptab: PropertyEnum**, plen: u32*, obj: Value, flags: i32) -> i32!:
     trap("unported: JS_GetOwnPropertyNames")
 ## Ported from quickjs.c:8817 JS_GetOwnPropertyInternal.
-func js_get_own_property_internal(ctx: Context*, desc: PropertyDescriptor*, p: Object*, prop: Atom) -> i32!:
+func js_get_own_property_internal(ctx: Context*, desc: PropertyDescriptor*?, p: Object*, prop: Atom) -> i32!:
     trap("unported: JS_GetOwnPropertyInternal")
 ## Ported from quickjs.c:8895 JS_GetOwnProperty.
 func js_get_own_property(ctx: Context*, desc: PropertyDescriptor*, obj: Value, prop: Atom) -> i32!:

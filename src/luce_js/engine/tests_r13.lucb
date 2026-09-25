@@ -1,0 +1,113 @@
+#==============================================================================================
+#
+#   tests_r13 - Unit tests of the operator, iterator and closure helpers
+#
+#   DESCRIPTION:
+#       Tests of the parts of quickjs.c lines 15090-17746 that work on plain values
+#       without a runtime: the tag classes of the slow operators, the short big integer
+#       range, number comparison (relational, strict, SameValue, SameValueZero), the
+#       stack slot clearing of the exception path, the class of a closure by function
+#       kind, and the frame-to-async-state container arithmetic.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## A NaN whose payload is not the canonical one ("NaN is not always normalized").
+func test_other_nan() -> f64:
+    return f64.bits(0x7ff8000000000123)
+
+# mark: Tags ====================================================================================
+
+test "tag classes of the slow operators":
+    assert(tag_is_string(Tag.string) and tag_is_string(Tag.string_rope))
+    assert(not tag_is_string(Tag.symbol) and not tag_is_string(Tag.object))
+    assert(tag_is_bigint(Tag.big_int) and tag_is_bigint(Tag.short_big_int))
+    assert(not tag_is_bigint(Tag.int))
+    assert(tag_is_number(Tag.int) and tag_is_number(Tag.float64))
+    assert(tag_is_number(Tag.big_int) and tag_is_number(Tag.short_big_int))
+    assert(not tag_is_number(Tag.boolean) and not tag_is_number(Tag.string))
+
+test "tag <= JS_TAG_NULL compares the tag unsigned":
+    assert(tag_is_int_bool_or_null(Tag.int))
+    assert(tag_is_int_bool_or_null(Tag.boolean))
+    assert(tag_is_int_bool_or_null(Tag.null))
+    assert(not tag_is_int_bool_or_null(Tag.undefined))
+    assert(not tag_is_int_bool_or_null(Tag.float64))
+    # the reference-counted tags are negative, so above every other tag unsigned
+    assert(not tag_is_int_bool_or_null(Tag.object))
+    assert(not tag_is_int_bool_or_null(Tag.string))
+    assert(not tag_is_int_bool_or_null(Tag.big_int))
+
+test "short big integers are the i32 range":
+    assert(js_fits_short_bigint(0))
+    assert(js_fits_short_bigint(2147483647))
+    assert(js_fits_short_bigint(-2147483648))
+    assert(not js_fits_short_bigint(2147483648))
+    assert(not js_fits_short_bigint(-2147483649))
+
+# mark: Number comparison =======================================================================
+
+test "relational comparison of numbers, booleans and null":
+    let one = js_new_int32(1)
+    let half = js_new_float64_raw(0.5)
+    let nan = js_nan()
+    assert(js_float64_compare(Op.lt, half, one))
+    assert(js_float64_compare(Op.lte, one, one))
+    assert(js_float64_compare(Op.gt, one, half))
+    assert(js_float64_compare(Op.gte, one, js_true()))
+    assert(js_float64_compare(Op.lt, js_null(), half))
+    # if NaN return false
+    assert(not js_float64_compare(Op.lt, nan, one))
+    assert(not js_float64_compare(Op.lte, nan, nan))
+    assert(not js_float64_compare(Op.gt, one, nan))
+    assert(not js_float64_compare(Op.gte, nan, one))
+
+test "strict equality: NaN differs from itself, +0 equals -0":
+    let nan = f64.bits(0x7ff8000000000000)
+    assert(not js_strict_eq_number(nan, nan, StrictEqMode.strict))
+    assert(js_strict_eq_number(0.0, -0.0, StrictEqMode.strict))
+    assert(js_strict_eq_number(1.5, 1.5, StrictEqMode.strict))
+    assert(not js_strict_eq_number(1.5, 2.5, StrictEqMode.strict))
+
+test "SameValue: every NaN equals itself, +0 differs from -0":
+    let nan = f64.bits(0x7ff8000000000000)
+    assert(js_strict_eq_number(nan, test_other_nan(), StrictEqMode.same_value))
+    assert(not js_strict_eq_number(nan, 1.0, StrictEqMode.same_value))
+    assert(not js_strict_eq_number(0.0, -0.0, StrictEqMode.same_value))
+    assert(js_strict_eq_number(-0.0, -0.0, StrictEqMode.same_value))
+    assert(js_strict_eq_number(3.0, 3.0, StrictEqMode.same_value))
+
+test "SameValueZero: every NaN equals itself, +0 equals -0":
+    let nan = f64.bits(0x7ff8000000000000)
+    assert(js_strict_eq_number(test_other_nan(), nan, StrictEqMode.same_value_zero))
+    assert(js_strict_eq_number(0.0, -0.0, StrictEqMode.same_value_zero))
+    assert(not js_strict_eq_number(1.0, nan, StrictEqMode.same_value_zero))
+
+# mark: Stack slots, closures and frames ========================================================
+
+test "the exception path clears both operand slots":
+    var stack: Value[3] = [js_new_int32(1), js_new_int32(2), js_new_int32(3)]
+    js_clear_binary_operands(&stack[2])
+    assert(js_is_undefined(stack[0]) and js_is_undefined(stack[1]))
+    assert(js_value_get_int(stack[2]) == 3)
+
+test "a closure's class follows the function kind":
+    assert(func_kind_to_class_id[(usize)js_func_normal] == ClassId.bytecode_function)
+    assert(func_kind_to_class_id[(usize)js_func_generator] == ClassId.generator_function)
+    assert(func_kind_to_class_id[(usize)js_func_async] == ClassId.async_function)
+    assert(func_kind_to_class_id[(usize)js_func_async_generator] ==
+        ClassId.async_generator_function)
+
+test "an async function's state contains its frame":
+    var buf: u64[64] = ---
+    let s = (AsyncFunctionState*)&buf[0]
+    assert(sizeof(AsyncFunctionState) <= sizeof(u64) * 64)
+    assert(js_async_function_of_frame(&s.frame) == s)
+
+test "the call flags are distinct bits":
+    assert((call_flag_constructor & call_flag_copy_argv) == 0)
+    assert((call_flag_constructor & call_flag_generator) == 0)
+    assert((call_flag_copy_argv & call_flag_generator) == 0)
+    assert((u8)OpSpecialObject.import_meta == 6)
+    assert((global_var_offset & argument_var_offset) == 0)

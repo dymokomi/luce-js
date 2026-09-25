@@ -27,7 +27,7 @@ func get_leb128(pval: u32*, buf: const u8*, buf_end: const u8*) -> i32:
 func get_sleb128(pval: i32*, buf: const u8*, buf_end: const u8*) -> i32:
     trap("unported: get_sleb128")
 ## Ported from quickjs.c:7435 find_line_num.
-func find_line_num(ctx: Context*, b: FunctionBytecode*, pc_value: u32, pcol_num: i32*) -> i32!:
+func find_line_num(ctx: Context*, b: FunctionBytecode*, pc_value: u32, pcol_num: i32*) -> i32:
     trap("unported: find_line_num")
 ## Ported from quickjs.c:7538 build_backtrace.
 func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*, line_num: i32, col_num: i32, backtrace_flags: i32):
@@ -105,7 +105,7 @@ func js_throw_interrupted(ctx: Context*):
 func js_poll_interrupts_raw(ctx: Context*) -> i32!:
     trap("unported: __js_poll_interrupts")
 ## Ported from quickjs.c:7877 js_poll_interrupts.
-func js_poll_interrupts(ctx: Context*) -> i32:
+func js_poll_interrupts(ctx: Context*) -> !:
     trap("unported: js_poll_interrupts")
 ## Ported from quickjs.c:7886 JS_SetImmutablePrototype.
 func js_set_immutable_prototype(ctx: Context*, obj: Value):

@@ -117,7 +117,7 @@ func js_array_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
 func js_create_array_iterator(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
     trap("unported: js_create_array_iterator")
 ## Ported from quickjs.c:43628 js_array_iterator_next.
-func js_array_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: bool*, magic: i32) -> Value!:
+func js_array_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*, magic: i32) -> Value!:
     trap("unported: js_array_iterator_next")
 ## Ported from quickjs.c:43696 js_iterator_wrap_finalizer.
 func js_iterator_wrap_finalizer(rt: Runtime*, val: Value):

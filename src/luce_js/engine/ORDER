@@ -28,7 +28,13 @@ stub_r09_property_set.lucb
 stub_r10_define_property.lucb
 stub_r11_bigint.lucb
 stub_r12_conversions.lucb
-stub_r13_operators.lucb
+operators_slow.lucb
+operators.lucb
+arguments_objects.lucb
+for_in.lucb
+iterators.lucb
+closures.lucb
+calls.lucb
 stub_r14_interpreter.lucb
 stub_r15_async_generators.lucb
 stub_r16_tokenizer.lucb
@@ -49,3 +55,4 @@ tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
+tests_r13.lucb

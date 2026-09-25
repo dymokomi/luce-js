@@ -84,7 +84,7 @@ func js_bigint_new_si64(ctx: Context*, a: i64) -> BigInt*?:
 func js_bigint_new_ui64(ctx: Context*, a: u64) -> BigInt*?:
     trap("unported: js_bigint_new_ui64")
 ## Ported from quickjs.c:11709 js_bigint_new_di.
-func js_bigint_new_di(ctx: Context*, a: i64) -> BigInt*?:
+func js_bigint_new_di(ctx: Context*, a: i64) -> BigInt*!:
     trap("unported: js_bigint_new_di")
 ## Ported from quickjs.c:11730 js_bigint_normalize1.
 func js_bigint_normalize1(ctx: Context*, a: BigInt*, l: i32) -> BigInt*!:
@@ -102,7 +102,7 @@ func js_bigint_get_si_sat(a: const BigInt*) -> i32:
 func js_bigint_extend(ctx: Context*, r: BigInt*, op1: u32) -> BigInt*!:
     trap("unported: js_bigint_extend")
 ## Ported from quickjs.c:11811 js_bigint_add.
-func js_bigint_add(ctx: Context*, a: const BigInt*, b: const BigInt*, b_neg: i32) -> BigInt*?:
+func js_bigint_add(ctx: Context*, a: const BigInt*, b: const BigInt*, b_neg: i32) -> BigInt*!:
     trap("unported: js_bigint_add")
 ## Ported from quickjs.c:11852 js_bigint_neg.
 func js_bigint_neg(ctx: Context*, a: const BigInt*) -> BigInt*:
@@ -114,16 +114,16 @@ func js_bigint_mul(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*
 func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem: bool) -> BigInt*!:
     trap("unported: js_bigint_divrem")
 ## Ported from quickjs.c:11982 js_bigint_logic.
-func js_bigint_logic(ctx: Context*, a: const BigInt*, b: const BigInt*, op: Op) -> BigInt*?:
+func js_bigint_logic(ctx: Context*, a: const BigInt*, b: const BigInt*, op: Op) -> BigInt*!:
     trap("unported: js_bigint_logic")
 ## Ported from quickjs.c:12034 js_bigint_not.
 func js_bigint_not(ctx: Context*, a: const BigInt*) -> BigInt*?:
     trap("unported: js_bigint_not")
 ## Ported from quickjs.c:12049 js_bigint_shl.
-func js_bigint_shl(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*?:
+func js_bigint_shl(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*!:
     trap("unported: js_bigint_shl")
 ## Ported from quickjs.c:12078 js_bigint_shr.
-func js_bigint_shr(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*?:
+func js_bigint_shr(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*!:
     trap("unported: js_bigint_shr")
 ## Ported from quickjs.c:12105 js_bigint_pow.
 func js_bigint_pow(ctx: Context*, a: const BigInt*, b: BigInt*) -> BigInt*!:
@@ -141,7 +141,7 @@ func js_bigint_to_float64(ctx: Context*, a: const BigInt*) -> f64:
 func js_bigint_from_float64(ctx: Context*, pres: i32*, a1: f64) -> BigInt*?:
     trap("unported: js_bigint_from_float64")
 ## Ported from quickjs.c:12339 js_bigint_float64_cmp.
-func js_bigint_float64_cmp(ctx: Context*, a: const BigInt*, b: f64) -> i32!:
+func js_bigint_float64_cmp(ctx: Context*, a: const BigInt*, b: f64) -> i32:
     trap("unported: js_bigint_float64_cmp")
 ## Ported from quickjs.c:12393 js_bigint_cmp.
 func js_bigint_cmp(ctx: Context*, a: const BigInt*, b: const BigInt*) -> i32:
@@ -159,7 +159,7 @@ func limb_to_a(q: u8*, n: u32, radix: u32, len: i32) -> u8*:
 func js_bigint_to_string1(ctx: Context*, val: Value, radix: i32) -> Value!:
     trap("unported: js_bigint_to_string1")
 ## Ported from quickjs.c:12732 JS_CompactBigInt.
-func js_compact_bigint(ctx: Context*, p: BigInt*) -> Value!:
+func js_compact_bigint(ctx: Context*, p: BigInt*) -> Value:
     trap("unported: JS_CompactBigInt")
 ## Ported from quickjs.c:12763 js_atof.
 func js_atof(ctx: Context*, str_: const u8*, pp: const u8**, radix: i32, flags: i32) -> Value!:
