@@ -1,4 +1,4 @@
-# Porting QuickJS to luce-base
+# The luce-js port of QuickJS
 
 luce-js is a port of Fabrice Bellard's QuickJS (upstream `bellard/quickjs`, version
 2026-06-04, commit `04be246`) to luce-base. It is a **faithful port**: the same data
@@ -6,8 +6,9 @@ structures, the same algorithms, the same bytecode, the same atoms, the same ord
 functions, and the same comments where they still apply. It is not a redesign. When in
 doubt, do what the C does, spelled the way luce-base spells it.
 
+This document describes how the port is laid out and the conventions every change keeps.
 The language reference is `../luce-base/docs/language/base.md`; the standard library
-reference is `../luce-base/docs/LIBRARY.md`. Read §5–§12 of the language before porting.
+reference is `../luce-base/docs/LIBRARY.md`.
 
 ## Layout
 
@@ -17,16 +18,23 @@ reference is `../luce-base/docs/LIBRARY.md`. Read §5–§12 of the language bef
 | `dtoa.c`, `dtoa.h` | `luce_js.dtoa` | `src/luce_js/dtoa/` |
 | `libunicode.c`, `libunicode-table.h` | `libunicode` (luce-regex package) | `../luce-regex/src/luce_regex/unicode/` |
 | `libregexp.c`, `libregexp-opcode.h` | not ported: the `regex` module of the luce-regex dependency (engine `regexp_bridge.lucb`) | `../luce-regex` |
-| `quickjs.c`, `quickjs.h`, `quickjs-atom.h`, `quickjs-opcode.h` | `luce_js.engine` | `src/luce_js/engine/` |
+| `quickjs.c`, `quickjs.h`, `quickjs-atom.h`, `quickjs-opcode.h` | `luce_js.engine` (exported as `js`) | `src/luce_js/engine/` |
+| `quickjs-libc.c` (POSIX, without workers) | `luce_js.host` (exported as `host`) | `src/luce_js/host/` |
+| `qjs.c` (without the REPL) | the `ljs` program | `tests/ljs.lucb` |
+| `run-test262.c` | the `run-test262` program | `tests/run_test262/` |
 
 Every module is a directory whose `ORDER` file lists its fragments (language §16.1). The
 fragments of one module share one scope, exactly like the one C file they came from, so a
 `static` C function is a private Luce function visible to every fragment of its module.
 Another module's declarations are reached with `import luce_js.cutils as cutils` in the
 module's first fragment (imports in `module.lucb` apply to every fragment) and must be `pub`.
+`luce_js.cutils` also holds the few helpers every module shares: the C library binding,
+C strings as `str` views (`c_str_view`, `c_str_equals`) and nullable byte pointers as untyped
+ones (`nullable_void`, `nullable_const_void`).
 
 - Keep each fragment focused and under about 600 lines. Split along the C source's own
-  sections, in the C source's order.
+  sections, in the C source's order. Generated tables (`atoms_table`, `opcodes_table`) and
+  test vector tables are exempt.
 - Every fragment starts with a header box saying what it owns and which C lines it came
   from:
 
@@ -41,11 +49,17 @@ module's first fragment (imports in `module.lucb` apply to every fragment) and m
 #==============================================================================================
 ```
 
-- Fragments over 150 lines use `# mark: Name ====...` section comments.
+- Fragments over 150 lines use `# mark: Name ====...` section comments (97 columns).
 - Keep QuickJS's explanatory comments (as `#` comments), and give every `pub` declaration
   a `##` doc line.
-- Tests live in a `tests.lucb` fragment at the end of the module's `ORDER` (tests may use
-  private declarations). Run a module's tests with `luce-base test src/luce_js/<module>`.
+- Tests live in `tests*.lucb` fragments at the end of the module's `ORDER` (tests may use
+  private declarations), named after what they test. Run a module's tests with
+  `luce-base test src/luce_js/<module>`.
+- `luce-base check src/luce_js/<module> -W` prints no warning for any module or test
+  program: no unused private function, local or import, and no unreachable statement. The
+  debug dumps QuickJS compiles only under `DUMP_*` options are not ported. A per-target
+  return is written `if os.macos: ... else: ...` so the branch ruled out is pruned
+  silently.
 
 ## Names
 
@@ -164,32 +178,42 @@ C and luce-base disagree in three places; get these right, they are where ports 
 - `printf`-style formats (`JS_ThrowTypeError(ctx, "%s is not a function", name)`) become
   `fmt` parameters and interpolation: `throw_type_error(ctx, f"{name} is not a function")`.
 
-## The engine
+## How the engine is organized
 
-The engine module `src/luce_js/engine/` starts as the shared types (written by hand:
-`value`, `refcount`, `api_types`, `types_runtime`, `types_object`), the generated tables
-(`atoms_table`, `opcodes_table`, by `tools/engine_tables.py`), and one **stub fragment per
-region** of quickjs.c (`stub_rNN_name.lucb`): every C function of the region with a
-generated signature and a body of `trap("unported: NAME")`, plus placeholders for the types
-a region declares (`stub_types.lucb`). The module always type-checks
-(`luce-base check src/luce_js/engine`).
+`src/luce_js/engine/ORDER` lists the fragments in quickjs.c's order. Each header gives the
+C lines it ports; in broad groups:
 
-Porting a region:
-
-1. Write the region's code in new fragments named after what they hold (`atoms.lucb`,
-   `strings.lucb`, `shapes.lucb`, ...), each under ~600 lines, in C order; list them in
-   `ORDER` where the region's stub file was, and delete the stub file. Move the region's
-   type placeholders out of `stub_types.lucb` into real declarations.
-2. The region owns its functions' signatures. The generated ones are guesses (from the C
-   text): fix nullability (`T*` vs `T*?`), fallibility, `bool` vs `i32`, spans, parameter
-   names. When you change a signature, fix every call of it in ported (non-stub) code; stub
-   bodies call nothing, so other regions' stubs are not affected, but update a stub whose
-   signature mentions a type you renamed.
-3. Calls to functions of unported regions call their stubs; that is expected.
-4. Keep the shared type fragments stable. Change them only when the region needs it (a
-   field's nullability, a missing field), and say so in your report.
-5. `luce-base check src/luce_js/engine` must pass before you are done, with nothing left
-   of the region's stubs.
+- **Declarations**: `module` (imports, the error code, engine-wide limits), `value` and
+  `refcount` (JSValue and reference counts), `api_types` (quickjs.h's public types, class
+  and function-list tables), `types_runtime`, `types_bytecode`, `types_object` (the structs
+  of quickjs.c), `compiler_types` (the parser's and compiler's), and the generated
+  `atoms_table` and `opcodes_table` (`tools/engine_tables.py` from quickjs-atom.h and
+  quickjs-opcode.h).
+- **Runtime**: atoms, QuickJS's own small-block allocator (`malloc`, `malloc_api`), the
+  runtime and contexts, classes, strings and ropes, shapes and objects, the garbage
+  collector (`gc`, `object_free`), `memory_usage`, exceptions and the `js_throw_*` helpers.
+- **The object model**: prototypes, property reads (`property_get`), own properties,
+  `define_property*`, global variables, property writes (`property_set*`,
+  `property_add_delete`, `fast_arrays`), conversions, the value printer, BigInt
+  (`bigint_*`), and the slow paths of the operators.
+- **The interpreter**: `interpreter_support` (InterpState and the macros of
+  JS_CallInternal), `interpreter` (js_call_internal and its dispatch loop), `interp_frames`
+  (frame setup, the call opcodes, unwinding and release), the opcode bodies
+  (`interp_ops_*`), `call_entry` (JS_Call and friends), generators and async functions.
+- **The compiler**: the tokenizer, the emitter, the parser (`parser_*`, `parse_function*`,
+  `module_parse`), modules (`modules`, `module_resolve`, `module_link`, `module_load`,
+  `module_eval`), the variable resolution pass (`closure_vars`, `resolve_scope_var`,
+  `resolve_private_fields`, `eval_variables`, `resolve_variables`), the label resolution
+  and peephole pass (`code_match`, `label_helpers`, `resolve_labels*`), `stack_size`,
+  `create_function` and `eval`.
+- **Serialization**: the binary object format (`bytecode_writer`, `object_writer`,
+  `bytecode_reader`, `object_reader`, `object_list`).
+- **The builtins**, one group of fragments per class in quickjs.c's order: functions and
+  errors, Object, Number and Boolean, String, Math, Array and the iterators, RegExp
+  (`regexp_*`, over luce-regex), JSON, Reflect, Proxy, Symbol, Map and Set, Promise,
+  URI, Date, Atomics, WeakRef, the intrinsics, ArrayBuffer, the typed arrays and DataView.
+- **Unit tests** (`tests_*`), for what can be checked without JavaScript source; the
+  JavaScript tests exercise the rest.
 
 Engine idioms:
 
@@ -211,25 +235,46 @@ Engine idioms:
 - Builtin tables (`JSCFunctionListEntry` arrays) are `let` arrays of
   `CFunctionListEntry(...)`; the spelling of each C macro is in `api_types.lucb`.
 - Class tables and exotic method tables are `let` values of `ClassExoticMethods(...)` etc.
-- Do not port the `DUMP_*` debug blocks (`#ifdef DUMP_LEAKS`, `DUMP_BYTECODE`, ...); port
-  code under `#ifdef CONFIG_*` options that are on by default (check the top of quickjs.c).
+- Port code under `#ifdef CONFIG_*` options that are on by default (check the top of
+  quickjs.c); leave out the `DUMP_*` debug blocks.
+- The interpreter's structure (two nested loops instead of computed goto, one noinline
+  function per opcode body taking the InterpState) is explained in the header of
+  `interpreter.lucb`.
 
 ## Tests
 
-- Every support module has unit tests in its `tests.lucb`, driven by the upstream
-  behaviour: port the C test tables where upstream has them, otherwise write cases that pin
-  the C results (compile the C and compare when in doubt).
-- The engine is tested by running upstream's `tests/*.js` (`tests/run.py`) and test262
-  (`tests/test262.py`, see the README). A test262 test that fails in luce-js and not in
-  QuickJS (a line that is not in `tests/test262_errors.txt`) is a port or compiler bug;
-  reduce it, fix it, and add the reduction to `tests/js/test_conformance.js`. A test that
-  traps is reported as CRASH by the split run.
-- A test run must be green before a change is committed. Never commit on a pipeline whose
-  exit status is not the test's own.
+- `./test.sh` runs every module's unit tests and then QuickJS's own JavaScript tests
+  (`tests/run.py`, through the `ljs` runner built in `build/ljs`). A test run must be
+  green before a change is committed; never commit on a pipeline whose exit status is not
+  the test's own.
+- Every support module has unit tests in its `tests*.lucb` fragments, driven by the
+  upstream behaviour: port the C test tables where upstream has them, otherwise write cases
+  that pin the C results (compile the C and compare when in doubt).
+- test262: `python3 tests/test262.py` clones tc39/test262 at the commit QuickJS pins
+  (outside the repository, `../.test262` or `$LUCE_JS_TEST262`, linked from
+  `tests/test262`), applies `tests/test262.patch`, builds `build/run-test262` and runs the
+  suite with `tests/test262.conf`. The expected result is QuickJS's own:
+  `58/83558 errors, 3356 excluded, 6000 skipped`, the 58 being exactly
+  `tests/test262_errors.txt`. `--no-build` reuses the runner; `--direct` runs one
+  threaded runner as `make test2` does. A test that fails in luce-js and not in QuickJS
+  (a line that is not in `tests/test262_errors.txt`) is a port or compiler bug; reduce it,
+  fix it, and add the reduction to `tests/js/test_conformance.js`. A test that traps is
+  reported as CRASH by the split run.
 
 ## Language bugs
 
 When the compiler rejects correct code, crashes, or miscompiles: reduce it to the smallest
 program that shows it, keep the reduction in `docs/compiler-issues/`, work around it in the
 port with a `# workaround: compiler-issues/NAME` comment, and report it. The compiler is
-not changed from this repository.
+not changed from this repository. When the compiler is fixed, remove the workaround and
+its reduction.
+
+## History
+
+The port was written region by region: the engine started as its shared types, the
+generated tables and one stub fragment per region of quickjs.c (every C function with a
+generated signature and a `trap("unported: NAME")` body), and each region replaced its
+stub with real fragments while the module kept type-checking. No stub is left; the
+region-by-region workflow no longer applies. `docs/namemap.txt` is the name table that
+workflow generated (`tools/namemap.py`, from a list of quickjs.c's functions); it still
+gives the Luce name of every quickjs.c function whose name changes.

@@ -105,8 +105,8 @@ pub func memcpy_no_ub(dest: void*?, src: const void*?, n: usize):
 
 # mark: Nullable pointers =======================================================================
 
-# workaround: compiler-issues/nullable_pointer_cast and nullable_pointer_const (`u8*?` does
-# not convert to `void*?` or `const void*?`, implicitly or by a cast)
+# workaround: compiler-issues/nullable_pointer_cast, compiler-issues/nullable_pointer_const
+# (`u8*?` converts to neither `void*?` nor `const void*?`, implicitly or by a cast)
 
 ## The nullable byte pointer `p` as an untyped one: none stays none.
 pub func nullable_void(p: u8*?) -> void*?:
