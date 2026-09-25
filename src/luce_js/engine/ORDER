@@ -44,7 +44,11 @@ stub_r17_parser.lucb
 stub_r18_modules.lucb
 stub_r19_resolve.lucb
 stub_r20_function_eval.lucb
-stub_r21_bytecode_io.lucb
+bytecode_writer.lucb
+object_writer.lucb
+bytecode_reader.lucb
+object_reader.lucb
+function_list.lucb
 stub_r22_object_function_error.lucb
 stub_r23_array_iterator.lucb
 stub_r24_number_string_math.lucb
@@ -60,3 +64,4 @@ tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
+tests_bytecode_io.lucb

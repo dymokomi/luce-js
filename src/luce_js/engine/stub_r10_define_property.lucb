@@ -21,7 +21,7 @@ func js_define_property_value(ctx: Context*, this_obj: Value, prop: Atom, val: V
 func js_define_property_value_value(ctx: Context*, this_obj: Value, prop: Value, val: Value, flags: i32) -> i32!:
     trap("unported: JS_DefinePropertyValueValue")
 ## Ported from quickjs.c:10705 JS_DefinePropertyValueUint32.
-func js_define_property_value_uint32(ctx: Context*, this_obj: Value, idx: u32, val: Value, flags: i32) -> i32:
+func js_define_property_value_uint32(ctx: Context*, this_obj: Value, idx: u32, val: Value, flags: i32) -> bool!:
     trap("unported: JS_DefinePropertyValueUint32")
 ## Ported from quickjs.c:10712 JS_DefinePropertyValueInt64.
 func js_define_property_value_int64(ctx: Context*, this_obj: Value, idx: i64, val: Value, flags: i32) -> i32:
@@ -30,7 +30,7 @@ func js_define_property_value_int64(ctx: Context*, this_obj: Value, idx: i64, va
 func js_define_property_value_str(ctx: Context*, this_obj: Value, prop: const u8*, val: Value, flags: i32) -> i32!:
     trap("unported: JS_DefinePropertyValueStr")
 ## Ported from quickjs.c:10735 JS_DefinePropertyGetSet.
-func js_define_property_get_set(ctx: Context*, this_obj: Value, prop: Atom, getter: Value, setter: Value, flags: i32) -> i32:
+func js_define_property_get_set(ctx: Context*, this_obj: Value, prop: Atom, getter: Value, setter: Value, flags: i32) -> bool!:
     trap("unported: JS_DefinePropertyGetSet")
 ## Ported from quickjs.c:10748 JS_CreateDataPropertyUint32.
 func js_create_data_property_uint32(ctx: Context*, this_obj: Value, idx: i64, val: Value, flags: i32) -> i32:

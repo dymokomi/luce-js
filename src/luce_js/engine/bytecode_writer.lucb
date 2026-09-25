@@ -1,0 +1,390 @@
+#==============================================================================================
+#
+#   bytecode_writer - The binary object writer: its state, primitives and function records
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "binary object writer & reader" lines 37477-37967: the tags of
+#       the format (BCTagEnum) and its version, the writer's state, the little-endian
+#       primitives (bc_put_*), the atom table built while writing, the byte swap of
+#       bytecode for big-endian hosts, and the writers of strings, big integers, compiled
+#       functions and modules. The byte format is QuickJS's exactly, so files written by
+#       the C qjsc can be read and the reverse.
+#
+#       is_be (quickjs.c 37551) belongs to the region before this one.
+#
+#       A writer function that returns -1 in C (an exception is pending) is fallible here.
+#       C ignores the result of bc_put_atom where it only fails when out of memory; the
+#       port propagates that failure.
+#
+#==============================================================================================
+
+# mark: Tags and state ==========================================================================
+
+## The tag byte before each value of the binary format (BCTagEnum).
+enum BCTag as u8:
+    null = 1
+    undefined = 2
+    bool_false = 3
+    bool_true = 4
+    int32 = 5
+    float64 = 6
+    string = 7
+    object = 8
+    array = 9
+    big_int = 10
+    template_object = 11
+    function_bytecode = 12
+    module = 13
+    typed_array = 14
+    array_buffer = 15
+    shared_array_buffer = 16
+    date = 17
+    object_value = 18
+    object_reference = 19
+
+## The format version, the first byte of every binary object (BC_VERSION).
+let bc_version: u8 = 5
+
+## The SharedArrayBuffer data pointers a write collected (the C `uint8_t **`).
+pub type SabTab = u8*?*?
+
+## The state of JS_WriteObject2 (BCWriterState).
+struct BCWriterState:
+    var ctx: Context*
+    var dbuf: cutils.DynBuf
+    var allow_bytecode: bool
+    var allow_sab: bool
+    var allow_reference: bool
+    ## Atoms below this one are written as themselves; the others through the atom table.
+    var first_atom: u32
+    ## The table index (plus first_atom) of each atom at or above first_atom, 0 if none yet.
+    var atom_to_idx: u32*?
+    var atom_to_idx_size: i32
+    ## The atoms of the table, in index order.
+    var idx_to_atom: Atom*?
+    var idx_to_atom_count: i32
+    var idx_to_atom_size: i32
+    var sab_tab: SabTab
+    var sab_tab_len: i32
+    var sab_tab_size: i32
+    ## List of referenced objects (used if allow_reference = true).
+    var object_list: ObjectList
+
+# mark: Primitives ==============================================================================
+
+func bc_put_u8(s: BCWriterState*, v: u8):
+    discard(cutils.dbuf_putc(&s.dbuf, v))
+
+func bc_put_u16(s: BCWriterState*, v0: u16):
+    var v = v0
+    if is_be():
+        v = cutils.bswap16(v)
+    discard(cutils.dbuf_put_u16(&s.dbuf, v))
+
+func bc_put_u32(s: BCWriterState*, v0: u32):
+    var v = v0
+    if is_be():
+        v = cutils.bswap32(v)
+    discard(cutils.dbuf_put_u32(&s.dbuf, v))
+
+func bc_put_u64(s: BCWriterState*, v0: u64):
+    var v = v0
+    if is_be():
+        v = cutils.bswap64(v)
+    discard(cutils.dbuf_put_u64(&s.dbuf, v))
+
+func bc_put_leb128(s: BCWriterState*, v: u32):
+    dbuf_put_leb128(&s.dbuf, v)
+
+func bc_put_sleb128(s: BCWriterState*, v: i32):
+    dbuf_put_sleb128(&s.dbuf, v)
+
+## Store the `n`-bit field `val` at bit `*pidx` of `*pflags` and advance `*pidx`.
+func bc_set_flags(pflags: u32*, pidx: i32*, val: u32, n: i32):
+    *pflags = *pflags | (val << (u32)*pidx)
+    *pidx += n
+
+# mark: Atoms ===================================================================================
+
+## The number an atom is written as: itself below first_atom (and for tagged integers), else
+## its index in the atom table plus first_atom, adding it to the table on first use.
+func bc_atom_to_idx(s: BCWriterState*, pres: u32*, atom0: Atom) -> !:
+    var atom = atom0
+    if atom < s.first_atom or js_atom_is_tagged_int_raw(atom):
+        *pres = atom
+        return
+    atom -= s.first_atom
+    if atom < (u32)s.atom_to_idx_size:
+        let known = s.atom_to_idx else trap("bc_atom_to_idx: no table")
+        if known[(usize)atom] != 0:
+            *pres = known[(usize)atom]
+            return
+    if atom >= (u32)s.atom_to_idx_size:
+        let old_size = s.atom_to_idx_size
+        try js_resize_array(s.ctx, (void*?*)&s.atom_to_idx, (i32)sizeof(u32), &s.atom_to_idx_size,
+                            (i32)(atom + 1))
+        # XXX: could add a specific js_resize_array() function to do it
+        let grown = s.atom_to_idx else trap("bc_atom_to_idx: no table")
+        for i in (usize)old_size..<(usize)s.atom_to_idx_size:
+            grown[i] = 0
+    js_resize_array(s.ctx, (void*?*)&s.idx_to_atom, (i32)sizeof(Atom), &s.idx_to_atom_size,
+                    s.idx_to_atom_count + 1) catch failure:
+        *pres = 0
+        error(failure.code, failure.message)
+
+    let atoms = s.idx_to_atom else trap("bc_atom_to_idx: no atoms")
+    let atom_to_idx = s.atom_to_idx else trap("bc_atom_to_idx: no table")
+    var v = (u32)s.idx_to_atom_count
+    s.idx_to_atom_count += 1
+    atoms[(usize)v] = atom + s.first_atom
+    v += s.first_atom
+    atom_to_idx[(usize)atom] = v
+    *pres = v
+
+## Write an atom: a tagged integer as (n << 1) | 1, any other as its table number << 1.
+func bc_put_atom(s: BCWriterState*, atom: Atom) -> !:
+    var v: u32 = 0
+    if js_atom_is_tagged_int_raw(atom):
+        v = (js_atom_to_uint32_raw(atom) << 1) | 1
+    else:
+        try bc_atom_to_idx(s, &v, atom)
+        v = v << 1
+    bc_put_leb128(s, v)
+
+# mark: Bytecode ================================================================================
+
+## Swap the byte order of every multi-byte operand of the `bc_len` bytes of bytecode.
+func bc_byte_swap(bc_buf: u8*, bc_len: i32):
+    var pos: i32 = 0
+    while pos < bc_len:
+        let op = bc_buf[(usize)pos]
+        let info = op_info(op, false)
+        let len = (i32)info.size
+        let fmt_ = info.fmt
+        let operand = bc_buf + (usize)pos + 1
+        match fmt_:
+            .u16_, .i16_, .label16, .npop, .loc, .arg, .var_ref:
+                cutils.put_u16(operand, cutils.bswap16((u16)cutils.get_u16(operand)))
+            .i32_, .u32_, .const_, .label, .atom, .atom_u8:
+                cutils.put_u32(operand, cutils.bswap32(cutils.get_u32(operand)))
+            .atom_u16, .label_u16:
+                cutils.put_u32(operand, cutils.bswap32(cutils.get_u32(operand)))
+                cutils.put_u16(operand + 4, cutils.bswap16((u16)cutils.get_u16(operand + 4)))
+            .atom_label_u8, .atom_label_u16:
+                cutils.put_u32(operand, cutils.bswap32(cutils.get_u32(operand)))
+                cutils.put_u32(operand + 4, cutils.bswap32(cutils.get_u32(operand + 4)))
+                if fmt_ == OpFormat.atom_label_u16:
+                    cutils.put_u16(operand + 4 + 4, cutils.bswap16((u16)cutils.get_u16(operand + 4 + 4)))
+            .npop_u16:
+                cutils.put_u16(operand, cutils.bswap16((u16)cutils.get_u16(operand)))
+                cutils.put_u16(operand + 2, cutils.bswap16((u16)cutils.get_u16(operand + 2)))
+            _:
+                discard(0)
+        pos += len
+
+## Write a function's bytecode, its atom operands renumbered through the atom table.
+func js_write_function_bytecode(s: BCWriterState*, bc_buf1: const u8*, bc_len: i32) -> !:
+    let bc_buf = (u8*)(try js_malloc(s.ctx, (usize)bc_len))
+    defer js_free(s.ctx, bc_buf)
+    discard(cutils.memcpy(bc_buf, bc_buf1, (usize)bc_len))
+
+    var pos: i32 = 0
+    while pos < bc_len:
+        let op = bc_buf[(usize)pos]
+        let info = op_info(op, false)
+        let len = (i32)info.size
+        match info.fmt:
+            .atom, .atom_u8, .atom_u16, .atom_label_u8, .atom_label_u16:
+                let atom = cutils.get_u32(bc_buf + (usize)pos + 1)
+                var val: u32 = 0
+                try bc_atom_to_idx(s, &val, atom)
+                cutils.put_u32(bc_buf + (usize)pos + 1, val)
+            _:
+                discard(0)
+        pos += len
+
+    if is_be():
+        bc_byte_swap(bc_buf, bc_len)
+
+    discard(cutils.dbuf_put(&s.dbuf, bc_buf, (usize)bc_len))
+
+# mark: Strings and big integers ================================================================
+
+## Write a flat string: (len << 1) | is_wide_char, then its characters.
+func js_write_string(s: BCWriterState*, p: String*):
+    bc_put_leb128(s, (p.len << 1) | (u32)p.is_wide_char)
+    if p.is_wide_char:
+        let chars = str16(p)
+        for i in 0..<(usize)p.len:
+            bc_put_u16(s, chars[i])
+    else:
+        discard(cutils.dbuf_put(&s.dbuf, str8(p), (usize)p.len))
+
+## Write a big integer as the shortest little-endian two's complement bytes that hold it
+## (none for zero), after their count.
+func js_write_bigint(s: BCWriterState*, obj: Value) -> !:
+    var buf: BigIntBuf
+    var p: BigInt* = ---
+    var len: u32 = 0
+
+    bc_put_u8(s, (u8)BCTag.big_int)
+
+    if obj.tag == Tag.short_big_int:
+        p = js_bigint_set_short(&buf, obj)
+    else:
+        p = obj.u.big_int
+    let tab = js_bigint_tab(p)
+    if p.len == 1 and tab[0] == 0:
+        # zero case
+        len = 0
+    else:
+        # compute the length of the two's complement representation in bytes
+        len = p.len * (u32)(js_limb_bits // 8)
+        let v = tab[(usize)p.len - 1]
+        var shift = js_limb_bits - 8
+        while shift > 0:
+            let b = (v >> (u32)shift) & 0xff
+            if b != 0x00 and b != 0xff:
+                break
+            if (b & 1) != ((v >> (u32)(shift - 1)) & 1):
+                break
+            shift -= 8
+            len -= 1
+    bc_put_leb128(s, len)
+    if len > 0:
+        let limb_bytes = (u32)(js_limb_bits // 8)
+        for i in 0..<(usize)(len // limb_bytes):
+            bc_put_u32(s, tab[i])
+        for i: u32 in 0..<len % limb_bytes:
+            bc_put_u8(s, (u8)((tab[(usize)p.len - 1] >> (i * 8)) & 0xff))
+
+# mark: Functions and modules ===================================================================
+
+## Write a compiled function: its flags, counts, variables, closure variables, bytecode,
+## optional debug information and constant pool.
+func js_write_function_tag(s: BCWriterState*, obj: Value) -> !:
+    let b = obj.u.bytecode
+    var flags: u32 = 0
+    var idx: i32 = 0
+
+    bc_put_u8(s, (u8)BCTag.function_bytecode)
+    bc_set_flags(&flags, &idx, (u32)b.has_prototype, 1)
+    bc_set_flags(&flags, &idx, (u32)b.has_simple_parameter_list, 1)
+    bc_set_flags(&flags, &idx, (u32)b.is_derived_class_constructor, 1)
+    bc_set_flags(&flags, &idx, (u32)b.need_home_object, 1)
+    bc_set_flags(&flags, &idx, (u32)b.func_kind, 2)
+    bc_set_flags(&flags, &idx, (u32)b.new_target_allowed, 1)
+    bc_set_flags(&flags, &idx, (u32)b.super_call_allowed, 1)
+    bc_set_flags(&flags, &idx, (u32)b.super_allowed, 1)
+    bc_set_flags(&flags, &idx, (u32)b.arguments_allowed, 1)
+    bc_set_flags(&flags, &idx, (u32)b.has_debug, 1)
+    bc_set_flags(&flags, &idx, (u32)b.is_direct_or_indirect_eval, 1)
+    assert(idx <= 16)
+    bc_put_u16(s, (u16)flags)
+    bc_put_u8(s, b.js_mode)
+    try bc_put_atom(s, b.func_name)
+
+    bc_put_leb128(s, b.arg_count)
+    bc_put_leb128(s, b.var_count)
+    bc_put_leb128(s, b.defined_arg_count)
+    bc_put_leb128(s, b.stack_size)
+    bc_put_leb128(s, b.var_ref_count)
+    bc_put_leb128(s, (u32)b.closure_var_count)
+    bc_put_leb128(s, (u32)b.cpool_count)
+    bc_put_leb128(s, (u32)b.byte_code_len)
+    if let vardefs = b.vardefs:
+        let local_count = (i32)b.arg_count + (i32)b.var_count
+        bc_put_leb128(s, (u32)local_count)
+        for i: i32 in 0..<local_count:
+            let vd = vardefs + (usize)i
+            try bc_put_atom(s, vd.var_name)
+            bc_put_leb128(s, (u32)(vd.scope_next + 1))
+            bc_put_leb128(s, vd.var_ref_idx)
+            flags = 0
+            idx = 0
+            bc_set_flags(&flags, &idx, (u32)(u8)vd.var_kind, 4)
+            bc_set_flags(&flags, &idx, (u32)vd.is_const, 1)
+            bc_set_flags(&flags, &idx, (u32)vd.is_lexical, 1)
+            bc_set_flags(&flags, &idx, (u32)vd.is_captured, 1)
+            bc_set_flags(&flags, &idx, (u32)vd.has_scope, 1)
+            assert(idx <= 8)
+            bc_put_u8(s, (u8)flags)
+    else:
+        bc_put_leb128(s, 0)
+
+    for i: i32 in 0..<b.closure_var_count:
+        let closure_var = b.closure_var else trap("js_write_function_tag: no closure variables")
+        let cv = closure_var + (usize)i
+        try bc_put_atom(s, cv.var_name)
+        bc_put_leb128(s, cv.var_idx)
+        flags = 0
+        idx = 0
+        bc_set_flags(&flags, &idx, (u32)(u8)cv.closure_type, 3)
+        bc_set_flags(&flags, &idx, (u32)cv.is_const, 1)
+        bc_set_flags(&flags, &idx, (u32)cv.is_lexical, 1)
+        bc_set_flags(&flags, &idx, (u32)(u8)cv.var_kind, 4)
+        assert(idx <= 16)
+        bc_put_u16(s, (u16)flags)
+
+    try js_write_function_bytecode(s, b.byte_code_buf, b.byte_code_len)
+
+    if b.has_debug:
+        try bc_put_atom(s, b.debug.filename)
+        bc_put_leb128(s, (u32)b.debug.pc2line_len)
+        if let pc2line_buf = b.debug.pc2line_buf:
+            discard(cutils.dbuf_put(&s.dbuf, pc2line_buf, (usize)b.debug.pc2line_len))
+        if let source = b.debug.source:
+            bc_put_leb128(s, (u32)b.debug.source_len)
+            discard(cutils.dbuf_put(&s.dbuf, source, (usize)b.debug.source_len))
+        else:
+            bc_put_leb128(s, 0)
+
+    for i: i32 in 0..<b.cpool_count:
+        let cpool = b.cpool else trap("js_write_function_tag: no constant pool")
+        try js_write_object_rec(s, cpool[(usize)i])
+
+## Write a module: its name, requested modules, exports, star exports, imports, whether it
+## has a top-level await, and its function.
+func js_write_module(s: BCWriterState*, obj: Value) -> !:
+    let m = obj.u.module
+
+    bc_put_u8(s, (u8)BCTag.module)
+    try bc_put_atom(s, m.module_name)
+
+    bc_put_leb128(s, (u32)m.req_module_entries_count)
+    for i: i32 in 0..<m.req_module_entries_count:
+        let entries = m.req_module_entries else trap("js_write_module: no requested modules")
+        let rme = entries + (usize)i
+        try bc_put_atom(s, rme.module_name)
+        try js_write_object_rec(s, rme.attributes)
+
+    bc_put_leb128(s, (u32)m.export_entries_count)
+    for i: i32 in 0..<m.export_entries_count:
+        let entries = m.export_entries else trap("js_write_module: no exports")
+        let me = entries + (usize)i
+        bc_put_u8(s, (u8)(i32)me.export_type)
+        if me.export_type == ExportType.local_:
+            bc_put_leb128(s, (u32)me.u.local_.var_idx)
+        else:
+            bc_put_leb128(s, (u32)me.u.req_module_idx)
+            try bc_put_atom(s, me.local_name)
+        try bc_put_atom(s, me.export_name)
+
+    bc_put_leb128(s, (u32)m.star_export_entries_count)
+    for i: i32 in 0..<m.star_export_entries_count:
+        let entries = m.star_export_entries else trap("js_write_module: no star exports")
+        let se = entries + (usize)i
+        bc_put_leb128(s, (u32)se.req_module_idx)
+
+    bc_put_leb128(s, (u32)m.import_entries_count)
+    for i: i32 in 0..<m.import_entries_count:
+        let entries = m.import_entries else trap("js_write_module: no imports")
+        let mi = entries + (usize)i
+        bc_put_leb128(s, (u32)mi.var_idx)
+        bc_put_u8(s, (u8)mi.is_star)
+        try bc_put_atom(s, mi.import_name)
+        bc_put_leb128(s, (u32)mi.req_module_idx)
+
+    bc_put_u8(s, (u8)m.has_tla)
+
+    try js_write_object_rec(s, m.func_obj)

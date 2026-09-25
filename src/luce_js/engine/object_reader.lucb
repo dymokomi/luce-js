@@ -1,0 +1,302 @@
+#==============================================================================================
+#
+#   object_reader - Reading values from the binary object format (JS_ReadObject)
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 39060-39514: the readers of plain objects, arrays (and
+#       template objects), typed arrays, array buffers, SharedArrayBuffers, dates and
+#       primitive wrapper objects, the recursive reader of any value (JS_ReadObjectRec),
+#       the atom table at the start of the input (JS_ReadObjectAtoms), and JS_ReadObject.
+#
+#==============================================================================================
+
+# mark: Objects and arrays ======================================================================
+
+## Read a plain object: its property count, then each key and value.
+func js_read_object_tag(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    var prop_count: u32 = 0
+
+    let obj = try js_new_object(ctx)
+    errdefer js_free_value(ctx, obj)
+    try bc_add_object_ref(s, obj)
+    try bc_get_leb128(s, &prop_count)
+    for i: u32 in 0..<prop_count:
+        var atom: Atom = no_atom
+        try bc_get_atom(s, &atom)
+        defer js_free_atom(ctx, atom)
+        let val = try js_read_object_rec(s)
+        discard(try js_define_property_value(ctx, obj, atom, val, prop_c_w_e))
+    return obj
+
+## Read an array, or a template object (a frozen-length array of enumerable, read-only
+## elements with a 'raw' property).
+func js_read_array(s: BCReaderState*, tag: u8) -> Value!:
+    let ctx = s.ctx
+    var len: u32 = 0
+
+    let obj = try js_new_array(ctx)
+    errdefer js_free_value(ctx, obj)
+    try bc_add_object_ref(s, obj)
+    let is_template = tag == (u8)BCTag.template_object
+    try bc_get_leb128(s, &len)
+    for i: u32 in 0..<len:
+        let val = try js_read_object_rec(s)
+        var prop_flags = prop_c_w_e
+        if is_template:
+            prop_flags = prop_enumerable
+        discard(try js_define_property_value_uint32(ctx, obj, i, val, prop_flags))
+    if is_template:
+        let val = try js_read_object_rec(s)
+        if not js_is_undefined(val):
+            discard(try js_define_property_value(ctx, obj, atom_raw, val, 0))
+        discard(js_prevent_extensions(ctx, obj))
+    return obj
+
+# mark: Binary data =============================================================================
+
+## Read a typed array: its kind, length and offset, then its array buffer.
+func js_read_typed_array(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    var array_tag: u8 = 0
+    var len: u32 = 0
+    var offset: u32 = 0
+
+    try bc_get_u8(s, &array_tag)
+    if (u32)array_tag >= js_typed_array_count:
+        try js_throw_type_error(ctx, "invalid typed array")
+    try bc_get_leb128(s, &len)
+    try bc_get_leb128(s, &offset)
+    # XXX: this hack could be avoided if the typed array could be created before the array
+    # buffer
+    let idx = s.objects_count
+    try bc_add_object_ref1(s, none)
+    let array_buffer = try js_read_object_rec(s)
+    defer js_free_value(ctx, array_buffer)
+    discard(try js_get_array_buffer_internal(ctx, array_buffer))
+    var args: Value[3] = ---
+    args[0] = array_buffer
+    args[1] = js_new_int64((i64)offset)
+    args[2] = js_new_int64((i64)len)
+    let obj = try js_typed_array_constructor(ctx, js_undefined(), 3, &args[0],
+                                             (i32)ClassId.uint8c_array + (i32)array_tag)
+    if s.allow_reference:
+        let objects = s.objects else trap("js_read_typed_array: no object table")
+        objects[(usize)idx] = obj.u.obj
+    return obj
+
+## Read an array buffer: its lengths, then a copy of its bytes.
+func js_read_array_buffer(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    var byte_length: u32 = 0
+    var max_byte_length: u32 = 0
+    var max_byte_length_u64: u64 = 0
+    var pmax_byte_length: u64*? = none
+
+    try bc_get_leb128(s, &byte_length)
+    try bc_get_leb128(s, &max_byte_length)
+    if max_byte_length < byte_length:
+        try js_throw_type_error(ctx, "invalid array buffer")
+    if max_byte_length != 0xffffffff:
+        max_byte_length_u64 = max_byte_length
+        pmax_byte_length = &max_byte_length_u64
+    if bc_remaining(s) < (isize)byte_length:
+        try bc_read_error_end(s)
+    # makes a copy of the input
+    let obj = try js_array_buffer_constructor3(ctx, js_undefined(), byte_length, pmax_byte_length,
+                                               (u32)ClassId.array_buffer, (u8*)s.ptr,
+                                               js_array_buffer_free, none, true)   # alloc_flag
+    errdefer js_free_value(ctx, obj)
+    try bc_add_object_ref(s, obj)
+    s.ptr = s.ptr + (usize)byte_length
+    return obj
+
+## Read a SharedArrayBuffer: its lengths and the address of the data it shares, which is
+## cloned with the runtime's sab_dup.
+func js_read_shared_array_buffer(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    var byte_length: u32 = 0
+    var max_byte_length: u32 = 0
+    var max_byte_length_u64: u64 = 0
+    var pmax_byte_length: u64*? = none
+    var u64_: u64 = 0
+
+    try bc_get_leb128(s, &byte_length)
+    try bc_get_leb128(s, &max_byte_length)
+    if max_byte_length < byte_length:
+        try js_throw_type_error(ctx, "invalid array buffer")
+    if max_byte_length != 0xffffffff:
+        max_byte_length_u64 = max_byte_length
+        pmax_byte_length = &max_byte_length_u64
+    try bc_get_u64(s, &u64_)
+    let data_ptr = (u8*?)(usize)u64_
+    # the SharedArrayBuffer is cloned
+    let obj = try js_array_buffer_constructor3(ctx, js_undefined(), byte_length, pmax_byte_length,
+                                               (u32)ClassId.shared_array_buffer, data_ptr,
+                                               none, none, false)
+    errdefer js_free_value(ctx, obj)
+    try bc_add_object_ref(s, obj)
+    return obj
+
+# mark: Wrapper objects =========================================================================
+
+## The Date object of time value `val` (a number), remembered for references.
+func js_read_date_object(s: BCReaderState*, val: Value) -> Value!:
+    let ctx = s.ctx
+    if not js_is_number(val):
+        try js_throw_type_error(ctx, "Number tag expected for date")
+    let class_proto = ctx.class_proto else trap("js_read_date: no class prototypes")
+    let obj = try js_new_object_proto_class(ctx, class_proto[(usize)ClassId.date], (u32)ClassId.date)
+    errdefer js_free_value(ctx, obj)
+    try bc_add_object_ref(s, obj)
+    return obj
+
+## Read a Date: its time value.
+func js_read_date(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    let val = try js_read_object_rec(s)
+    let obj = js_read_date_object(s, val) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    # takes ownership of val; cannot fail for a Date
+    js_set_object_data(ctx, obj, val) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    return obj
+
+## Read a Number, String, Boolean or BigInt wrapper object: its primitive value.
+func js_read_object_value(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    let val = try js_read_object_rec(s)
+    defer js_free_value(ctx, val)
+    let obj = try js_to_object(ctx, val)
+    errdefer js_free_value(ctx, obj)
+    try bc_add_object_ref(s, obj)
+    return obj
+
+# mark: Any value ===============================================================================
+
+## Whether the host can clone SharedArrayBuffers (C: rt->sab_funcs.sab_dup != NULL).
+func has_sab_dup(rt: Runtime*) -> bool:
+    if let _sab_dup = rt.sab_funcs.sab_dup:
+        return true
+    return false
+
+## Read any value (JS_ReadObjectRec).
+func js_read_object_rec(s: BCReaderState*) -> Value!:
+    let ctx = s.ctx
+    var tag: u8 = 0
+
+    if js_check_stack_overflow(ctx.rt, 0):
+        try js_throw_stack_overflow(ctx)
+
+    try bc_get_u8(s, &tag)
+
+    match (BCTag)tag:
+        .null:
+            return js_null()
+        .undefined:
+            return js_undefined()
+        .bool_false, .bool_true:
+            return js_new_bool(tag == (u8)BCTag.bool_true)
+        .int32:
+            var val: i32 = 0
+            try bc_get_sleb128(s, &val)
+            return js_new_int32(val)
+        .float64:
+            var u: Float64Union = ---
+            try bc_get_u64(s, &u.bits)
+            return js_new_float64_raw(u.d)
+        .string:
+            let p = try js_read_string(s)
+            return js_mkptr(Tag.string, p)
+        .function_bytecode if s.allow_bytecode:
+            return try js_read_function_tag(s)
+        .module if s.allow_bytecode:
+            return try js_read_module(s)
+        .object:
+            return try js_read_object_tag(s)
+        .array, .template_object:
+            return try js_read_array(s, tag)
+        .typed_array:
+            return try js_read_typed_array(s)
+        .array_buffer:
+            return try js_read_array_buffer(s)
+        .shared_array_buffer if s.allow_sab and has_sab_dup(ctx.rt):
+            return try js_read_shared_array_buffer(s)
+        .date:
+            return try js_read_date(s)
+        .object_value:
+            return try js_read_object_value(s)
+        .big_int:
+            return try js_read_bigint(s)
+        .object_reference:
+            var val: u32 = 0
+            if not s.allow_reference:
+                try js_throw_syntax_error(ctx, "object references are not allowed")
+            try bc_get_leb128(s, &val)
+            if val >= (u32)s.objects_count:
+                try js_throw_syntax_error(ctx, f"invalid object reference ({val} >= {s.objects_count})")
+            let objects = s.objects else trap("js_read_object_rec: no object table")
+            # C dereferences the placeholder of a typed array whose buffer is being read;
+            # the port reports it as an invalid reference.
+            let p = objects[(usize)val] else try js_throw_syntax_error(ctx, "invalid object reference")
+            return js_dup_value(ctx, js_mkptr(Tag.object, p))
+        _:
+            try js_throw_syntax_error(ctx, f"invalid tag (tag={tag} pos={(u32)(s.ptr - s.buf_start)})")
+
+# mark: The atom table and the entry point ======================================================
+
+## Read the version and the atom table at the start of the input (JS_ReadObjectAtoms).
+func js_read_object_atoms(s: BCReaderState*) -> !:
+    var v8: u8 = 0
+
+    try bc_get_u8(s, &v8)
+    if v8 != bc_version:
+        try js_throw_syntax_error(s.ctx, f"invalid version ({v8} expected={bc_version})")
+    try bc_get_leb128(s, &s.idx_to_atom_count)
+
+    if s.idx_to_atom_count != 0:
+        let table = js_mallocz(s.ctx, (usize)s.idx_to_atom_count *% sizeof(Atom)) catch failure:
+            s.error_state = -1
+            error(failure.code, failure.message)
+        s.idx_to_atom = (Atom*)table
+    for i: u32 in 0..<s.idx_to_atom_count:
+        let p = try js_read_string(s)
+        let atom = js_new_atom_str(s.ctx, p) catch failure:
+            s.error_state = -1
+            error(failure.code, failure.message)
+        let atoms = s.idx_to_atom else trap("js_read_object_atoms: no atom table")
+        atoms[(usize)i] = atom
+        if s.is_rom_data and atom != i +% s.first_atom:
+            s.is_rom_data = false   # atoms must be relocated
+
+## Release the reader's atom table and object table.
+func bc_reader_free(s: BCReaderState*):
+    if let atoms = s.idx_to_atom:
+        for i in 0..<(usize)s.idx_to_atom_count:
+            js_free_atom(s.ctx, atoms[i])
+        js_free(s.ctx, atoms)
+    # workaround: compiler-issues/nullable_pointer_cast (Object*?*? to void*?)
+    if let objects = s.objects:
+        js_free(s.ctx, objects)
+
+## Deserialize a value from the `buf_len` bytes at `buf` (JS_ReadObject). `flags` are the
+## read_obj_* flags; with read_obj_rom_data the buffer must outlive the result.
+pub func js_read_object(ctx: Context*, buf: const u8*, buf_len: usize, flags: i32) -> Value!:
+    ctx.binary_object_count = ctx.binary_object_count +% 1
+    ctx.binary_object_size = ctx.binary_object_size +% (i32)buf_len
+
+    var ss = BCReaderState(ctx = ctx, buf_start = buf, ptr = buf, buf_end = buf + buf_len)
+    let s = &ss
+    s.allow_bytecode = (flags & read_obj_bytecode) != 0
+    s.is_rom_data = (flags & read_obj_rom_data) != 0
+    s.allow_sab = (flags & read_obj_sab) != 0
+    s.allow_reference = (flags & read_obj_reference) != 0
+    if s.allow_bytecode:
+        s.first_atom = atom_end
+    else:
+        s.first_atom = 1
+    defer bc_reader_free(s)
+    try js_read_object_atoms(s)
+    return try js_read_object_rec(s)
