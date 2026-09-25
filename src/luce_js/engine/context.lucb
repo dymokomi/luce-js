@@ -1,0 +1,344 @@
+#==============================================================================================
+#
+#   context - Freeing a runtime; creating, marking and freeing contexts
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 2336-2868: the free-slot encoding of the atom array,
+#       string allocation, JS_FreeRuntime, JS_NewContextRaw and JS_NewContext, the class
+#       prototypes, module release, the context's GC marking, JS_FreeContext and the
+#       stack limit. The DUMP_LEAKS, DUMP_ATOMS, DUMP_SHAPES, DUMP_OBJECTS and DUMP_MEM
+#       blocks are not ported.
+#
+#==============================================================================================
+
+# mark: Atom slots and strings ==================================================================
+
+# A free slot of the atom array holds the next free index, shifted left and tagged with 1.
+
+## The next free index held by a free atom slot.
+func atom_get_free(p: const String*) -> u32:
+    return (u32)((usize)p >> 1)
+
+## Whether an atom slot is free.
+func atom_is_free(p: const String*) -> bool:
+    return ((usize)p & 1) != 0
+
+## A free atom slot holding the next free index `v`.
+func atom_set_free(v: u32) -> String*:
+    return (String*?)(((usize)v << 1) | 1) else trap("atom_set_free: odd address is never null")
+
+## A string of `max_len` characters with a reference count of one; none if out of
+## memory. Note: the string contents are uninitialized.
+func js_alloc_string_rt(rt: Runtime*, max_len: i32, is_wide_char: bool) -> String*?:
+    let wide = (i32)is_wide_char
+    let p = js_malloc_rt(rt, sizeof(String) + (usize)((max_len << wide) + 1 - wide)) else return none
+    let s = (String*)p
+    js_rc(s).ref_count = 1
+    s.is_wide_char = is_wide_char
+    s.len = (u32)max_len
+    s.atom_type = 0
+    s.hash = 0          # optional but costless
+    s.hash_next = 0     # optional
+    return s
+
+## As js_alloc_string_rt; throw out of memory in case of error.
+func js_alloc_string(ctx: Context*, max_len: i32, is_wide_char: bool) -> String*!:
+    let p = js_alloc_string_rt(ctx.rt, max_len, is_wide_char) else try js_throw_out_of_memory(ctx)
+    return p
+
+## Release a reference to a string: same as js_free_value_rt() but faster.
+func js_free_string(rt: Runtime*, p: String*):
+    let b = js_rc(p)
+    b.ref_count -= 1
+    if b.ref_count <= 0:
+        if p.atom_type != 0:
+            js_free_atom_struct(rt, p)
+        else:
+            js_free_rt(rt, p)
+
+# mark: Freeing a runtime =======================================================================
+
+## Set the name leak reports print for the runtime (JS_SetRuntimeInfo).
+pub func js_set_runtime_info(rt: Runtime*?, s: const u8*?):
+    if let r = rt:
+        r.rt_info = s
+
+## Free the runtime: its pending jobs, its remaining objects, classes and atoms, and
+## the runtime itself (JS_FreeRuntime). Every context must have been freed.
+pub func js_free_runtime(rt: Runtime*):
+    js_free_value_rt(rt, rt.current_exception)
+
+    let jobs = &rt.job_list
+    var el = jobs.next else trap("js_free_runtime: unlinked job list")
+    while el != jobs:
+        let next = el.next else trap("js_free_runtime: unlinked job list")
+        let e = (JobEntry*)((u8*)el - offsetof(JobEntry, link))
+        let e_argv = job_entry_argv(e)
+        for i in 0..<(usize)e.argc:
+            js_free_value_rt(rt, e_argv[i])
+        js_free_context(e.realm)
+        js_free_rt(rt, e)
+        el = next
+    cutils.init_list_head(&rt.job_list)
+
+    # don't remove the weak objects to avoid create new jobs with FinalizationRegistry
+    js_run_gc_internal(rt, false)
+
+    assert(cutils.list_empty(&rt.gc_obj_list))
+    assert(cutils.list_empty(&rt.weakref_list))
+
+    # free the classes
+    if let classes = rt.class_array:
+        for i in 0..<(usize)rt.class_count:
+            let cl = &classes[i]
+            if cl.class_id != 0:
+                js_free_atom_rt(rt, cl.class_name)
+        js_free_rt(rt, classes)
+
+    # free the atoms
+    if let atoms = rt.atom_array:
+        for i in 0..<(usize)rt.atom_size:
+            let p = atoms[i]
+            if not atom_is_free(p):
+                js_free_rt(rt, p)
+        js_free_rt(rt, atoms)
+    if let atom_hash = rt.atom_hash:
+        js_free_rt(rt, atom_hash)
+    if let shapes = rt.shape_hash:
+        js_free_rt(rt, shapes)
+
+    var ms = rt.malloc_ctx.malloc_state
+    let host_free = rt.malloc_ctx.mf.js_free
+    host_free(&ms, rt)
+
+# mark: Creating contexts =======================================================================
+
+## A context with only the basic objects; none if out of memory (JS_NewContextRaw).
+pub func js_new_context_raw(rt: Runtime*) -> Context*?:
+    let p = js_mallocz_rt(rt, sizeof(Context)) else return none
+    let ctx = (Context*)p
+    js_rc(ctx).ref_count = 1
+    add_gc_object(rt, &ctx.header, GCObjectType.js_context)
+
+    let class_proto = js_malloc_rt(rt, sizeof(Value) * (usize)rt.class_count)
+    if class_proto == none:
+        # as upstream, the context is freed without remove_gc_object()
+        js_free_rt(rt, ctx)
+        return none
+    let protos = (Value*)(class_proto else return none)
+    ctx.class_proto = protos
+    ctx.rt = rt
+    cutils.list_add_tail(&ctx.link, &rt.context_list)
+    for i in 0..<(usize)rt.class_count:
+        protos[i] = js_null()
+    ctx.array_ctor = js_null()
+    ctx.iterator_ctor = js_null()
+    ctx.regexp_ctor = js_null()
+    ctx.promise_ctor = js_null()
+    cutils.init_list_head(&ctx.loaded_modules)
+
+    let status = js_add_intrinsic_basic_objects(ctx) catch failure: recover -1
+    if status != 0:
+        js_free_context(ctx)
+        return none
+    return ctx
+
+## Add the intrinsics of a standard context, in JS_NewContext's order; a failure has
+## an exception pending.
+func js_add_standard_intrinsics(ctx: Context*) -> !:
+    if try js_add_intrinsic_base_objects(ctx) != 0: error(exception, "")
+    if try js_add_intrinsic_date(ctx) != 0: error(exception, "")
+    if js_add_intrinsic_eval(ctx) != 0: error(exception, "")
+    if js_add_intrinsic_string_normalize(ctx) != 0: error(exception, "")
+    if try js_add_intrinsic_reg_exp(ctx) != 0: error(exception, "")
+    if js_add_intrinsic_json(ctx) != 0: error(exception, "")
+    if try js_add_intrinsic_proxy(ctx) != 0: error(exception, "")
+    if try js_add_intrinsic_map_set(ctx) != 0: error(exception, "")
+    if try js_add_intrinsic_typed_arrays(ctx) != 0: error(exception, "")
+    if try js_add_intrinsic_promise(ctx) != 0: error(exception, "")
+    if try js_add_intrinsic_weak_ref(ctx) != 0: error(exception, "")
+
+## A context with all the standard intrinsics; none if they cannot be created
+## (JS_NewContext).
+pub func js_new_context(rt: Runtime*) -> Context*?:
+    let ctx = js_new_context_raw(rt) else return none
+
+    js_add_standard_intrinsics(ctx) catch failure:
+        js_free_context(ctx)
+        return none
+    return ctx
+
+## The host's opaque pointer of the context (JS_GetContextOpaque).
+pub func js_get_context_opaque(ctx: Context*) -> void*?:
+    return ctx.user_opaque
+
+## Set the host's opaque pointer of the context (JS_SetContextOpaque).
+pub func js_set_context_opaque(ctx: Context*, opaque: void*?):
+    ctx.user_opaque = opaque
+
+# mark: Class prototypes ========================================================================
+
+## Set the new value and free the old value after (freeing the value can reallocate the
+## object data).
+func set_value(ctx: Context*, pval: Value*, new_val: Value):
+    let old_val = *pval
+    *pval = new_val
+    js_free_value(ctx, old_val)
+
+## The class prototype array of a context, allocated by js_new_context_raw.
+func context_class_proto(ctx: Context*) -> Value*:
+    return ctx.class_proto else trap("context without class prototypes")
+
+## Set the prototype of a class, taking ownership of `obj` (JS_SetClassProto).
+pub func js_set_class_proto(ctx: Context*, class_id: ClassIdValue, obj: Value):
+    let rt = ctx.rt
+    assert(class_id < (u32)rt.class_count)
+    set_value(ctx, context_class_proto(ctx) + (usize)class_id, obj)
+
+## A new reference to the prototype of a class (JS_GetClassProto).
+pub func js_get_class_proto(ctx: Context*, class_id: ClassIdValue) -> Value:
+    let rt = ctx.rt
+    assert(class_id < (u32)rt.class_count)
+    return js_dup_value(ctx, context_class_proto(ctx)[(usize)class_id])
+
+# mark: Modules and marking =====================================================================
+
+## Which modules js_free_modules releases (JSFreeModuleEnum).
+enum FreeModuleKind as i32:
+    all = 0
+    not_resolved = 1
+
+# XXX: would be more efficient with separate module lists
+func js_free_modules(ctx: Context*, flag: FreeModuleKind):
+    let head = &ctx.loaded_modules
+    var el = head.next else trap("js_free_modules: unlinked module list")
+    while el != head:
+        let next = el.next else trap("js_free_modules: unlinked module list")
+        let m = (ModuleDef*)((u8*)el - offsetof(ModuleDef, link))
+        if flag == FreeModuleKind.all or (flag == FreeModuleKind.not_resolved and not m.resolved):
+            # warning: the module may be referenced elsewhere. It could be simpler to use
+            # an array instead of a list for 'ctx.loaded_modules'
+            cutils.list_del(&m.link)
+            m.link.prev = none
+            m.link.next = none
+            js_free_value(ctx, js_mkptr(Tag.module, m))
+        el = next
+
+## A new reference to the context (JS_DupContext).
+pub func js_dup_context(ctx: Context*) -> Context*:
+    js_rc(ctx).ref_count += 1
+    return ctx
+
+## Mark everything the context references (used by the GC).
+func js_mark_context(rt: Runtime*, ctx: Context*, mark_func: MarkFunc):
+    let head = &ctx.loaded_modules
+    var el = head.next else trap("js_mark_context: unlinked module list")
+    while el != head:
+        let m = (ModuleDef*)((u8*)el - offsetof(ModuleDef, link))
+        js_mark_value(rt, js_mkptr(Tag.module, m), mark_func)
+        el = el.next else trap("js_mark_context: unlinked module list")
+
+    js_mark_value(rt, ctx.global_obj, mark_func)
+    js_mark_value(rt, ctx.global_var_obj, mark_func)
+
+    js_mark_value(rt, ctx.throw_type_error, mark_func)
+    js_mark_value(rt, ctx.eval_obj, mark_func)
+
+    js_mark_value(rt, ctx.array_proto_values, mark_func)
+    for i in 0..<js_native_error_count:
+        js_mark_value(rt, ctx.native_error_proto[i], mark_func)
+    let protos = context_class_proto(ctx)
+    for i in 0..<(usize)rt.class_count:
+        js_mark_value(rt, protos[i], mark_func)
+    js_mark_value(rt, ctx.iterator_ctor, mark_func)
+    js_mark_value(rt, ctx.async_iterator_proto, mark_func)
+    js_mark_value(rt, ctx.promise_ctor, mark_func)
+    js_mark_value(rt, ctx.array_ctor, mark_func)
+    js_mark_value(rt, ctx.regexp_ctor, mark_func)
+    js_mark_value(rt, ctx.function_ctor, mark_func)
+    js_mark_value(rt, ctx.function_proto, mark_func)
+
+    if let sh = ctx.array_shape:
+        mark_func(rt, &sh.header)
+    if let sh = ctx.arguments_shape:
+        mark_func(rt, &sh.header)
+    if let sh = ctx.mapped_arguments_shape:
+        mark_func(rt, &sh.header)
+    if let sh = ctx.regexp_shape:
+        mark_func(rt, &sh.header)
+    if let sh = ctx.regexp_result_shape:
+        mark_func(rt, &sh.header)
+
+# mark: Freeing contexts ========================================================================
+
+## Release a reference to the context; the last one frees it (JS_FreeContext).
+pub func js_free_context(ctx: Context*):
+    let rt = ctx.rt
+
+    let b = js_rc(ctx)
+    b.ref_count -= 1
+    if b.ref_count > 0:
+        return
+    assert(b.ref_count == 0)
+
+    js_free_modules(ctx, FreeModuleKind.all)
+
+    js_free_value(ctx, ctx.global_obj)
+    js_free_value(ctx, ctx.global_var_obj)
+
+    js_free_value(ctx, ctx.throw_type_error)
+    js_free_value(ctx, ctx.eval_obj)
+
+    js_free_value(ctx, ctx.array_proto_values)
+    for i in 0..<js_native_error_count:
+        js_free_value(ctx, ctx.native_error_proto[i])
+    let protos = context_class_proto(ctx)
+    for i in 0..<(usize)rt.class_count:
+        js_free_value(ctx, protos[i])
+    js_free_rt(rt, protos)
+    js_free_value(ctx, ctx.iterator_ctor)
+    js_free_value(ctx, ctx.async_iterator_proto)
+    js_free_value(ctx, ctx.promise_ctor)
+    js_free_value(ctx, ctx.array_ctor)
+    js_free_value(ctx, ctx.regexp_ctor)
+    js_free_value(ctx, ctx.function_ctor)
+    js_free_value(ctx, ctx.function_proto)
+
+    js_free_shape_null(ctx.rt, ctx.array_shape)
+    js_free_shape_null(ctx.rt, ctx.arguments_shape)
+    js_free_shape_null(ctx.rt, ctx.mapped_arguments_shape)
+    js_free_shape_null(ctx.rt, ctx.regexp_shape)
+    js_free_shape_null(ctx.rt, ctx.regexp_result_shape)
+
+    cutils.list_del(&ctx.link)
+    remove_gc_object(&ctx.header)
+    js_free_rt(ctx.rt, ctx)
+
+# mark: Stack limit =============================================================================
+
+## The runtime of a context (JS_GetRuntime).
+pub func js_get_runtime(ctx: Context*) -> Runtime*:
+    return ctx.rt
+
+func update_stack_limit(rt: Runtime*):
+    if rt.stack_size == 0:
+        rt.stack_limit = 0  # no limit
+    else:
+        rt.stack_limit = rt.stack_top -% rt.stack_size
+
+## Set the maximum stack size in bytes; 0 removes the limit (JS_SetMaxStackSize).
+pub func js_set_max_stack_size(rt: Runtime*, stack_size: usize):
+    rt.stack_size = stack_size
+    update_stack_limit(rt)
+
+## Take the current stack position as the top of the stack the limit is measured from;
+## call it when the runtime is used from another thread (JS_UpdateStackTop).
+pub func js_update_stack_top(rt: Runtime*):
+    rt.stack_top = js_get_stack_pointer()
+    update_stack_limit(rt)
+
+## Whether the running function is in strict mode.
+func is_strict_mode(ctx: Context*) -> bool:
+    if let sf = ctx.rt.current_stack_frame:
+        return (sf.js_mode & js_mode_strict) != 0
+    return false

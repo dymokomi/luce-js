@@ -1,0 +1,158 @@
+#==============================================================================================
+#
+#   malloc_api - The engine's allocation functions, with accounting and out-of-memory throws
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 1780-1963: the GC trigger, js_malloc_rt and its family
+#       over the runtime's JS malloc context, the context forms that throw an out of
+#       memory error (a failure, `!`), string duplication, the growable-array helpers
+#       and the DynBuf initializers that allocate through the runtime.
+#
+#==============================================================================================
+
+# mark: GC trigger ==============================================================================
+
+## Run the GC when the allocated size plus `size` exceeds the runtime's threshold, then
+## set the next threshold at 1.5 times the size in use.
+func js_trigger_gc(rt: Runtime*, size: usize):
+    let force_gc = rt.malloc_ctx.malloc_state.malloc_size +% size > rt.malloc_gc_threshold
+    if force_gc:
+        js_run_gc(rt)
+        let used = rt.malloc_ctx.malloc_state.malloc_size
+        rt.malloc_gc_threshold = used + (used >> 1)
+
+# mark: Runtime allocation ======================================================================
+
+## Allocate `size` bytes from the runtime's heap; none on failure (js_malloc_rt).
+pub func js_malloc_rt(rt: Runtime*, size: usize) -> void*?:
+    return js_malloc_raw(&rt.malloc_ctx, size)
+
+## Free a block of the runtime's heap; none is ignored (js_free_rt).
+pub func js_free_rt(rt: Runtime*, ptr: void*?):
+    js_free_raw(&rt.malloc_ctx, ptr)
+
+## Resize a block of the runtime's heap (js_realloc_rt): a null `ptr` allocates, a zero
+## `size` frees and answers none; none on failure.
+pub func js_realloc_rt(rt: Runtime*, ptr: void*?, size: usize) -> void*?:
+    return js_realloc_raw(&rt.malloc_ctx, ptr, size)
+
+## The usable size of a block of the runtime's heap (js_malloc_usable_size_rt).
+pub func js_malloc_usable_size_rt(rt: Runtime*, ptr: const void*?) -> usize:
+    return js_malloc_usable_size_raw(&rt.malloc_ctx, ptr)
+
+## Allocate `size` zeroed bytes from the runtime's heap; none on failure (js_mallocz_rt).
+pub func js_mallocz_rt(rt: Runtime*, size: usize) -> void*?:
+    let ptr = js_malloc_rt(rt, size) else return none
+    discard(cutils.memset(ptr, 0, size))
+    return ptr
+
+# mark: Context allocation ======================================================================
+
+## Allocate `size` bytes; throw out of memory in case of error (js_malloc).
+pub func js_malloc(ctx: Context*, size: usize) -> void*!:
+    let ptr = js_malloc_rt(ctx.rt, size) else try js_throw_out_of_memory(ctx)
+    return ptr
+
+## Allocate `size` zeroed bytes; throw out of memory in case of error (js_mallocz).
+pub func js_mallocz(ctx: Context*, size: usize) -> void*!:
+    let ptr = js_mallocz_rt(ctx.rt, size) else try js_throw_out_of_memory(ctx)
+    return ptr
+
+## Free a block; none is ignored (js_free).
+pub func js_free(ctx: Context*, ptr: void*?):
+    js_free_rt(ctx.rt, ptr)
+
+## Resize a block; throw out of memory in case of error (js_realloc). A zero `size`
+## frees the block and answers none without failing.
+pub func js_realloc(ctx: Context*, ptr: void*?, size: usize) -> void*?!:
+    let ret = js_realloc_rt(ctx.rt, ptr, size)
+    if ret == none and size != 0:
+        try js_throw_out_of_memory(ctx)
+    return ret
+
+## As js_realloc, and store the extra allocated size in `*pslack` if successful
+## (js_realloc2).
+pub func js_realloc2(ctx: Context*, ptr: void*?, size: usize, pslack: usize*?) -> void*?!:
+    let ret = js_realloc_rt(ctx.rt, ptr, size)
+    if ret == none and size != 0:
+        try js_throw_out_of_memory(ctx)
+    if let slack = pslack:
+        # workaround: compiler-issues/nullable_pointer_cast (void*? to const void*?)
+        var new_size: usize = 0
+        if let r = ret:
+            new_size = js_malloc_usable_size_rt(ctx.rt, r)
+        *slack = new_size - size if new_size > size else 0
+    return ret
+
+## The usable size of a block (js_malloc_usable_size).
+pub func js_malloc_usable_size(ctx: Context*, ptr: const void*?) -> usize:
+    return js_malloc_usable_size_rt(ctx.rt, ptr)
+
+## A NUL-terminated copy of the `n` bytes at `s`; throw out of memory exception in case
+## of error (js_strndup).
+pub func js_strndup(ctx: Context*, s: const u8*, n: usize) -> u8*!:
+    let ptr = (u8*)(try js_malloc(ctx, n + 1))
+    discard(cutils.memcpy(ptr, s, n))
+    ptr[n] = 0
+    return ptr
+
+## A copy of the NUL-terminated text at `text` (js_strdup).
+pub func js_strdup(ctx: Context*, text: const u8*) -> u8*!:
+    return try js_strndup(ctx, text, cutils.strlen(text))
+
+# mark: Growable arrays =========================================================================
+
+## Grow the array `*parray` of `*psize` elements of `elem_size` bytes to at least
+## `req_size` elements, by half again its size, keeping any slack the allocator gives.
+## `parray` is the address of a nullable pointer to the array: callers cast
+## `(void*?*)&s.tab`.
+func js_realloc_array(ctx: Context*, parray: void*?*, elem_size: i32, psize: i32*, req_size: i32) -> !:
+    var slack: usize = 0
+    # XXX: potential arithmetic overflow
+    var new_size = cutils.max_int(req_size, *psize * 3 // 2)
+    let new_array = try js_realloc2(ctx, *parray, (usize)(new_size * elem_size), &slack)
+    new_size += (i32)(slack // (usize)elem_size)
+    *psize = new_size
+    *parray = new_array
+
+## Resize the array and update its size if req_size > *psize (js_resize_array).
+func js_resize_array(ctx: Context*, parray: void*?*, elem_size: i32, psize: i32*, req_size: i32) -> !:
+    if req_size > *psize:
+        try js_realloc_array(ctx, parray, elem_size, psize, req_size)
+
+# mark: Dynamic buffers =========================================================================
+
+## The DynBuf reallocation function over a runtime's heap: `opaque` is the Runtime (C
+## casts js_realloc_rt to DynBufReallocFunc).
+func js_dbuf_realloc_rt(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    let rt = (Runtime*)(opaque else trap("js_dbuf_realloc_rt: no runtime"))
+    return js_realloc_rt(rt, ptr, size)
+
+## Initialize a DynBuf that allocates from the context's runtime (js_dbuf_init).
+func js_dbuf_init(ctx: Context*, s: cutils.DynBuf*):
+    cutils.dbuf_init2(s, ctx.rt, js_dbuf_realloc_rt)
+
+func js_realloc_bytecode_rt(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    let rt = (Runtime*)(opaque else trap("js_realloc_bytecode_rt: no runtime"))
+    if size > (usize)(0x7fffffff // 2):
+        # the bytecode cannot be larger than 2G. Leave some slack to avoid some overflows.
+        return none
+    return js_realloc_rt(rt, ptr, size)
+
+## Initialize a DynBuf for bytecode, limited to 1G (js_dbuf_bytecode_init).
+func js_dbuf_bytecode_init(ctx: Context*, s: cutils.DynBuf*):
+    cutils.dbuf_init2(s, ctx.rt, js_realloc_bytecode_rt)
+
+# mark: Small helpers ===========================================================================
+
+## Whether `c` is an ASCII decimal digit.
+func is_digit(c: i32) -> bool:
+    return c >= (i32)'0' and c <= (i32)'9'
+
+## The code unit at `idx` of a flat string: its characters follow the String header,
+## 8-bit or 16-bit as `is_wide_char` says.
+func string_get(p: const String*, idx: i32) -> i32:
+    let chars = (const u8*)p + sizeof(String)
+    if p.is_wide_char:
+        return (i32)((const u16*)chars)[(isize)idx]
+    return (i32)chars[(isize)idx]

@@ -32,9 +32,6 @@ struct CFunctionDataRecord:
 struct ClassFieldsDef:
     var unported: i32
 
-struct ClassShortDef:
-    var unported: i32
-
 struct CodeContext:
     var unported: i32
 
@@ -140,9 +137,6 @@ struct ValueBuffer:
 struct VarDef:
     var unported: i32
 
-enum FreeModuleKind as i32:
-    unported = 0
-
 enum ParseExportKind as i32:
     unported = 0
 
@@ -163,8 +157,6 @@ enum ToNumberHint as i32:
 
 enum VarDefKind as i32:
     unported = 0
-
-type MallocIterFunc = func() -> unit
 
 type PrintValueWrite = func() -> unit
 

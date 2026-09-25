@@ -1,0 +1,395 @@
+#==============================================================================================
+#
+#   runtime - Creating a runtime: the standard classes, the stack check, the host allocator
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 1965-2335: the table of the standard classes, the stack
+#       overflow check (CONFIG_STACK_CHECK is on: the stack pointer is the address of a
+#       local), JS_NewRuntime2 and JS_NewRuntime, the default host allocator with its
+#       memory limit and accounting, the runtime's setters and getters, and the job
+#       queue.
+#
+#==============================================================================================
+
+import os
+
+# mark: Standard classes ========================================================================
+
+## A class of the standard table: its name, finalizer and marking function
+## (JSClassShortDef).
+struct ClassShortDef:
+    var class_name: Atom
+    var finalizer: ClassFinalizer?
+    var gc_mark: ClassGCMark?
+
+## The classes from ClassId.object to ClassId.rawjson, in ClassId order.
+let js_std_class_def: ClassShortDef[50] = [
+    # ClassId.object
+    ClassShortDef(atom_Object, none, none),
+    # ClassId.array
+    ClassShortDef(atom_Array, js_array_finalizer, js_array_mark),
+    # ClassId.error
+    ClassShortDef(atom_Error, none, none),
+    # ClassId.number
+    ClassShortDef(atom_Number, js_object_data_finalizer, js_object_data_mark),
+    # ClassId.string
+    ClassShortDef(atom_String, js_object_data_finalizer, js_object_data_mark),
+    # ClassId.boolean
+    ClassShortDef(atom_Boolean, js_object_data_finalizer, js_object_data_mark),
+    # ClassId.symbol
+    ClassShortDef(atom_Symbol, js_object_data_finalizer, js_object_data_mark),
+    # ClassId.arguments
+    ClassShortDef(atom_Arguments, js_array_finalizer, js_array_mark),
+    # ClassId.mapped_arguments
+    ClassShortDef(atom_Arguments, js_mapped_arguments_finalizer, js_mapped_arguments_mark),
+    # ClassId.date
+    ClassShortDef(atom_Date, js_object_data_finalizer, js_object_data_mark),
+    # ClassId.module_ns
+    ClassShortDef(atom_Object, none, none),
+    # ClassId.c_function
+    ClassShortDef(atom_Function, js_c_function_finalizer, js_c_function_mark),
+    # ClassId.bytecode_function
+    ClassShortDef(atom_Function, js_bytecode_function_finalizer, js_bytecode_function_mark),
+    # ClassId.bound_function
+    ClassShortDef(atom_Function, js_bound_function_finalizer, js_bound_function_mark),
+    # ClassId.c_function_data
+    ClassShortDef(atom_Function, js_c_function_data_finalizer, js_c_function_data_mark),
+    # ClassId.generator_function
+    ClassShortDef(atom_GeneratorFunction, js_bytecode_function_finalizer, js_bytecode_function_mark),
+    # ClassId.for_in_iterator
+    ClassShortDef(atom_ForInIterator, js_for_in_iterator_finalizer, js_for_in_iterator_mark),
+    # ClassId.regexp
+    ClassShortDef(atom_RegExp, js_regexp_finalizer, none),
+    # ClassId.array_buffer
+    ClassShortDef(atom_ArrayBuffer, js_array_buffer_finalizer, none),
+    # ClassId.shared_array_buffer
+    ClassShortDef(atom_SharedArrayBuffer, js_array_buffer_finalizer, none),
+    # ClassId.uint8c_array
+    ClassShortDef(atom_Uint8ClampedArray, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.int8_array
+    ClassShortDef(atom_Int8Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.uint8_array
+    ClassShortDef(atom_Uint8Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.int16_array
+    ClassShortDef(atom_Int16Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.uint16_array
+    ClassShortDef(atom_Uint16Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.int32_array
+    ClassShortDef(atom_Int32Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.uint32_array
+    ClassShortDef(atom_Uint32Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.big_int64_array
+    ClassShortDef(atom_BigInt64Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.big_uint64_array
+    ClassShortDef(atom_BigUint64Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.float16_array
+    ClassShortDef(atom_Float16Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.float32_array
+    ClassShortDef(atom_Float32Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.float64_array
+    ClassShortDef(atom_Float64Array, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.dataview
+    ClassShortDef(atom_DataView, js_typed_array_finalizer, js_typed_array_mark),
+    # ClassId.big_int
+    ClassShortDef(atom_BigInt, js_object_data_finalizer, js_object_data_mark),
+    # ClassId.map
+    ClassShortDef(atom_Map, js_map_finalizer, js_map_mark),
+    # ClassId.set
+    ClassShortDef(atom_Set, js_map_finalizer, js_map_mark),
+    # ClassId.weakmap
+    ClassShortDef(atom_WeakMap, js_map_finalizer, js_map_mark),
+    # ClassId.weakset
+    ClassShortDef(atom_WeakSet, js_map_finalizer, js_map_mark),
+    # ClassId.iterator
+    ClassShortDef(atom_Iterator, none, none),
+    # ClassId.iterator_concat
+    ClassShortDef(atom_IteratorConcat, js_iterator_concat_finalizer, js_iterator_concat_mark),
+    # ClassId.iterator_helper
+    ClassShortDef(atom_IteratorHelper, js_iterator_helper_finalizer, js_iterator_helper_mark),
+    # ClassId.iterator_wrap
+    ClassShortDef(atom_IteratorWrap, js_iterator_wrap_finalizer, js_iterator_wrap_mark),
+    # ClassId.map_iterator
+    ClassShortDef(atom_Map_Iterator, js_map_iterator_finalizer, js_map_iterator_mark),
+    # ClassId.set_iterator
+    ClassShortDef(atom_Set_Iterator, js_map_iterator_finalizer, js_map_iterator_mark),
+    # ClassId.array_iterator
+    ClassShortDef(atom_Array_Iterator, js_array_iterator_finalizer, js_array_iterator_mark),
+    # ClassId.string_iterator
+    ClassShortDef(atom_String_Iterator, js_array_iterator_finalizer, js_array_iterator_mark),
+    # ClassId.regexp_string_iterator
+    ClassShortDef(atom_RegExp_String_Iterator, js_regexp_string_iterator_finalizer, js_regexp_string_iterator_mark),
+    # ClassId.generator
+    ClassShortDef(atom_Generator, js_generator_finalizer, js_generator_mark),
+    # ClassId.global_object
+    ClassShortDef(atom_Object, js_global_object_finalizer, js_global_object_mark),
+    # ClassId.rawjson
+    ClassShortDef(atom_Object, none, none),
+]
+
+## Declare the classes `start`, `start + 1`, ... of `tab`; -1 if a declaration fails.
+func init_class_range(rt: Runtime*, tab: const ClassShortDef[], start: i32) -> i32:
+    for i in 0..<tab.length:
+        let class_id = (i32)i + start
+        let cm = ClassDef(class_name = "", finalizer = tab[i].finalizer, gc_mark = tab[i].gc_mark)
+        if js_new_class1(rt, (u32)class_id, &cm, tab[i].class_name) < 0:
+            return -1
+    return 0
+
+# mark: Stack check =============================================================================
+
+## The current stack pointer, approximated by the address of a local (C uses
+## __builtin_frame_address(0)). Note: OS and CPU dependent.
+noinline func js_get_stack_pointer() -> usize:
+    var marker: u8 = 0
+    return (usize)&marker
+
+## Whether `alloca_size` more bytes of stack would pass the runtime's stack limit.
+func js_check_stack_overflow(rt: Runtime*, alloca_size: usize) -> bool:
+    let sp = js_get_stack_pointer() -% alloca_size
+    return sp < rt.stack_limit
+
+# mark: Creating a runtime ======================================================================
+
+## A new runtime whose memory comes from the host functions `mf`; none if out of memory
+## (JS_NewRuntime2).
+pub func js_new_runtime2(mf: const MallocFunctions*, opaque: void*?) -> Runtime*?:
+    var ms: MallocState
+    ms.opaque = opaque
+    ms.malloc_limit = ~(usize)0
+
+    let host_malloc = mf.js_malloc
+    let p = host_malloc(&ms, sizeof(Runtime)) else return none
+    discard(cutils.memset(p, 0, sizeof(Runtime)))
+    let rt = (Runtime*)p
+    js_malloc_init(&rt.malloc_ctx)
+    rt.malloc_ctx.mf = *mf
+    rt.malloc_ctx.malloc_state = ms
+    rt.malloc_gc_threshold = 256 * 1024
+
+    cutils.init_list_head(&rt.context_list)
+    cutils.init_list_head(&rt.gc_obj_list)
+    cutils.init_list_head(&rt.gc_zero_ref_count_list)
+    rt.gc_phase = GCPhase.none_
+    cutils.init_list_head(&rt.weakref_list)
+    cutils.init_list_head(&rt.job_list)
+
+    if js_init_atoms(rt) != 0:
+        js_free_runtime(rt)
+        return none
+
+    # create the object, array and function classes
+    if init_class_range(rt, js_std_class_def, (i32)ClassId.object) < 0:
+        js_free_runtime(rt)
+        return none
+    let classes = rt.class_array else trap("js_new_runtime2: no class array")
+    # pending-link: the exotic method tables are declared by the regions that own them
+    # (js_arguments_exotic_methods: quickjs.c:16150, js_string_exotic_methods: 45261,
+    # js_module_ns_exotic_methods: 30351). Enable these lines when they exist:
+    # classes[(usize)ClassId.arguments].exotic = &js_arguments_exotic_methods
+    # classes[(usize)ClassId.mapped_arguments].exotic = &js_arguments_exotic_methods
+    # classes[(usize)ClassId.string].exotic = &js_string_exotic_methods
+    # classes[(usize)ClassId.module_ns].exotic = &js_module_ns_exotic_methods
+
+    classes[(usize)ClassId.c_function].call = js_call_c_function
+    classes[(usize)ClassId.c_function_data].call = js_c_function_data_call
+    classes[(usize)ClassId.bound_function].call = js_call_bound_function
+    classes[(usize)ClassId.generator_function].call = js_generator_function_call
+    if init_shape_hash(rt) != 0:
+        js_free_runtime(rt)
+        return none
+
+    rt.stack_size = js_default_stack_size
+    js_update_stack_top(rt)
+
+    rt.current_exception = js_uninitialized()
+    return rt
+
+## The host's opaque pointer of the runtime (JS_GetRuntimeOpaque).
+pub func js_get_runtime_opaque(rt: Runtime*) -> void*?:
+    return rt.user_opaque
+
+## Set the host's opaque pointer of the runtime (JS_SetRuntimeOpaque).
+pub func js_set_runtime_opaque(rt: Runtime*, opaque: void*?):
+    rt.user_opaque = opaque
+
+# mark: The default host allocator ==============================================================
+
+# The host malloc's bookkeeping per block, counted in malloc_size (MALLOC_OVERHEAD).
+let malloc_overhead_macos: usize = 0
+let malloc_overhead_other: usize = 8
+
+extern func malloc_size(ptr: const void*?) -> usize
+extern func malloc_usable_size(ptr: void*?) -> usize
+extern func msize as "_msize"(ptr: void*?) -> usize
+
+## MALLOC_OVERHEAD: 0 on macOS, 8 elsewhere.
+func malloc_overhead() -> usize:
+    if os.macos:
+        return malloc_overhead_macos
+    return malloc_overhead_other
+
+# default memory allocation functions with memory limitation
+func js_def_malloc_usable_size(ptr: const void*?) -> usize:
+    # workaround: compiler-issues/nullable_pointer_cast (const void*? to void*?)
+    let p = ptr else return 0
+    if os.macos:
+        return malloc_size(p)
+    elif os.windows:
+        return msize((void*)p)
+    elif os.wasm32:
+        return 0
+    else:
+        return malloc_usable_size((void*)p)
+
+func js_def_malloc(s: MallocState*, size: usize) -> void*?:
+    # Do not allocate zero bytes: behavior is platform dependent
+    assert(size != 0)
+
+    if s.malloc_size +% size > s.malloc_limit:
+        return none
+
+    let ptr = cutils.malloc(size) else return none
+
+    s.malloc_count += 1
+    s.malloc_size += js_def_malloc_usable_size(ptr) + malloc_overhead()
+    return ptr
+
+func js_def_free(s: MallocState*, ptr: void*?):
+    let p = ptr else return
+
+    s.malloc_count -= 1
+    s.malloc_size -= js_def_malloc_usable_size(p) + malloc_overhead()
+    cutils.c_free(p)
+
+func js_def_realloc(s: MallocState*, ptr: void*?, size: usize) -> void*?:
+    if ptr == none:
+        if size == 0:
+            return none
+        return js_def_malloc(s, size)
+    let p = ptr else return none
+    let old_size = js_def_malloc_usable_size(p)
+    if size == 0:
+        s.malloc_count -= 1
+        s.malloc_size -= old_size + malloc_overhead()
+        cutils.c_free(p)
+        return none
+    if s.malloc_size +% size -% old_size > s.malloc_limit:
+        return none
+
+    let q = cutils.realloc(p, size) else return none
+
+    s.malloc_size = s.malloc_size +% js_def_malloc_usable_size(q) -% old_size
+    return q
+
+let def_malloc_funcs = MallocFunctions(
+    js_malloc = js_def_malloc,
+    js_free = js_def_free,
+    js_realloc = js_def_realloc,
+    js_malloc_usable_size = js_def_malloc_usable_size,
+)
+
+## A new runtime over the C allocator; none if out of memory (JS_NewRuntime).
+pub func js_new_runtime() -> Runtime*?:
+    return js_new_runtime2(&def_malloc_funcs, none)
+
+# mark: Runtime settings ========================================================================
+
+## Limit the memory the runtime may allocate; `~0` means no limit (JS_SetMemoryLimit).
+pub func js_set_memory_limit(rt: Runtime*, limit: usize):
+    rt.malloc_ctx.malloc_state.malloc_limit = limit
+
+## Set the allocated size that triggers a GC; use `~0` to disable automatic GC
+## (JS_SetGCThreshold).
+pub func js_set_gc_threshold(rt: Runtime*, gc_threshold: usize):
+    rt.malloc_gc_threshold = gc_threshold
+
+## Set the handler polled to interrupt running code; none removes it
+## (JS_SetInterruptHandler).
+pub func js_set_interrupt_handler(rt: Runtime*, cb: InterruptHandler?, opaque: void*?):
+    rt.interrupt_handler = cb
+    rt.interrupt_opaque = opaque
+
+## Whether Atomics.wait may block (JS_SetCanBlock).
+pub func js_set_can_block(rt: Runtime*, can_block: bool):
+    rt.can_block = can_block
+
+## Set the functions that allocate, free and clone SharedArrayBuffers
+## (JS_SetSharedArrayBufferFunctions).
+pub func js_set_shared_array_buffer_functions(rt: Runtime*, sf: const SharedArrayBufferFunctions*):
+    rt.sab_funcs = *sf
+
+## Set what compilation strips: `strip_source`, `strip_debug` (JS_SetStripInfo).
+pub func js_set_strip_info(rt: Runtime*, flags: i32):
+    rt.strip_flags = (u8)flags
+
+## What compilation strips (JS_GetStripInfo).
+pub func js_get_strip_info(rt: Runtime*) -> i32:
+    return (i32)rt.strip_flags
+
+# mark: Jobs ====================================================================================
+
+## The arguments of a job: `argc` values after the JobEntry (JSJobEntry.argv).
+func job_entry_argv(e: JobEntry*) -> Value*:
+    return (Value*)((u8*)e + sizeof(JobEntry))
+
+## Queue `job_func(ctx, argc, argv)`. With `no_exception`, an allocation failure fails
+## without throwing (no exception is pending then).
+func js_enqueue_job2(ctx: Context*, job_func: JobFunc, argc: i32, argv: Value*, no_exception: bool) -> !:
+    let rt = ctx.rt
+    let size = sizeof(JobEntry) + (usize)argc * sizeof(Value)
+    var p: void*? = none
+    if no_exception:
+        p = js_malloc_rt(ctx.rt, size)
+    else:
+        p = try js_malloc(ctx, size)
+    let e = (JobEntry*)(p else error(exception, ""))
+    e.realm = js_dup_context(ctx)
+    e.job_func = job_func
+    e.argc = argc
+    let e_argv = job_entry_argv(e)
+    for i in 0..<(usize)argc:
+        e_argv[i] = js_dup_value(ctx, argv[i])
+    cutils.list_add_tail(&e.link, &rt.job_list)
+
+## Queue a job; fails if an exception was thrown (JS_EnqueueJob).
+pub func js_enqueue_job(ctx: Context*, job_func: JobFunc, argc: i32, argv: Value*) -> !:
+    try js_enqueue_job2(ctx, job_func, argc, argv, false)
+
+## Whether a job is queued (JS_IsJobPending).
+pub func js_is_job_pending(rt: Runtime*) -> bool:
+    return not cutils.list_empty(&rt.job_list)
+
+## Run the first pending job: false if no job was pending, true if a job was executed
+## successfully, a failure if it threw (JS_ExecutePendingJob). The context of the job is
+## stored in `*pctx` if `pctx` is given. It may be none if the context was already
+## destroyed or if no job was pending. The `pctx` parameter is now obsolete.
+pub func js_execute_pending_job(rt: Runtime*, pctx: Context*?*?) -> bool!:
+    if cutils.list_empty(&rt.job_list):
+        if let out_ctx = pctx:
+            *out_ctx = none
+        return false
+
+    # get the first pending job and execute it
+    let first = rt.job_list.next else trap("js_execute_pending_job: unlinked job list")
+    let e = (JobEntry*)((u8*)first - offsetof(JobEntry, link))
+    cutils.list_del(&e.link)
+    let ctx = e.realm
+    let e_argv = job_entry_argv(e)
+    var failed = false
+    let job_func = e.job_func
+    let res = job_func(ctx, e.argc, e_argv) catch failure:
+        failed = true
+        recover js_exception()
+    for i in 0..<(usize)e.argc:
+        js_free_value(ctx, e_argv[i])
+    js_free_value(ctx, res)
+    js_free(ctx, e)
+    if let out_ctx = pctx:
+        if js_rc(ctx).ref_count > 1:
+            *out_ctx = ctx
+        else:
+            *out_ctx = none
+    js_free_context(ctx)
+    if failed:
+        error(exception, "")
+    return true

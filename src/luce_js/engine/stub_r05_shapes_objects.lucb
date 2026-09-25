@@ -57,7 +57,7 @@ func js_free_shape0(rt: Runtime*, sh: Shape*):
 func js_free_shape(rt: Runtime*, sh: Shape*):
     trap("unported: js_free_shape")
 ## Ported from quickjs.c:5327 js_free_shape_null.
-func js_free_shape_null(rt: Runtime*, sh: Shape*):
+func js_free_shape_null(rt: Runtime*, sh: Shape*?):
     trap("unported: js_free_shape_null")
 ## Ported from quickjs.c:5334 resize_properties.
 func resize_properties(ctx: Context*, psh: Shape**, p: Object*, count: u32) -> i32!:
