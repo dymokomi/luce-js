@@ -98,15 +98,5 @@ enum PutLValueKind as i32:
 enum ResolveResult as i32:
     unported = 0
 
-enum StrictEqMode as i32:
-    unported = 0
-
 enum VarDefKind as i32:
     unported = 0
-
-# Constants of unported regions that ported code already uses. The region that declares
-# each one deletes it here.
-
-# quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
-let global_var_offset: i32 = 0x40000000
-let argument_var_offset: i32 = 0x20000000

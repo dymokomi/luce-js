@@ -1,0 +1,488 @@
+#==============================================================================================
+#
+#   closures - Variable references, global variable bindings, closures and classes
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 16973-17560. A closure reaches the variables it captures
+#       through VarRefs: attached to a live frame (pvalue points into its arg_buf or
+#       var_buf) until the frame closes them, detached (pvalue points at their own value)
+#       after. Global variables are VarRefs held by varref properties of the global object
+#       (var and function declarations) or of the global lexical object (let, const,
+#       class); a reference taken before the declaration runs waits, uninitialized, in the
+#       global object's hidden uninitialized_vars object.
+#
+#==============================================================================================
+
+# mark: Variable references =====================================================================
+
+# only valid inside C functions
+## The function being called (JS_GetActiveFunction).
+func js_get_active_function(ctx: Context*) -> Value:
+    let sf = ctx.rt.current_stack_frame else trap("js_get_active_function: no frame")
+    return sf.cur_func
+
+## A new detached variable reference holding undefined, or uninitialized when
+## `is_lexical`.
+func js_create_var_ref(ctx: Context*, is_lexical: bool) -> VarRef*!:
+    let var_ref = (VarRef*)(try js_malloc(ctx, sizeof(VarRef)))
+    js_rc(var_ref).ref_count = 1
+    if is_lexical:
+        var_ref.u.value = js_uninitialized()
+    else:
+        var_ref.u.value = js_undefined()
+    var_ref.pvalue = &var_ref.u.value
+    var_ref.is_detached = 1
+    var_ref.is_lexical = 0
+    var_ref.is_const = 0
+    add_gc_object(ctx.rt, &var_ref.header, GCObjectType.var_ref)
+    return var_ref
+
+## The container of an async function's frame (container_of(sf, JSAsyncFunctionState,
+## frame)).
+func js_async_function_of_frame(sf: StackFrame*) -> AsyncFunctionState*:
+    return (AsyncFunctionState*)((u8*)sf - offsetof(AsyncFunctionState, frame))
+
+## A reference to the captured argument (`is_arg`) or local variable `var_idx` of the
+## frame `sf`: the one the frame already has, or a new attached one.
+func get_var_ref(ctx: Context*, sf: StackFrame*, var_idx: i32, is_arg: bool) -> VarRef*!:
+    let p = sf.cur_func.u.obj
+    let b = p.u.func_.function_bytecode
+    let vardefs = b.vardefs else trap("get_var_ref: no variable definitions")
+
+    var vd: BytecodeVarDef* = ---
+    var pvalue: Value* = ---
+    if is_arg:
+        vd = vardefs + (usize)var_idx
+        let arg_buf = sf.arg_buf else trap("get_var_ref: no arguments")
+        pvalue = arg_buf + (usize)var_idx
+    else:
+        vd = vardefs + (usize)b.arg_count + (usize)var_idx
+        let var_buf = sf.var_buf else trap("get_var_ref: no variables")
+        pvalue = var_buf + (usize)var_idx
+    assert(vd.is_captured)
+    let var_ref_idx = (i32)vd.var_ref_idx
+    assert(var_ref_idx < (i32)b.var_ref_count)
+    let var_refs = sf.var_refs else trap("get_var_ref: no variable references")
+    if let existing = var_refs[(usize)var_ref_idx]:
+        # reference to the already created local variable
+        assert(existing.pvalue == pvalue)
+        js_rc(existing).ref_count += 1
+        return existing
+
+    # create a new one
+    let var_ref = (VarRef*)(try js_malloc(ctx, sizeof(VarRef)))
+    js_rc(var_ref).ref_count = 1
+    add_gc_object(ctx.rt, &var_ref.header, GCObjectType.var_ref)
+    var_ref.is_detached = 0
+    var_ref.is_lexical = 0
+    var_ref.is_const = 0
+    var_ref.u.frame.var_ref_idx = (u16)var_ref_idx
+    var_ref.u.frame.stack_frame = sf
+    var_refs[(usize)var_ref_idx] = var_ref
+    if (sf.js_mode & js_mode_async) != 0:
+        let async_func = js_async_function_of_frame(sf)
+        # The stack frame is detached and may be destroyed at any
+        # time so its reference count must be increased. Calling
+        # close_var_refs() when destroying the stack frame is not
+        # possible because it would change the graph between the GC
+        # objects. Another solution could be to temporarily detach
+        # the JSVarRef of async functions during the GC. It would
+        # have the advantage of allowing the release of unused stack
+        # frames in a cycle.
+        js_rc(async_func).ref_count += 1
+    var_ref.pvalue = pvalue
+    return var_ref
+
+# mark: Global variables ========================================================================
+
+## The finalizer of the global object: release its uninitialized variables.
+func js_global_object_finalizer(rt: Runtime*, obj: Value):
+    let p = obj.u.obj
+    js_free_value_rt(rt, p.u.global_object.uninitialized_vars)
+
+## The GC marking of the global object: its uninitialized variables.
+func js_global_object_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    js_mark_value(rt, p.u.global_object.uninitialized_vars, mark_func)
+
+## The varref property `atom` of a hidden object, found by find_own_property.
+func js_varref_of(pr: Property*?, prs: ShapeProperty*) -> VarRef*:
+    assert(((i32)prs.flags & prop_tmask) == prop_varref)
+    let found = pr else trap("a found property has storage")
+    return found.u.var_ref
+
+## A new reference to the uninitialized variable `atom` of the global object `p1`,
+## created (uninitialized) on first use.
+func js_global_object_get_uninitialized_var(ctx: Context*, p1: Object*, atom: Atom) -> VarRef*!:
+    let p = p1.u.global_object.uninitialized_vars.u.obj
+    var pr: Property*? = none
+
+    if let prs = find_own_property(&pr, p, atom):
+        let var_ref = js_varref_of(pr, prs)
+        js_rc(var_ref).ref_count += 1
+        return var_ref
+
+    let var_ref = try js_create_var_ref(ctx, true)
+    let new_pr = add_property(ctx, p, atom, prop_c_w_e | prop_varref) catch failure:
+        free_var_ref(ctx.rt, var_ref)
+        error(failure.code, failure.message)
+    new_pr.u.var_ref = var_ref
+    js_rc(var_ref).ref_count += 1
+    return var_ref
+
+# return a new variable reference. Get it from the uninitialized
+# variables if it is present. Return NULL in case of memory error.
+func js_global_object_find_uninitialized_var(ctx: Context*, p: Object*, atom: Atom, is_lexical: bool) -> VarRef*!:
+    let p1 = p.u.global_object.uninitialized_vars.u.obj
+    var pr: Property*? = none
+    if let prs = find_own_property(&pr, p1, atom):
+        let var_ref = js_varref_of(pr, prs)
+        js_rc(var_ref).ref_count += 1
+        # as in QuickJS, a failure to delete is not reported
+        delete_property(ctx, p1, atom) catch: recover false
+        if not is_lexical:
+            var_ref.u.value = js_undefined()
+        return var_ref
+    return try js_create_var_ref(ctx, is_lexical)
+
+## The reference of a global declaration `cv` of eval or script code (var, function, or
+## let/const/class when is_lexical), defining its varref property.
+func js_closure_define_global_var(ctx: Context*, cv: ClosureVar*, is_direct_or_indirect_eval: bool) -> VarRef*!:
+    var p: Object* = ---
+    var flags: i32 = 0
+    var pr: Property*? = none
+    var var_ref: VarRef* = ---
+    var add_var_ref = false
+
+    if cv.is_lexical:
+        p = ctx.global_var_obj.u.obj
+        flags = prop_enumerable | prop_configurable
+        if not cv.is_const:
+            flags |= prop_writable
+
+        if let prs = find_own_property(&pr, p, cv.var_name):
+            let found = js_varref_of(pr, prs)
+            js_rc(found).ref_count += 1
+            return found
+
+        # if there is a corresponding global variable, reuse its
+        # reference and create a new one for the global variable
+        let p1 = ctx.global_obj.u.obj
+        if let prs = find_own_property(&pr, p1, cv.var_name):
+            if ((i32)prs.flags & prop_tmask) == prop_varref:
+                let var_ref1 = try js_create_var_ref(ctx, false)
+                let gpr = pr else trap("a found property has storage")
+                var_ref = gpr.u.var_ref
+                var_ref1.u.value = var_ref.u.value
+                var_ref.u.value = js_uninitialized()
+                gpr.u.var_ref = var_ref1
+                add_var_ref = true
+    else:
+        p = ctx.global_obj.u.obj
+        flags = prop_enumerable | prop_writable
+        if is_direct_or_indirect_eval:
+            flags |= prop_configurable
+
+        # retry
+        while true:
+            let prs = find_own_property(&pr, p, cv.var_name) else break
+            let gpr = pr else trap("a found property has storage")
+            if ((i32)prs.flags & prop_tmask) == prop_autoinit:
+                try js_auto_init_property(ctx, p, cv.var_name, gpr, prs)
+                continue
+            elif ((i32)prs.flags & prop_tmask) != prop_varref:
+                var_ref = try js_global_object_get_uninitialized_var(ctx, p, cv.var_name)
+            else:
+                var_ref = gpr.u.var_ref
+                js_rc(var_ref).ref_count += 1
+            if (cv.var_kind == VarKind.global_function_decl and
+                    ((i32)prs.flags & prop_configurable) != 0):
+                # update the property flags if possible when
+                # declaring a global function
+                if ((i32)prs.flags & prop_tmask) == prop_getset:
+                    free_property(ctx.rt, gpr, (i32)prs.flags)
+                    prs.flags = (u8)(flags | prop_varref)
+                    gpr.u.var_ref = var_ref
+                    js_rc(var_ref).ref_count += 1
+                else:
+                    assert(((i32)prs.flags & prop_tmask) == prop_varref)
+                    prs.flags = (u8)(((i32)prs.flags & ~prop_c_w_e) | flags)
+                var_ref.is_const = 0
+            return var_ref
+
+        if not p.extensible:
+            return try js_global_object_get_uninitialized_var(ctx, p, cv.var_name)
+
+    if not add_var_ref:
+        # if there is a corresponding uninitialized variable, use it
+        let p1 = ctx.global_obj.u.obj
+        var_ref = try js_global_object_find_uninitialized_var(ctx, p1, cv.var_name, cv.is_lexical)
+    # add_var_ref:
+    if cv.is_lexical:
+        var_ref.is_lexical = 1
+        var_ref.is_const = (u8)cv.is_const
+
+    let new_pr = add_property(ctx, p, cv.var_name, flags | prop_varref) catch failure:
+        free_var_ref(ctx.rt, var_ref)
+        error(failure.code, failure.message)
+    new_pr.u.var_ref = var_ref
+    js_rc(var_ref).ref_count += 1
+    return var_ref
+
+## The reference of the global variable `cv` a closure uses: the lexical one, the global
+## object's one, or an uninitialized one until the variable is declared.
+func js_closure_global_var(ctx: Context*, cv: ClosureVar*) -> VarRef*!:
+    var pr: Property*? = none
+
+    let lexical_obj = ctx.global_var_obj.u.obj
+    if let prs = find_own_property(&pr, lexical_obj, cv.var_name):
+        let var_ref = js_varref_of(pr, prs)
+        js_rc(var_ref).ref_count += 1
+        return var_ref
+    let p = ctx.global_obj.u.obj
+    # redo
+    while true:
+        let prs = find_own_property(&pr, p, cv.var_name) else break
+        let gpr = pr else trap("a found property has storage")
+        if ((i32)prs.flags & prop_tmask) == prop_autoinit:
+            # Instantiate property and retry
+            try js_auto_init_property(ctx, p, cv.var_name, gpr, prs)
+            continue
+        if ((i32)prs.flags & prop_tmask) == prop_varref:
+            let var_ref = gpr.u.var_ref
+            js_rc(var_ref).ref_count += 1
+            return var_ref
+        break
+    return try js_global_object_get_uninitialized_var(ctx, p, cv.var_name)
+
+# mark: Closures ================================================================================
+
+## Make `func_obj` a closure of `b`, taking its captured variables from the frame `sf`,
+## the enclosing closure's references `cur_var_refs` and the global object. Consumes
+## `func_obj` on failure (which releases `b`).
+func js_closure2(ctx: Context*, func_obj: Value, b: FunctionBytecode*, cur_var_refs: VarRef*?*?, sf: StackFrame*?, is_eval: bool, m: ModuleDef*?) -> Value!:
+    # bfunc is freed when func_obj is freed
+    errdefer js_free_value(ctx, func_obj)
+    let p = func_obj.u.obj
+    p.u.func_.function_bytecode = b
+    p.u.func_.home_object = none
+    p.u.func_.var_refs = none
+    if b.closure_var_count == 0:
+        return func_obj
+
+    let var_refs = (VarRef*?*)(try js_mallocz(ctx, sizeof(VarRef*?) * (usize)b.closure_var_count))
+    p.u.func_.var_refs = var_refs
+    let closure_var = b.closure_var else trap("js_closure2: no closure variables")
+    if is_eval:
+        # first pass to check the global variable definitions
+        for i in 0..<(usize)b.closure_var_count:
+            let cv = closure_var + i
+            if cv.closure_type == ClosureType.global_decl:
+                var flags: i32 = 0
+                if cv.is_lexical:
+                    flags |= define_global_lex_var
+                if cv.var_kind == VarKind.global_function_decl:
+                    flags |= define_global_func_var
+                try js_check_define_global_var(ctx, cv.var_name, flags)
+    for i in 0..<(usize)b.closure_var_count:
+        let cv = closure_var + i
+        var var_ref: VarRef* = ---
+        match cv.closure_type:
+            .module_import:
+                # imported from other modules
+                continue
+            .module_decl:
+                var_ref = try js_create_var_ref(ctx, cv.is_lexical)
+            .global_decl:
+                var_ref = try js_closure_define_global_var(ctx, cv, b.is_direct_or_indirect_eval)
+            .global:
+                var_ref = try js_closure_global_var(ctx, cv)
+            .local_:
+                # reuse the existing variable reference if it already exists
+                let frame = sf else trap("js_closure2: a local variable without a frame")
+                var_ref = try get_var_ref(ctx, frame, (i32)cv.var_idx, false)
+            .arg:
+                # reuse the existing variable reference if it already exists
+                let frame = sf else trap("js_closure2: an argument without a frame")
+                var_ref = try get_var_ref(ctx, frame, (i32)cv.var_idx, true)
+            .ref, .global_ref:
+                let cur = cur_var_refs else trap("js_closure2: no enclosing references")
+                var_ref = cur[(usize)cv.var_idx] else trap("js_closure2: a closed reference")
+                js_rc(var_ref).ref_count += 1
+            _:
+                trap("js_closure2: bad closure type")
+        var_refs[i] = var_ref
+    return func_obj
+
+## The auto-init function of a function's `prototype` property: a new object whose
+## `constructor` is the function.
+func js_instantiate_prototype(ctx: Context*, p: Object*, atom: Atom, opaque: void*?) -> Value!:
+    let this_val = js_mkptr(Tag.object, p)
+    let obj = try js_new_object(ctx)
+    set_cycle_flag(ctx, obj)
+    set_cycle_flag(ctx, this_val)
+    js_define_property_value(ctx, obj, atom_constructor, js_dup_value(ctx, this_val),
+            prop_writable | prop_configurable) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    return obj
+
+## The class of a function object by the function's kind (js_func_normal, generator,
+## async, async generator).
+let func_kind_to_class_id: ClassId[4] = [
+    ClassId.bytecode_function,
+    ClassId.generator_function,
+    ClassId.async_function,
+    ClassId.async_generator_function,
+]
+
+## A new function object for the bytecode `bfunc`, which it takes (OP_fclosure).
+func js_closure(ctx: Context*, bfunc: Value, cur_var_refs: VarRef*?*?, sf: StackFrame*?, is_eval: bool) -> Value!:
+    let b = bfunc.u.bytecode
+    let func_obj0 = js_new_object_class(ctx, (i32)(u16)func_kind_to_class_id[(usize)b.func_kind]) catch failure:
+        js_free_value(ctx, bfunc)
+        error(failure.code, failure.message)
+    # on failure bfunc has been freed
+    let func_obj = try js_closure2(ctx, func_obj0, b, cur_var_refs, sf, is_eval, none)
+    # bfunc is freed when func_obj is freed
+    errdefer js_free_value(ctx, func_obj)
+    var name_atom = b.func_name
+    if name_atom == no_atom:
+        name_atom = atom_empty_string
+    js_function_set_properties(ctx, func_obj, name_atom, (i32)b.defined_arg_count)
+
+    if (b.func_kind & js_func_generator) != 0:
+        # generators have a prototype field which is used as
+        # prototype for the generator object
+        var proto_class_id = ClassId.generator
+        if b.func_kind == js_func_async_generator:
+            proto_class_id = ClassId.async_generator
+        let class_proto = ctx.class_proto else trap("js_closure: no class prototypes")
+        let proto = try js_new_object_proto(ctx, class_proto[(usize)proto_class_id])
+        js_define_property_value(ctx, func_obj, atom_prototype, proto,
+            prop_writable) catch: recover false
+    elif b.has_prototype:
+        # add the 'prototype' property: delay instantiation to avoid
+        # creating cycles for every javascript function. The prototype
+        # object is created on the fly when first accessed
+        discard(js_set_constructor_bit(ctx, func_obj, true))
+        js_define_auto_init_property(ctx, func_obj, atom_prototype,
+            AutoInitId.prototype, none, prop_writable) catch: recover false
+    return func_obj
+
+# mark: Classes =================================================================================
+
+## OP_define_class flags: the class has an `extends` clause (JS_DEFINE_CLASS_HAS_HERITAGE).
+let define_class_has_heritage: i32 = 1 << 0
+
+## The values js_op_define_class owns until it succeeds; its `fail:` label frees them.
+struct DefineClassValues:
+    var parent_class: Value
+    var parent_proto: Value
+    var bfunc: Value
+    var proto: Value
+    var ctor: Value
+
+## The `fail:` label of js_op_define_class.
+func js_op_define_class_fail(ctx: Context*, sp: Value*, v: DefineClassValues*):
+    js_free_value(ctx, v.parent_class)
+    js_free_value(ctx, v.parent_proto)
+    js_free_value(ctx, v.bfunc)
+    js_free_value(ctx, v.proto)
+    js_free_value(ctx, v.ctor)
+    *(sp - 2) = js_undefined()
+    *(sp - 1) = js_undefined()
+
+## OP_define_class: from the parent class sp[-2] and the constructor's bytecode sp[-1],
+## make the class constructor and its prototype, left at sp[-2] and sp[-1]. A computed
+## class name is at sp[-3].
+func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags: i32, cur_var_refs: VarRef*?*?, sf: StackFrame*?, is_computed_name: bool) -> !:
+    var v = DefineClassValues(
+        parent_class = *(sp - 2),
+        parent_proto = js_undefined(),
+        bfunc = *(sp - 1),
+        proto = js_undefined(),
+        ctor = js_undefined(),
+    )
+    errdefer js_op_define_class_fail(ctx, sp, &v)
+
+    if (class_flags & define_class_has_heritage) != 0:
+        if js_is_null(v.parent_class):
+            v.parent_proto = js_null()
+            v.parent_class = js_dup_value(ctx, ctx.function_proto)
+        else:
+            if not js_is_constructor(ctx, v.parent_class):
+                try js_throw_type_error(ctx, "parent class must be constructor")
+            v.parent_proto = try js_get_property(ctx, v.parent_class, atom_prototype)
+            if not js_is_null(v.parent_proto) and not js_is_object(v.parent_proto):
+                try js_throw_type_error(ctx, "parent prototype must be an object or null")
+    else:
+        # parent_class is JS_UNDEFINED in this case
+        let class_proto = ctx.class_proto else trap("js_op_define_class: no class prototypes")
+        v.parent_proto = js_dup_value(ctx, class_proto[(usize)ClassId.object])
+        v.parent_class = js_dup_value(ctx, ctx.function_proto)
+    v.proto = try js_new_object_proto(ctx, v.parent_proto)
+
+    let b = v.bfunc.u.bytecode
+    assert(b.func_kind == js_func_normal)
+    v.ctor = try js_new_object_proto_class(ctx, v.parent_class, (u32)ClassId.bytecode_function)
+    # js_closure2 takes the constructor and, through it, the bytecode
+    let ctor = v.ctor
+    v.ctor = js_undefined()
+    v.bfunc = js_undefined()
+    v.ctor = try js_closure2(ctx, ctor, b, cur_var_refs, sf, false, none)
+    js_method_set_home_object(ctx, v.ctor, v.proto)
+    discard(js_set_constructor_bit(ctx, v.ctor, true))
+
+    js_define_property_value(ctx, v.ctor, atom_length,
+        js_new_int32((i32)b.defined_arg_count), prop_configurable) catch: recover false
+
+    if is_computed_name:
+        try js_define_object_name_computed(ctx, v.ctor, *(sp - 3), prop_configurable)
+    else:
+        try js_define_object_name(ctx, v.ctor, class_name, prop_configurable)
+
+    # the constructor property must be first. It can be overriden by
+    # computed property names
+    discard(try js_define_property_value(ctx, v.proto, atom_constructor,
+        js_dup_value(ctx, v.ctor), prop_configurable | prop_writable | prop_throw))
+    # set the prototype property
+    discard(try js_define_property_value(ctx, v.ctor, atom_prototype,
+        js_dup_value(ctx, v.proto), prop_throw))
+    set_cycle_flag(ctx, v.ctor)
+    set_cycle_flag(ctx, v.proto)
+
+    js_free_value(ctx, v.parent_proto)
+    js_free_value(ctx, v.parent_class)
+
+    *(sp - 2) = v.ctor
+    *(sp - 1) = v.proto
+
+# mark: Closing variable references =============================================================
+
+## Detach `var_ref` from the frame `sf`: it keeps a copy of the variable's value.
+func close_var_ref(rt: Runtime*, sf: StackFrame*, var_ref: VarRef*):
+    if (sf.js_mode & js_mode_async) != 0:
+        let async_func = js_async_function_of_frame(sf)
+        async_func_free(rt, async_func)
+    var_ref.u.value = js_dup_value_rt(rt, *var_ref.pvalue)
+    var_ref.pvalue = &var_ref.u.value
+    # the reference is no longer to a local variable
+    var_ref.is_detached = 1
+
+## Detach every variable reference of the frame `sf` of `b` (the frame is returning).
+func close_var_refs(rt: Runtime*, b: FunctionBytecode*, sf: StackFrame*):
+    if let var_refs = sf.var_refs:
+        for i in 0..<(usize)b.var_ref_count:
+            if let var_ref = var_refs[i]:
+                close_var_ref(rt, sf, var_ref)
+
+## Detach the reference to the local variable `var_idx` of `sf`, if any (the variable's
+## scope ends, as for a `let` in a loop body: OP_close_loc).
+func close_lexical_var(ctx: Context*, b: FunctionBytecode*, sf: StackFrame*, var_idx: i32):
+    let vardefs = b.vardefs else trap("close_lexical_var: no variable definitions")
+    let var_ref_idx = (usize)vardefs[(usize)b.arg_count + (usize)var_idx].var_ref_idx
+    let var_refs = sf.var_refs else trap("close_lexical_var: no variable references")
+    if let var_ref = var_refs[var_ref_idx]:
+        close_var_ref(ctx.rt, sf, var_ref)
+        var_refs[var_ref_idx] = none

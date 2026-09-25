@@ -1,0 +1,358 @@
+#==============================================================================================
+#
+#   iterators - The iteration protocol: getting, stepping and closing iterators, for-of
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 16498-16972: JS_GetIterator and JS_IteratorNext with the
+#       fast path for builtin iterators (a C function of the iterator_next kind answers
+#       the value and a done flag without a result object), JS_IteratorClose, the for-of
+#       and for-await-of stack operators, iterator result objects, the spread helper
+#       js_append_enumerate with its fast array path, and JS_CopyDataProperties.
+#
+#==============================================================================================
+
+# mark: Getting an iterator =====================================================================
+
+## Call `method` on `obj` and check that it answers an object (JS_GetIterator2).
+func js_get_iterator2(ctx: Context*, obj: Value, method: Value) -> Value!:
+    var no_args = js_undefined()
+    let enum_obj = try js_call(ctx, method, obj, 0, &no_args)
+    if not js_is_object(enum_obj):
+        js_free_value(ctx, enum_obj)
+        try js_throw_type_error_not_an_object(ctx)
+    return enum_obj
+
+## The iterator of `obj` (GetIterator), async when `is_async`: from Symbol.asyncIterator,
+## or a sync iterator wrapped as async when there is none (JS_GetIterator).
+func js_get_iterator(ctx: Context*, obj: Value, is_async: bool) -> Value!:
+    var method = js_undefined()
+    if is_async:
+        method = try js_get_property(ctx, obj, atom_Symbol_asyncIterator)
+        if js_is_undefined(method) or js_is_null(method):
+            method = try js_get_property(ctx, obj, atom_Symbol_iterator)
+            let sync_iter = js_get_iterator2(ctx, obj, method) catch failure:
+                js_free_value(ctx, method)
+                error(failure.code, failure.message)
+            js_free_value(ctx, method)
+            let ret = js_create_async_from_sync_iterator(ctx, sync_iter) catch failure:
+                js_free_value(ctx, sync_iter)
+                error(failure.code, failure.message)
+            js_free_value(ctx, sync_iter)
+            return ret
+    else:
+        method = try js_get_property(ctx, obj, atom_Symbol_iterator)
+    if not js_is_function(ctx, method):
+        js_free_value(ctx, method)
+        try js_throw_type_error(ctx, "value is not iterable")
+    defer js_free_value(ctx, method)
+    return try js_get_iterator2(ctx, obj, method)
+
+# mark: Stepping an iterator ====================================================================
+
+# return *pdone = 2 if the iterator object is not parsed
+## One step of an iterator. A builtin iterator answers the value with *pdone 0 or 1;
+## otherwise the result object is answered with *pdone 2 (JS_IteratorNext2).
+func js_iterator_next2(ctx: Context*, enum_obj: Value, method: Value, argc: i32, argv: Value*, pdone: i32*) -> Value!:
+    # fast path for the built-in iterators (avoid creating the
+    # intermediate result object)
+    if js_is_object(method):
+        let p = method.u.obj
+        if p.class_id == ClassId.c_function and p.u.cfunc.cproto == CFunctionEnum.iterator_next:
+            var args: Value[1] = ---
+            var arg_buf = argv
+            # in case the function expects one argument
+            if argc == 0:
+                args[0] = js_undefined()
+                arg_buf = &args[0]
+            let func_ = p.u.cfunc.c_function
+            return try func_.iterator_next(ctx, enum_obj, argc, arg_buf, pdone,
+                (i32)p.u.cfunc.magic)
+    let obj = js_call(ctx, method, enum_obj, argc, argv) catch failure:
+        *pdone = 0
+        error(failure.code, failure.message)
+    if not js_is_object(obj):
+        js_free_value(ctx, obj)
+        *pdone = 0
+        try js_throw_type_error(ctx, "iterator must return an object")
+    *pdone = 2
+    return obj
+
+## The `fail:` label of JS_IteratorNext once it holds the result object.
+func js_iterator_next_fail(ctx: Context*, obj: Value, pdone: bool*):
+    js_free_value(ctx, obj)
+    *pdone = false
+
+# Note: always return JS_UNDEFINED when *pdone = TRUE.
+## The next value of an iterator and whether it is done (JS_IteratorNext).
+func js_iterator_next(ctx: Context*, enum_obj: Value, method: Value, argc: i32, argv: Value*, pdone: bool*) -> Value!:
+    var done: i32 = 0
+    let obj = js_iterator_next2(ctx, enum_obj, method, argc, argv, &done) catch failure:
+        *pdone = false
+        error(failure.code, failure.message)
+    if done == 0:
+        *pdone = false
+        return obj
+    elif done != 2:
+        js_free_value(ctx, obj)
+        *pdone = true
+        return js_undefined()
+    errdefer js_iterator_next_fail(ctx, obj, pdone)
+    let done_val = try js_get_property(ctx, obj, atom_done)
+    *pdone = try js_to_bool_free(ctx, done_val)
+    var value = js_undefined()
+    if not *pdone:
+        value = try js_get_property(ctx, obj, atom_value)
+    js_free_value(ctx, obj)
+    return value
+
+## The body of JS_IteratorClose between saving and restoring a pending exception: call
+## the iterator's `return` method. With an exception pending, the call's own failures and
+## result are ignored.
+func js_iterator_close_call(ctx: Context*, enum_obj: Value, is_exception_pending: bool) -> !:
+    let method = try js_get_property(ctx, enum_obj, atom_return)
+    if js_is_undefined(method) or js_is_null(method):
+        return
+    var no_args = js_undefined()
+    let ret = js_call_free(ctx, method, enum_obj, 0, &no_args) catch failure:
+        if not is_exception_pending:
+            error(failure.code, failure.message)
+        return
+    if not is_exception_pending and not js_is_object(ret):
+        js_free_value(ctx, ret)
+        try js_throw_type_error_not_an_object(ctx)
+    js_free_value(ctx, ret)
+
+# return < 0 in case of exception
+## Close an iterator (IteratorClose). With `is_exception_pending`, the pending exception
+## is kept aside during the call and thrown again after it, so this always fails then.
+func js_iterator_close(ctx: Context*, enum_obj: Value, is_exception_pending: bool) -> !:
+    var ex_obj = js_undefined()
+    if is_exception_pending:
+        ex_obj = ctx.rt.current_exception
+        ctx.rt.current_exception = js_uninitialized()
+    js_iterator_close_call(ctx, enum_obj, is_exception_pending) catch failure:
+        if is_exception_pending:
+            try js_throw(ctx, ex_obj)
+        error(failure.code, failure.message)
+    if is_exception_pending:
+        try js_throw(ctx, ex_obj)
+
+# mark: for-of ==================================================================================
+
+# obj -> enum_rec (3 slots)
+## OP_for_of_start and OP_for_await_of_start: replace the object at sp[-1] by its
+## iterator and push the iterator's `next` method.
+func js_for_of_start(ctx: Context*, sp: Value*, is_async: bool) -> !:
+    let op1 = *(sp - 1)
+    let obj = try js_get_iterator(ctx, op1, is_async)
+    js_free_value(ctx, op1)
+    *(sp - 1) = obj
+    let method = try js_get_property(ctx, obj, atom_next)
+    sp[0] = method
+
+# enum_rec [objs] -> enum_rec [objs] value done. There are 'offset'
+# objs. If 'done' is true or in case of exception, 'enum_rec' is set
+# to undefined. If 'done' is true, 'value' is always set to
+# undefined.
+## OP_for_of_next: one step of the iterator record at sp[offset].
+func js_for_of_next(ctx: Context*, sp: Value*, offset: i32) -> !:
+    let rec = sp + (isize)offset
+    var value = js_undefined()
+    var done = true
+    if not js_is_undefined(rec[0]):
+        var no_args = js_undefined()
+        value = js_iterator_next(ctx, rec[0], rec[1], 0, &no_args, &done) catch failure:
+            # replace the iteration object with undefined
+            js_free_value(ctx, rec[0])
+            rec[0] = js_undefined()
+            error(failure.code, failure.message)
+        if done:
+            # value is JS_UNDEFINED
+            # replace the iteration object with undefined
+            js_free_value(ctx, rec[0])
+            rec[0] = js_undefined()
+            js_free_value(ctx, value)
+            value = js_undefined()
+    sp[0] = value
+    sp[1] = js_new_bool(done)
+
+## OP_for_await_of_next: call the iterator's `next` method (sp[-3], sp[-2]) and push the
+## result, whose promise the bytecode awaits.
+func js_for_await_of_next(ctx: Context*, sp: Value*) -> !:
+    *(sp - 1) = js_undefined()      # disable the catch offset so that
+                                    # exceptions do not close the iterator
+    let iter = *(sp - 3)
+    let next = *(sp - 2)
+    var no_args = js_undefined()
+    let obj = try js_call(ctx, next, iter, 0, &no_args)
+    sp[0] = obj
+
+## Clear a done flag (the `fail:` label of JS_IteratorGetCompleteValue).
+func js_clear_done(pdone: bool*):
+    *pdone = false
+
+## The value and done flag of an iterator result object (JS_IteratorGetCompleteValue).
+func js_iterator_get_complete_value(ctx: Context*, obj: Value, pdone: bool*) -> Value!:
+    errdefer js_clear_done(pdone)
+    let done_val = try js_get_property(ctx, obj, atom_done)
+    let done = try js_to_bool_free(ctx, done_val)
+    let value = try js_get_property(ctx, obj, atom_value)
+    *pdone = done
+    return value
+
+## OP_iterator_get_value_done: replace the awaited result object at sp[-1] by its value
+## and done flag.
+func js_iterator_get_value_done(ctx: Context*, sp: Value*) -> !:
+    let obj = *(sp - 1)
+    if not js_is_object(obj):
+        try js_throw_type_error(ctx, "iterator must return an object")
+    var done = false
+    let value = try js_iterator_get_complete_value(ctx, obj, &done)
+    js_free_value(ctx, obj)
+    # put again the catch offset so that exceptions close the
+    # iterator
+    *(sp - 2) = js_new_catch_offset(0)
+    *(sp - 1) = value
+    sp[0] = js_new_bool(done)
+
+## A new iterator result object { value, done }, taking ownership of `val`.
+func js_create_iterator_result(ctx: Context*, val: Value, done: bool) -> Value!:
+    let obj = js_new_object(ctx) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    errdefer js_free_value(ctx, obj)
+    discard(try js_define_property_value(ctx, obj, atom_value, val, prop_c_w_e))
+    discard(try js_define_property_value(ctx, obj, atom_done, js_new_bool(done), prop_c_w_e))
+    return obj
+
+# mark: Spreading and copying ===================================================================
+
+# Access an Array's internal JSValue array if available
+## Whether `obj` is a fast array; then `*arrpp` and `*countp` receive its elements (none
+## when it has none) and their count.
+func js_get_fast_array(ctx: Context*, obj: Value, arrpp: Value*?*, countp: u32*) -> bool:
+    # Try and handle fast arrays explicitly
+    if obj.tag == Tag.object:
+        let p = obj.u.obj
+        if p.class_id == ClassId.array and p.fast_array:
+            *countp = p.u.array.count
+            *arrpp = none
+            if let values = p.u.array.u.ptr:
+                *arrpp = (Value*)values
+            return true
+    return false
+
+## The `exception:` label of js_append_enumerate: close the iterator and release it.
+func js_append_enumerate_close(ctx: Context*, enumobj: Value, method: Value):
+    # it rethrows the pending exception, which stays pending
+    js_iterator_close(ctx, enumobj, true) catch: recover ()
+    js_free_value(ctx, enumobj)
+    js_free_value(ctx, method)
+
+## OP_append: append the values of the iterable sp[-1] to the array sp[-3] from the
+## index sp[-2], leaving the next index at sp[-2].
+func js_append_enumerate(ctx: Context*, sp: Value*) -> !:
+    if (*(sp - 2)).tag != Tag.int:
+        try js_throw_internal_error(ctx, "invalid index for append")
+
+    var pos = (u32)js_value_get_int(*(sp - 2))
+
+    # XXX: further optimisations:
+    # - use ctx->array_proto_values?
+    # - check if array_iterator_prototype next method is built-in and
+    #   avoid constructing actual iterator object?
+    # - build this into js_for_of_start and use in all `for (x of o)` loops
+    let iterator = try js_get_property(ctx, *(sp - 1), atom_Symbol_iterator)
+    var ft: CFunctionType = ---
+    ft.generic_magic = js_create_array_iterator
+    let is_array_iterator = js_is_c_function(ctx, iterator, ft.generic,
+        (i32)IteratorKind.value)
+    js_free_value(ctx, iterator)
+
+    let enumobj = try js_get_iterator(ctx, *(sp - 1), false)
+    let method = js_get_property(ctx, enumobj, atom_next) catch failure:
+        js_free_value(ctx, enumobj)
+        error(failure.code, failure.message)
+    errdefer js_append_enumerate_close(ctx, enumobj, method)
+
+    ft.iterator_next = js_array_iterator_next
+    var arrp: Value*? = none
+    var count32: u32 = 0
+    var general_case = true
+    if (is_array_iterator and js_is_c_function(ctx, method, ft.generic, 0) and
+            js_get_fast_array(ctx, *(sp - 1), &arrp, &count32)):
+        var len: u32 = 0
+        try js_get_length32(ctx, &len, *(sp - 1))
+        # if len > count32, the elements >= count32 might be read in
+        # the prototypes and might have side effects
+        if len == count32:
+            general_case = false
+            # Handle fast arrays explicitly
+            for i in 0..<count32:
+                let arr = arrp else trap("js_append_enumerate: no elements")
+                discard(try js_define_property_value_uint32(ctx, *(sp - 3), pos,
+                    js_dup_value(ctx, arr[(usize)i]), prop_c_w_e))
+                pos += 1
+    if general_case:
+        while true:
+            var done = false
+            var no_args = js_undefined()
+            let value = try js_iterator_next(ctx, enumobj, method, 0, &no_args, &done)
+            if done:
+                # value is JS_UNDEFINED
+                break
+            discard(try js_define_property_value_uint32(ctx, *(sp - 3), pos, value, prop_c_w_e))
+            pos += 1
+    # Note: could raise an error if too many elements
+    *(sp - 2) = js_new_int32((i32)pos)
+    js_free_value(ctx, enumobj)
+    js_free_value(ctx, method)
+
+## Copy the own enumerable properties of `source` to `target`, except the keys of
+## `excluded` (an object, or undefined), by [[Set]] when `setprop` and by
+## CreateDataProperty otherwise (JS_CopyDataProperties: object spread and rest).
+func js_copy_data_properties(ctx: Context*, target: Value, source: Value, excluded: Value, setprop: bool) -> !:
+    if source.tag != Tag.object:
+        return
+
+    var pexcl: Object*? = none
+    if excluded.tag == Tag.object:
+        pexcl = excluded.u.obj
+
+    let p = source.u.obj
+
+    var gpn_flags = gpn_string_mask | gpn_symbol_mask | gpn_enum_only
+    if p.is_exotic:
+        let class_array = ctx.rt.class_array else trap("js_copy_data_properties: no classes")
+        if let em = class_array[(usize)p.class_id].exotic:
+            # cannot use JS_GPN_ENUM_ONLY with e.g. proxies because it
+            # introduces a visible change
+            if em.get_own_property_names != none:
+                gpn_flags &= ~gpn_enum_only
+    var tab_atom: PropertyEnum*? = none
+    var tab_atom_count: u32 = 0
+    try js_get_own_property_names_internal(ctx, &tab_atom, &tab_atom_count, p, gpn_flags)
+    defer js_free_property_enum(ctx, tab_atom, tab_atom_count)
+    let tab = tab_atom else trap("js_copy_data_properties: no key table")
+
+    for i in 0..<(usize)tab_atom_count:
+        let atom = tab[i].atom
+        if let excl = pexcl:
+            let ret = try js_get_own_property_internal(ctx, none, excl, atom)
+            if ret:
+                continue
+        if (gpn_flags & gpn_enum_only) == 0:
+            # test if the property is enumerable
+            var desc: PropertyDescriptor = ---
+            let ret = try js_get_own_property_internal(ctx, &desc, p, atom)
+            if not ret:
+                continue
+            let is_enumerable = (desc.flags & prop_enumerable) != 0
+            js_free_desc(ctx, &desc)
+            if not is_enumerable:
+                continue
+        let val = try js_get_property(ctx, source, atom)
+        if setprop:
+            try js_set_property(ctx, target, atom, val)
+        else:
+            discard(try js_define_property_value(ctx, target, atom, val, prop_c_w_e))

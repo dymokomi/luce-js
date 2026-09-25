@@ -53,7 +53,13 @@ print_value.lucb
 print_object.lucb
 conversions_bigint.lucb
 arith_slow.lucb
-stub_r13_operators.lucb
+operators_slow.lucb
+operators.lucb
+arguments_objects.lucb
+for_in.lucb
+iterators.lucb
+closures.lucb
+calls.lucb
 stub_r14_interpreter.lucb
 stub_r15_async_generators.lucb
 tokenizer.lucb
@@ -85,3 +91,4 @@ tests_r10.lucb
 tests_r09.lucb
 tests_tokenizer.lucb
 tests_r12.lucb
+tests_r13.lucb

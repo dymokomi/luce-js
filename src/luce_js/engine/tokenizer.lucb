@@ -58,7 +58,7 @@ func dump_token_atom(s: ParseState*, token: const Token*):
 
 # The value of a string token, printed with `label` (JS_ToCString, then printf).
 func dump_token_text(s: ParseState*, label: str, val: Value):
-    let text = js_to_c_string_len2(s.ctx, none, val, false) else return
+    let text = js_to_c_string_len2(s.ctx, none, val, false) catch: return
     print(f"{label}{c_text(text)}")
     js_free_c_string(s.ctx, text)
 
@@ -79,7 +79,7 @@ func dump_token(s: ParseState*, token: const Token*):
         .template:
             dump_token_text(s, "template: ", token.u.str_.str)
         .regexp:
-            let body = js_to_c_string_len2(s.ctx, none, token.u.regexp.body, false) else return
+            let body = js_to_c_string_len2(s.ctx, none, token.u.regexp.body, false) catch: return
             let flags = js_to_c_string_len2(s.ctx, none, token.u.regexp.flags, false) else return
             print(f"regexp: '{c_text(body)}' '{c_text(flags)}'")
             js_free_c_string(s.ctx, body)

@@ -1,0 +1,201 @@
+#==============================================================================================
+#
+#   for_in - The for-in enumeration: the ForInIterator object and its steps
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 16268-16496. `for (k in obj)` builds a hidden
+#       ForInIterator object over the own enumerable string keys of obj (or only the
+#       element count of a fast array without enumerable named properties), then walks
+#       the prototype chain. Once it enters the chain, the iterator object itself records
+#       the keys already visited so that shadowed keys are not produced twice.
+#
+#==============================================================================================
+
+# mark: Building the iterator ===================================================================
+
+## A new ForInIterator over `obj`, which is consumed (converted to an object unless it is
+## null or undefined, which enumerate nothing).
+func build_for_in_iterator(ctx: Context*, obj_in: Value) -> Value!:
+    var obj = obj_in
+    let tag = obj.tag
+    if tag != Tag.object and tag != Tag.null and tag != Tag.undefined:
+        obj = try js_to_object_free(ctx, obj)
+
+    let mem = js_malloc(ctx, sizeof(ForInIterator)) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    let it = (ForInIterator*)mem
+    let enum_obj = js_new_object_proto_class(ctx, js_null(), (u32)ClassId.for_in_iterator) catch failure:
+        js_free(ctx, it)
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    it.is_array = 0
+    it.obj = obj
+    it.idx = 0
+    it.tab_atom = none
+    it.atom_count = 0
+    it.in_prototype_chain = 0
+    let p1 = enum_obj.u.obj
+    p1.u.for_in_iterator = it
+
+    if tag == Tag.null or tag == Tag.undefined:
+        return enum_obj
+
+    let p = obj.u.obj
+    var normal_case = true
+    if p.fast_array:
+        # check that there are no enumerable normal fields
+        let sh = p.shape
+        let prs = get_shape_prop(sh)
+        normal_case = false
+        for i in 0..<(usize)sh.prop_count:
+            if ((i32)prs[i].flags & prop_enumerable) != 0:
+                normal_case = true
+                break
+        if not normal_case:
+            # for fast arrays, we only store the number of elements
+            it.is_array = 1
+            it.atom_count = p.u.array.count
+    if normal_case:
+        var tab_atom: PropertyEnum*? = none
+        var tab_atom_count: u32 = 0
+        js_get_own_property_names_internal(ctx, &tab_atom, &tab_atom_count, p,
+                gpn_string_mask | gpn_set_enum) catch failure:
+            js_free_value(ctx, enum_obj)
+            error(failure.code, failure.message)
+        it.tab_atom = tab_atom
+        it.atom_count = tab_atom_count
+    return enum_obj
+
+# obj -> enum_obj
+## OP_for_in_start: replace the object at sp[-1] by its ForInIterator.
+func js_for_in_start(ctx: Context*, sp: Value*) -> !:
+    let enum_obj = build_for_in_iterator(ctx, *(sp - 1)) catch failure:
+        # the object was consumed
+        *(sp - 1) = js_exception()
+        error(failure.code, failure.message)
+    *(sp - 1) = enum_obj
+
+# mark: Stepping ================================================================================
+
+# return -1 if exception, 0 if slow case, 1 if the enumeration is finished
+## Prepare the walk of the prototype chain: true when no prototype has an enumerable
+## property (the enumeration is finished); otherwise record every key of the object
+## itself, even the non-enumerable ones, as visited on `enum_obj` and answer false.
+func js_for_in_prepare_prototype_chain_enum(ctx: Context*, enum_obj: Value) -> bool!:
+    let p = enum_obj.u.obj
+    let it = p.u.for_in_iterator
+
+    # check if there are enumerable properties in the prototype chain (fast path)
+    var obj1 = js_dup_value(ctx, it.obj)
+    var slow_path = false
+    while true:
+        obj1 = try js_get_prototype_free(ctx, obj1)
+        if js_is_null(obj1):
+            break
+        var tab_atom: PropertyEnum*? = none
+        var tab_atom_count: u32 = 0
+        js_get_own_property_names_internal(ctx, &tab_atom, &tab_atom_count, obj1.u.obj,
+                gpn_string_mask | gpn_enum_only) catch failure:
+            js_free_value(ctx, obj1)
+            error(failure.code, failure.message)
+        js_free_property_enum(ctx, tab_atom, tab_atom_count)
+        if tab_atom_count != 0:
+            js_free_value(ctx, obj1)
+            slow_path = true
+            break
+        # must check for timeout to avoid infinite loop
+        js_poll_interrupts(ctx) catch failure:
+            js_free_value(ctx, obj1)
+            error(failure.code, failure.message)
+    if not slow_path:
+        js_free_value(ctx, obj1)
+        return true
+
+    # slow_path: add the visited properties, even if they are not enumerable
+    if it.is_array != 0:
+        var tab_atom: PropertyEnum*? = none
+        var tab_atom_count: u32 = 0
+        try js_get_own_property_names_internal(ctx, &tab_atom, &tab_atom_count, it.obj.u.obj,
+            gpn_string_mask | gpn_set_enum)
+        it.is_array = 0
+        it.tab_atom = tab_atom
+        it.atom_count = tab_atom_count
+
+    if it.atom_count != 0:
+        let tab = it.tab_atom else trap("js_for_in_prepare_prototype_chain_enum: no keys")
+        for i in 0..<(usize)it.atom_count:
+            discard(try js_define_property_value(ctx, enum_obj, tab[i].atom, js_null(),
+                prop_enumerable))
+    return false
+
+## The next key of a for-in enumeration, or none when it is finished.
+func js_for_in_next_key(ctx: Context*, enum_obj: Value) -> Atom?!:
+    let it = enum_obj.u.obj.u.for_in_iterator
+    while true:
+        if it.idx >= it.atom_count:
+            if js_is_null(it.obj) or js_is_undefined(it.obj):
+                return none     # not an object
+            # no more property in the current object: look in the prototype
+            if it.in_prototype_chain == 0:
+                if try js_for_in_prepare_prototype_chain_enum(ctx, enum_obj):
+                    return none
+                it.in_prototype_chain = 1
+            it.obj = js_get_prototype_free(ctx, it.obj) catch failure:
+                # the previous object was consumed
+                it.obj = js_exception()
+                error(failure.code, failure.message)
+            if js_is_null(it.obj):
+                return none     # no more prototype
+
+            # must check for timeout to avoid infinite loop
+            try js_poll_interrupts(ctx)
+
+            var tab_atom: PropertyEnum*? = none
+            var tab_atom_count: u32 = 0
+            try js_get_own_property_names_internal(ctx, &tab_atom, &tab_atom_count,
+                it.obj.u.obj, gpn_string_mask | gpn_set_enum)
+            js_free_property_enum(ctx, it.tab_atom, it.atom_count)
+            it.tab_atom = tab_atom
+            it.atom_count = tab_atom_count
+            it.idx = 0
+        else:
+            var prop = no_atom
+            if it.is_array != 0:
+                prop = js_atom_from_uint32_raw(it.idx)
+                it.idx += 1
+            else:
+                let tab = it.tab_atom else trap("js_for_in_next: no keys")
+                prop = tab[(usize)it.idx].atom
+                let is_enumerable = tab[(usize)it.idx].is_enumerable
+                it.idx += 1
+                if it.in_prototype_chain != 0:
+                    # slow case: we are in the prototype chain
+                    let ret = try js_get_own_property_internal(ctx, none, enum_obj.u.obj, prop)
+                    if ret:
+                        continue    # already visited
+                    # add to the visited property list
+                    discard(try js_define_property_value(ctx, enum_obj, prop, js_null(),
+                        prop_enumerable))
+                if not is_enumerable:
+                    continue
+            # check if the property was deleted
+            let ret = try js_get_own_property_internal(ctx, none, it.obj.u.obj, prop)
+            if ret:
+                return prop
+    return none
+
+# enum_obj -> enum_obj value done
+## OP_for_in_next: push the next key and false, or undefined and true at the end.
+func js_for_in_next(ctx: Context*, sp: Value*) -> !:
+    let enum_obj = *(sp - 1)
+    # fail safe
+    if enum_obj.tag == Tag.object and enum_obj.u.obj.class_id == ClassId.for_in_iterator:
+        if let prop = try js_for_in_next_key(ctx, enum_obj):
+            # return the property
+            sp[0] = try js_atom_to_value(ctx, prop)
+            sp[1] = js_false()
+            return
+    # done: return the end
+    sp[0] = js_undefined()
+    sp[1] = js_true()

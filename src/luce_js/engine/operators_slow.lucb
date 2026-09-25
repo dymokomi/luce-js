@@ -1,0 +1,507 @@
+#==============================================================================================
+#
+#   operators_slow - The slow paths of the additive, bitwise, relational and equality operators
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 15093-15771. The interpreter calls these when its fast
+#       paths for two integers do not apply. Each takes its operands on the value stack at
+#       sp[-2] and sp[-1], consumes them and leaves the result at sp[-2]; on an exception
+#       both slots are set to undefined (QuickJS's `exception:` label, an `errdefer` here).
+#       JS_VALUE_GET_NORM_TAG is the tag itself with this value layout.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## The `exception:` label of the slow operators: the operands were consumed, so both stack
+## slots are cleared.
+func js_clear_binary_operands(sp: Value*):
+    *(sp - 2) = js_undefined()
+    *(sp - 1) = js_undefined()
+
+## Whether a tag is a string or a rope.
+func tag_is_string(tag: Tag) -> bool:
+    return tag == Tag.string or tag == Tag.string_rope
+
+## Whether a tag is a big integer, short or not (written out in QuickJS).
+func tag_is_bigint(tag: Tag) -> bool:
+    return tag == Tag.big_int or tag == Tag.short_big_int
+
+## The big integer of a bigint value: a short one is expanded into `buf` (the
+## "js_bigint_set_short or JS_VALUE_GET_PTR" pair QuickJS writes at each use).
+func js_bigint_value_ptr(buf: BigIntBuf*, op: Value) -> BigInt*:
+    if op.tag == Tag.short_big_int:
+        return js_bigint_set_short(buf, op)
+    return op.u.big_int
+
+## Whether `v` fits a short big integer (JS_SHORT_BIG_INT_MIN..JS_SHORT_BIG_INT_MAX: the
+## i32 range with 32-bit limbs).
+func js_fits_short_bigint(v: i64) -> bool:
+    return v >= -2147483648 and v <= 2147483647
+
+# mark: Addition ================================================================================
+
+## The `+` operator when the operands are not two integers (js_add_slow).
+func js_add_slow(ctx: Context*, sp: Value*) -> !:
+    errdefer js_clear_binary_operands(sp)
+    var op1 = *(sp - 2)
+    var op2 = *(sp - 1)
+
+    var tag1 = op1.tag
+    var tag2 = op2.tag
+    # fast path for float64
+    if tag1 == Tag.float64 and tag2 == Tag.float64:
+        let d1 = js_value_get_float64(op1)
+        let d2 = js_value_get_float64(op2)
+        *(sp - 2) = js_new_float64_raw(d1 + d2)
+        return
+    # fast path for short bigint
+    if tag1 == Tag.short_big_int and tag2 == Tag.short_big_int:
+        let v1 = js_value_get_short_big_int(op1)
+        let v2 = js_value_get_short_big_int(op2)
+        let v = (i64)v1 + (i64)v2
+        if js_fits_short_bigint(v):
+            *(sp - 2) = js_new_short_big_int_raw((i32)v)
+        else:
+            let r = try js_bigint_new_di(ctx, v)
+            *(sp - 2) = js_mkptr(Tag.big_int, r)
+        return
+
+    if tag1 == Tag.object or tag2 == Tag.object:
+        op1 = js_to_primitive_free(ctx, op1, hint_none) catch failure:
+            js_free_value(ctx, op2)
+            error(failure.code, failure.message)
+        op2 = js_to_primitive_free(ctx, op2, hint_none) catch failure:
+            js_free_value(ctx, op1)
+            error(failure.code, failure.message)
+        tag1 = op1.tag
+        tag2 = op2.tag
+
+    if tag_is_string(tag1) or tag_is_string(tag2):
+        *(sp - 2) = try js_concat_string(ctx, op1, op2)
+        return
+
+    op1 = js_to_numeric_free(ctx, op1) catch failure:
+        js_free_value(ctx, op2)
+        error(failure.code, failure.message)
+    op2 = js_to_numeric_free(ctx, op2) catch failure:
+        js_free_value(ctx, op1)
+        error(failure.code, failure.message)
+    tag1 = op1.tag
+    tag2 = op2.tag
+
+    if tag1 == Tag.int and tag2 == Tag.int:
+        let v1 = js_value_get_int(op1)
+        let v2 = js_value_get_int(op2)
+        let v = (i64)v1 + (i64)v2
+        *(sp - 2) = js_new_int64(v)
+    elif tag_is_bigint(tag1) and tag_is_bigint(tag2):
+        # bigint result
+        var buf1: BigIntBuf = ---
+        var buf2: BigIntBuf = ---
+        let p1 = js_bigint_value_ptr(&buf1, op1)
+        let p2 = js_bigint_value_ptr(&buf2, op2)
+        let r: BigInt*? = js_bigint_add(ctx, p1, p2, false) catch: recover none
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+        let res = r else error(exception, "")
+        *(sp - 2) = js_compact_bigint(ctx, res)
+    else:
+        # float64 result
+        var d1: f64 = 0.0
+        var d2: f64 = 0.0
+        js_to_float64_free(ctx, &d1, op1) catch failure:
+            js_free_value(ctx, op2)
+            error(failure.code, failure.message)
+        try js_to_float64_free(ctx, &d2, op2)
+        *(sp - 2) = js_new_float64_raw(d1 + d2)
+
+# mark: Bitwise operators =======================================================================
+
+## `&`, `|`, `^`, `<<` and `>>` when the operands are not two integers
+## (js_binary_logic_slow).
+func js_binary_logic_slow(ctx: Context*, sp: Value*, op: Op) -> !:
+    errdefer js_clear_binary_operands(sp)
+    var op1 = *(sp - 2)
+    var op2 = *(sp - 1)
+    let tag1 = op1.tag
+    let tag2 = op2.tag
+
+    if tag1 == Tag.short_big_int and tag2 == Tag.short_big_int:
+        let v1 = js_value_get_short_big_int(op1)
+        var v2 = js_value_get_short_big_int(op2)
+        var v: i32 = 0
+        var slow_big_int = false
+        # bigint fast path
+        match op:
+            .and_:
+                v = v1 & v2
+            .or_:
+                v = v1 | v2
+            .xor:
+                v = v1 ^ v2
+            .sar, .shl:
+                # a negative shift count shifts the other way (bigint_shl / bigint_sar)
+                var is_shl = op == Op.shl
+                if v2 > js_limb_bits - 1:
+                    slow_big_int = true
+                elif v2 < 0:
+                    if v2 < -(js_limb_bits - 1):
+                        slow_big_int = true
+                    else:
+                        v2 = -v2
+                        is_shl = not is_shl
+                if not slow_big_int:
+                    if is_shl:
+                        # (js_dlimb_t)v1 << v2
+                        let vd = (i64)((u64)(i64)v1 << (u64)v2)
+                        if js_fits_short_bigint(vd):
+                            v = (i32)vd
+                        else:
+                            let r = try js_bigint_new_di(ctx, vd)
+                            *(sp - 2) = js_mkptr(Tag.big_int, r)
+                            return
+                    else:
+                        v = v1 >> v2
+            _:
+                trap("js_binary_logic_slow: not a bitwise operator")
+        if not slow_big_int:
+            *(sp - 2) = js_new_short_big_int_raw(v)
+            return
+        *(sp - 2) = try js_binary_logic_bigint(ctx, op, op1, op2)
+        return
+
+    op1 = js_to_numeric_free(ctx, op1) catch failure:
+        js_free_value(ctx, op2)
+        error(failure.code, failure.message)
+    op2 = js_to_numeric_free(ctx, op2) catch failure:
+        js_free_value(ctx, op1)
+        error(failure.code, failure.message)
+
+    if tag_is_bigint(op1.tag) and tag_is_bigint(op2.tag):
+        *(sp - 2) = try js_binary_logic_bigint(ctx, op, op1, op2)
+    else:
+        var v1: i32 = 0
+        var v2: i32 = 0
+        js_to_int32_free(ctx, &v1, op1) catch failure:
+            js_free_value(ctx, op2)
+            error(failure.code, failure.message)
+        try js_to_int32_free(ctx, &v2, op2)
+        let u1 = (u32)v1
+        let u2 = (u32)v2
+        var r: u32 = 0
+        match op:
+            .shl:
+                r = u1 << (u2 & 0x1f)
+            .sar:
+                r = (u32)(v1 >> (u2 & 0x1f))
+            .and_:
+                r = u1 & u2
+            .or_:
+                r = u1 | u2
+            .xor:
+                r = u1 ^ u2
+            _:
+                trap("js_binary_logic_slow: not a bitwise operator")
+        *(sp - 2) = js_new_int32((i32)r)
+
+## The `slow_big_int:` label of js_binary_logic_slow: the bitwise operator `op` on two big
+## integers, consuming them.
+func js_binary_logic_bigint(ctx: Context*, op: Op, op1: Value, op2: Value) -> Value!:
+    var buf1: BigIntBuf = ---
+    var buf2: BigIntBuf = ---
+    let p1 = js_bigint_value_ptr(&buf1, op1)
+    let p2 = js_bigint_value_ptr(&buf2, op2)
+    var r: BigInt*? = none
+    match op:
+        .and_, .or_, .xor:
+            r = js_bigint_logic(ctx, p1, p2, op) catch: recover none
+        .shl, .sar:
+            var shift = js_bigint_get_si_sat(p2)
+            if shift > 2147483647:
+                shift = 2147483647
+            elif shift < -2147483647:
+                shift = -2147483647
+            if op == Op.sar:
+                shift = -shift
+            if shift >= 0:
+                r = js_bigint_shl(ctx, p1, (u32)shift) catch: recover none
+            else:
+                r = js_bigint_shr(ctx, p1, (u32)-shift) catch: recover none
+        _:
+            trap("js_binary_logic_slow: not a bitwise operator")
+    js_free_value(ctx, op1)
+    js_free_value(ctx, op2)
+    let res = r else error(exception, "")
+    return js_compact_bigint(ctx, res)
+
+# mark: Relational operators ====================================================================
+
+# op1 must be a bigint or int.
+func js_to_bigint_buf(ctx: Context*, buf1: BigIntBuf*, op1: Value) -> BigInt*:
+    match op1.tag:
+        .int:
+            return js_bigint_set_si(buf1, js_value_get_int(op1))
+        .short_big_int:
+            return js_bigint_set_short(buf1, op1)
+        .big_int:
+            return op1.u.big_int
+        _:
+            trap("js_to_bigint_buf: not an integer")
+
+# op1 and op2 must be numeric types and at least one must be a
+# bigint. No exception is generated.
+## Compare two numbers of which one is a big integer with `op` (lt, lte, gt, gte or eq),
+## consuming them.
+func js_compare_bigint(ctx: Context*, op: Op, op1: Value, op2: Value) -> bool:
+    var val: i32 = 0
+    let tag1 = op1.tag
+    let tag2 = op2.tag
+    if ((tag1 == Tag.short_big_int or tag1 == Tag.int) and
+            (tag2 == Tag.short_big_int or tag2 == Tag.int)):
+        # fast path
+        let v1 = js_value_get_int(op1) if tag1 == Tag.int else js_value_get_short_big_int(op1)
+        let v2 = js_value_get_int(op2) if tag2 == Tag.int else js_value_get_short_big_int(op2)
+        val = (i32)(v1 > v2) - (i32)(v1 < v2)
+    else:
+        var buf1: BigIntBuf = ---
+        var buf2: BigIntBuf = ---
+        if tag1 == Tag.float64:
+            let p2 = js_to_bigint_buf(ctx, &buf2, op2)
+            val = js_bigint_float64_cmp(ctx, p2, js_value_get_float64(op1))
+            if val != 2:
+                val = -val
+        elif tag2 == Tag.float64:
+            let p1 = js_to_bigint_buf(ctx, &buf1, op1)
+            val = js_bigint_float64_cmp(ctx, p1, js_value_get_float64(op2))
+        else:
+            let p1 = js_to_bigint_buf(ctx, &buf1, op1)
+            let p2 = js_to_bigint_buf(ctx, &buf2, op2)
+            val = js_bigint_cmp(ctx, p1, p2)
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+        if val == 2:
+            # unordered
+            return false
+
+    match op:
+        .lt:
+            return val < 0
+        .lte:
+            return val <= 0
+        .gt:
+            return val > 0
+        .gte:
+            return val >= 0
+        .eq:
+            return val == 0
+        _:
+            trap("js_compare_bigint: not a comparison")
+
+## The `float64_compare:` label of js_relational_slow: `op` on two numbers that are
+## integers, booleans, null or floats. A NaN compares false.
+func js_float64_compare(op: Op, op1: Value, op2: Value) -> bool:
+    # can use floating point comparison
+    let d1 = js_value_get_float64(op1) if op1.tag == Tag.float64 else f64(js_value_get_int(op1))
+    let d2 = js_value_get_float64(op2) if op2.tag == Tag.float64 else f64(js_value_get_int(op2))
+    match op:
+        .lt:
+            return d1 < d2      # if NaN return false
+        .lte:
+            return d1 <= d2     # if NaN return false
+        .gt:
+            return d1 > d2      # if NaN return false
+        _:
+            return d1 >= d2     # OP_gte; if NaN return false
+
+## Whether a tag is int, boolean or null: QuickJS's `tag <= JS_TAG_NULL` on an unsigned
+## tag, where the negative (reference-counted) tags compare above.
+func tag_is_int_bool_or_null(tag: Tag) -> bool:
+    return (u32)(i64)tag <= (u32)(i64)Tag.null
+
+## `<`, `<=`, `>` and `>=` when the operands are not two integers (js_relational_slow).
+func js_relational_slow(ctx: Context*, sp: Value*, op: Op) -> !:
+    errdefer js_clear_binary_operands(sp)
+    var op1 = *(sp - 2)
+    var op2 = *(sp - 1)
+    op1 = js_to_primitive_free(ctx, op1, hint_number) catch failure:
+        js_free_value(ctx, op2)
+        error(failure.code, failure.message)
+    op2 = js_to_primitive_free(ctx, op2, hint_number) catch failure:
+        js_free_value(ctx, op1)
+        error(failure.code, failure.message)
+    var tag1 = op1.tag
+    var tag2 = op2.tag
+
+    var res = false
+    if tag_is_string(tag1) and tag_is_string(tag2):
+        var cmp: i32 = 0
+        if tag1 == Tag.string and tag2 == Tag.string:
+            cmp = js_string_compare(ctx, op1.u.string, op2.u.string)
+        else:
+            cmp = js_string_rope_compare(ctx, op1, op2, false)
+        match op:
+            .lt:
+                res = cmp < 0
+            .lte:
+                res = cmp <= 0
+            .gt:
+                res = cmp > 0
+            _:
+                res = cmp >= 0      # OP_gte
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+    elif ((tag_is_int_bool_or_null(tag1) or tag1 == Tag.float64) and
+            (tag_is_int_bool_or_null(tag2) or tag2 == Tag.float64)):
+        # fast path for float64/int
+        res = js_float64_compare(op, op1, op2)
+    else:
+        var invalid_bigint_string = false
+        if ((tag_is_bigint(tag1) and tag_is_string(tag2)) or
+                (tag_is_bigint(tag2) and tag_is_string(tag1))):
+            # As in QuickJS, a conversion that throws reads as an invalid string (the
+            # exception stays pending).
+            if tag_is_string(tag1):
+                op1 = js_string_to_bigint(ctx, op1) catch: recover js_exception()
+                if not tag_is_bigint(op1.tag):
+                    invalid_bigint_string = true
+            if not invalid_bigint_string and tag_is_string(tag2):
+                op2 = js_string_to_bigint(ctx, op2) catch: recover js_exception()
+                if not tag_is_bigint(op2.tag):
+                    invalid_bigint_string = true
+        else:
+            op1 = js_to_numeric_free(ctx, op1) catch failure:
+                js_free_value(ctx, op2)
+                error(failure.code, failure.message)
+            op2 = js_to_numeric_free(ctx, op2) catch failure:
+                js_free_value(ctx, op1)
+                error(failure.code, failure.message)
+
+        if invalid_bigint_string:
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+            res = false
+        else:
+            tag1 = op1.tag
+            tag2 = op2.tag
+            if tag_is_bigint(tag1) or tag_is_bigint(tag2):
+                res = js_compare_bigint(ctx, op, op1, op2)
+            else:
+                res = js_float64_compare(op, op1, op2)
+    *(sp - 2) = js_new_bool(res)
+
+# mark: Equality ================================================================================
+
+## Whether a tag is a number or a big integer.
+func tag_is_number(tag: Tag) -> bool:
+    return tag == Tag.int or tag == Tag.float64 or tag_is_bigint(tag)
+
+## `==` and `!=` (`is_neq`) when the operands are not two integers (js_eq_slow).
+func js_eq_slow(ctx: Context*, sp: Value*, is_neq: bool) -> !:
+    errdefer js_clear_binary_operands(sp)
+    var op1 = *(sp - 2)
+    var op2 = *(sp - 1)
+    var res = false
+    # redo
+    while true:
+        let tag1 = op1.tag
+        let tag2 = op2.tag
+        if tag_is_number(tag1) and tag_is_number(tag2):
+            if tag1 == Tag.int and tag2 == Tag.int:
+                res = js_value_get_int(op1) == js_value_get_int(op2)
+            elif ((tag1 == Tag.float64 and (tag2 == Tag.int or tag2 == Tag.float64)) or
+                    (tag2 == Tag.float64 and (tag1 == Tag.int or tag1 == Tag.float64))):
+                let d1 = js_value_get_float64(op1) if tag1 == Tag.float64 else f64(js_value_get_int(op1))
+                let d2 = js_value_get_float64(op2) if tag2 == Tag.float64 else f64(js_value_get_int(op2))
+                res = d1 == d2
+            else:
+                res = js_compare_bigint(ctx, Op.eq, op1, op2)
+        elif tag1 == tag2:
+            res = js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+        elif ((tag1 == Tag.null and tag2 == Tag.undefined) or
+                (tag2 == Tag.null and tag1 == Tag.undefined)):
+            res = true
+        elif tag_is_string(tag1) and tag_is_string(tag2):
+            # needed when comparing strings and ropes
+            res = js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+        elif ((tag_is_string(tag1) and tag_is_number(tag2)) or
+                (tag_is_string(tag2) and tag_is_number(tag1))):
+            var invalid_bigint_string = false
+            if tag_is_bigint(tag1) or tag_is_bigint(tag2):
+                # As in QuickJS, a conversion that throws reads as an invalid string.
+                if tag_is_string(tag1):
+                    op1 = js_string_to_bigint(ctx, op1) catch: recover js_exception()
+                    if not tag_is_bigint(op1.tag):
+                        invalid_bigint_string = true
+                if not invalid_bigint_string and tag_is_string(tag2):
+                    op2 = js_string_to_bigint(ctx, op2) catch: recover js_exception()
+                    if not tag_is_bigint(op2.tag):
+                        invalid_bigint_string = true
+            else:
+                op1 = js_to_numeric_free(ctx, op1) catch failure:
+                    js_free_value(ctx, op2)
+                    error(failure.code, failure.message)
+                op2 = js_to_numeric_free(ctx, op2) catch failure:
+                    js_free_value(ctx, op1)
+                    error(failure.code, failure.message)
+            if invalid_bigint_string:
+                res = false
+            else:
+                res = js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+        elif tag1 == Tag.boolean:
+            op1 = js_new_int32(js_value_get_int(op1))
+            continue
+        elif tag2 == Tag.boolean:
+            op2 = js_new_int32(js_value_get_int(op2))
+            continue
+        elif ((tag1 == Tag.object and
+                    (tag_is_number(tag2) or tag_is_string(tag2) or tag2 == Tag.symbol)) or
+                (tag2 == Tag.object and
+                    (tag_is_number(tag1) or tag_is_string(tag1) or tag1 == Tag.symbol))):
+            op1 = js_to_primitive_free(ctx, op1, hint_none) catch failure:
+                js_free_value(ctx, op2)
+                error(failure.code, failure.message)
+            op2 = js_to_primitive_free(ctx, op2, hint_none) catch failure:
+                js_free_value(ctx, op1)
+                error(failure.code, failure.message)
+            continue
+        else:
+            # IsHTMLDDA object is equivalent to undefined for '==' and '!='
+            res = ((js_is_htmldda(ctx, op1) and (tag2 == Tag.null or tag2 == Tag.undefined)) or
+                (js_is_htmldda(ctx, op2) and (tag1 == Tag.null or tag1 == Tag.undefined)))
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+        break
+    *(sp - 2) = js_new_bool(res != is_neq)
+
+# mark: Unsigned right shift ====================================================================
+
+## `>>>` when the operands are not two integers (js_shr_slow).
+func js_shr_slow(ctx: Context*, sp: Value*) -> !:
+    errdefer js_clear_binary_operands(sp)
+    var op1 = *(sp - 2)
+    var op2 = *(sp - 1)
+    op1 = js_to_numeric_free(ctx, op1) catch failure:
+        js_free_value(ctx, op2)
+        error(failure.code, failure.message)
+    op2 = js_to_numeric_free(ctx, op2) catch failure:
+        js_free_value(ctx, op1)
+        error(failure.code, failure.message)
+    if tag_is_bigint(op1.tag) or tag_is_bigint(op2.tag):
+        js_throw_type_error(ctx, "bigint operands are forbidden for >>>") catch failure:
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+            error(failure.code, failure.message)
+    var v1: u32 = 0
+    var v2: u32 = 0
+    # cannot give an exception
+    try js_to_uint32_free(ctx, &v1, op1)
+    try js_to_uint32_free(ctx, &v2, op2)
+    let r = v1 >> (v2 & 0x1f)
+    *(sp - 2) = js_new_uint32(r)

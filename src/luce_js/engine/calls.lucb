@@ -1,0 +1,186 @@
+#==============================================================================================
+#
+#   calls - Calling C functions and bound functions
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 17559-17745: the call handlers of the c_function and
+#       bound_function classes, and the constants of the interpreter that follows
+#       (OP_special_object's argument, the FUNC_RET_* codes). QuickJS copies arguments
+#       into an alloca'ed buffer; Base has no alloca, so a C function's padded
+#       arguments go to a local array of the largest length (a length is a u8), and a
+#       bound function's arguments to a local array when they are few, else to a
+#       js_malloc'ed buffer.
+#
+#==============================================================================================
+
+## JS_CALL_FLAG_COPY_ARGV: the callee must copy argv before modifying it.
+let call_flag_copy_argv: i32 = 1 << 1
+## JS_CALL_FLAG_GENERATOR: the call resumes a generator.
+let call_flag_generator: i32 = 1 << 2
+
+# mark: C functions =============================================================================
+
+## Make `sf` the runtime's current frame. The frame is a local of the caller, which unlinks
+## it before returning.
+# workaround: compiler-issues/local_address_store
+func js_push_stack_frame(rt: Runtime*, sf: StackFrame*):
+    rt.current_stack_frame = sf
+
+## The call handler of ClassId.c_function: call a C function with at least as many
+## readable arguments as its length (js_call_c_function).
+func js_call_c_function(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let rt = ctx.rt
+    let p = func_obj.u.obj
+    let arg_count = (i32)p.u.cfunc.length
+
+    # better to always check stack overflow
+    if js_check_stack_overflow(rt, sizeof(Value) * (usize)arg_count):
+        try js_throw_stack_overflow(ctx)
+
+    if argc < arg_count:
+        return try js_call_c_function_padded(rt, func_obj, this_obj, argc, argv, flags)
+    return try js_call_c_function_frame(rt, func_obj, this_obj, argc, argv, argc, flags)
+
+## js_call_c_function when fewer arguments than the function's length are given.
+noinline func js_call_c_function_padded(rt: Runtime*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let arg_count = (i32)func_obj.u.obj.u.cfunc.length
+    # ensure that at least argc_count arguments are readable
+    var arg_buf: Value[255] = ---
+    for i in 0..<(usize)argc:
+        arg_buf[i] = argv[i]
+    for i in (usize)argc..<(usize)arg_count:
+        arg_buf[i] = js_undefined()
+    return try js_call_c_function_frame(rt, func_obj, this_obj, argc, &arg_buf[0], arg_count, flags)
+
+## Push the C function's frame, call it in its realm, and pop the frame. `arg_buf` holds
+## `sf_arg_count` readable arguments, of which `argc` were given.
+func js_call_c_function_frame(rt: Runtime*, func_obj: Value, this_obj: Value, argc: i32, arg_buf: Value*, sf_arg_count: i32, flags: i32) -> Value!:
+    let p = func_obj.u.obj
+    var sf_s: StackFrame = ---
+    let sf = &sf_s
+    let prev_sf = rt.current_stack_frame
+    sf.prev_frame = prev_sf
+    js_push_stack_frame(rt, sf)
+    let ctx = p.u.cfunc.realm   # change the current realm
+    sf.js_mode = 0
+    sf.cur_func = func_obj
+    sf.arg_count = sf_arg_count
+    sf.arg_buf = arg_buf
+
+    let ret_val = js_call_c_function_switch(ctx, p, this_obj, argc, arg_buf, flags) catch failure:
+        rt.current_stack_frame = sf.prev_frame
+        error(failure.code, failure.message)
+    rt.current_stack_frame = sf.prev_frame
+    return ret_val
+
+## Call the C function of `p` by its calling shape (the switch of js_call_c_function).
+func js_call_c_function_switch(ctx: Context*, p: Object*, this_val: Value, argc: i32, arg_buf: Value*, flags: i32) -> Value!:
+    var this_obj = this_val
+    let cproto = p.u.cfunc.cproto
+    let func_ = p.u.cfunc.c_function
+    let magic = (i32)p.u.cfunc.magic
+    match cproto:
+        .constructor, .constructor_or_func:
+            if (flags & call_flag_constructor) == 0:
+                if cproto == CFunctionEnum.constructor:
+                    # not_a_constructor
+                    try js_throw_type_error(ctx, "must be called with new")
+                this_obj = js_undefined()
+            # here this_obj is new_target
+            # fall thru
+            return try func_.generic(ctx, this_obj, argc, arg_buf)
+        .generic:
+            return try func_.generic(ctx, this_obj, argc, arg_buf)
+        .constructor_magic, .constructor_or_func_magic:
+            if (flags & call_flag_constructor) == 0:
+                if cproto == CFunctionEnum.constructor_magic:
+                    # not_a_constructor
+                    try js_throw_type_error(ctx, "must be called with new")
+                this_obj = js_undefined()
+            # fall thru
+            return try func_.generic_magic(ctx, this_obj, argc, arg_buf, magic)
+        .generic_magic:
+            return try func_.generic_magic(ctx, this_obj, argc, arg_buf, magic)
+        .getter:
+            return try func_.getter(ctx, this_obj)
+        .setter:
+            return try func_.setter(ctx, this_obj, arg_buf[0])
+        .getter_magic:
+            return try func_.getter_magic(ctx, this_obj, magic)
+        .setter_magic:
+            return try func_.setter_magic(ctx, this_obj, arg_buf[0], magic)
+        .f_f:
+            var d1: f64 = 0.0
+            try js_to_float64(ctx, &d1, arg_buf[0])
+            return js_new_float64(func_.f_f(d1))
+        .f_f_f:
+            var d1: f64 = 0.0
+            var d2: f64 = 0.0
+            try js_to_float64(ctx, &d1, arg_buf[0])
+            try js_to_float64(ctx, &d2, arg_buf[1])
+            return js_new_float64(func_.f_f_f(d1, d2))
+        .iterator_next:
+            var done: i32 = 0
+            let ret_val = try func_.iterator_next(ctx, this_obj, argc, arg_buf, &done, magic)
+            if done != 2:
+                return try js_create_iterator_result(ctx, ret_val, done != 0)
+            return ret_val
+        _:
+            trap("js_call_c_function: bad calling shape")
+
+# mark: Bound functions =========================================================================
+
+## The number of arguments a bound function call copies to a local array; more go to a
+## js_malloc'ed buffer.
+let js_bound_args_local_max: i32 = 32
+
+## The call handler of ClassId.bound_function: call the target with the bound `this` and
+## the bound arguments before `argv` (js_call_bound_function).
+func js_call_bound_function(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let p = func_obj.u.obj
+    let bf = p.u.bound_function
+    let arg_count = bf.argc + argc
+    if js_check_stack_overflow(ctx.rt, sizeof(Value) * (usize)arg_count):
+        try js_throw_stack_overflow(ctx)
+    if arg_count <= js_bound_args_local_max:
+        var local_buf: Value[32] = ---
+        return try js_call_bound_function_args(ctx, func_obj, this_obj, argc, argv, flags,
+            &local_buf[0])
+    let heap_buf = (Value*)(try js_malloc(ctx, sizeof(Value) * (usize)arg_count))
+    defer js_free(ctx, heap_buf)
+    return try js_call_bound_function_args(ctx, func_obj, this_obj, argc, argv, flags, heap_buf)
+
+## js_call_bound_function with `arg_buf` room for the bound and the given arguments.
+func js_call_bound_function_args(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32, arg_buf: Value*) -> Value!:
+    let bf = func_obj.u.obj.u.bound_function
+    let bf_argv = bound_function_argv(bf)
+    let arg_count = bf.argc + argc
+    for i in 0..<(usize)bf.argc:
+        arg_buf[i] = bf_argv[i]
+    for i in 0..<(usize)argc:
+        arg_buf[(usize)bf.argc + i] = argv[i]
+    if (flags & call_flag_constructor) != 0:
+        var new_target = this_obj
+        if js_same_value_internal(ctx, func_obj, new_target):
+            new_target = bf.func_obj
+        return try js_call_constructor2(ctx, bf.func_obj, new_target, arg_count, arg_buf)
+    else:
+        return try js_call(ctx, bf.func_obj, bf.this_val, arg_count, arg_buf)
+
+# mark: Interpreter constants ===================================================================
+
+## The argument of OP_special_object (OPSpecialObjectEnum).
+enum OpSpecialObject as u8:
+    arguments = 0
+    mapped_arguments = 1
+    this_func = 2
+    new_target = 3
+    home_object = 4
+    var_object = 5
+    import_meta = 6
+
+## How a generator or async function returned to its caller (FUNC_RET_*).
+let func_ret_await: i32 = 0
+let func_ret_yield: i32 = 1
+let func_ret_yield_star: i32 = 2
+let func_ret_initial_yield: i32 = 3

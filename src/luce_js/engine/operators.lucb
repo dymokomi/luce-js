@@ -1,0 +1,247 @@
+#==============================================================================================
+#
+#   operators - Strict equality, SameValue, and the in, instanceof, typeof and delete operators
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 15773-16130: js_strict_eq2 and its public wrappers
+#       (JS_StrictEq, JS_SameValue, JS_SameValueZero), the stack operators `in`, private
+#       `in`, `instanceof` and `delete`, the typeof atom, the unscopables test of `with`,
+#       and the %ThrowTypeError% and Function.prototype fileName/lineNumber builtins.
+#       JSStrictEqModeEnum (quickjs.c:1262) is declared here, with its only user.
+#
+#==============================================================================================
+
+# mark: Strict equality =========================================================================
+
+## How js_strict_eq2 compares numbers (JSStrictEqModeEnum).
+enum StrictEqMode as i32:
+    ## `===`: NaN differs from itself, +0 equals -0.
+    strict = 0
+    ## SameValue: NaN equals itself, +0 differs from -0.
+    same_value = 1
+    ## SameValueZero: NaN equals itself, +0 equals -0.
+    same_value_zero = 2
+
+## The `number_test:` label of js_strict_eq2: compare two numbers in `eq_mode`.
+func js_strict_eq_number(d1: f64, d2: f64, eq_mode: StrictEqMode) -> bool:
+    if (i32)eq_mode >= (i32)StrictEqMode.same_value:
+        # NaN is not always normalized, so this test is necessary
+        let nan1 = d1 != d1
+        let nan2 = d2 != d2
+        if nan1 or nan2:
+            return nan1 == nan2
+        elif eq_mode == StrictEqMode.same_value_zero:
+            return d1 == d2     # +0 == -0
+        else:
+            return d1.bits() == d2.bits()   # +0 != -0
+    return d1 == d2     # if NaN return false and +0 == -0
+
+## Compare two values without conversion in `eq_mode`; the operands are not consumed.
+func js_strict_eq2(ctx: Context*, op1: Value, op2: Value, eq_mode: StrictEqMode) -> bool:
+    let tag1 = op1.tag
+    let tag2 = op2.tag
+    match tag1:
+        .boolean:
+            if tag1 != tag2:
+                return false
+            return js_value_get_int(op1) == js_value_get_int(op2)
+        .null, .undefined:
+            return tag1 == tag2
+        .string, .string_rope:
+            if not tag_is_string(tag2):
+                return false
+            elif tag1 == Tag.string and tag2 == Tag.string:
+                return js_string_eq(ctx, op1.u.string, op2.u.string)
+            else:
+                return js_string_rope_compare(ctx, op1, op2, true) == 0
+        .symbol:
+            if tag1 != tag2:
+                return false
+            return op1.u.ptr == op2.u.ptr
+        .object:
+            if tag1 != tag2:
+                return false
+            return op1.u.obj == op2.u.obj
+        .int:
+            let d1 = f64(js_value_get_int(op1))
+            if tag2 == Tag.int:
+                return js_strict_eq_number(d1, f64(js_value_get_int(op2)), eq_mode)
+            elif tag2 == Tag.float64:
+                return js_strict_eq_number(d1, js_value_get_float64(op2), eq_mode)
+            return false
+        .float64:
+            let d1 = js_value_get_float64(op1)
+            if tag2 == Tag.float64:
+                return js_strict_eq_number(d1, js_value_get_float64(op2), eq_mode)
+            elif tag2 == Tag.int:
+                return js_strict_eq_number(d1, f64(js_value_get_int(op2)), eq_mode)
+            return false
+        .short_big_int, .big_int:
+            if tag2 != Tag.short_big_int and tag2 != Tag.big_int:
+                return false
+            var buf1: BigIntBuf = ---
+            var buf2: BigIntBuf = ---
+            let p1 = js_bigint_value_ptr(&buf1, op1)
+            let p2 = js_bigint_value_ptr(&buf2, op2)
+            return js_bigint_cmp(ctx, p1, p2) == 0
+        _:
+            return false
+
+## `===` (js_strict_eq).
+func js_strict_eq_internal(ctx: Context*, op1: Value, op2: Value) -> bool:
+    return js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
+
+## Whether `op1 === op2` (JS_StrictEq).
+pub func js_strict_eq(ctx: Context*, op1: Value, op2: Value) -> bool:
+    return js_strict_eq_internal(ctx, op1, op2)
+
+## SameValue (js_same_value).
+func js_same_value_internal(ctx: Context*, op1: Value, op2: Value) -> bool:
+    return js_strict_eq2(ctx, op1, op2, StrictEqMode.same_value)
+
+## Whether the values are the same by SameValue, as Object.is (JS_SameValue).
+pub func js_same_value(ctx: Context*, op1: Value, op2: Value) -> bool:
+    return js_same_value_internal(ctx, op1, op2)
+
+## SameValueZero (js_same_value_zero).
+func js_same_value_zero_internal(ctx: Context*, op1: Value, op2: Value) -> bool:
+    return js_strict_eq2(ctx, op1, op2, StrictEqMode.same_value_zero)
+
+## Whether the values are the same by SameValueZero, as Array.prototype.includes
+## (JS_SameValueZero).
+pub func js_same_value_zero(ctx: Context*, op1: Value, op2: Value) -> bool:
+    return js_same_value_zero_internal(ctx, op1, op2)
+
+# mark: in, instanceof, typeof, delete ==========================================================
+
+## `key in obj` on sp[-2] and sp[-1], leaving the boolean at sp[-2].
+func js_operator_in(ctx: Context*, sp: Value*) -> !:
+    let op1 = *(sp - 2)
+    let op2 = *(sp - 1)
+
+    if op2.tag != Tag.object:
+        try js_throw_type_error(ctx, "invalid 'in' operand")
+    let atom = try js_value_to_atom(ctx, op1)
+    let ret = js_has_property(ctx, op2, atom) catch failure:
+        js_free_atom(ctx, atom)
+        error(failure.code, failure.message)
+    js_free_atom(ctx, atom)
+    js_free_value(ctx, op1)
+    js_free_value(ctx, op2)
+    *(sp - 2) = js_new_bool(ret)
+
+## `#field in obj`: sp[-2] is the object, sp[-1] the field name or the method function.
+func js_operator_private_in(ctx: Context*, sp: Value*) -> !:
+    let op1 = *(sp - 2)     # object
+    let op2 = *(sp - 1)     # field name or method function
+
+    if op1.tag != Tag.object:
+        try js_throw_type_error(ctx, "invalid 'in' operand")
+    var ret = false
+    if js_is_object(op2):
+        # method: use the brand
+        ret = try js_check_brand(ctx, op1, op2)
+    else:
+        # field
+        let atom = try js_value_to_atom(ctx, op2)
+        let p = op1.u.obj
+        var pr: Property*? = none
+        let prs = find_own_property(&pr, p, atom)
+        js_free_atom(ctx, atom)
+        ret = prs != none
+    js_free_value(ctx, op1)
+    js_free_value(ctx, op2)
+    *(sp - 2) = js_new_bool(ret)
+
+## Whether `obj[Symbol.unscopables][atom]` is truthy (a `with` binding is hidden).
+func js_has_unscopable(ctx: Context*, obj: Value, atom: Atom) -> bool!:
+    let arr = try js_get_property(ctx, obj, atom_Symbol_unscopables)
+    defer js_free_value(ctx, arr)
+    var ret = false
+    if js_is_object(arr):
+        let val = try js_get_property(ctx, arr, atom)
+        ret = try js_to_bool_free(ctx, val)
+    return ret
+
+## `val instanceof obj` on sp[-2] and sp[-1].
+func js_operator_instanceof(ctx: Context*, sp: Value*) -> !:
+    let op1 = *(sp - 2)
+    let op2 = *(sp - 1)
+    let ret = try js_is_instance_of(ctx, op1, op2)
+    js_free_value(ctx, op1)
+    js_free_value(ctx, op2)
+    *(sp - 2) = js_new_bool(ret)
+
+## The atom of `typeof op1`.
+func js_operator_typeof(ctx: Context*, op1: Value) -> Atom:
+    match op1.tag:
+        .short_big_int, .big_int:
+            return atom_bigint
+        .int, .float64:
+            return atom_number
+        .undefined:
+            return atom_undefined
+        .boolean:
+            return atom_boolean
+        .string, .string_rope:
+            return atom_string
+        .object:
+            let p = op1.u.obj
+            if p.is_htmldda:
+                return atom_undefined
+            elif js_is_function(ctx, op1):
+                return atom_function
+            return atom_object      # obj_type
+        .null:
+            return atom_object
+        .symbol:
+            return atom_symbol
+        _:
+            return atom_unknown
+
+## `delete obj[key]` on sp[-2] and sp[-1].
+func js_operator_delete(ctx: Context*, sp: Value*) -> !:
+    let op1 = *(sp - 2)
+    let op2 = *(sp - 1)
+    let atom = try js_value_to_atom(ctx, op2)
+    let ret = js_delete_property(ctx, op1, atom, prop_throw_strict) catch failure:
+        js_free_atom(ctx, atom)
+        error(failure.code, failure.message)
+    js_free_atom(ctx, atom)
+    js_free_value(ctx, op1)
+    js_free_value(ctx, op2)
+    *(sp - 2) = js_new_bool(ret)
+
+# mark: Function.prototype helpers ==============================================================
+
+# XXX: not 100% compatible, but mozilla seems to use a similar
+# implementation to ensure that caller in non strict mode does not
+# throw (ES5 compatibility)
+## %ThrowTypeError%: the getter and setter of `caller` and `callee` (js_throw_type_error).
+func js_throw_type_error_internal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var must_throw = true
+    if let b = js_get_function_bytecode(this_val):
+        must_throw = (((i32)b.js_mode & js_mode_strict) != 0 or not b.has_prototype or
+            argc >= 1)
+    if must_throw:
+        try js_throw_type_error(ctx, "invalid property access")
+    return js_undefined()
+
+## Function.prototype.fileName: the file of a bytecode function with debug information.
+func js_function_proto_file_name(ctx: Context*, this_val: Value) -> Value!:
+    if let b = js_get_function_bytecode(this_val):
+        if b.has_debug:
+            return try js_atom_to_string(ctx, b.debug.filename)
+    return js_undefined()
+
+## Function.prototype.lineNumber (`is_col` 0) and columnNumber (1).
+func js_function_proto_line_number(ctx: Context*, this_val: Value, is_col: i32) -> Value!:
+    if let b = js_get_function_bytecode(this_val):
+        if b.has_debug:
+            var col_num: i32 = 0
+            let line_num = find_line_num(ctx, b, 0xffffffff, &col_num)     # pc_value -1
+            if is_col != 0:
+                return js_new_int32(col_num)
+            else:
+                return js_new_int32(line_num)
+    return js_undefined()
