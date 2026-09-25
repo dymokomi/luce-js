@@ -17,74 +17,74 @@
 ## The body of OP_push_i32 in JS_CallInternal.
 noinline func interp_push_i32(st: InterpState*):
     *st.sp = js_new_int32((i32)cutils.get_u32(st.pc))
-    st.sp = st.sp + 1
-    st.pc = st.pc + 4
+    st.sp += 1
+    st.pc += 4
 
 ## The body of OP_push_bigint_i32 in JS_CallInternal.
 noinline func interp_push_bigint_i32(st: InterpState*):
     *st.sp = js_new_short_big_int_raw((i32)cutils.get_u32(st.pc))
-    st.sp = st.sp + 1
-    st.pc = st.pc + 4
+    st.sp += 1
+    st.pc += 4
 
 ## The body of OP_push_const in JS_CallInternal.
 noinline func interp_push_const(st: InterpState*):
     *st.sp = js_dup_value(st.ctx, cpool_at(st.b, cutils.get_u32(st.pc)))
-    st.sp = st.sp + 1
-    st.pc = st.pc + 4
+    st.sp += 1
+    st.pc += 4
 
 ## The body of OP_push_minus1, OP_push_0, OP_push_1, OP_push_2, OP_push_3, OP_push_4, OP_push_5, OP_push_6, OP_push_7 in JS_CallInternal.
 noinline func interp_push_minus1(st: InterpState*):
     *st.sp = js_new_int32((i32)(u8)st.opcode - (i32)(u8)Op.push_0)
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_push_i8 in JS_CallInternal.
 noinline func interp_push_i8(st: InterpState*):
     *st.sp = js_new_int32(cutils.get_i8(st.pc))
-    st.sp = st.sp + 1
-    st.pc = st.pc + 1
+    st.sp += 1
+    st.pc += 1
 
 ## The body of OP_push_i16 in JS_CallInternal.
 noinline func interp_push_i16(st: InterpState*):
     *st.sp = js_new_int32(cutils.get_i16(st.pc))
-    st.sp = st.sp + 1
-    st.pc = st.pc + 2
+    st.sp += 1
+    st.pc += 2
 
 ## The body of OP_push_const8 in JS_CallInternal.
 noinline func interp_push_const8(st: InterpState*):
     *st.sp = js_dup_value(st.ctx, cpool_at(st.b, (u32)*st.pc))
-    st.sp = st.sp + 1
-    st.pc = st.pc + 1
+    st.sp += 1
+    st.pc += 1
 
 ## The body of OP_fclosure8 in JS_CallInternal.
 noinline func interp_fclosure8(st: InterpState*) -> bool:
     let bfunc = js_dup_value(st.ctx, cpool_at(st.b, (u32)*st.pc))
-    st.pc = st.pc + 1
+    st.pc += 1
     *st.sp = js_closure(st.ctx, bfunc, st.var_refs, st.sf, false) catch: return false
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_push_empty_string in JS_CallInternal.
 noinline func interp_push_empty_string(st: InterpState*) -> bool:
     *st.sp = js_atom_to_string(st.ctx, atom_empty_string) catch: return false
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_push_atom_value in JS_CallInternal.
 noinline func interp_push_atom_value(st: InterpState*) -> bool:
     *st.sp = js_atom_to_value(st.ctx, cutils.get_u32(st.pc)) catch: return false
-    st.sp = st.sp + 1
-    st.pc = st.pc + 4
+    st.sp += 1
+    st.pc += 4
     return true
 
 ## The body of OP_undefined in JS_CallInternal.
 noinline func interp_undefined(st: InterpState*):
     *st.sp = js_undefined()
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_null in JS_CallInternal.
 noinline func interp_null(st: InterpState*):
     *st.sp = js_null()
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_push_this in JS_CallInternal.
 noinline func interp_push_this(st: InterpState*) -> bool:
@@ -100,54 +100,54 @@ noinline func interp_push_this(st: InterpState*) -> bool:
         # normal_this
         val = js_dup_value(st.ctx, st.this_obj)
     *st.sp = val
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_push_false in JS_CallInternal.
 noinline func interp_push_false(st: InterpState*):
     *st.sp = js_false()
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_push_true in JS_CallInternal.
 noinline func interp_push_true(st: InterpState*):
     *st.sp = js_true()
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_object in JS_CallInternal.
 noinline func interp_object(st: InterpState*) -> bool:
     *st.sp = js_new_object(st.ctx) catch: return false
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_special_object in JS_CallInternal.
 noinline func interp_special_object(st: InterpState*) -> bool:
     let arg = (OpSpecialObject)*st.pc
-    st.pc = st.pc + 1
+    st.pc += 1
     match arg:
         .arguments:
             *st.sp = js_build_arguments(st.ctx, st.argc, st.argv) catch: return false
-            st.sp = st.sp + 1
+            st.sp += 1
         .mapped_arguments:
             *st.sp = js_build_mapped_arguments(st.ctx, st.argc, st.argv, st.sf, cutils.min_int(st.argc, (i32)st.b.arg_count)) catch: return false
-            st.sp = st.sp + 1
+            st.sp += 1
         .this_func:
             *st.sp = js_dup_value(st.ctx, st.sf.cur_func)
-            st.sp = st.sp + 1
+            st.sp += 1
         .new_target:
             *st.sp = js_dup_value(st.ctx, st.new_target)
-            st.sp = st.sp + 1
+            st.sp += 1
         .home_object:
             if let p1 = st.p.u.func_.home_object:
                 *st.sp = js_dup_value(st.ctx, js_mkptr(Tag.object, p1))
             else:
                 *st.sp = js_undefined()
-            st.sp = st.sp + 1
+            st.sp += 1
         .var_object:
             *st.sp = js_new_object_proto(st.ctx, js_null()) catch: return false
-            st.sp = st.sp + 1
+            st.sp += 1
         .import_meta:
             *st.sp = js_import_meta(st.ctx) catch: return false
-            st.sp = st.sp + 1
+            st.sp += 1
         _:
             trap("invalid OP_special_object argument")
     return true
@@ -155,22 +155,22 @@ noinline func interp_special_object(st: InterpState*) -> bool:
 ## The body of OP_rest in JS_CallInternal.
 noinline func interp_rest(st: InterpState*) -> bool:
     var first = (i32)cutils.get_u16(st.pc)
-    st.pc = st.pc + 2
+    st.pc += 2
     first = cutils.min_int(first, st.argc)
     *st.sp = js_create_array(st.ctx, st.argc - first, st.argv + (usize)first) catch: return false
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_drop in JS_CallInternal.
 noinline func interp_drop(st: InterpState*):
     js_free_value(st.ctx, st.sp[-1])
-    st.sp = st.sp - 1
+    st.sp -= 1
 
 ## The body of OP_nip in JS_CallInternal.
 noinline func interp_nip(st: InterpState*):
     js_free_value(st.ctx, st.sp[-2])
     st.sp[-2] = st.sp[-1]
-    st.sp = st.sp - 1
+    st.sp -= 1
 
 ## The body of OP_nip1 in JS_CallInternal.
 # a b c -> b c
@@ -178,19 +178,19 @@ noinline func interp_nip1(st: InterpState*):
     js_free_value(st.ctx, st.sp[-3])
     st.sp[-3] = st.sp[-2]
     st.sp[-2] = st.sp[-1]
-    st.sp = st.sp - 1
+    st.sp -= 1
 
 ## The body of OP_dup in JS_CallInternal.
 noinline func interp_dup(st: InterpState*):
     st.sp[0] = js_dup_value(st.ctx, st.sp[-1])
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_dup2 in JS_CallInternal.
 # a b -> a b a b
 noinline func interp_dup2(st: InterpState*):
     st.sp[0] = js_dup_value(st.ctx, st.sp[-2])
     st.sp[1] = js_dup_value(st.ctx, st.sp[-1])
-    st.sp = st.sp + 2
+    st.sp += 2
 
 ## The body of OP_dup3 in JS_CallInternal.
 # a b c -> a b c a b c
@@ -198,14 +198,14 @@ noinline func interp_dup3(st: InterpState*):
     st.sp[0] = js_dup_value(st.ctx, st.sp[-3])
     st.sp[1] = js_dup_value(st.ctx, st.sp[-2])
     st.sp[2] = js_dup_value(st.ctx, st.sp[-1])
-    st.sp = st.sp + 3
+    st.sp += 3
 
 ## The body of OP_dup1 in JS_CallInternal.
 # a b -> a a b
 noinline func interp_dup1(st: InterpState*):
     st.sp[0] = st.sp[-1]
     st.sp[-1] = js_dup_value(st.ctx, st.sp[-2])
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_insert2 in JS_CallInternal.
 # obj a -> a obj a (dup_x1)
@@ -213,7 +213,7 @@ noinline func interp_insert2(st: InterpState*):
     st.sp[0] = st.sp[-1]
     st.sp[-1] = st.sp[-2]
     st.sp[-2] = js_dup_value(st.ctx, st.sp[0])
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_insert3 in JS_CallInternal.
 # obj prop a -> a obj prop a (dup_x2)
@@ -222,7 +222,7 @@ noinline func interp_insert3(st: InterpState*):
     st.sp[-1] = st.sp[-2]
     st.sp[-2] = st.sp[-3]
     st.sp[-3] = js_dup_value(st.ctx, st.sp[0])
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_insert4 in JS_CallInternal.
 # this obj prop a -> a this obj prop a
@@ -232,7 +232,7 @@ noinline func interp_insert4(st: InterpState*):
     st.sp[-2] = st.sp[-3]
     st.sp[-3] = st.sp[-4]
     st.sp[-4] = js_dup_value(st.ctx, st.sp[0])
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_perm3 in JS_CallInternal.
 # obj a b -> a obj b (213)
@@ -315,36 +315,36 @@ noinline func interp_swap2(st: InterpState*):
 ## The body of OP_fclosure in JS_CallInternal.
 noinline func interp_fclosure(st: InterpState*) -> bool:
     let bfunc = js_dup_value(st.ctx, cpool_at(st.b, cutils.get_u32(st.pc)))
-    st.pc = st.pc + 4
+    st.pc += 4
     *st.sp = js_closure(st.ctx, bfunc, st.var_refs, st.sf, false) catch: return false
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_array_from in JS_CallInternal.
 noinline func interp_array_from(st: InterpState*) -> bool:
     let call_argc = (i32)cutils.get_u16(st.pc)
-    st.pc = st.pc + 2
+    st.pc += 2
     st.ret_val = js_create_array_free(st.ctx, call_argc, st.sp - (usize)call_argc) catch:
-        st.sp = st.sp - (usize)call_argc
+        st.sp -= (usize)call_argc
         return false
-    st.sp = st.sp - (usize)call_argc
+    st.sp -= (usize)call_argc
     *st.sp = st.ret_val
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_apply in JS_CallInternal.
 noinline func interp_apply(st: InterpState*) -> bool:
     let magic = (i32)cutils.get_u16(st.pc)
-    st.pc = st.pc + 2
+    st.pc += 2
     st.sf.cur_pc = st.pc
 
     st.ret_val = js_function_apply(st.ctx, st.sp[-3], 2, st.sp - 2, magic) catch: return false
     js_free_value(st.ctx, st.sp[-3])
     js_free_value(st.ctx, st.sp[-2])
     js_free_value(st.ctx, st.sp[-1])
-    st.sp = st.sp - 3
+    st.sp -= 3
     *st.sp = st.ret_val
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_check_ctor_return in JS_CallInternal.
@@ -356,7 +356,7 @@ noinline func interp_check_ctor_return(st: InterpState*) -> bool:
         st.sp[0] = js_true()
     else:
         st.sp[0] = js_false()
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_check_ctor in JS_CallInternal.
@@ -378,7 +378,7 @@ noinline func interp_init_ctor(st: InterpState*) -> bool:
     if js_is_exception(ret):
         return false
     *st.sp = ret
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_check_brand in JS_CallInternal.
@@ -393,14 +393,14 @@ noinline func interp_add_brand(st: InterpState*) -> bool:
     js_add_brand(st.ctx, st.sp[-2], st.sp[-1]) catch: return false
     js_free_value(st.ctx, st.sp[-2])
     js_free_value(st.ctx, st.sp[-1])
-    st.sp = st.sp - 2
+    st.sp -= 2
     return true
 
 # mark: Throw, eval, regexp, super and import ===================================================
 
 ## The body of OP_throw in JS_CallInternal.
 noinline func interp_throw(st: InterpState*) -> bool:
-    st.sp = st.sp - 1
+    st.sp -= 1
     js_throw(st.ctx, *st.sp) catch: return false
     return true
 
@@ -408,7 +408,7 @@ noinline func interp_throw(st: InterpState*) -> bool:
 noinline func interp_throw_error(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     let type_ = (i32)st.pc[4]
-    st.pc = st.pc + 5
+    st.pc += 5
     if type_ == throw_var_ro:
         discard(js_throw_type_error_read_only(st.ctx, prop_throw, atom) catch: return false)
     elif type_ == throw_var_redecl:
@@ -427,7 +427,7 @@ noinline func interp_throw_error(st: InterpState*) -> bool:
 noinline func interp_eval(st: InterpState*) -> bool:
     let call_argc = (i32)cutils.get_u16(st.pc)
     let scope_idx = (i32)cutils.get_u16(st.pc + 2) + arg_scope_end
-    st.pc = st.pc + 4
+    st.pc += 4
     let call_argv = st.sp - (usize)call_argc
     st.sf.cur_pc = st.pc
     if js_same_value_internal(st.ctx, call_argv[-1], st.ctx.eval_obj):
@@ -441,15 +441,15 @@ noinline func interp_eval(st: InterpState*) -> bool:
     while i < (isize)call_argc:
         js_free_value(st.ctx, call_argv[i])
         i += 1
-    st.sp = st.sp - (usize)(call_argc + 1)
+    st.sp -= (usize)(call_argc + 1)
     *st.sp = st.ret_val
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_apply_eval in JS_CallInternal.
 noinline func interp_apply_eval(st: InterpState*) -> bool:
     let scope_idx = (i32)cutils.get_u16(st.pc) + arg_scope_end
-    st.pc = st.pc + 2
+    st.pc += 2
     st.sf.cur_pc = st.pc
     var len: u32 = 0
     let tab = build_arg_list(st.ctx, &len, st.sp[-1]) catch: return false
@@ -465,15 +465,15 @@ noinline func interp_apply_eval(st: InterpState*) -> bool:
         return false
     js_free_value(st.ctx, st.sp[-2])
     js_free_value(st.ctx, st.sp[-1])
-    st.sp = st.sp - 2
+    st.sp -= 2
     *st.sp = st.ret_val
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_regexp in JS_CallInternal.
 noinline func interp_regexp(st: InterpState*) -> bool:
     st.sp[-2] = js_new_regexp(st.ctx, st.sp[-2], st.sp[-1]) catch: recover js_exception()
-    st.sp = st.sp - 1
+    st.sp -= 1
     if js_is_exception(st.sp[-1]):
         return false
     return true
@@ -492,6 +492,6 @@ noinline func interp_import(st: InterpState*) -> bool:
     let val = js_dynamic_import(st.ctx, st.sp[-2], st.sp[-1]) catch: return false
     js_free_value(st.ctx, st.sp[-2])
     js_free_value(st.ctx, st.sp[-1])
-    st.sp = st.sp - 1
+    st.sp -= 1
     st.sp[-1] = val
     return true

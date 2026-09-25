@@ -24,7 +24,7 @@ noinline func interp_add(st: InterpState*) -> bool:
             st.sp[-2] = js_new_float64_raw(f64(r))
         else:
             st.sp[-2] = js_new_int32((i32)r)
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
         var d2: f64 = 0.0
@@ -42,10 +42,10 @@ noinline func interp_add(st: InterpState*) -> bool:
             slow = true
         if not slow:
             st.sp[-2] = js_new_float64_raw(d1 + d2)
-            st.sp = st.sp - 1
+            st.sp -= 1
     elif js_is_string(op1) and js_is_string(op2):
         st.sp[-2] = js_concat_string(st.ctx, op1, op2) catch: recover js_exception()
-        st.sp = st.sp - 1
+        st.sp -= 1
         if js_is_exception(st.sp[-1]):
             return false
     else:
@@ -54,13 +54,13 @@ noinline func interp_add(st: InterpState*) -> bool:
         # add_slow_case
         st.sf.cur_pc = st.pc
         js_add_slow(st.ctx, st.sp) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_add_loc in JS_CallInternal.
 noinline func interp_add_loc(st: InterpState*) -> bool:
     let idx = (usize)*st.pc
-    st.pc = st.pc + 1
+    st.pc += 1
 
     let op2 = st.sp[-1]
     let pv = st.var_buf + idx
@@ -70,12 +70,12 @@ noinline func interp_add_loc(st: InterpState*) -> bool:
             *pv = js_new_float64_raw(f64(r))
         else:
             *pv = js_new_int32((i32)r)
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif js_value_is_both_float(*pv, op2):
         *pv = js_new_float64_raw(js_value_get_float64(*pv) + js_value_get_float64(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif pv.tag == Tag.string and op2.tag == Tag.string:
-        st.sp = st.sp - 1
+        st.sp -= 1
         st.sf.cur_pc = st.pc
         if js_concat_string_in_place(st.ctx, js_value_get_string(*pv), op2):
             js_free_value(st.ctx, op2)
@@ -89,7 +89,7 @@ noinline func interp_add_loc(st: InterpState*) -> bool:
         st.sf.cur_pc = st.pc
         ops[0] = js_dup_value(st.ctx, *pv)
         ops[1] = op2
-        st.sp = st.sp - 1
+        st.sp -= 1
         js_add_slow(st.ctx, &ops[0] + 2) catch: return false
         set_value(st.ctx, pv, ops[0])
     return true
@@ -107,7 +107,7 @@ noinline func interp_sub(st: InterpState*) -> bool:
             st.sp[-2] = js_new_float64_raw(f64(r))
         else:
             st.sp[-2] = js_new_int32((i32)r)
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
         var d2: f64 = 0.0
@@ -125,14 +125,14 @@ noinline func interp_sub(st: InterpState*) -> bool:
             slow = true
         if not slow:
             st.sp[-2] = js_new_float64_raw(d1 - d2)
-            st.sp = st.sp - 1
+            st.sp -= 1
     else:
         slow = true
     if slow:
         # binary_arith_slow
         st.sf.cur_pc = st.pc
         js_binary_arith_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_mul in JS_CallInternal.
@@ -155,7 +155,7 @@ noinline func interp_mul(st: InterpState*) -> bool:
             fp_res = true
         else:
             st.sp[-2] = js_new_int32((i32)r)
-            st.sp = st.sp - 1
+            st.sp -= 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
         var d2: f64 = 0.0
@@ -179,12 +179,12 @@ noinline func interp_mul(st: InterpState*) -> bool:
     if fp_res:
         # mul_fp_res
         st.sp[-2] = js_new_float64_raw(d)
-        st.sp = st.sp - 1
+        st.sp -= 1
     if slow:
         # binary_arith_slow
         st.sf.cur_pc = st.pc
         js_binary_arith_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_div in JS_CallInternal.
@@ -195,12 +195,12 @@ noinline func interp_div(st: InterpState*) -> bool:
         let v1 = js_value_get_int(op1)
         let v2 = js_value_get_int(op2)
         st.sp[-2] = js_new_float64(f64(v1) / f64(v2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     else:
         # binary_arith_slow
         st.sf.cur_pc = st.pc
         js_binary_arith_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_mod in JS_CallInternal.
@@ -216,13 +216,13 @@ noinline func interp_mod(st: InterpState*) -> bool:
         if not (v1 < 0 or v2 <= 0):
             let r = v1 % v2
             st.sp[-2] = js_new_int32(r)
-            st.sp = st.sp - 1
+            st.sp -= 1
             slow = false
     if slow:
         # binary_arith_slow
         st.sf.cur_pc = st.pc
         js_binary_arith_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_pow in JS_CallInternal.
@@ -230,7 +230,7 @@ noinline func interp_pow(st: InterpState*) -> bool:
     # binary_arith_slow
     st.sf.cur_pc = st.pc
     js_binary_arith_slow(st.ctx, st.sp, st.opcode) catch: return false
-    st.sp = st.sp - 1
+    st.sp -= 1
     return true
 
 ## The body of OP_plus in JS_CallInternal.
@@ -307,7 +307,7 @@ noinline func interp_post_inc(st: InterpState*) -> bool:
         # post_inc_slow
         st.sf.cur_pc = st.pc
         js_post_inc_slow(st.ctx, st.sp, st.opcode) catch: return false
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_post_dec in JS_CallInternal.
@@ -319,13 +319,13 @@ noinline func interp_post_dec(st: InterpState*) -> bool:
         # post_dec_slow
         st.sf.cur_pc = st.pc
         js_post_inc_slow(st.ctx, st.sp, st.opcode) catch: return false
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_inc_loc in JS_CallInternal.
 noinline func interp_inc_loc(st: InterpState*) -> bool:
     let idx = (usize)*st.pc
-    st.pc = st.pc + 1
+    st.pc += 1
 
     var op1 = st.var_buf[idx]
     if op1.tag == Tag.int and js_value_get_int(op1) != 2147483647:
@@ -343,7 +343,7 @@ noinline func interp_inc_loc(st: InterpState*) -> bool:
 ## The body of OP_dec_loc in JS_CallInternal.
 noinline func interp_dec_loc(st: InterpState*) -> bool:
     let idx = (usize)*st.pc
-    st.pc = st.pc + 1
+    st.pc += 1
 
     var op1 = st.var_buf[idx]
     if op1.tag == Tag.int and js_value_get_int(op1) != -2147483648:
@@ -378,11 +378,11 @@ noinline func interp_shl(st: InterpState*) -> bool:
         let v1 = (u32)js_value_get_int(op1)
         let v2 = (u32)js_value_get_int(op2) & 0x1f
         st.sp[-2] = js_new_int32((i32)(v1 << v2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     else:
         st.sf.cur_pc = st.pc
         js_binary_logic_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_shr in JS_CallInternal.
@@ -392,11 +392,11 @@ noinline func interp_shr(st: InterpState*) -> bool:
     if js_value_is_both_int(op1, op2):
         let v2 = (u32)js_value_get_int(op2) & 0x1f
         st.sp[-2] = js_new_uint32((u32)js_value_get_int(op1) >> v2)
-        st.sp = st.sp - 1
+        st.sp -= 1
     else:
         st.sf.cur_pc = st.pc
         js_shr_slow(st.ctx, st.sp) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_sar in JS_CallInternal.
@@ -406,11 +406,11 @@ noinline func interp_sar(st: InterpState*) -> bool:
     if js_value_is_both_int(op1, op2):
         let v2 = (u32)js_value_get_int(op2) & 0x1f
         st.sp[-2] = js_new_int32(js_value_get_int(op1) >> v2)
-        st.sp = st.sp - 1
+        st.sp -= 1
     else:
         st.sf.cur_pc = st.pc
         js_binary_logic_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_and in JS_CallInternal.
@@ -419,11 +419,11 @@ noinline func interp_and(st: InterpState*) -> bool:
     let op2 = st.sp[-1]
     if js_value_is_both_int(op1, op2):
         st.sp[-2] = js_new_int32(js_value_get_int(op1) & js_value_get_int(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     else:
         st.sf.cur_pc = st.pc
         js_binary_logic_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_or in JS_CallInternal.
@@ -432,11 +432,11 @@ noinline func interp_or(st: InterpState*) -> bool:
     let op2 = st.sp[-1]
     if js_value_is_both_int(op1, op2):
         st.sp[-2] = js_new_int32(js_value_get_int(op1) | js_value_get_int(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     else:
         st.sf.cur_pc = st.pc
         js_binary_logic_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_xor in JS_CallInternal.
@@ -445,9 +445,9 @@ noinline func interp_xor(st: InterpState*) -> bool:
     let op2 = st.sp[-1]
     if js_value_is_both_int(op1, op2):
         st.sp[-2] = js_new_int32(js_value_get_int(op1) ^ js_value_get_int(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     else:
         st.sf.cur_pc = st.pc
         js_binary_logic_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true

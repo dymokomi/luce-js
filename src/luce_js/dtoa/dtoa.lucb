@@ -91,12 +91,12 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
         if m == 0:
             if sgn != 0:
                 *q = '-'
-                q = q + 1
+                q += 1
             discard(cutils.memcpy(q, "Infinity".bytes.data, 8))
-            q = q + 8
+            q += 8
         else:
             discard(cutils.memcpy(q, "NaN".bytes.data, 3))
-            q = q + 3
+            q += 3
         return dtoa_done(buf, q)
     elif e == 0 and m == 0:
         tmp1.len = 1
@@ -111,7 +111,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
         # "-0" is displayed as "0" if JS_DTOA_MINUS_ZERO is not present
         if sgn != 0 and (flags & dtoa_minus_zero) != 0:
             *q = '-'
-            q = q + 1
+            q += 1
         # goto output
     else:
         if e == 0:
@@ -123,7 +123,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
             m |= (u64)1 << 52
         if sgn != 0:
             *q = '-'
-            q = q + 1
+            q += 1
         # remove the bias
         e -= 1022
         # d = 2^(e-53)*m
@@ -132,7 +132,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
                 (flags & dtoa_exp_mask) != dtoa_exp_enabled):
             m = m >> (u64)(53 - e)
             # 'm' is never zero
-            q = q + u64toa_radix(q, m, (u32)radix)
+            q += u64toa_radix(q, m, (u32)radix)
             return dtoa_done(buf, q)
 
         # this choice of E implies F=round(x*B^(P-E) is such as:
@@ -201,7 +201,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
             if q[0] == '0' and len >= 2 and q[1] != '.':
                 len -= 1
                 discard(cutils.memmove(q, q + 1, (usize)len))
-            q = q + (usize)len
+            q += (usize)len
             return dtoa_done(buf, q)
         else:
             assert(n_digits >= 1 and n_digits <= dtoa_max_digits)
@@ -228,7 +228,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
     let exp_mode = flags & dtoa_exp_mask
     if (exp_mode == dtoa_exp_enabled or
             (exp_mode == dtoa_exp_auto and (E <= -6 or E > E_max))):
-        q = q + (usize)output_digits(q, tmp1, radix, P, 1)
+        q += (usize)output_digits(q, tmp1, radix, P, 1)
         E -= 1
         if radix == 10:
             *q = 'e'
@@ -237,30 +237,30 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
             *q = 'p'
         else:
             *q = '@'
-        q = q + 1
+        q += 1
         if E < 0:
             *q = '-'
             E = -E
         else:
             *q = '+'
-        q = q + 1
-        q = q + u32toa(q, (u32)E)
+        q += 1
+        q += u32toa(q, (u32)E)
     elif E <= 0:
         *q = '0'
-        q = q + 1
+        q += 1
         *q = '.'
-        q = q + 1
+        q += 1
         var i: i32 = 0
         while i < -E:
             *q = '0'
-            q = q + 1
+            q += 1
             i += 1
-        q = q + (usize)output_digits(q, tmp1, radix, P, P)
+        q += (usize)output_digits(q, tmp1, radix, P, P)
     else:
-        q = q + (usize)output_digits(q, tmp1, radix, P, cutils.min_int(P, E))
+        q += (usize)output_digits(q, tmp1, radix, P, cutils.min_int(P, E))
         var i: i32 = 0
         while i < E - P:
             *q = '0'
-            q = q + 1
+            q += 1
             i += 1
     return dtoa_done(buf, q)

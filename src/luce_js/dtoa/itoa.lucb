@@ -92,16 +92,16 @@ pub func u64toa(buf: u8*, n0: u64) -> usize:
             # at most two digits
             if n2 >= 10:
                 *q = (u8)(n2 // 10) + '0'
-                q = q + 1
+                q += 1
                 n2 = n2 % 10
             *q = (u8)n2 + '0'
-            q = q + 1
+            q += 1
             u32toa_len(q, (u32)n1, 9)
-            q = q + 9
+            q += 9
         else:
-            q = q + u32toa(q, (u32)n1)
+            q += u32toa(q, (u32)n1)
         u32toa_len(q, (u32)n, 9)
-        q = q + 9
+        q += 9
         return (usize)(q - buf)
 
 ## Write `n` in decimal at `buf` (at most 20 bytes, no NUL); answers the length.

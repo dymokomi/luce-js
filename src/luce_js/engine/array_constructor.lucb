@@ -250,26 +250,26 @@ func js_array_with(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
         while i < idx:
             *pval = js_dup_value(ctx, arrp[(usize)i])
             i += 1
-            pval = pval + 1
+            pval += 1
         *pval = js_dup_value(ctx, argv[1])
         i += 1
-        pval = pval + 1
+        pval += 1
         while i < len:
             *pval = js_dup_value(ctx, arrp[(usize)i])
             i += 1
-            pval = pval + 1
+            pval += 1
     else:
         while i < idx:
             try js_try_get_property_int64(ctx, obj, i, pval)
             i += 1
-            pval = pval + 1
+            pval += 1
         *pval = js_dup_value(ctx, argv[1])
         i += 1
-        pval = pval + 1
+        pval += 1
         while i < len:
             try js_try_get_property_int64(ctx, obj, i, pval)
             i += 1
-            pval = pval + 1
+            pval += 1
     return arr
 
 ## Array.prototype.concat(...items).

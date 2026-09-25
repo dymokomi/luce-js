@@ -253,7 +253,7 @@ func find_last_byte(s: const u8*, c: u8) -> const u8*?:
     while *p != 0:
         if *p == c:
             found = p
-        p = p + 1
+        p += 1
     return found
 
 # The path part of js_default_module_normalize_name: write into `filename` (`cap` bytes,
@@ -270,7 +270,7 @@ func module_normalize_path(filename: u8*, cap: i32, base_name: const u8*, name: 
     var r = name
     while true:
         if r[0] == '.' and r[1] == '/':
-            r = r + 2
+            r += 2
         elif r[0] == '.' and r[1] == '.' and r[2] == '/':
             # remove the last path element of filename, except if "." or ".."
             if filename[0] == 0:
@@ -281,9 +281,9 @@ func module_normalize_path(filename: u8*, cap: i32, base_name: const u8*, name: 
             if cutils.c_str_equals(p, ".") or cutils.c_str_equals(p, ".."):
                 break
             if p > filename:
-                p = p - 1
+                p -= 1
             *p = 0
-            r = r + 3
+            r += 3
         else:
             break
     if filename[0] != 0:

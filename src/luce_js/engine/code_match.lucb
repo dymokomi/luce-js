@@ -126,4 +126,3 @@ func code_match(s: CodeContext*, pos0: i32, pattern: const i32[]) -> bool:
             _:
                 discard(0)
         pos = pos_next
-    trap("code_match: not reached")

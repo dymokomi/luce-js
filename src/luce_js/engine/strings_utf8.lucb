@@ -14,7 +14,6 @@
 ## A string from the UTF-8 text `buf[0..<buf_len]`; invalid sequences become U+FFFD
 ## (JS_NewStringLen).
 pub func js_new_string_len(ctx: Context*, buf: const u8*, buf_len: usize) -> Value!:
-    # workaround: compiler-issues/pointer_compound_assign (`p = p + 1` for `p++`)
     let p_start = buf
     let p_end = p_start + buf_len
     let len1 = count_ascii(p_start, buf_len)
@@ -34,7 +33,7 @@ pub func js_new_string_len(ctx: Context*, buf: const u8*, buf_len: usize) -> Val
     while p < p_end:
         if *p < 128:
             string_buffer_putc8(&b, *p) catch: recover ()
-            p = p + 1
+            p += 1
         else:
             # parse utf-8 sequence, return 0xFFFFFFFF for error
             var p_next = p
@@ -52,11 +51,11 @@ pub func js_new_string_len(ctx: Context*, buf: const u8*, buf_len: usize) -> Val
                 # skip the invalid chars
                 # XXX: seems incorrect. Why not just use c = *p++; ?
                 while p < p_end and (*p >= 0x80 and *p < 0xc0):
-                    p = p + 1
+                    p += 1
                 if p < p_end:
-                    p = p + 1
+                    p += 1
                     while p < p_end and (*p >= 0x80 and *p < 0xc0):
-                        p = p + 1
+                        p += 1
             string_buffer_putc16(&b, c) catch: recover ()
     return try string_buffer_end(&b)
 
@@ -110,7 +109,6 @@ pub func js_to_c_string_len2(ctx: Context*, plen: usize*?, val1: Value, cesu8: b
     let text = val.u.string
     let len = (i32)text.len
     var str_new: String* = ---
-    # workaround: compiler-issues/pointer_compound_assign (`q = q + 1` for `q++`)
     var q: u8* = ---
     if not text.is_wide_char:
         let src = str8(text)
@@ -133,12 +131,12 @@ pub func js_to_c_string_len2(ctx: Context*, plen: usize*?, val1: Value, cesu8: b
             let c = src[pos]
             if c < 0x80:
                 *q = c
-                q = q + 1
+                q += 1
             else:
                 *q = (c >> 6) | 0xc0
-                q = q + 1
+                q += 1
                 *q = (c & 0x3f) | 0x80
-                q = q + 1
+                q += 1
     else:
         let src = str16(text)
         # Allocate 3 bytes per 16 bit code point. Surrogate pairs may produce 4 bytes
@@ -151,7 +149,7 @@ pub func js_to_c_string_len2(ctx: Context*, plen: usize*?, val1: Value, cesu8: b
             pos += 1
             if c < 0x80:
                 *q = (u8)c
-                q = q + 1
+                q += 1
             else:
                 if cutils.is_hi_surrogate(c):
                     if pos < len and not cesu8:
@@ -162,7 +160,7 @@ pub func js_to_c_string_len2(ctx: Context*, plen: usize*?, val1: Value, cesu8: b
                         # else: keep unmatched surrogate code points (c = 0xfffd would
                         # be an error)
                     # else: keep unmatched surrogate code points
-                q = q + cutils.unicode_to_utf8(q, c)
+                q += cutils.unicode_to_utf8(q, c)
 
     *q = 0
     str_new.len = (u32)(q - str8(str_new))

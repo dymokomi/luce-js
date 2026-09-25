@@ -16,15 +16,15 @@ func extract_desc(buf: const u8*, style: u8) -> u8*?:
     var p = buf
     while *p != 0:
         if p[0] == '/' and p[1] == '*' and p[2] == style and p[3] != '/':
-            p = p + 3
+            p += 3
             let desc_start = p
             while *p != 0 and (p[0] != '*' or p[1] != '/'):
-                p = p + 1
+                p += 1
             if *p == 0:
                 warning("Expecting end of desc comment")
                 return none
             return strdup_len(desc_start, (usize)(p - desc_start))
-        p = p + 1
+        p += 1
     return none
 
 func find_tag(desc: const u8*, tag: const u8*, state: i32*) -> u8*?:
@@ -41,21 +41,21 @@ func get_option(pp: (u8*?)*, state: i32*) -> u8*?:
         let ch = *q
         if ch == '[':
             *state += 1
-            q = q + 1
+            q += 1
             continue
         if ch == ']':
             *state -= 1
             if *state > 0:
-                q = q + 1
+                q += 1
                 continue
             p = none
             break
         if ch == ' ' or ch == '\t' or ch == '\r' or ch == ',' or ch == '-':
-            q = q + 1
+            q += 1
             continue
         if ch == '\n':
             if *state > 0 or q[1] == ' ':
-                q = q + 1
+                q += 1
                 continue
             p = none
             break
@@ -63,7 +63,7 @@ func get_option(pp: (u8*?)*, state: i32*) -> u8*?:
             p = none
             break
         let p0 = q
-        q = q + strcspn(p0, z(" \t\r\n,]"))
+        q += strcspn(p0, z(" \t\r\n,]"))
         option = strdup_len(p0, (usize)(q - p0))
         p = q
         break
@@ -247,7 +247,7 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
                 if let q0 = find_tag(neg, z("type:"), &state):
                     var q = q0
                     while is_space(*q):
-                        q = q + 1
+                        q += 1
                     error_type = strdup_len(q, strcspn(q, z(" \n")))
                 is_negative = true
             p = find_tag(desc, z("features:"), &state)
@@ -292,7 +292,7 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
             else:
                 namelist_add(ip, none, ifile)
             c_free(ifile)
-            p = p + 1
+            p += 1
 
         # locate the old style configuration comment
         if let desc = extract_desc(buf, '*'):

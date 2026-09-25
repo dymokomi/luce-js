@@ -216,7 +216,7 @@ func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
         let pr = p.prop + i
         if prs.atom != no_atom and ((i32)prs.flags & prop_tmask) == 0:
             compute_value_size(pr.u.value, hp)
-        prs = prs + 1
+        prs += 1
     # the hashed shapes are counted separately
     if sh.is_hashed == 0:
         let hash_size = (usize)sh.prop_hash_mask + 1

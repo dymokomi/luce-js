@@ -33,9 +33,9 @@ func js_bigint_from_string(ctx: Context*, text: const u8*, radix: i32) -> BigInt
     var is_neg = false
     if *p == '-':
         is_neg = true
-        p = p + 1
+        p += 1
     while *p == '0':
-        p = p + 1
+        p += 1
     let n_digits1 = cutils.strlen(p)
     # the real check for overflox is done js_bigint_new(). Here we just avoid integer
     # overflow
@@ -65,7 +65,7 @@ func js_bigint_from_string(ctx: Context*, text: const u8*, radix: i32) -> BigInt
                 let c = (u32)to_digit((i32)*p)
                 if c >= (u32)radix:
                     break
-                p = p + 1
+                p += 1
                 v = v * 10 + c
                 i += 1
             if i == 0:
@@ -128,7 +128,7 @@ func js_u64toa(q0: u8*, n0: i64, base: u32) -> u8*:
         while true:
             let digit = n % 10
             n = n // 10
-            q = q - 1
+            q -= 1
             *q = '0' + (u8)digit
             if n == 0:
                 break
@@ -136,7 +136,7 @@ func js_u64toa(q0: u8*, n0: i64, base: u32) -> u8*:
         while true:
             let digit = n % (u64)base
             n = n // (u64)base
-            q = q - 1
+            q -= 1
             *q = radix_digits[digit]
             if n == 0:
                 break
@@ -153,13 +153,13 @@ func limb_to_a(q0: u8*, n0: u32, radix: u32, len: i32) -> u8*:
         for i in 0..<len:
             let digit = n % 10
             n = n // 10
-            q = q - 1
+            q -= 1
             *q = (u8)digit + '0'
     else:
         for i in 0..<len:
             let digit = n % radix
             n = n // radix
-            q = q - 1
+            q -= 1
             *q = radix_digits[digit]
     return q
 
@@ -224,7 +224,7 @@ func js_bigint_to_string1(ctx: Context*, val: Value, radix: i32) -> Value!:
         error(failure.code, failure.message)
     let buf = (u8*)buf_block
     var q = buf + size
-    q = q - 1
+    q -= 1
     *q = 0
     let buf_end = q
     if not is_binary_radix:
@@ -253,11 +253,11 @@ func js_bigint_to_string1(ctx: Context*, val: Value, radix: i32) -> Value!:
             if shift + (u32)log2_radix > (u32)js_limb_bits and pos + 1 < r.len:
                 c |= r_tab[pos + 1] << ((u32)js_limb_bits - shift)
             c &= (u32)(radix - 1)
-            q = q - 1
+            q -= 1
             *q = radix_digits[c]
             i += 1
     if is_neg != 0:
-        q = q - 1
+        q -= 1
         *q = '-'
     if let t = tmp:
         js_free(ctx, t)

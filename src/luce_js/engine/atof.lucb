@@ -65,24 +65,24 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
     # `goto no_radix_prefix` skips the radix prefixes
     var radix_prefix = true
     if p[0] == '+':
-        p = p + 1
+        p += 1
         if (flags & atod_accept_prefix_after_sign) == 0:
             radix_prefix = false
     elif p[0] == '-':
-        p = p + 1
+        p += 1
         is_neg = true
         if (flags & atod_accept_prefix_after_sign) == 0:
             radix_prefix = false
     if radix_prefix and p[0] == '0':
         var has_prefix = true # false for `goto no_prefix`
         if (p[1] == 'x' or p[1] == 'X') and (radix == 0 or radix == 16):
-            p = p + 2
+            p += 2
             radix = 16
         elif (p[1] == 'o' or p[1] == 'O') and radix == 0 and (flags & atod_accept_bin_oct) != 0:
-            p = p + 2
+            p += 2
             radix = 8
         elif (p[1] == 'b' or p[1] == 'B') and radix == 0 and (flags & atod_accept_bin_oct) != 0:
-            p = p + 2
+            p += 2
             radix = 2
         elif ((p[1] >= '0' and p[1] <= '9') and radix == 0 and
                 (flags & atod_accept_legacy_octal) != 0):
@@ -94,7 +94,7 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
             if p[i] == '8' or p[i] == '9':
                 has_prefix = false
             else:
-                p = p + 1
+                p += 1
                 radix = 8
         else:
             has_prefix = false
@@ -117,26 +117,26 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
     while (to_digit((i32)*p) < radix or
             ((i32)*p == sep and (radix != 10 or p != p_start + 1 or p[-1] != '0') and
              to_digit((i32)p[1]) < radix)):
-        p = p + 1
+        p += 1
     if (flags & atod_int_only) == 0 and radix == 10:
         if *p == '.' and (p > p_start or to_digit((i32)p[1]) < radix):
             is_float = true
-            p = p + 1
+            p += 1
             if (i32)*p == sep:
                 return js_nan() # fail
             while to_digit((i32)*p) < radix or ((i32)*p == sep and to_digit((i32)p[1]) < radix):
-                p = p + 1
+                p += 1
         if p > p_start and (*p == 'e' or *p == 'E'):
             var p1 = p + 1
             is_float = true
             if *p1 == '+':
-                p1 = p1 + 1
+                p1 += 1
             elif *p1 == '-':
-                p1 = p1 + 1
+                p1 += 1
             if is_digit((i32)*p1):
                 p = p1 + 1
                 while is_digit((i32)*p) or ((i32)*p == sep and is_digit((i32)p[1])):
-                    p = p + 1
+                    p += 1
     if p == p_start:
         return js_nan() # fail
 
@@ -158,7 +158,7 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
     buf[j] = 0
 
     if (flags & atod_accept_suffix) != 0 and *p == 'n':
-        p = p + 1
+        p += 1
         atod_type = atod_type_big_int
 
     if atod_type == atod_type_float64:
@@ -212,12 +212,12 @@ func js_to_number_hint_free(ctx: Context*, val0: Value, flag: ToNumberHint) -> V
                 js_free_value(ctx, val)
                 defer js_free_c_string(ctx, text)
                 var p = text
-                p = p + (usize)skip_spaces(p)
+                p += (usize)skip_spaces(p)
                 if (usize)(p - text) == len:
                     return js_new_int32(0)
                 let flags = atod_accept_bin_oct
                 var ret = try js_atof(ctx, p, &p, 0, flags)
-                p = p + (usize)skip_spaces(p)
+                p += (usize)skip_spaces(p)
                 if (usize)(p - text) != len:
                     js_free_value(ctx, ret)
                     ret = js_nan()

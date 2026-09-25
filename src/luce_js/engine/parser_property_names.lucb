@@ -163,7 +163,7 @@ func has_lf_in_range(p1: const u8*, p2: const u8*) -> bool:
     while lo < hi:
         if *lo == '\n':
             return true
-        lo = lo + 1
+        lo += 1
     return false
 
 # Push the opening token `c` on the look-ahead stack; false if it is full.
@@ -240,7 +240,7 @@ func js_parse_skip_parens_token(s: ParseState*, pbits: i32*?, no_line_terminator
                 let tok_len: usize = 2 if s.token.val == TokenType.div_assign else 1
                 # parse_regexp:
                 if is_regexp_allowed(last_tok):
-                    s.buf_ptr = s.buf_ptr - tok_len
+                    s.buf_ptr -= tok_len
                     js_parse_regexp(s) catch failure:
                         # XXX: should clear the exception
                         break tokens

@@ -283,7 +283,7 @@ func str_strip(text: u8*) -> u8*:
         len -= 1
         p[len] = 0
     while is_space(*p):
-        p = p + 1
+        p += 1
     return p
 
 func has_prefix(text: const u8*, prefix: const u8*) -> bool:
@@ -312,8 +312,8 @@ func strstart(text: const u8*, prefix: const u8*, ptr: (const u8*)*?) -> bool:
     while *q != 0:
         if *p != *q:
             return false
-        p = p + 1
-        q = q + 1
+        p += 1
+        q += 1
     if let out = ptr:
         *out = p
     return true
@@ -331,10 +331,10 @@ func compose_path(path: const u8*?, name: const u8*) -> u8*:
     let d = xmalloc(path_len + 1 + name_len + 1)
     var q = d
     discard(memcpy(q, dir, path_len))
-    q = q + path_len
+    q += path_len
     if dir[path_len - 1] != '/':
         *q = '/'
-        q = q + 1
+        q += 1
     discard(memcpy(q, name, name_len + 1))
     return d
 
@@ -346,21 +346,21 @@ func namelist_cmp(a0: const u8*, b0: const u8*) -> i32:
     var b = b0
     while true:
         var ca = (i32)*a
-        a = a + 1
+        a += 1
         var cb = (i32)*b
-        b = b + 1
+        b += 1
         if isdigit(ca) != 0 and isdigit(cb) != 0:
             var na = ca - (i32)'0'
             var nb = cb - (i32)'0'
             while true:
                 ca = (i32)*a
-                a = a + 1
+                a += 1
                 if isdigit(ca) == 0:
                     break
                 na = na *% 10 +% ca -% (i32)'0'
             while true:
                 cb = (i32)*b
-                b = b + 1
+                b += 1
                 if isdigit(cb) == 0:
                     break
                 nb = nb *% 10 +% cb -% (i32)'0'
@@ -374,7 +374,6 @@ func namelist_cmp(a0: const u8*, b0: const u8*) -> i32:
             return 1
         if ca == 0:
             return 0
-    trap("unreachable")
 
 func namelist_cmp_indirect(a: const void*, b: const void*) -> i32:
     return namelist_cmp(*(u8**)a, *(u8**)b)
@@ -443,11 +442,11 @@ func namelist_add_from_error_file(lp: NameList*, file: const u8*):
         p = found
         var p0 = p
         while p0 > file and *(p0 - 1) != '\n':
-            p0 = p0 - 1
+            p0 -= 1
         let pp = strdup_len(p0, (usize)(p + 3 - p0))
         namelist_add(lp, none, pp)
         c_free(pp)
-        p = p + 1
+        p += 1
 
 func namelist_free(lp: NameList*):
     if let arr = lp.array:

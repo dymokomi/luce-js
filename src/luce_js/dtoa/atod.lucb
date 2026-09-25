@@ -74,24 +74,24 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
     var p = text
     var is_neg: u64 = 0
     if p[0] == '+':
-        p = p + 1
+        p += 1
     elif p[0] == '-':
         is_neg = 1
-        p = p + 1
+        p += 1
     let p_start = p
 
     if p[0] == '0':
         var has_prefix = true
         if (p[1] == 'x' or p[1] == 'X') and (radix == 0 or radix == 16):
-            p = p + 2
+            p += 2
             radix = 16
         elif ((p[1] == 'o' or p[1] == 'O') and radix == 0 and
                 (flags & atod_accept_bin_oct) != 0):
-            p = p + 2
+            p += 2
             radix = 8
         elif ((p[1] == 'b' or p[1] == 'B') and radix == 0 and
                 (flags & atod_accept_bin_oct) != 0):
-            p = p + 2
+            p += 2
             radix = 2
         elif ((p[1] >= '0' and p[1] <= '9') and radix == 0 and
                 (flags & atod_accept_legacy_octal) != 0):
@@ -102,7 +102,7 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
             if p[i] == '8' or p[i] == '9':
                 has_prefix = false # goto no_prefix
             else:
-                p = p + 1
+                p += 1
                 radix = 8
         else:
             has_prefix = false # goto no_prefix
@@ -143,12 +143,12 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
             if dot_pos >= 0:
                 break
             dot_pos = pos
-            p = p + 1
+            p += 1
         if (i32)*p == sep and p > p_start and p[1] == '0':
-            p = p + 1
+            p += 1
         if *p != '0':
             break
-        p = p + 1
+        p += 1
         pos += 1
 
     let sig_pos = pos
@@ -160,13 +160,13 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
             if dot_pos >= 0:
                 break
             dot_pos = pos
-            p = p + 1
+            p += 1
         if (i32)*p == sep and p > p_start and to_digit(p[1]) < radix:
-            p = p + 1
+            p += 1
         let c = (u32)to_digit(*p)
         if c >= (u32)radix:
             break
-        p = p + 1
+        p += 1
         pos += 1
         if digit_count < max_digits:
             # XXX: could be faster when radix_bits != 0
@@ -208,21 +208,21 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
                                 (*p == 'p' or *p == 'P'))))) and
             p > p_start):
         is_bin_exp = *p == 'p' or *p == 'P'
-        p = p + 1
+        p += 1
         var exp_is_neg = false
         if *p == '+':
-            p = p + 1
+            p += 1
         elif *p == '-':
             exp_is_neg = true
-            p = p + 1
+            p += 1
         var c = to_digit(*p)
         if c >= 10:
             return (none, p) # XXX: could stop before the exponent part
         expn = c
-        p = p + 1
+        p += 1
         while true:
             if (i32)*p == sep and to_digit(p[1]) < 10:
-                p = p + 1
+                p += 1
             c = to_digit(*p)
             if c >= 10:
                 break
@@ -231,7 +231,7 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
                     expn_overflow = true
                 else:
                     expn = expn * 10 + c
-            p = p + 1
+            p += 1
         if exp_is_neg:
             expn = -expn
         # if zero result, the exponent can be arbitrarily large

@@ -87,8 +87,8 @@ func js_typed_array_reverse(ctx: Context*, this_val: Value, argc: i32, argv: Val
                     let v = *p1
                     *p1 = *p2
                     *p2 = v
-                    p1 = p1 + 1
-                    p2 = p2 - 1
+                    p1 += 1
+                    p2 -= 1
             1:
                 var p1 = p.u.array.u.uint16_ptr
                 var p2 = p1 + (usize)(len - 1)
@@ -96,8 +96,8 @@ func js_typed_array_reverse(ctx: Context*, this_val: Value, argc: i32, argv: Val
                     let v = *p1
                     *p1 = *p2
                     *p2 = v
-                    p1 = p1 + 1
-                    p2 = p2 - 1
+                    p1 += 1
+                    p2 -= 1
             2:
                 var p1 = p.u.array.u.uint32_ptr
                 var p2 = p1 + (usize)(len - 1)
@@ -105,8 +105,8 @@ func js_typed_array_reverse(ctx: Context*, this_val: Value, argc: i32, argv: Val
                     let v = *p1
                     *p1 = *p2
                     *p2 = v
-                    p1 = p1 + 1
-                    p2 = p2 - 1
+                    p1 += 1
+                    p2 -= 1
             3:
                 var p1 = p.u.array.u.uint64_ptr
                 var p2 = p1 + (usize)(len - 1)
@@ -114,8 +114,8 @@ func js_typed_array_reverse(ctx: Context*, this_val: Value, argc: i32, argv: Val
                     let v = *p1
                     *p1 = *p2
                     *p2 = v
-                    p1 = p1 + 1
-                    p2 = p2 - 1
+                    p1 += 1
+                    p2 -= 1
             _:
                 trap("abort")
     return js_dup_value(ctx, this_val)

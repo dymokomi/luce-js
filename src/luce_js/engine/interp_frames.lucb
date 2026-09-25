@@ -25,7 +25,7 @@ func interp_call_argc(st: InterpState*) -> i32:
     if st.opcode == Op.call0 or st.opcode == Op.call1 or st.opcode == Op.call2 or st.opcode == Op.call3:
         return (i32)(u8)st.opcode - (i32)(u8)Op.call0
     let call_argc = (i32)cutils.get_u16(st.pc)
-    st.pc = st.pc + 2
+    st.pc += 2
     return call_argc
 
 ## After a call returned st.ret_val: release the function (and `this`, or new.target,
@@ -36,9 +36,9 @@ func interp_call_done(st: InterpState*, call_argc: i32, extra: i32):
     while i < (isize)call_argc:
         js_free_value(st.ctx, call_argv[i])
         i += 1
-    st.sp = st.sp - (usize)(call_argc + extra)
+    st.sp -= (usize)(call_argc + extra)
     *st.sp = st.ret_val
-    st.sp = st.sp + 1
+    st.sp += 1
 
 ## The body of OP_call0 to OP_call3 (SHORT_OPCODES), OP_call and OP_tail_call. After a
 ## tail call the stack is left as it is: the frame returns st.ret_val (C: goto done).
@@ -200,7 +200,7 @@ noinline func interp_unwind(st: InterpState*) -> bool:
         build_backtrace(st.ctx, st.rt.current_exception, none, 0, 0, 0)
     if not st.rt.current_exception_is_uncatchable:
         while st.sp > st.stack_buf:
-            st.sp = st.sp - 1
+            st.sp -= 1
             let val = *st.sp
             js_free_value(st.ctx, val)
             if val.tag == Tag.catch_offset:
@@ -208,11 +208,11 @@ noinline func interp_unwind(st: InterpState*) -> bool:
                 if pos == 0:
                     # enumerator: close it with a throw
                     js_free_value(st.ctx, st.sp[-1]) # drop the next method
-                    st.sp = st.sp - 1
+                    st.sp -= 1
                     js_iterator_close(st.ctx, st.sp[-1], true) catch: recover ()
                 else:
                     *st.sp = st.rt.current_exception
-                    st.sp = st.sp + 1
+                    st.sp += 1
                     st.rt.current_exception = js_uninitialized()
                     st.pc = st.bc_buf + (usize)pos
                     return true
@@ -239,7 +239,7 @@ noinline func interp_leave(st: InterpState*, exit: FrameExit):
         var pval = st.local_buf
         while pval < st.sp:
             js_free_value(st.ctx, *pval)
-            pval = pval + 1
+            pval += 1
     st.rt.current_stack_frame = st.sf.prev_frame
     if let block = st.heap_frame:
         js_free_rt(st.rt, block)

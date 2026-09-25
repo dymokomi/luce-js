@@ -89,7 +89,7 @@ func js_write_object_tag(s: BCWriterState*, obj: Value) -> !:
                 else:
                     try bc_put_atom(s, atom)
                     try js_write_object_rec(s, p.prop[i].u.value)
-            pr = pr + 1
+            pr += 1
 
 # mark: Binary data =============================================================================
 

@@ -89,7 +89,7 @@ func load_config(filename: const u8*, ignore: const u8*):
 
         if *p == '[':
             # new section
-            p = p + 1
+            p += 1
             p[strcspn(p, z("]"))] = 0
             if str_equal(p, z("config")):
                 section = section_config
@@ -203,25 +203,25 @@ func find_error(filename: const u8*, pline: i32*?, is_strict: bool) -> u8*?:
                 line = (i32)strtol(q + 1, &end, 10)
                 q = end
                 if *q == ':':
-                    q = q + 1
+                    q += 1
             while *q == ' ':
-                q = q + 1
+                q += 1
             # check strict mode indicator
             var rest: const u8* = q
             let has_strict = strstart(q, z("strict mode: "), &rest)
             if has_strict != is_strict:
-                p = p + len
+                p += len
                 continue
             q = skip_prefix(rest, z("unexpected error: "))
             var r = q
-            r = r + strcspn(r, z("\n"))
+            r += strcspn(r, z("\n"))
             while r[0] == '\n' and r[1] != 0 and strncmp(r + 1, filename, 8) != 0:
-                r = r + 1
-                r = r + strcspn(r, z("\n"))
+                r += 1
+                r += strcspn(r, z("\n"))
             if let out = pline:
                 *out = line
             return strdup_len(q, (usize)(r - q))
-        p = p + len
+        p += len
 
 # mark: Error lines =============================================================================
 
@@ -230,7 +230,7 @@ func skip_comments(text: const u8*, line0: i32, pline: i32*?) -> i32:
     var p = text
     while true:
         let ch = *p
-        p = p + 1
+        p += 1
         if ch == 0:
             break
         if is_space(ch):
@@ -239,21 +239,21 @@ func skip_comments(text: const u8*, line0: i32, pline: i32*?) -> i32:
             continue
         if ch == '/' and *p == '/':
             while true:
-                p = p + 1
+                p += 1
                 if *p == 0 or *p == '\n':
                     break
             continue
         if ch == '/' and *p == '*':
-            p = p + 1
+            p += 1
             while *p != 0:
                 if *p == '\n':
                     line += 1
-                    p = p + 1
+                    p += 1
                     continue
                 if *p == '*' and p[1] == '/':
-                    p = p + 2
+                    p += 2
                     break
-                p = p + 1
+                p += 1
             continue
         break
     if let out = pline:
@@ -280,7 +280,7 @@ func longest_match(text: const u8*, find: const u8*, pos: i32, ppos: i32*?, line
                         break
             if *p == '\n':
                 line += 1
-            p = p + 1
+            p += 1
     return maxlen
 
 ## Report an error line: into the new error list with -u, else on standard output.

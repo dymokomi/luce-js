@@ -58,12 +58,12 @@ func js_string_to_bigint(ctx: Context*, val: Value) -> Value!:
     js_free_value(ctx, val)
     defer js_free_c_string(ctx, text)
     var p = text
-    p = p + (usize)skip_spaces(p)
+    p += (usize)skip_spaces(p)
     if (usize)(p - text) == len:
         return try js_new_bigint64(ctx, 0)
     let flags = atod_int_only | atod_accept_bin_oct | atod_type_big_int
     var ret = try js_atof(ctx, p, &p, 0, flags)
-    p = p + (usize)skip_spaces(p)
+    p += (usize)skip_spaces(p)
     if (usize)(p - text) != len:
         js_free_value(ctx, ret)
         ret = js_nan()

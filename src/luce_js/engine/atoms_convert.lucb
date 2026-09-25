@@ -39,7 +39,7 @@ func count_ascii(buf: const u8*, len: usize) -> usize:
     var p = buf
     let p_end = buf + len
     while p < p_end and *p < 128:
-        p = p + 1
+        p += 1
     return (usize)(p - buf)
 
 ## The atom of the UTF-8 text `str_[0..<len]` (JS_NewAtomLen).

@@ -20,7 +20,7 @@ noinline func interp_lt(st: InterpState*) -> bool:
     var slow = false
     if js_value_is_both_int(op1, op2):
         st.sp[-2] = js_new_bool(js_value_get_int(op1) < js_value_get_int(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
         var d2: f64 = 0.0
@@ -38,13 +38,13 @@ noinline func interp_lt(st: InterpState*) -> bool:
             slow = true
         if not slow:
             st.sp[-2] = js_new_bool(d1 < d2)
-            st.sp = st.sp - 1
+            st.sp -= 1
     else:
         slow = true
     if slow:
         st.sf.cur_pc = st.pc
         js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_lte in JS_CallInternal.
@@ -54,7 +54,7 @@ noinline func interp_lte(st: InterpState*) -> bool:
     var slow = false
     if js_value_is_both_int(op1, op2):
         st.sp[-2] = js_new_bool(js_value_get_int(op1) <= js_value_get_int(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
         var d2: f64 = 0.0
@@ -72,13 +72,13 @@ noinline func interp_lte(st: InterpState*) -> bool:
             slow = true
         if not slow:
             st.sp[-2] = js_new_bool(d1 <= d2)
-            st.sp = st.sp - 1
+            st.sp -= 1
     else:
         slow = true
     if slow:
         st.sf.cur_pc = st.pc
         js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_gt in JS_CallInternal.
@@ -88,7 +88,7 @@ noinline func interp_gt(st: InterpState*) -> bool:
     var slow = false
     if js_value_is_both_int(op1, op2):
         st.sp[-2] = js_new_bool(js_value_get_int(op1) > js_value_get_int(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
         var d2: f64 = 0.0
@@ -106,13 +106,13 @@ noinline func interp_gt(st: InterpState*) -> bool:
             slow = true
         if not slow:
             st.sp[-2] = js_new_bool(d1 > d2)
-            st.sp = st.sp - 1
+            st.sp -= 1
     else:
         slow = true
     if slow:
         st.sf.cur_pc = st.pc
         js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_gte in JS_CallInternal.
@@ -122,7 +122,7 @@ noinline func interp_gte(st: InterpState*) -> bool:
     var slow = false
     if js_value_is_both_int(op1, op2):
         st.sp[-2] = js_new_bool(js_value_get_int(op1) >= js_value_get_int(op2))
-        st.sp = st.sp - 1
+        st.sp -= 1
     elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
         var d1: f64 = 0.0
         var d2: f64 = 0.0
@@ -140,36 +140,36 @@ noinline func interp_gte(st: InterpState*) -> bool:
             slow = true
         if not slow:
             st.sp[-2] = js_new_bool(d1 >= d2)
-            st.sp = st.sp - 1
+            st.sp -= 1
     else:
         slow = true
     if slow:
         st.sf.cur_pc = st.pc
         js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 ## The body of OP_eq in JS_CallInternal.
 noinline func interp_eq(st: InterpState*) -> bool:
     eq_inline(st.ctx, st.sf, st.pc, st.sp, false) catch: return false
-    st.sp = st.sp - 1
+    st.sp -= 1
     return true
 
 ## The body of OP_neq in JS_CallInternal.
 noinline func interp_neq(st: InterpState*) -> bool:
     eq_inline(st.ctx, st.sf, st.pc, st.sp, true) catch: return false
-    st.sp = st.sp - 1
+    st.sp -= 1
     return true
 
 ## The body of OP_strict_eq in JS_CallInternal.
 noinline func interp_strict_eq(st: InterpState*):
     strict_eq_inline(st.ctx, st.sp, false)
-    st.sp = st.sp - 1
+    st.sp -= 1
 
 ## The body of OP_strict_neq in JS_CallInternal.
 noinline func interp_strict_neq(st: InterpState*):
     strict_eq_inline(st.ctx, st.sp, true)
-    st.sp = st.sp - 1
+    st.sp -= 1
 
 # mark: in, instanceof, typeof and delete =======================================================
 
@@ -177,21 +177,21 @@ noinline func interp_strict_neq(st: InterpState*):
 noinline func interp_in(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
     js_operator_in(st.ctx, st.sp) catch: return false
-    st.sp = st.sp - 1
+    st.sp -= 1
     return true
 
 ## The body of OP_private_in in JS_CallInternal.
 noinline func interp_private_in(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
     js_operator_private_in(st.ctx, st.sp) catch: return false
-    st.sp = st.sp - 1
+    st.sp -= 1
     return true
 
 ## The body of OP_instanceof in JS_CallInternal.
 noinline func interp_instanceof(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
     js_operator_instanceof(st.ctx, st.sp) catch: return false
-    st.sp = st.sp - 1
+    st.sp -= 1
     return true
 
 ## The body of OP_typeof in JS_CallInternal.
@@ -206,18 +206,18 @@ noinline func interp_typeof(st: InterpState*):
 noinline func interp_delete(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
     js_operator_delete(st.ctx, st.sp) catch: return false
-    st.sp = st.sp - 1
+    st.sp -= 1
     return true
 
 ## The body of OP_delete_var in JS_CallInternal.
 noinline func interp_delete_var(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
-    st.pc = st.pc + 4
+    st.pc += 4
     st.sf.cur_pc = st.pc
 
     let ret = js_delete_global_var(st.ctx, atom) catch: return false
     *st.sp = js_new_bool(ret)
-    st.sp = st.sp + 1
+    st.sp += 1
     return true
 
 ## The body of OP_to_object in JS_CallInternal.
@@ -246,7 +246,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     let diff = (i32)cutils.get_u32(st.pc + 4)
     let is_with = st.pc[8] != 0
-    st.pc = st.pc + 9
+    st.pc += 9
     st.sf.cur_pc = st.pc
 
     let obj = st.sp[-1]
@@ -278,7 +278,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
                     js_throw_reference_error_not_defined(st.ctx, atom) catch: return false
                 let set_ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[-2], obj, prop_throw_strict) catch: recover none)
                 js_free_value(st.ctx, st.sp[-1])
-                st.sp = st.sp - 2
+                st.sp -= 2
                 if set_ret < 0:
                     return false
             .with_delete_var:
@@ -288,7 +288,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
             .with_make_ref:
                 # produce a pair object/propname on the stack
                 *st.sp = js_atom_to_value(st.ctx, atom) catch: return false
-                st.sp = st.sp + 1
+                st.sp += 1
             .with_get_ref:
                 # produce a pair object/method on the stack
                 # in Object Environment Records, GetBindingValue() calls
@@ -300,14 +300,14 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
                 else:
                     val = js_get_property(st.ctx, obj, atom) catch: return false
                 *st.sp = val
-                st.sp = st.sp + 1
+                st.sp += 1
             _:
                 trap("not a with opcode")
-        st.pc = st.pc + (isize)(diff - 5)
+        st.pc += (isize)(diff - 5)
     else:
         # no_with: if not jumping, drop the object argument
         js_free_value(st.ctx, st.sp[-1])
-        st.sp = st.sp - 1
+        st.sp -= 1
     return true
 
 # mark: Tests and the invalid opcode ============================================================

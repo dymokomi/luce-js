@@ -64,10 +64,10 @@ func js_parse_primary_expr(s: ParseState*, pcall_type: FuncCallType*, paccept_lp
             try emit_push_const(s, s.token.u.str_.str, true)
             try next_token(s)
         .div_assign:
-            s.buf_ptr = s.buf_ptr - 2
+            s.buf_ptr -= 2
             try js_parse_regexp_literal(s)
         .slash:
-            s.buf_ptr = s.buf_ptr - 1
+            s.buf_ptr -= 1
             try js_parse_regexp_literal(s)
         .lparen:
             try js_parse_expr_paren(s)

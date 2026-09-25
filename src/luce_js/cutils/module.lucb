@@ -59,11 +59,11 @@ pub func pstrcpy(buf: u8*, buf_size: i32, text: const u8*):
     let last = buf + (usize)(buf_size - 1)
     while true:
         let c = *p
-        p = p + 1
+        p += 1
         if c == 0 or q >= last:
             break
         *q = c
-        q = q + 1
+        q += 1
     *q = 0
 
 ## strcat and truncate.
@@ -80,7 +80,7 @@ pub func strstart(text: const u8*, val: str, ptr: const u8**?) -> bool:
     for q in val.bytes:
         if *p != q:
             return false
-        p = p + 1
+        p += 1
     if let out = ptr:
         *out = p
     return true

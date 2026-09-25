@@ -36,11 +36,11 @@ func http_get_header_line(f: void*, buf: u8*, buf_size: usize, dbuf: DynBuf*?) -
 func http_get_status(buf: const u8*) -> i32:
     var p = buf
     while *p != ' ' and *p != 0:
-        p = p + 1
+        p += 1
     if *p != ' ':
         return 0
     while *p == ' ':
-        p = p + 1
+        p += 1
     return atoi(p)
 
 ## The command that downloads `url`: curl with the URL single-quoted for the shell.
