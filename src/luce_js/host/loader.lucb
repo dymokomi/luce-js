@@ -119,10 +119,8 @@ func create_json_module(ctx: Context*, module_name: const u8*, val: Value) -> Mo
     return m
 
 ## JS_ParseJSON2 with extended syntax when `flags` has parse_json_ext.
-# workaround: the engine's JS_ParseJSON2 (region r25) is not ported yet, so JSON modules
-# and std.parseExtJSON throw until it is.
 func parse_json2(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*, flags: i32) -> Value!:
-    try js.js_throw_internal_error(ctx, "JSON parsing is not ported yet (JS_ParseJSON2, region r25)")
+    return try js.js_parse_json2(ctx, buf, buf_len, filename, flags)
 
 # mark: Import attributes =======================================================================
 
