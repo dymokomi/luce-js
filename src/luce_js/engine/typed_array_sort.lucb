@@ -1,0 +1,272 @@
+#==============================================================================================
+#
+#   typed_array_sort - %TypedArray%.prototype.sort and toSorted
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "TypedArray.prototype.sort" (lines 58640-58964): the element
+#       comparisons of each typed array kind, the element readers used with a user
+#       comparison function, js_TA_cmp_generic, js_typed_array_sort and
+#       js_typed_array_toSorted. Without a comparison function the storage is sorted in
+#       place; with one, a copy of the elements is sorted through an index array so that
+#       the sort is stable and the function may modify the array.
+#
+#==============================================================================================
+
+# mark: Element comparisons =====================================================================
+
+## The order of two numbers for sort: NaN last, -0 before +0.
+func js_cmp_doubles(x: f64, y: f64) -> i32:
+    if math.is_nan(x):
+        return 0 if math.is_nan(y) else 1
+    if math.is_nan(y):
+        return -1
+    if x < y:
+        return -1
+    if x > y:
+        return 1
+    if x != 0.0:
+        return 0
+    if math.signbit(x):
+        return 0 if math.signbit(y) else -1
+    else:
+        return 1 if math.signbit(y) else 0
+
+func js_ta_cmp_int8(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return (i32)*(const i8*)a - (i32)*(const i8*)b
+
+func js_ta_cmp_uint8(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return (i32)*(const u8*)a - (i32)*(const u8*)b
+
+func js_ta_cmp_int16(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return (i32)*(const i16*)a - (i32)*(const i16*)b
+
+func js_ta_cmp_uint16(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return (i32)*(const u16*)a - (i32)*(const u16*)b
+
+func js_ta_cmp_int32(a: const void*, b: const void*, opaque: void*?) -> i32:
+    let x = *(const i32*)a
+    let y = *(const i32*)b
+    return (i32)(y < x) - (i32)(y > x)
+
+func js_ta_cmp_uint32(a: const void*, b: const void*, opaque: void*?) -> i32:
+    let x = *(const u32*)a
+    let y = *(const u32*)b
+    return (i32)(y < x) - (i32)(y > x)
+
+func js_ta_cmp_int64(a: const void*, b: const void*, opaque: void*?) -> i32:
+    let x = *(const i64*)a
+    let y = *(const i64*)b
+    return (i32)(y < x) - (i32)(y > x)
+
+func js_ta_cmp_uint64(a: const void*, b: const void*, opaque: void*?) -> i32:
+    let x = *(const u64*)a
+    let y = *(const u64*)b
+    return (i32)(y < x) - (i32)(y > x)
+
+func js_ta_cmp_float16(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return js_cmp_doubles(cutils.fromfp16(*(const u16*)a), cutils.fromfp16(*(const u16*)b))
+
+func js_ta_cmp_float32(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return js_cmp_doubles((f64)*(const f32*)a, (f64)*(const f32*)b)
+
+func js_ta_cmp_float64(a: const void*, b: const void*, opaque: void*?) -> i32:
+    return js_cmp_doubles(*(const f64*)a, *(const f64*)b)
+
+# mark: Element readers =========================================================================
+
+## Reads one element of a typed array as a value.
+type TaGetFunc = func(Context*, const void*) -> Value!
+
+func js_ta_get_int8(ctx: Context*, a: const void*) -> Value!:
+    return js_new_int32((i32)*(const i8*)a)
+
+func js_ta_get_uint8(ctx: Context*, a: const void*) -> Value!:
+    return js_new_int32((i32)*(const u8*)a)
+
+func js_ta_get_int16(ctx: Context*, a: const void*) -> Value!:
+    return js_new_int32((i32)*(const i16*)a)
+
+func js_ta_get_uint16(ctx: Context*, a: const void*) -> Value!:
+    return js_new_int32((i32)*(const u16*)a)
+
+func js_ta_get_int32(ctx: Context*, a: const void*) -> Value!:
+    return js_new_int32(*(const i32*)a)
+
+func js_ta_get_uint32(ctx: Context*, a: const void*) -> Value!:
+    return js_new_uint32(*(const u32*)a)
+
+func js_ta_get_int64(ctx: Context*, a: const void*) -> Value!:
+    return try js_new_bigint64(ctx, *(const i64*)a)
+
+func js_ta_get_uint64(ctx: Context*, a: const void*) -> Value!:
+    return try js_new_big_uint64(ctx, *(const u64*)a)
+
+func js_ta_get_float16(ctx: Context*, a: const void*) -> Value!:
+    return js_new_float64_raw(cutils.fromfp16(*(const u16*)a))
+
+func js_ta_get_float32(ctx: Context*, a: const void*) -> Value!:
+    return js_new_float64_raw((f64)*(const f32*)a)
+
+func js_ta_get_float64(ctx: Context*, a: const void*) -> Value!:
+    return js_new_float64_raw(*(const f64*)a)
+
+# mark: Sorting with a comparison function ======================================================
+
+## The state of a sort with a user comparison function (struct TA_sort_context).
+struct TaSortContext:
+    var ctx: Context*
+    ## 1 = exception, 2 = detached typed array.
+    var exception: i32
+    ## The copy of the elements being sorted.
+    var array: u8*?
+    var cmp: Value
+    var getfun: TaGetFunc
+    var elt_size: i32
+
+## Compare the elements at the indexes `*a` and `*b` of the copy with the user function;
+## ties are ordered by index so that the sort is stable. After an exception every
+## comparison answers 0.
+func js_ta_cmp_generic(a: const void*, b: const void*, opaque: void*?) -> i32:
+    let psc = (TaSortContext*)(opaque else trap("sort without a context"))
+    let ctx = psc.ctx
+    var cmp: i32 = 0
+    if psc.exception == 0:
+        # Note: the typed array can be detached without causing an error
+        let a_idx = *(const u32*)a
+        let b_idx = *(const u32*)b
+        let array = psc.array else trap("sort without a copy")
+        # (C passes the JS_EXCEPTION of a failed read to the function; the port stops)
+        let arg0 = psc.getfun(ctx, array + (usize)a_idx * (usize)psc.elt_size) catch failure:
+            psc.exception = 1
+            return 0
+        let arg1 = psc.getfun(ctx, array + (usize)b_idx * (usize)psc.elt_size) catch failure:
+            js_free_value(ctx, arg0)
+            psc.exception = 1
+            return 0
+        var argv: Value[2] = ---
+        argv[0] = arg0
+        argv[1] = arg1
+        defer js_free_value(ctx, arg1)
+        defer js_free_value(ctx, arg0)
+        let res = js_call(ctx, psc.cmp, js_undefined(), 2, &argv[0]) catch failure:
+            psc.exception = 1
+            return 0
+        if res.tag == Tag.int:
+            let val = js_value_get_int(res)
+            cmp = (i32)(val > 0) - (i32)(val < 0)
+        else:
+            var val: f64 = 0.0
+            js_to_float64_free(ctx, &val, res) catch failure:
+                psc.exception = 1
+                return 0
+            cmp = (i32)(val > 0.0) - (i32)(val < 0.0)
+        if cmp == 0:
+            # make sort stable: compare array offsets
+            cmp = (i32)(a_idx > b_idx) - (i32)(a_idx < b_idx)
+    return cmp
+
+func js_typed_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let cmp = argv[0]
+
+    if not js_is_undefined(cmp):
+        discard(try check_function(ctx, cmp))
+    var len = try js_typed_array_get_length_unsafe(ctx, this_val)
+
+    if len > 1:
+        let p = this_val.u.obj
+        var getfun: TaGetFunc = js_ta_get_int8
+        var cmpfun: cutils.CmpF = js_ta_cmp_int8
+        match p.class_id:
+            .int8_array:
+                getfun = js_ta_get_int8
+                cmpfun = js_ta_cmp_int8
+            .uint8c_array, .uint8_array:
+                getfun = js_ta_get_uint8
+                cmpfun = js_ta_cmp_uint8
+            .int16_array:
+                getfun = js_ta_get_int16
+                cmpfun = js_ta_cmp_int16
+            .uint16_array:
+                getfun = js_ta_get_uint16
+                cmpfun = js_ta_cmp_uint16
+            .int32_array:
+                getfun = js_ta_get_int32
+                cmpfun = js_ta_cmp_int32
+            .uint32_array:
+                getfun = js_ta_get_uint32
+                cmpfun = js_ta_cmp_uint32
+            .big_int64_array:
+                getfun = js_ta_get_int64
+                cmpfun = js_ta_cmp_int64
+            .big_uint64_array:
+                getfun = js_ta_get_uint64
+                cmpfun = js_ta_cmp_uint64
+            .float16_array:
+                getfun = js_ta_get_float16
+                cmpfun = js_ta_cmp_float16
+            .float32_array:
+                getfun = js_ta_get_float32
+                cmpfun = js_ta_cmp_float32
+            .float64_array:
+                getfun = js_ta_get_float64
+                cmpfun = js_ta_cmp_float64
+            _:
+                trap("abort")
+        let elt_size = (usize)1 << (usize)typed_array_size_log2(p.class_id)
+        var tsc = TaSortContext(ctx = ctx, exception = 0, array = none, cmp = cmp,
+                                getfun = getfun, elt_size = (i32)elt_size)
+        if not js_is_undefined(tsc.cmp):
+            # the array must be copied because the comparison function may modify it
+            let array = (u8*)(try js_malloc(ctx, (usize)len * elt_size))
+            let src = p.u.array.u.ptr else trap("typed array without storage")
+            discard(cutils.memcpy(array, src, (usize)len * elt_size))
+
+            # array_idx is needed to have a stable sort
+            let array_idx_raw = js_malloc(ctx, (usize)len * sizeof(u32)) catch failure:
+                js_free(ctx, array)
+                error(failure.code, failure.message)
+            let array_idx = (u32*)array_idx_raw
+            defer js_free(ctx, array)
+            defer js_free(ctx, array_idx)
+            for i in 0..<(usize)len:
+                array_idx[i] = (u32)i
+            tsc.array = array
+            cutils.rqsort(array_idx, (usize)len, sizeof(u32), js_ta_cmp_generic, &tsc)
+            if tsc.exception != 0:
+                if tsc.exception == 1:
+                    error(exception, "")
+                # detached typed array during the sort: no error
+            elif let array_ptr = p.u.array.u.ptr:
+                len = cutils.min_int(len, (i32)p.u.array.count)
+                match elt_size:
+                    1:
+                        for i in 0..<(usize)len:
+                            let j = (usize)array_idx[i]
+                            ((u8*)array_ptr)[i] = array[j]
+                    2:
+                        for i in 0..<(usize)len:
+                            let j = (usize)array_idx[i]
+                            ((u16*)array_ptr)[i] = ((u16*)array)[j]
+                    4:
+                        for i in 0..<(usize)len:
+                            let j = (usize)array_idx[i]
+                            ((u32*)array_ptr)[i] = ((u32*)array)[j]
+                    8:
+                        for i in 0..<(usize)len:
+                            let j = (usize)array_idx[i]
+                            ((u64*)array_ptr)[i] = ((u64*)array)[j]
+                    _:
+                        trap("abort")
+        else:
+            let data = p.u.array.u.ptr else trap("typed array without storage")
+            cutils.rqsort(data, (usize)len, elt_size, cmpfun, &tsc)
+            if tsc.exception != 0:
+                error(exception, "")
+    return js_dup_value(ctx, this_val)
+
+func js_typed_array_to_sorted(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    let arr = try js_typed_array_constructor_ta(ctx, js_undefined(), this_val,
+                                                (i32)p.class_id, p.u.array.count)
+    defer js_free_value(ctx, arr)
+    return try js_typed_array_sort(ctx, arr, argc, argv)

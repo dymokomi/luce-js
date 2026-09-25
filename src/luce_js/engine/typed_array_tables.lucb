@@ -1,0 +1,107 @@
+#==============================================================================================
+#
+#   typed_array_tables - The function tables of %TypedArray%, the typed array classes and
+#                        Uint8Array
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 59759-59824: js_typed_array_base_funcs,
+#       js_typed_array_base_proto_funcs, js_typed_array_funcs (one BYTES_PER_ELEMENT
+#       entry per element size, indexed by typed_array_size_log2),
+#       js_uint8array_proto_funcs and js_uint8array_funcs.
+#
+#==============================================================================================
+
+let js_typed_array_base_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "from", def_type = def_cfunc, length = 1, generic = js_typed_array_from),
+    CFunctionListEntry(name = "of", def_type = def_cfunc, length = 0, generic = js_typed_array_of),
+    CFunctionListEntry(name = "[Symbol.species]", prop_flags = 1, def_type = def_cgetset, getter = js_get_this),
+]
+
+let js_typed_array_base_proto_funcs: CFunctionListEntry[36] = [
+    CFunctionListEntry(name = "length", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_typed_array_get_length),
+    CFunctionListEntry(name = "at", def_type = def_cfunc, length = 1, generic = js_typed_array_at),
+    CFunctionListEntry(name = "with", def_type = def_cfunc, length = 2, generic = js_typed_array_with),
+    CFunctionListEntry(name = "buffer", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_typed_array_get_buffer),
+    CFunctionListEntry(name = "byteLength", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_typed_array_get_byte_length),
+    CFunctionListEntry(name = "byteOffset", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_typed_array_get_byte_offset),
+    CFunctionListEntry(name = "set", def_type = def_cfunc, length = 1, generic = js_typed_array_set),
+    CFunctionListEntry(name = "values", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_typed_array_iterator, magic = (i16)IteratorKind.value),
+    CFunctionListEntry(name = "[Symbol.iterator]", def_type = def_alias, alias_name = "values"),
+    CFunctionListEntry(name = "keys", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_typed_array_iterator, magic = (i16)IteratorKind.key),
+    CFunctionListEntry(name = "entries", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_typed_array_iterator,
+                       magic = (i16)IteratorKind.key_and_value),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_typed_array_get_to_string_tag),
+    CFunctionListEntry(name = "copyWithin", def_type = def_cfunc, length = 2, generic = js_typed_array_copy_within),
+    CFunctionListEntry(name = "every", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)(special_every | special_ta)),
+    CFunctionListEntry(name = "some", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)(special_some | special_ta)),
+    CFunctionListEntry(name = "forEach", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)(special_for_each | special_ta)),
+    CFunctionListEntry(name = "map", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)(special_map | special_ta)),
+    CFunctionListEntry(name = "filter", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)(special_filter | special_ta)),
+    CFunctionListEntry(name = "reduce", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_reduce, magic = (i16)(special_reduce | special_ta)),
+    CFunctionListEntry(name = "reduceRight", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_reduce, magic = (i16)(special_reduce_right | special_ta)),
+    CFunctionListEntry(name = "fill", def_type = def_cfunc, length = 1, generic = js_typed_array_fill),
+    CFunctionListEntry(name = "find", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_typed_array_find, magic = (i16)array_find),
+    CFunctionListEntry(name = "findIndex", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_typed_array_find, magic = (i16)array_find_index),
+    CFunctionListEntry(name = "findLast", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_typed_array_find, magic = (i16)array_find_last),
+    CFunctionListEntry(name = "findLastIndex", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_typed_array_find,
+                       magic = (i16)array_find_last_index),
+    CFunctionListEntry(name = "reverse", def_type = def_cfunc, length = 0, generic = js_typed_array_reverse),
+    CFunctionListEntry(name = "toReversed", def_type = def_cfunc, length = 0, generic = js_typed_array_to_reversed),
+    CFunctionListEntry(name = "slice", def_type = def_cfunc, length = 2, generic = js_typed_array_slice),
+    CFunctionListEntry(name = "subarray", def_type = def_cfunc, length = 2, generic = js_typed_array_subarray),
+    CFunctionListEntry(name = "sort", def_type = def_cfunc, length = 1, generic = js_typed_array_sort),
+    CFunctionListEntry(name = "toSorted", def_type = def_cfunc, length = 1, generic = js_typed_array_to_sorted),
+    CFunctionListEntry(name = "join", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_typed_array_join, magic = 0),
+    CFunctionListEntry(name = "toLocaleString", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_typed_array_join, magic = 1),
+    CFunctionListEntry(name = "indexOf", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_typed_array_index_of, magic = (i16)special_index_of),
+    CFunctionListEntry(name = "lastIndexOf", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_typed_array_index_of, magic = (i16)special_last_index_of),
+    CFunctionListEntry(name = "includes", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_typed_array_index_of, magic = (i16)special_includes),
+    # JS_ALIAS_BASE_DEF("toString", "toString", 2 /* Array.prototype. */), @@@
+]
+
+# One BYTES_PER_ELEMENT per element size: js_typed_array_funcs[typed_array_size_log2(class)].
+let js_typed_array_funcs: CFunctionListEntry[4] = [
+    CFunctionListEntry(name = "BYTES_PER_ELEMENT", prop_flags = 0, def_type = def_prop_int32, i32_value = 1),
+    CFunctionListEntry(name = "BYTES_PER_ELEMENT", prop_flags = 0, def_type = def_prop_int32, i32_value = 2),
+    CFunctionListEntry(name = "BYTES_PER_ELEMENT", prop_flags = 0, def_type = def_prop_int32, i32_value = 4),
+    CFunctionListEntry(name = "BYTES_PER_ELEMENT", prop_flags = 0, def_type = def_prop_int32, i32_value = 8),
+]
+
+let js_uint8array_proto_funcs: CFunctionListEntry[5] = [
+    CFunctionListEntry(name = "BYTES_PER_ELEMENT", prop_flags = 0, def_type = def_prop_int32, i32_value = 1),
+    CFunctionListEntry(name = "toBase64", def_type = def_cfunc, length = 0, generic = js_uint8array_to_base64),
+    CFunctionListEntry(name = "toHex", def_type = def_cfunc, length = 0, generic = js_uint8array_to_hex),
+    CFunctionListEntry(name = "setFromBase64", def_type = def_cfunc, length = 1,
+                       generic = js_uint8array_set_from_base64),
+    CFunctionListEntry(name = "setFromHex", def_type = def_cfunc, length = 1, generic = js_uint8array_set_from_hex),
+]
+
+let js_uint8array_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "BYTES_PER_ELEMENT", prop_flags = 0, def_type = def_prop_int32, i32_value = 1),
+    CFunctionListEntry(name = "fromBase64", def_type = def_cfunc, length = 1, generic = js_uint8array_from_base64),
+    CFunctionListEntry(name = "fromHex", def_type = def_cfunc, length = 1, generic = js_uint8array_from_hex),
+]

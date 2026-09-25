@@ -1,0 +1,299 @@
+#==============================================================================================
+#
+#   dataview - DataView objects: the constructor, the accessors and the typed getters and
+#              setters
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "DataView" (lines 60125-60510): js_dataview_constructor,
+#       dataview_is_oob, get_dataview, the buffer, byteLength and byteOffset getters,
+#       js_dataview_getValue and js_dataview_setValue (whose magic is the typed array
+#       class of the element type) and js_dataview_proto_funcs. A DataView is a
+#       TypedArray view (`u.typed_array`) without element storage of its own.
+#
+#==============================================================================================
+
+# mark: Construction ============================================================================
+
+func js_dataview_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    var recompute_len = false
+    var track_rab = false
+
+    let buffer = argv[0]
+    let abuf = try js_get_array_buffer_internal(ctx, buffer)
+    var offset: u64 = 0
+    if argc > 1:
+        try js_to_index(ctx, &offset, argv[1])
+    if abuf.detached != 0:
+        try js_throw_type_error_detached_array_buffer(ctx)
+    if offset > (u64)abuf.byte_length:
+        try js_throw_range_error(ctx, "invalid byteOffset")
+    var len = (u32)((u64)abuf.byte_length - offset)
+    if argc > 2 and not js_is_undefined(argv[2]):
+        var l: u64 = 0
+        try js_to_index(ctx, &l, argv[2])
+        if l > (u64)len:
+            try js_throw_range_error(ctx, "invalid byteLength")
+        len = (u32)l
+    else:
+        recompute_len = true
+        track_rab = array_buffer_is_resizable(abuf)
+
+    let obj = try js_create_from_ctor(ctx, new_target, (i32)ClassId.dataview)
+    errdefer js_free_value(ctx, obj)
+    if abuf.detached != 0:
+        # could have been detached in js_create_from_ctor()
+        try js_throw_type_error_detached_array_buffer(ctx)
+    # RAB could have been resized in js_create_from_ctor()
+    if offset > (u64)abuf.byte_length:
+        try js_throw_range_error(ctx, "invalid byteOffset or byteLength")
+    elif recompute_len:
+        len = (u32)((u64)abuf.byte_length - offset)
+    elif offset + (u64)len > (u64)abuf.byte_length:
+        try js_throw_range_error(ctx, "invalid byteOffset or byteLength")
+    let ta = (TypedArray*)(try js_malloc(ctx, sizeof(TypedArray)))
+    let p = obj.u.obj
+    ta.obj = p
+    ta.buffer = js_dup_value(ctx, buffer).u.obj
+    ta.offset = (u32)offset
+    ta.length = len
+    ta.track_rab = track_rab
+    cutils.list_add_tail(&ta.link, &abuf.array_list)
+    p.u.typed_array = ta
+    return obj
+
+# is the DataView out of bounds relative to its parent arraybuffer?
+func dataview_is_oob(p: Object*) -> bool:
+    assert(p.class_id == ClassId.dataview)
+    let ta = p.u.typed_array
+    let abuf = ta.buffer.u.array_buffer
+    if abuf.detached != 0:
+        return true
+    if (i64)ta.offset > (i64)abuf.byte_length:
+        return true
+    if ta.track_rab:
+        return false
+    return (i64)ta.offset + (i64)ta.length > (i64)abuf.byte_length
+
+## The DataView object `this_val`, or a TypeError.
+func get_dataview(ctx: Context*, this_val: Value) -> Object*!:
+    if this_val.tag != Tag.object:
+        try js_throw_type_error(ctx, "not a DataView")
+    let p = this_val.u.obj
+    if p.class_id != ClassId.dataview:
+        try js_throw_type_error(ctx, "not a DataView")
+    return p
+
+# mark: Accessors ===============================================================================
+
+func js_dataview_get_buffer(ctx: Context*, this_val: Value) -> Value!:
+    let p = try get_dataview(ctx, this_val)
+    let ta = p.u.typed_array
+    return js_dup_value(ctx, js_mkptr(Tag.object, ta.buffer))
+
+func js_dataview_get_byte_length(ctx: Context*, this_val: Value) -> Value!:
+    let p = try get_dataview(ctx, this_val)
+    if dataview_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let ta = p.u.typed_array
+    if ta.track_rab:
+        let abuf = ta.buffer.u.array_buffer
+        return js_new_uint32((u32)abuf.byte_length - ta.offset)
+    return js_new_uint32(ta.length)
+
+func js_dataview_get_byte_offset(ctx: Context*, this_val: Value) -> Value!:
+    let p = try get_dataview(ctx, this_val)
+    if dataview_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let ta = p.u.typed_array
+    return js_new_uint32(ta.offset)
+
+# mark: getValue and setValue ===================================================================
+
+## The address of the `size` bytes at `pos` of the DataView `ta`, after the detached and
+## bounds checks shared by getValue and setValue.
+func dataview_element(ctx: Context*, ta: TypedArray*, pos: u64, size: u64) -> u8*!:
+    let abuf = ta.buffer.u.array_buffer
+    if abuf.detached != 0:
+        try js_throw_type_error_detached_array_buffer(ctx)
+    # order matters: this check should come before the next one
+    if (pos + size) > (u64)ta.length:
+        try js_throw_range_error(ctx, "out of bound")
+    # test262 expects a TypeError for this and V8, in its infinite wisdom,
+    # throws a "detached array buffer" exception, but IMO that doesn't make
+    # sense because the buffer is not in fact detached, it's still there
+    if (i64)ta.offset + (i64)ta.length > (i64)abuf.byte_length:
+        try js_throw_type_error(ctx, "out of bound")
+    let data = abuf.data else trap("ArrayBuffer without storage")
+    return data + (usize)ta.offset + (usize)pos
+
+## getInt8 ... getFloat64 (`class_id` is the typed array class of the element type).
+func js_dataview_get_value(ctx: Context*, this_obj: Value, argc: i32, argv: Value*, class_id: i32) -> Value!:
+    let ta = (TypedArray*)(try js_get_opaque2(ctx, this_obj, (u32)ClassId.dataview))
+    let cid = (ClassId)(u16)class_id
+    let size = (u64)1 << (u64)typed_array_size_log2(cid)
+    var pos: u64 = 0
+    try js_to_index(ctx, &pos, argv[0])
+    var little_endian = false
+    if argc > 1:
+        little_endian = try js_to_bool(ctx, argv[1])
+    let is_swap = little_endian != (not is_be())
+    let ptr = try dataview_element(ctx, ta, pos, size)
+
+    match cid:
+        .int8_array:
+            return js_new_int32((i32)*(i8*)ptr)
+        .uint8_array:
+            return js_new_int32((i32)*ptr)
+        .int16_array:
+            var v = (u16)cutils.get_u16(ptr)
+            if is_swap:
+                v = cutils.bswap16(v)
+            return js_new_int32((i32)(i16)v)
+        .uint16_array:
+            var v = (u16)cutils.get_u16(ptr)
+            if is_swap:
+                v = cutils.bswap16(v)
+            return js_new_int32((i32)v)
+        .int32_array:
+            var v = cutils.get_u32(ptr)
+            if is_swap:
+                v = cutils.bswap32(v)
+            return js_new_int32((i32)v)
+        .uint32_array:
+            var v = cutils.get_u32(ptr)
+            if is_swap:
+                v = cutils.bswap32(v)
+            return js_new_uint32(v)
+        .big_int64_array:
+            var v = cutils.get_u64(ptr)
+            if is_swap:
+                v = cutils.bswap64(v)
+            return try js_new_bigint64(ctx, (i64)v)
+        .big_uint64_array:
+            var v = cutils.get_u64(ptr)
+            if is_swap:
+                v = cutils.bswap64(v)
+            return try js_new_big_uint64(ctx, v)
+        .float16_array:
+            var v = (u16)cutils.get_u16(ptr)
+            if is_swap:
+                v = cutils.bswap16(v)
+            return js_new_float64_raw(cutils.fromfp16(v))
+        .float32_array:
+            var v = cutils.get_u32(ptr)
+            if is_swap:
+                v = cutils.bswap32(v)
+            return js_new_float64_raw((f64)f32.bits(v))
+        .float64_array:
+            var v = cutils.get_u64(ptr)
+            if is_swap:
+                v = cutils.bswap64(v)
+            return js_new_float64_raw(f64.bits(v))
+        _:
+            trap("abort")
+
+## setInt8 ... setFloat64 (`class_id` is the typed array class of the element type).
+func js_dataview_set_value(ctx: Context*, this_obj: Value, argc: i32, argv: Value*, class_id: i32) -> Value!:
+    let ta = (TypedArray*)(try js_get_opaque2(ctx, this_obj, (u32)ClassId.dataview))
+    let cid = (ClassId)(u16)class_id
+    let size = (u64)1 << (u64)typed_array_size_log2(cid)
+    var pos: u64 = 0
+    try js_to_index(ctx, &pos, argv[0])
+    let val = argv[1]
+    var v: u32 = 0
+    var v64: u64 = 0
+    if (u16)cid <= (u16)ClassId.uint32_array:
+        try js_to_uint32(ctx, &v, val)
+    elif (u16)cid <= (u16)ClassId.big_uint64_array:
+        var s: i64 = 0
+        try js_to_bigint64(ctx, &s, val)
+        v64 = (u64)s
+    else:
+        var d: f64 = 0.0
+        try js_to_float64(ctx, &d, val)
+        if cid == ClassId.float16_array:
+            v = cutils.tofp16(d)
+        elif cid == ClassId.float32_array:
+            v = ((f32)d).bits()
+        else:
+            v64 = d.bits()
+    var little_endian = false
+    if argc > 2:
+        little_endian = try js_to_bool(ctx, argv[2])
+    let is_swap = little_endian != (not is_be())
+    let ptr = try dataview_element(ctx, ta, pos, size)
+
+    match cid:
+        .int8_array, .uint8_array:
+            *ptr = (u8)v
+        .int16_array, .uint16_array, .float16_array:
+            if is_swap:
+                v = cutils.bswap16((u16)v)
+            cutils.put_u16(ptr, (u16)v)
+        .int32_array, .uint32_array, .float32_array:
+            if is_swap:
+                v = cutils.bswap32(v)
+            cutils.put_u32(ptr, v)
+        .big_int64_array, .big_uint64_array, .float64_array:
+            if is_swap:
+                v64 = cutils.bswap64(v64)
+            cutils.put_u64(ptr, v64)
+        _:
+            trap("abort")
+    return js_undefined()
+
+# mark: Table ===================================================================================
+
+let js_dataview_proto_funcs: CFunctionListEntry[26] = [
+    CFunctionListEntry(name = "buffer", prop_flags = 1, def_type = def_cgetset, getter = js_dataview_get_buffer),
+    CFunctionListEntry(name = "byteLength", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_dataview_get_byte_length),
+    CFunctionListEntry(name = "byteOffset", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_dataview_get_byte_offset),
+    CFunctionListEntry(name = "getInt8", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.int8_array),
+    CFunctionListEntry(name = "getUint8", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.uint8_array),
+    CFunctionListEntry(name = "getInt16", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.int16_array),
+    CFunctionListEntry(name = "getUint16", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.uint16_array),
+    CFunctionListEntry(name = "getInt32", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.int32_array),
+    CFunctionListEntry(name = "getUint32", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.uint32_array),
+    CFunctionListEntry(name = "getBigInt64", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.big_int64_array),
+    CFunctionListEntry(name = "getBigUint64", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.big_uint64_array),
+    CFunctionListEntry(name = "getFloat16", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.float16_array),
+    CFunctionListEntry(name = "getFloat32", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.float32_array),
+    CFunctionListEntry(name = "getFloat64", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_get_value, magic = (i16)ClassId.float64_array),
+    CFunctionListEntry(name = "setInt8", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.int8_array),
+    CFunctionListEntry(name = "setUint8", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.uint8_array),
+    CFunctionListEntry(name = "setInt16", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.int16_array),
+    CFunctionListEntry(name = "setUint16", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.uint16_array),
+    CFunctionListEntry(name = "setInt32", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.int32_array),
+    CFunctionListEntry(name = "setUint32", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.uint32_array),
+    CFunctionListEntry(name = "setBigInt64", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.big_int64_array),
+    CFunctionListEntry(name = "setBigUint64", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.big_uint64_array),
+    CFunctionListEntry(name = "setFloat16", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.float16_array),
+    CFunctionListEntry(name = "setFloat32", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.float32_array),
+    CFunctionListEntry(name = "setFloat64", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_dataview_set_value, magic = (i16)ClassId.float64_array),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", def_type = def_prop_string,
+                       prop_flags = (u8)prop_configurable, string_value = "DataView"),
+]

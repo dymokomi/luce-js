@@ -1,0 +1,385 @@
+#==============================================================================================
+#
+#   typed_array_search - %TypedArray%.prototype.copyWithin, fill, find and indexOf
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 57873-58357: js_typed_array_copyWithin,
+#       js_typed_array_fill, js_typed_array_find (find, findIndex, findLast,
+#       findLastIndex) and js_typed_array_indexOf (indexOf, lastIndexOf, includes), which
+#       scans the element storage directly for a value of the array's own type.
+#
+#==============================================================================================
+
+# mark: copyWithin and fill =====================================================================
+
+func js_typed_array_copy_within(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let len = (i32)p.u.array.count
+
+    var to: i32 = 0
+    try js_to_int32_clamp(ctx, &to, argv[0], 0, len, len)
+
+    var from_: i32 = 0
+    try js_to_int32_clamp(ctx, &from_, argv[1], 0, len, len)
+
+    var final = len
+    if argc > 2 and not js_is_undefined(argv[2]):
+        try js_to_int32_clamp(ctx, &final, argv[2], 0, len, len)
+
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+
+    # RAB may have been resized by evil .valueOf method
+    let space = (i32)p.u.array.count - cutils.max_int(to, from_)
+    var count = cutils.min_int(final - from_, len - to)
+    count = cutils.min_int(count, space)
+    if count > 0:
+        let shift = typed_array_size_log2(p.class_id)
+        let data = p.u.array.u.uint8_ptr
+        discard(cutils.memmove(data + (usize)(to << shift),
+                               data + (usize)(from_ << shift),
+                               (usize)(count << shift)))
+    return js_dup_value(ctx, this_val)
+
+func js_typed_array_fill(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let len = (i32)p.u.array.count
+
+    var v64: u64 = 0
+    if p.class_id == ClassId.uint8c_array:
+        var v: i32 = 0
+        try js_to_uint8_clamp_free(ctx, &v, js_dup_value(ctx, argv[0]))
+        v64 = (u64)v
+    elif (u16)p.class_id <= (u16)ClassId.uint32_array:
+        var v: u32 = 0
+        try js_to_uint32(ctx, &v, argv[0])
+        v64 = v
+    elif (u16)p.class_id <= (u16)ClassId.big_uint64_array:
+        var v: i64 = 0
+        try js_to_bigint64(ctx, &v, argv[0])
+        v64 = (u64)v
+    else:
+        var d: f64 = 0.0
+        try js_to_float64(ctx, &d, argv[0])
+        if p.class_id == ClassId.float16_array:
+            v64 = cutils.tofp16(d)
+        elif p.class_id == ClassId.float32_array:
+            v64 = ((f32)d).bits()
+        else:
+            v64 = d.bits()
+
+    var k: i32 = 0
+    if argc > 1:
+        try js_to_int32_clamp(ctx, &k, argv[1], 0, len, len)
+
+    var final = len
+    if argc > 2 and not js_is_undefined(argv[2]):
+        try js_to_int32_clamp(ctx, &final, argv[2], 0, len, len)
+
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+
+    # RAB may have been resized by evil .valueOf method
+    final = cutils.min_int(final, (i32)p.u.array.count)
+    let shift = typed_array_size_log2(p.class_id)
+    match shift:
+        0:
+            if k < final:
+                discard(cutils.memset(p.u.array.u.uint8_ptr + (usize)k, (i32)(u8)v64, (usize)(final - k)))
+        1:
+            while k < final:
+                p.u.array.u.uint16_ptr[(usize)k] = (u16)v64
+                k += 1
+        2:
+            while k < final:
+                p.u.array.u.uint32_ptr[(usize)k] = (u32)v64
+                k += 1
+        3:
+            while k < final:
+                p.u.array.u.uint64_ptr[(usize)k] = v64
+                k += 1
+        _:
+            trap("abort")
+    return js_dup_value(ctx, this_val)
+
+# mark: find ====================================================================================
+
+## find, findIndex, findLast and findLastIndex (`mode` is array_find...).
+func js_typed_array_find(ctx: Context*, this_val: Value, argc: i32, argv: Value*, mode: i32) -> Value!:
+    let len = try js_typed_array_get_length_unsafe(ctx, this_val)
+
+    let func_ = argv[0]
+    discard(try check_function(ctx, func_))
+
+    var this_arg = js_undefined()
+    if argc > 1:
+        this_arg = argv[1]
+
+    var k: i32 = 0
+    var dir: i32 = 1
+    var end = len
+    if mode == array_find_last or mode == array_find_last_index:
+        k = len - 1
+        dir = -1
+        end = -1
+
+    var args: Value[3] = ---
+    while k != end:
+        let index_val = js_new_int32(k)
+        let val = try js_get_property_value(ctx, this_val, index_val)
+        args[0] = val
+        args[1] = index_val
+        args[2] = this_val
+        let res = js_call(ctx, func_, this_arg, 3, &args[0]) catch failure:
+            js_free_value(ctx, val)
+            error(failure.code, failure.message)
+        let found = js_to_bool_free(ctx, res) catch failure:
+            js_free_value(ctx, val)
+            error(failure.code, failure.message)
+        if found:
+            if mode == array_find_index or mode == array_find_last_index:
+                js_free_value(ctx, val)
+                return index_val
+            else:
+                return val
+        js_free_value(ctx, val)
+        k += dir
+    if mode == array_find_index or mode == array_find_last_index:
+        return js_new_int32(-1)
+    else:
+        return js_undefined()
+
+# mark: indexOf =================================================================================
+
+# The magic of js_typed_array_indexOf.
+let special_index_of: i32 = 0
+let special_last_index_of: i32 = 1
+let special_includes: i32 = -1
+
+## The result of indexOf/lastIndexOf (the index `res`) or includes (whether found).
+func typed_array_index_of_result(special: i32, res: i32) -> Value:
+    if special == special_includes:
+        return js_new_bool(res >= 0)
+    else:
+        return js_new_int32(res)
+
+## The first index from `k` stepping by `inc` up to `stop` whose 16-bit element is `v`.
+func typed_array_scan16(pv: const u16*, k0: i32, stop: i32, inc: i32, v: u16) -> i32:
+    var k = k0
+    while k != stop:
+        if pv[(usize)k] == v:
+            return k
+        k += inc
+    return -1
+
+## The first index from `k` stepping by `inc` up to `stop` whose 32-bit element is `v`.
+func typed_array_scan32(pv: const u32*, k0: i32, stop: i32, inc: i32, v: u32) -> i32:
+    var k = k0
+    while k != stop:
+        if pv[(usize)k] == v:
+            return k
+        k += inc
+    return -1
+
+## The first index from `k` stepping by `inc` up to `stop` whose 64-bit element is `v`.
+func typed_array_scan64(pv: const u64*, k0: i32, stop: i32, inc: i32, v: u64) -> i32:
+    var k = k0
+    while k != stop:
+        if pv[(usize)k] == v:
+            return k
+        k += inc
+    return -1
+
+## The first index from `k` stepping by `inc` up to `stop` whose byte is `v`; a forward
+## scan up to `len` is C's memchr.
+## A typed array without storage has no element.
+func typed_array_scan8(ptr: void*?, k0: i32, stop: i32, inc: i32, len: i32, v: u8) -> i32:
+    let data = (u8*)(ptr else return -1)
+    var k = k0
+    if inc > 0:
+        while k < len:
+            if data[(usize)k] == v:
+                return k
+            k += 1
+        return -1
+    while k != stop:
+        if data[(usize)k] == v:
+            return k
+        k += inc
+    return -1
+
+## indexOf, lastIndexOf and includes (`special` is special_index_of...).
+func js_typed_array_index_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*, special: i32) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    var len = (i32)p.u.array.count
+    var res: i32 = -1
+
+    if len == 0:
+        return typed_array_index_of_result(special, res)
+
+    var k: i32 = 0
+    var stop: i32 = 0
+    var inc: i32 = 0
+    if special == special_last_index_of:
+        k = len - 1
+        if argc > 1:
+            var k1: i64 = 0
+            try js_to_int64_clamp(ctx, &k1, argv[1], -1, (i64)(len - 1), (i64)len)
+            k = (i32)k1
+            if k < 0:
+                return typed_array_index_of_result(special, res)
+        stop = -1
+        inc = -1
+    else:
+        k = 0
+        if argc > 1:
+            try js_to_int32_clamp(ctx, &k, argv[1], 0, len, len)
+        stop = len
+        inc = 1
+
+    # includes function: 'undefined' can be found if searching out of bounds
+    if (len > (i32)p.u.array.count and special == special_includes and
+            js_is_undefined(argv[0]) and k < len):
+        return typed_array_index_of_result(special, 0)
+
+    # RAB may have been resized by evil .valueOf method
+    len = cutils.min_int(len, (i32)p.u.array.count)
+    if len == 0:
+        return typed_array_index_of_result(special, res)
+    if special == special_last_index_of:
+        k = cutils.min_int(k, len - 1)
+    else:
+        k = cutils.min_int(k, len)
+    stop = cutils.min_int(stop, len)
+
+    var is_bigint = false
+    var is_int = false
+    var v64: i64 = 0
+    var d: f64 = 0.0
+    let tag = argv[0].tag
+    if tag == Tag.int:
+        is_int = true
+        v64 = (i64)js_value_get_int(argv[0])
+        d = f64(v64)
+    elif tag == Tag.float64:
+        d = js_value_get_float64(argv[0])
+        if d >= -9223372036854775808.0 and d < 9223372036854775808.0:
+            v64 = (i64)d
+            is_int = f64(v64) == d
+    elif tag == Tag.big_int or tag == Tag.short_big_int:
+        var buf1: BigIntBuf
+        let sz = (u32)(64 // js_limb_bits)
+        let p1 = js_bigint_set_short(&buf1, argv[0]) if tag == Tag.short_big_int else argv[0].u.big_int
+
+        if p.class_id == ClassId.big_int64_array:
+            if p1.len > sz:
+                # does not fit an int64: cannot be found
+                return typed_array_index_of_result(special, res)
+        elif p.class_id == ClassId.big_uint64_array:
+            if js_bigint_sign(p1) != 0:
+                # v < 0
+                return typed_array_index_of_result(special, res)
+            # OK if it fits, or 2^63 <= v <= 2^64-1
+            if not (p1.len <= sz or (p1.len == sz + 1 and js_bigint_tab(p1)[(usize)sz] == 0)):
+                return typed_array_index_of_result(special, res)
+        else:
+            return typed_array_index_of_result(special, res)
+        try js_to_bigint64(ctx, &v64, argv[0])
+        d = 0.0
+        is_bigint = true
+    else:
+        return typed_array_index_of_result(special, res)
+
+    let ptr = p.u.array.u.ptr
+    match p.class_id:
+        .int8_array:
+            if is_int and (i64)(i8)v64 == v64:
+                res = typed_array_scan8(ptr, k, stop, inc, len, (u8)v64)
+        .uint8c_array, .uint8_array:
+            if is_int and (i64)(u8)v64 == v64:
+                res = typed_array_scan8(ptr, k, stop, inc, len, (u8)v64)
+        .int16_array:
+            if is_int and (i64)(i16)v64 == v64:
+                res = typed_array_scan16(p.u.array.u.uint16_ptr, k, stop, inc, (u16)v64)
+        .uint16_array:
+            if is_int and (i64)(u16)v64 == v64:
+                res = typed_array_scan16(p.u.array.u.uint16_ptr, k, stop, inc, (u16)v64)
+        .int32_array:
+            if is_int and (i64)(i32)v64 == v64:
+                res = typed_array_scan32(p.u.array.u.uint32_ptr, k, stop, inc, (u32)v64)
+        .uint32_array:
+            if is_int and (i64)(u32)v64 == v64:
+                res = typed_array_scan32(p.u.array.u.uint32_ptr, k, stop, inc, (u32)v64)
+        .float16_array:
+            if not is_bigint:
+                let pv = p.u.array.u.fp16_ptr
+                if math.is_nan(d):
+                    # special case: indexOf returns -1, includes finds NaN
+                    if special != special_includes:
+                        return typed_array_index_of_result(special, res)
+                    while k != stop:
+                        if cutils.isfp16nan(pv[(usize)k]):
+                            res = k
+                            break
+                        k += inc
+                elif d == 0.0:
+                    # special case: includes also finds negative zero
+                    while k != stop:
+                        if cutils.isfp16zero(pv[(usize)k]):
+                            res = k
+                            break
+                        k += inc
+                else:
+                    let hf = cutils.tofp16(d)
+                    if d == cutils.fromfp16(hf):
+                        res = typed_array_scan16(pv, k, stop, inc, hf)
+        .float32_array:
+            if not is_bigint:
+                let pv = p.u.array.u.float_ptr
+                let f = (f32)d
+                if math.is_nan(d):
+                    # special case: indexOf returns -1, includes finds NaN
+                    if special != special_includes:
+                        return typed_array_index_of_result(special, res)
+                    while k != stop:
+                        if math.is_nan((f64)pv[(usize)k]):
+                            res = k
+                            break
+                        k += inc
+                elif (f64)f == d:
+                    while k != stop:
+                        if pv[(usize)k] == f:
+                            res = k
+                            break
+                        k += inc
+        .float64_array:
+            if not is_bigint:
+                let pv = p.u.array.u.double_ptr
+                if math.is_nan(d):
+                    # special case: indexOf returns -1, includes finds NaN
+                    if special != special_includes:
+                        return typed_array_index_of_result(special, res)
+                    while k != stop:
+                        if math.is_nan(pv[(usize)k]):
+                            res = k
+                            break
+                        k += inc
+                else:
+                    while k != stop:
+                        if pv[(usize)k] == d:
+                            res = k
+                            break
+                        k += inc
+        .big_int64_array, .big_uint64_array:
+            if is_bigint:
+                res = typed_array_scan64(p.u.array.u.uint64_ptr, k, stop, inc, (u64)v64)
+        _:
+            return typed_array_index_of_result(special, res)
+
+    return typed_array_index_of_result(special, res)

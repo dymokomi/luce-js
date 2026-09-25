@@ -71,7 +71,20 @@ stub_r24_number_string_math.lucb
 stub_r25_regexp_json_reflect.lucb
 stub_r26_proxy_symbol_map.lucb
 stub_r27_promise_date.lucb
-stub_r28_typed_arrays.lucb
+bigint_builtins.lucb
+intrinsics_base.lucb
+array_buffers.lucb
+array_buffer_methods.lucb
+typed_arrays.lucb
+typed_array_search.lucb
+typed_array_slices.lucb
+typed_array_sort.lucb
+base64.lucb
+uint8array_base64.lucb
+typed_array_tables.lucb
+typed_array_constructors.lucb
+dataview.lucb
+atomics_ops.lucb
 stub_r29_atomics_weakref.lucb
 tests_bigint.lucb
 tests_bigint_vectors.lucb
@@ -85,3 +98,4 @@ tests_r10.lucb
 tests_r09.lucb
 tests_tokenizer.lucb
 tests_r12.lucb
+tests_r28.lucb

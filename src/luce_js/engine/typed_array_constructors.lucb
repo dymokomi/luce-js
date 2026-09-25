@@ -1,0 +1,198 @@
+#==============================================================================================
+#
+#   typed_array_constructors - The typed array constructors, their views, finalizer and
+#                              marking
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 59826-60123: the %TypedArray% base constructor,
+#       typed_array_init (attaching a view to its ArrayBuffer), js_array_from_iterator,
+#       the constructors from an object, from another typed array and the generic one,
+#       and the finalizer and mark function shared with DataView.
+#
+#==============================================================================================
+
+# mark: Views ===================================================================================
+
+func js_typed_array_base_constructor(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    try js_throw_type_error(ctx, "cannot be called")
+
+# 'obj' must be an allocated typed array object
+## Make the typed array `obj` a view of `len` elements of `buffer` from the byte
+## `offset`, taking ownership of `buffer` (freed on failure too).
+func typed_array_init(ctx: Context*, obj: Value, buffer: Value, offset: u64, len: u64, track_rab: bool) -> !:
+    let p = obj.u.obj
+    let size_log2 = (u64)typed_array_size_log2(p.class_id)
+    let ta_raw = js_malloc(ctx, sizeof(TypedArray)) catch failure:
+        js_free_value(ctx, buffer)
+        error(failure.code, failure.message)
+    let ta = (TypedArray*)ta_raw
+    let pbuffer = buffer.u.obj
+    let abuf = pbuffer.u.array_buffer
+    ta.obj = p
+    ta.buffer = pbuffer
+    ta.offset = (u32)offset
+    ta.length = (u32)(len << size_log2)
+    ta.track_rab = track_rab
+    cutils.list_add_tail(&ta.link, &abuf.array_list)
+    p.u.typed_array = ta
+    p.u.array.count = (u32)len
+    p.u.array.u.ptr = array_buffer_data_at(abuf.data, (u32)offset)
+
+## A new array of the values the iterator method `method` of `obj` yields; `*plen`
+## receives their count.
+func js_array_from_iterator(ctx: Context*, plen: u32*, obj: Value, method: Value) -> Value!:
+    *plen = 0
+    let arr = try js_new_array(ctx)
+    errdefer js_free_value(ctx, arr)
+    let iter = try js_get_iterator2(ctx, obj, method)
+    defer js_free_value(ctx, iter)
+    let next_method = try js_get_property(ctx, iter, atom_next)
+    defer js_free_value(ctx, next_method)
+    var k: u32 = 0
+    var no_args = js_undefined()
+    while true:
+        var done = false
+        let val = try js_iterator_next(ctx, iter, next_method, 0, &no_args, &done)
+        if done:
+            break
+        discard(try js_create_data_property_uint32(ctx, arr, (i64)k, val, prop_throw))
+        k += 1
+    *plen = k
+    return arr
+
+# mark: Constructors ============================================================================
+
+## A typed array of class `classid` initialized from the iterable or array-like `obj`.
+func js_typed_array_constructor_obj(ctx: Context*, new_target: Value, obj: Value, classid: i32) -> Value!:
+    let size_log2 = (i64)typed_array_size_log2((ClassId)(u16)classid)
+    let ret = try js_create_from_ctor(ctx, new_target, classid)
+    errdefer js_free_value(ctx, ret)
+
+    let iter = try js_get_property(ctx, obj, atom_Symbol_iterator)
+    var len: i64 = 0
+    var arr = js_undefined()
+    if not js_is_undefined(iter) and not js_is_null(iter):
+        var len1: u32 = 0
+        arr = js_array_from_iterator(ctx, &len1, obj, iter) catch failure:
+            js_free_value(ctx, iter)
+            error(failure.code, failure.message)
+        js_free_value(ctx, iter)
+        len = (i64)len1
+    else:
+        discard(try js_get_length64(ctx, &len, obj))
+        arr = js_dup_value(ctx, obj)
+    defer js_free_value(ctx, arr)
+
+    let buffer = try js_array_buffer_constructor1(ctx, js_undefined(), (u64)(len << size_log2), none)
+    try typed_array_init(ctx, ret, buffer, 0, (u64)len, false)
+
+    for i in 0..<(u32)len:
+        let val = try js_get_property_uint32(ctx, arr, i)
+        discard(try js_set_property_uint32(ctx, ret, i, val))
+    return ret
+
+## A typed array of class `classid` and `len` elements copied from the typed array
+## `src_obj`.
+func js_typed_array_constructor_ta(ctx: Context*, new_target: Value, src_obj: Value, classid: i32, len: u32) -> Value!:
+    let obj = try js_create_from_ctor(ctx, new_target, classid)
+    errdefer js_free_value(ctx, obj)
+    let p = src_obj.u.obj
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let size_log2 = (u64)typed_array_size_log2((ClassId)(u16)classid)
+    let buffer = try js_array_buffer_constructor1(ctx, js_undefined(), (u64)len << size_log2, none)
+    # necessary because it could have been detached
+    if typed_array_is_oob(p):
+        js_free_value(ctx, buffer)
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let abuf = (ArrayBuffer*)(js_get_opaque(buffer, (u32)ClassId.array_buffer) else trap("not an ArrayBuffer"))
+    try typed_array_init(ctx, obj, buffer, 0, (u64)len, false)
+    let ta = p.u.typed_array
+    let src_buffer = ta.buffer
+    let src_abuf = src_buffer.u.array_buffer
+    if ((u16)p.class_id == (u16)classid and
+            (i64)ta.offset + (i64)abuf.byte_length <= (i64)src_abuf.byte_length):
+        # same type and no overflow: copy the content
+        discard(cutils.memcpy(bytes_as_void(abuf.data), array_buffer_const_data_at(src_abuf.data, ta.offset),
+                              (usize)abuf.byte_length))
+    else:
+        for i in 0..<len:
+            let val = try js_get_property_uint32(ctx, src_obj, i)
+            discard(try js_set_property_uint32(ctx, obj, i, val))
+    return obj
+
+## The constructor of the typed array class `classid`: `(length)`, `(buffer, offset,
+## length)`, `(typed array)` or `(iterable or array-like)`.
+func js_typed_array_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*, classid: i32) -> Value!:
+    var track_rab = false
+    let size_log2 = (u64)typed_array_size_log2((ClassId)(u16)classid)
+    var len: u64 = 0
+    var offset: u64 = 0
+    var obj = js_undefined()
+    var buffer = js_undefined()
+
+    if argv[0].tag != Tag.object:
+        try js_to_index(ctx, &len, argv[0])
+        obj = try js_create_from_ctor(ctx, new_target, classid)
+        buffer = js_array_buffer_constructor1(ctx, js_undefined(), len << size_log2, none) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        offset = 0
+    else:
+        let p = argv[0].u.obj
+        if p.class_id == ClassId.array_buffer or p.class_id == ClassId.shared_array_buffer:
+            obj = try js_create_from_ctor(ctx, new_target, classid)
+            errdefer js_free_value(ctx, obj)
+            try js_to_index(ctx, &offset, argv[1])
+            if (offset & (((u64)1 << size_log2) - 1)) != 0:
+                try js_throw_range_error(ctx, "invalid offset")
+            let abuf = p.u.array_buffer
+            if js_is_undefined(argv[2]):
+                if abuf.detached != 0:
+                    try js_throw_type_error_detached_array_buffer(ctx)
+                if offset > (u64)abuf.byte_length:
+                    try js_throw_range_error(ctx, "invalid offset")
+                track_rab = array_buffer_is_resizable(abuf)
+                if not track_rab:
+                    if ((u64)abuf.byte_length & (((u64)1 << size_log2) - 1)) != 0:
+                        try js_throw_range_error(ctx, "invalid length")
+                len = ((u64)abuf.byte_length - offset) >> size_log2
+            else:
+                try js_to_index(ctx, &len, argv[2])
+                if abuf.detached != 0:
+                    try js_throw_type_error_detached_array_buffer(ctx)
+                if (offset + (len << size_log2)) > (u64)abuf.byte_length:
+                    try js_throw_range_error(ctx, "invalid length")
+            buffer = js_dup_value(ctx, argv[0])
+        else:
+            if is_typed_array_class(p.class_id):
+                return try js_typed_array_constructor_ta(ctx, new_target, argv[0],
+                                                         classid, p.u.array.count)
+            else:
+                return try js_typed_array_constructor_obj(ctx, new_target, argv[0], classid)
+    typed_array_init(ctx, obj, buffer, offset, len, track_rab) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    return obj
+
+# mark: Finalizer and marking ===================================================================
+
+# also used for DataView
+## Unlink a typed array or DataView from its ArrayBuffer and release it.
+func js_typed_array_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    let opaque = p.u.opaque else return
+    let ta = (TypedArray*)opaque
+    # during the GC the finalizers are called in an arbitrary order so the ArrayBuffer
+    # finalizer may have been called
+    if ta.link.next != none:
+        cutils.list_del(&ta.link)
+    js_free_value_rt(rt, js_mkptr(Tag.object, ta.buffer))
+    js_free_rt(rt, ta)
+
+## Mark the ArrayBuffer of a typed array or DataView.
+func js_typed_array_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    let opaque = p.u.opaque else return
+    let ta = (TypedArray*)opaque
+    js_mark_value(rt, js_mkptr(Tag.object, ta.buffer), mark_func)

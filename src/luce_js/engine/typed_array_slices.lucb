@@ -1,0 +1,207 @@
+#==============================================================================================
+#
+#   typed_array_slices - %TypedArray%.prototype.join, reverse, toReversed, slice and
+#                        subarray
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 58359-58640: js_typed_array_join (join and
+#       toLocaleString), js_typed_array_reverse, js_typed_array_toReversed, slice_memcpy,
+#       js_typed_array_slice and js_typed_array_subarray.
+#
+#==============================================================================================
+
+# mark: join ====================================================================================
+
+## Append the separator of join: the character `c`, or the string `s` when `c` < 0.
+func typed_array_join_put_sep(b: StringBuffer*, c: i32, s: String*?) -> !:
+    if c >= 0:
+        try string_buffer_putc8(b, (u32)c)
+    else:
+        let sep = s else trap("join without a separator string")
+        try string_buffer_concat(b, sep, 0, sep.len)
+
+## join (to_locale_string == 0) and toLocaleString (1).
+func js_typed_array_join(ctx: Context*, this_val: Value, argc: i32, argv: Value*, to_locale_string: i32) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    var len = (i32)p.u.array.count
+    let oldlen = len
+    var newlen = len
+
+    var c = (i32)(u8)','    # default separator
+    var sep = js_undefined()
+    var s: String*? = none
+    if to_locale_string == 0 and argc > 0 and not js_is_undefined(argv[0]):
+        sep = try js_to_string(ctx, argv[0])
+        let sep_str = sep.u.string
+        s = sep_str
+        if sep_str.len == 1 and not sep_str.is_wide_char:
+            c = (i32)str8(sep_str)[0]
+        else:
+            c = -1
+        # ToString(sep) can detach or resize the arraybuffer as a side effect
+        newlen = (i32)p.u.array.count
+        len = cutils.min_int(len, newlen)
+    defer js_free_value(ctx, sep)
+    var b_s: StringBuffer = ---
+    let b = &b_s
+    try string_buffer_init(ctx, b, 0)
+    typed_array_join_elements(ctx, this_val, b, len, newlen, oldlen, c, s, to_locale_string) catch failure:
+        string_buffer_free(b)
+        error(failure.code, failure.message)
+    return try string_buffer_end(b)
+
+## The elements of join: the first `len` elements between separators, then the extra
+## separators of an array shrunk from `oldlen` to `newlen` elements.
+func typed_array_join_elements(ctx: Context*, this_val: Value, b: StringBuffer*, len: i32, newlen: i32,
+                               oldlen: i32, c: i32, s: String*?, to_locale_string: i32) -> !:
+    # XXX: optimize with direct access
+    for i in 0..<(u32)cutils.max_int(len, 0):
+        if i > 0:
+            try typed_array_join_put_sep(b, c, s)
+        var el = try js_get_property_uint32(ctx, this_val, i)
+        # Can return undefined for example if the typed array is detached
+        if not js_is_null(el) and not js_is_undefined(el):
+            if to_locale_string != 0:
+                el = try js_to_locale_string_free(ctx, el)
+            try string_buffer_concat_value_free(b, el)
+
+    # add extra separators in case RAB was resized by evil .valueOf method
+    var i = cutils.max_int(1, newlen)
+    while i < oldlen:
+        try typed_array_join_put_sep(b, c, s)
+        i += 1
+
+# mark: reverse =================================================================================
+
+func js_typed_array_reverse(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let len = try js_typed_array_get_length_unsafe(ctx, this_val)
+    if len > 0:
+        let p = this_val.u.obj
+        match typed_array_size_log2(p.class_id):
+            0:
+                var p1 = p.u.array.u.uint8_ptr
+                var p2 = p1 + (usize)(len - 1)
+                while p1 < p2:
+                    let v = *p1
+                    *p1 = *p2
+                    *p2 = v
+                    p1 = p1 + 1
+                    p2 = p2 - 1
+            1:
+                var p1 = p.u.array.u.uint16_ptr
+                var p2 = p1 + (usize)(len - 1)
+                while p1 < p2:
+                    let v = *p1
+                    *p1 = *p2
+                    *p2 = v
+                    p1 = p1 + 1
+                    p2 = p2 - 1
+            2:
+                var p1 = p.u.array.u.uint32_ptr
+                var p2 = p1 + (usize)(len - 1)
+                while p1 < p2:
+                    let v = *p1
+                    *p1 = *p2
+                    *p2 = v
+                    p1 = p1 + 1
+                    p2 = p2 - 1
+            3:
+                var p1 = p.u.array.u.uint64_ptr
+                var p2 = p1 + (usize)(len - 1)
+                while p1 < p2:
+                    let v = *p1
+                    *p1 = *p2
+                    *p2 = v
+                    p1 = p1 + 1
+                    p2 = p2 - 1
+            _:
+                trap("abort")
+    return js_dup_value(ctx, this_val)
+
+func js_typed_array_to_reversed(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    let arr = try js_typed_array_constructor_ta(ctx, js_undefined(), this_val,
+                                                (i32)p.class_id, p.u.array.count)
+    defer js_free_value(ctx, arr)
+    return try js_typed_array_reverse(ctx, arr, argc, argv)
+
+# mark: slice and subarray ======================================================================
+
+## Copy `len` bytes from `src` to `dst`: memcpy when they do not overlap, else byte by
+## byte as the spec mandates.
+func slice_memcpy(dst: u8*, src: const u8*, len: usize):
+    if (usize)dst + len <= (usize)src or (usize)dst >= (usize)src + len:
+        # no overlap: can use memcpy
+        discard(cutils.memcpy(dst, src, len))
+    else:
+        # otherwise the spec mandates byte copy
+        for i in 0..<len:
+            dst[i] = src[i]
+
+func js_typed_array_slice(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    if typed_array_is_oob(p):
+        try js_throw_type_error_array_buffer_oob(ctx)
+    let len = (i32)p.u.array.count
+
+    var start: i32 = 0
+    try js_to_int32_clamp(ctx, &start, argv[0], 0, len, len)
+    var final = len
+    if not js_is_undefined(argv[1]):
+        try js_to_int32_clamp(ctx, &final, argv[1], 0, len, len)
+    var count = cutils.max_int(final - start, 0)
+
+    let shift = typed_array_size_log2(p.class_id)
+
+    var args: Value[2] = ---
+    args[0] = this_val
+    args[1] = js_new_int32(count)
+    let arr = try js_typed_array__species_create(ctx, js_undefined(), 2, &args[0])
+    errdefer js_free_value(ctx, arr)
+
+    if count > 0:
+        try validate_typed_array(ctx, this_val)
+        try validate_typed_array(ctx, arr)
+
+        let p1 = try get_typed_array(ctx, arr)
+        let space = cutils.max_int(0, (i32)p.u.array.count - start)
+        count = cutils.min_int(count, space)
+        if p.class_id == p1.class_id:
+            slice_memcpy(p1.u.array.u.uint8_ptr,
+                         p.u.array.u.uint8_ptr + (usize)(start << shift),
+                         (usize)(count << shift))
+        else:
+            for n in 0..<count:
+                let val = try js_get_property_value(ctx, this_val, js_new_int32(start + n))
+                discard(try js_set_property_value(ctx, arr, js_new_int32(n), val, prop_throw))
+    return arr
+
+func js_typed_array_subarray(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let p = try get_typed_array(ctx, this_val)
+    let len = (i32)p.u.array.count
+    var start: i32 = 0
+    try js_to_int32_clamp(ctx, &start, argv[0], 0, len, len)
+
+    let shift = typed_array_size_log2(p.class_id)
+    let ta = p.u.typed_array
+    # Read byteOffset (ta.offset) even if detached
+    let offset = (i32)ta.offset + (start << shift)
+
+    var final = len
+    var is_auto = false
+    if js_is_undefined(argv[1]):
+        is_auto = ta.track_rab
+    else:
+        is_auto = false
+        try js_to_int32_clamp(ctx, &final, argv[1], 0, len, len)
+    let count = cutils.max_int(final - start, 0)
+    let ta_buffer = try js_typed_array_get_buffer(ctx, this_val)
+    defer js_free_value(ctx, ta_buffer)
+    var args: Value[4] = ---
+    args[0] = this_val
+    args[1] = ta_buffer
+    args[2] = js_new_int32(offset)
+    args[3] = js_new_int32(count)
+    return try js_typed_array__species_create(ctx, js_undefined(), 3 if is_auto else 4, &args[0])

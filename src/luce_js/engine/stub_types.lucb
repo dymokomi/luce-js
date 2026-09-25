@@ -110,3 +110,83 @@ enum VarDefKind as i32:
 # quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
 let global_var_offset: i32 = 0x40000000
 let argument_var_offset: i32 = 0x20000000
+
+# quickjs.c:39802 (region r22): the flags of JS_NewCConstructor.
+let new_ctor_no_global: i32 = 1 << 0
+let new_ctor_proto_class: i32 = 1 << 1
+let new_ctor_proto_exist: i32 = 1 << 2
+let new_ctor_readonly: i32 = 1 << 3
+
+# quickjs.c:42112 and 42276 (region r23): the magic of js_array_every and js_array_reduce.
+let special_every: i32 = 0
+let special_some: i32 = 1
+let special_for_each: i32 = 2
+let special_map: i32 = 3
+let special_filter: i32 = 4
+let special_ta: i32 = 8
+let special_reduce: i32 = 0
+let special_reduce_right: i32 = 1
+
+# quickjs.c:42548 (region r23): the modes of js_array_find.
+let array_find: i32 = 0
+let array_find_index: i32 = 1
+let array_find_last: i32 = 2
+let array_find_last_index: i32 = 3
+
+# Builtin tables of unported regions that ported code already uses (the intrinsics of
+# quickjs.c 56379-56730 name them). Each placeholder is one inert entry; the region that
+# declares the real table deletes its line here.
+let unported_function_list: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+]
+# region r22 (quickjs.c 41006-41575)
+let js_object_funcs: CFunctionListEntry[1] = unported_function_list
+let js_object_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_function_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_error_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_native_error_proto_funcs: CFunctionListEntry[16] = [
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+    CFunctionListEntry(name = "unported", def_type = def_prop_undefined),
+]
+let js_error_funcs: CFunctionListEntry[1] = unported_function_list
+# region r23 (quickjs.c 41932-44808)
+let js_array_funcs: CFunctionListEntry[1] = unported_function_list
+let js_iterator_wrap_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_iterator_concat_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_iterator_funcs: CFunctionListEntry[1] = unported_function_list
+let js_iterator_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_iterator_helper_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_array_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_array_iterator_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_number_funcs: CFunctionListEntry[1] = unported_function_list
+# region r24 (quickjs.c 45073-47446)
+let js_number_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_boolean_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_string_funcs: CFunctionListEntry[1] = unported_function_list
+let js_string_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_string_iterator_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_math_obj: CFunctionListEntry[1] = unported_function_list
+# region r25 (quickjs.c 50574)
+let js_reflect_obj: CFunctionListEntry[1] = unported_function_list
+# region r26 (quickjs.c 51639-51672)
+let js_symbol_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_symbol_funcs: CFunctionListEntry[1] = unported_function_list
+# quickjs.c 53321-53325
+let js_generator_function_proto_funcs: CFunctionListEntry[1] = unported_function_list
+let js_generator_proto_funcs: CFunctionListEntry[1] = unported_function_list
+# region r27 (quickjs.c 54994)
+let js_global_funcs: CFunctionListEntry[1] = unported_function_list

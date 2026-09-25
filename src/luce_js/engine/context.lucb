@@ -137,8 +137,7 @@ pub func js_new_context_raw(rt: Runtime*) -> Context*?:
     ctx.promise_ctor = js_null()
     cutils.init_list_head(&ctx.loaded_modules)
 
-    let status = js_add_intrinsic_basic_objects(ctx) catch failure: recover -1
-    if status != 0:
+    js_add_intrinsic_basic_objects(ctx) catch failure:
         js_free_context(ctx)
         return none
     return ctx
@@ -146,7 +145,7 @@ pub func js_new_context_raw(rt: Runtime*) -> Context*?:
 ## Add the intrinsics of a standard context, in JS_NewContext's order; a failure has
 ## an exception pending.
 func js_add_standard_intrinsics(ctx: Context*) -> !:
-    if try js_add_intrinsic_base_objects(ctx) != 0: error(exception, "")
+    try js_add_intrinsic_base_objects(ctx)
     if try js_add_intrinsic_date(ctx) != 0: error(exception, "")
     if js_add_intrinsic_eval(ctx) != 0: error(exception, "")
     if js_add_intrinsic_string_normalize(ctx) != 0: error(exception, "")
