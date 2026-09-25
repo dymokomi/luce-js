@@ -10,6 +10,8 @@
 #
 #==============================================================================================
 
+# mark: Exceptions ==============================================================================
+
 ## Store a TypeError as the pending exception of `ctx`.
 func throw_type_error(ctx: js.Context*, message: str):
     js.js_throw_type_error(ctx, message) catch: return
@@ -22,6 +24,8 @@ func strict_prefix(eval_flags: i32) -> const u8*:
     if (eval_flags & js.eval_flag_strict) != 0:
         return z("strict mode: ")
     return z("")
+
+# mark: eval_buf ================================================================================
 
 func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const u8*, is_test: bool,
               is_negative: bool, error_type: const u8*?, outf: void*?, eval_flags: i32,
@@ -189,6 +193,8 @@ func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const 
     js.js_free_value(ctx, exception_val)
     js.js_free_value(ctx, res_val)
     return ret
+
+# mark: eval_file ===============================================================================
 
 func eval_file(ctx: js.Context*, base: const u8*?, p: const u8*, eval_flags: i32) -> i32:
     var buf_len: usize = 0

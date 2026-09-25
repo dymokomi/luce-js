@@ -8,7 +8,7 @@
 #       (JS_AutoInitProperty and its function table) and JS_GetPropertyInternal, the
 #       property read through strings, own properties, getters, variable references,
 #       fast arrays, exotic objects and the prototype chain. JS_GetPrototype itself is
-#       ported with its region (r07).
+#       in prototype.lucb.
 #
 #==============================================================================================
 

@@ -13,7 +13,7 @@
 #
 #==============================================================================================
 
-# mark: Calls =================================================================================
+# mark: Calls ===================================================================================
 
 # The bodies of the call opcodes. The callee runs in js_call_internal, called from here:
 # the recursion of JavaScript calls then holds this small frame beside the dispatch loop's.

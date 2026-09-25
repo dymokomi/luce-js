@@ -11,7 +11,7 @@
 #
 #==============================================================================================
 
-# mark: Jumps =================================================================================
+# mark: Jumps ===================================================================================
 
 ## The body of OP_goto in JS_CallInternal.
 noinline func interp_goto(st: InterpState*) -> bool:
@@ -93,7 +93,7 @@ noinline func interp_if_false8(st: InterpState*) -> bool:
     js_poll_interrupts(st.ctx) catch: return false
     return true
 
-# mark: Catch, gosub and ret ==================================================================
+# mark: Catch, gosub and ret ====================================================================
 
 ## The body of OP_catch in JS_CallInternal.
 noinline func interp_catch(st: InterpState*):
@@ -121,7 +121,7 @@ noinline func interp_ret(st: InterpState*) -> bool:
     st.pc = st.bc_buf + (usize)pos
     return true
 
-# mark: For-in, for-of and iterators ==========================================================
+# mark: For-in, for-of and iterators ============================================================
 
 ## The body of OP_for_in_start in JS_CallInternal.
 noinline func interp_for_in_start(st: InterpState*) -> bool:

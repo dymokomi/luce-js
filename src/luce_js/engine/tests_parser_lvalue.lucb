@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r17a - Unit tests of the parser's first half that need no runtime
+#   tests_parser_lvalue - Unit tests of the parser's first half that need no runtime
 #
 #   DESCRIPTION:
 #       The look-ahead helpers, the with-scope and private field lookups on FunctionDefs
@@ -14,7 +14,7 @@
 # mark: Helpers =================================================================================
 
 # A zeroed ParseState whose current function is `fd`, which gets an empty bytecode
-# buffer; the caller frees both with free_r17a_parse_state.
+# buffer; the caller frees both with free_test_parse_state.
 func r17a_parse_state(fd: FunctionDef*) -> ParseState*:
     cutils.dbuf_init(&fd.byte_code)
     fd.last_opcode_pos = -1
@@ -24,7 +24,7 @@ func r17a_parse_state(fd: FunctionDef*) -> ParseState*:
     s.cur_func = fd
     return s
 
-func free_r17a_parse_state(s: ParseState*):
+func free_test_parse_state(s: ParseState*):
     cutils.dbuf_free(&s.fd().byte_code)
     cutils.c_free(s)
 
@@ -116,7 +116,7 @@ test "var declarations need a reference except in strict local code":
     let fd = test_function_def(none, 0, 1)
     defer cutils.c_free(fd)
     let s = r17a_parse_state(fd)
-    defer free_r17a_parse_state(s)
+    defer free_test_parse_state(s)
     assert(not need_var_reference(s, TokenType.let_))
     assert(not need_var_reference(s, TokenType.const_))
     assert(need_var_reference(s, TokenType.var_))
@@ -133,7 +133,7 @@ test "a field read becomes a field store":
     let fd = test_function_def(none, 0, 1)
     defer cutils.c_free(fd)
     let s = r17a_parse_state(fd)
-    defer free_r17a_parse_state(s)
+    defer free_test_parse_state(s)
     emit_op(s, (u8)Op.push_this)
     emit_op(s, (u8)Op.get_field)
     emit_atom(s, atom_length)
@@ -160,7 +160,7 @@ test "an element read kept on the stack becomes an element store":
     let fd = test_function_def(none, 0, 1)
     defer cutils.c_free(fd)
     let s = r17a_parse_state(fd)
-    defer free_r17a_parse_state(s)
+    defer free_test_parse_state(s)
     emit_op(s, (u8)Op.get_array_el)
     var opcode: i32 = 0
     var scope: i32 = 0
@@ -181,7 +181,7 @@ test "a variable read becomes a variable store or initialization":
     fd_scope(fd, 0).parent = -1
     fd_scope(fd, 0).first = -1
     let s = r17a_parse_state(fd)
-    defer free_r17a_parse_state(s)
+    defer free_test_parse_state(s)
     emit_op(s, (u8)TempOp.scope_get_var)
     emit_atom(s, atom_value)
     emit_u16(s, 0)
@@ -208,7 +208,7 @@ test "super property stores keep the stack order":
     let fd = test_function_def(none, 0, 1)
     defer cutils.c_free(fd)
     let s = r17a_parse_state(fd)
-    defer free_r17a_parse_state(s)
+    defer free_test_parse_state(s)
     put_lvalue(s, (i32)Op.get_super_value, 0, no_atom, -1, PutLValueKind.keep_second, false)
     put_lvalue(s, (i32)Op.get_super_value, 0, no_atom, -1, PutLValueKind.nokeep_bottom, false)
     let buf = test_bytecode(fd)
@@ -222,7 +222,7 @@ test "set_object_name renames an anonymous function":
     let fd = test_function_def(none, 0, 1)
     defer cutils.c_free(fd)
     let s = r17a_parse_state(fd)
-    defer free_r17a_parse_state(s)
+    defer free_test_parse_state(s)
     emit_op(s, (u8)Op.fclosure)
     emit_u32(s, 0)
     emit_op(s, (u8)Op.set_name)
@@ -248,7 +248,7 @@ test "set_object_name renames an anonymous class":
     let fd = test_function_def(none, 0, 1)
     defer cutils.c_free(fd)
     let s = r17a_parse_state(fd)
-    defer free_r17a_parse_state(s)
+    defer free_test_parse_state(s)
     emit_op(s, (u8)Op.undefined)
     emit_op(s, (u8)Op.define_class)
     emit_atom(s, atom_empty_string)

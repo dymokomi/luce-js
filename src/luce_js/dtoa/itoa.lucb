@@ -9,7 +9,7 @@
 #
 #==============================================================================================
 
-# mark: Fixed-length digits ====================================================================
+# mark: Fixed-length digits =====================================================================
 
 func u32toa_len(buf: u8*, n0: u32, len: usize):
     var n = n0
@@ -53,7 +53,7 @@ func limb_to_a(buf: u8*, n0: u32, radix: u32, len: i32):
             buf[(usize)i] = (u8)digit
             i -= 1
 
-# mark: Exported conversions ===================================================================
+# mark: Exported conversions ====================================================================
 
 ## Write the decimal digits of `n` at `buf` (at most 10 bytes, no NUL); answers the length.
 pub func u32toa(buf: u8*, n0: u32) -> usize:

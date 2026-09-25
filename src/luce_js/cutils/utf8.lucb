@@ -8,7 +8,7 @@
 #
 #==============================================================================================
 
-# mark: UTF-8 ==================================================================================
+# mark: UTF-8 ===================================================================================
 
 ## The longest UTF-8 sequence `unicode_to_utf8` writes (31-bit values).
 pub let utf8_char_len_max: i32 = 6
@@ -90,7 +90,7 @@ pub func unicode_from_utf8(p: const u8*, max_len: i32, pp: const u8**) -> i32:
     *pp = q
     return c
 
-# mark: Surrogates =============================================================================
+# mark: Surrogates ==============================================================================
 
 ## Whether `c` is a UTF-16 surrogate, 0xD800-0xDFFF.
 pub func is_surrogate(c: u32) -> bool:
@@ -116,7 +116,7 @@ pub func get_lo_surrogate(c: u32) -> u32:
 pub func from_surrogate(hi: u32, lo: u32) -> u32:
     return 0x10000 +% 0x400 *% (hi -% 0xD800) +% (lo -% 0xDC00)
 
-# mark: Hex digits =============================================================================
+# mark: Hex digits ==============================================================================
 
 ## The value of the hex digit `c` (either case), or -1.
 pub func from_hex(c: i32) -> i32:

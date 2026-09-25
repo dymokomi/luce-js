@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r22 - Tests of the Object, Function and Error builtins region
+#   tests_object_builtins - Tests of the Object, Function and Error builtins
 #
 #   DESCRIPTION:
 #       Unit tests of the pieces of quickjs.c lines 39700-41600 that run without a

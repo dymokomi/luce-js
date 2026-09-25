@@ -9,7 +9,7 @@
 #
 #==============================================================================================
 
-# mark: Length bound ===========================================================================
+# mark: Length bound ============================================================================
 
 ## A maximum bound of the string length `js_dtoa` writes (without the NUL). The bound
 ## depends on `d` only if the format is `dtoa_format_frac` or if `dtoa_exp_disabled` is set.
@@ -54,7 +54,7 @@ pub func js_dtoa_max_len(d: f64, radix: i32, n_digits: i32, flags: i32) -> i32:
             n += 1 + 1 + 1 + n_digits
     return cutils.max_int(n, 9) # also include NaN and [-]Infinity
 
-# mark: Temporary memory =======================================================================
+# mark: Temporary memory ========================================================================
 
 func dtoa_malloc(pptr: u64**, size: usize) -> void*:
     let ret = *pptr
@@ -65,7 +65,7 @@ func dtoa_done(buf: u8*, q: u8*) -> i32:
     *q = 0
     return (i32)(q - buf)
 
-# mark: js_dtoa ================================================================================
+# mark: js_dtoa =================================================================================
 
 ## Write `d` at `buf` in `radix` (2 to 36; other than 10 only with `dtoa_format_free`) as
 ## `flags` say, NUL-terminated; answers the length. `buf` must hold `js_dtoa_max_len(...) + 1`

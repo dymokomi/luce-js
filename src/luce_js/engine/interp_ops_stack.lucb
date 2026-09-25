@@ -12,7 +12,7 @@
 #
 #==============================================================================================
 
-# mark: Constants and the stack ===============================================================
+# mark: Constants and the stack =================================================================
 
 ## The body of OP_push_i32 in JS_CallInternal.
 noinline func interp_push_i32(st: InterpState*):
@@ -310,7 +310,7 @@ noinline func interp_swap2(st: InterpState*):
     st.sp[(isize)-2] = tmp1
     st.sp[(isize)-1] = tmp2
 
-# mark: Closures, calls and constructors ======================================================
+# mark: Closures, calls and constructors ========================================================
 
 ## The body of OP_fclosure in JS_CallInternal.
 noinline func interp_fclosure(st: InterpState*) -> bool:
@@ -396,7 +396,7 @@ noinline func interp_add_brand(st: InterpState*) -> bool:
     st.sp = st.sp - 2
     return true
 
-# mark: Throw, eval, regexp, super and import =================================================
+# mark: Throw, eval, regexp, super and import ===================================================
 
 ## The body of OP_throw in JS_CallInternal.
 noinline func interp_throw(st: InterpState*) -> bool:

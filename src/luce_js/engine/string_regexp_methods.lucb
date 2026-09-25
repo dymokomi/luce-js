@@ -8,7 +8,7 @@
 #       Symbol method (Symbol.match, Symbol.replace, ...) of its argument and calls it;
 #       otherwise match and search build a RegExp, while replace and split work on
 #       strings. GetSubstitution expands the `$` patterns of a replacement string; the
-#       RegExp methods of the r25 region call it too.
+#       RegExp methods (regexp_exec.lucb, regexp_symbols.lucb) call it too.
 #
 #==============================================================================================
 

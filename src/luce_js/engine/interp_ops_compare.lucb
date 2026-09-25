@@ -11,7 +11,7 @@
 #
 #==============================================================================================
 
-# mark: Comparisons ===========================================================================
+# mark: Comparisons =============================================================================
 
 ## The body of OP_lt in JS_CallInternal.
 noinline func interp_lt(st: InterpState*) -> bool:
@@ -171,7 +171,7 @@ noinline func interp_strict_neq(st: InterpState*):
     strict_eq_inline(st.ctx, st.sp, true)
     st.sp = st.sp - 1
 
-# mark: in, instanceof, typeof and delete =====================================================
+# mark: in, instanceof, typeof and delete =======================================================
 
 ## The body of OP_in in JS_CallInternal.
 noinline func interp_in(st: InterpState*) -> bool:
@@ -239,7 +239,7 @@ noinline func interp_to_propkey(st: InterpState*) -> bool:
         st.sp[(isize)-1] = st.ret_val
     return true
 
-# mark: with statements =======================================================================
+# mark: with statements =========================================================================
 
 ## The body of OP_with_get_var, OP_with_put_var, OP_with_delete_var, OP_with_make_ref, OP_with_get_ref in JS_CallInternal.
 noinline func interp_with_get_var(st: InterpState*) -> bool:
@@ -310,7 +310,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
         st.sp = st.sp - 1
     return true
 
-# mark: Tests and the invalid opcode ==========================================================
+# mark: Tests and the invalid opcode ============================================================
 
 ## The body of OP_is_undefined_or_null in JS_CallInternal.
 noinline func interp_is_undefined_or_null(st: InterpState*):

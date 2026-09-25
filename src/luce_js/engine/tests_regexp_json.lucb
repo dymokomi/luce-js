@@ -1,13 +1,13 @@
 #==============================================================================================
 #
-#   tests_r25 - Tests of the RegExp, JSON and Reflect helpers that need no context
+#   tests_regexp_json - Tests of the RegExp, JSON and Reflect helpers that need no context
 #
 #   DESCRIPTION:
 #       The hex escapes of RegExp.escape and JSON.stringify, the characters RegExp.escape
 #       and JSON.rawJSON single out, the flag letters of a RegExp, the parse-record
 #       lookup of JSON.parse on records built by hand, and the regex bridge: the escape
 #       parser the tokenizer uses, and compiling and matching through luce-regex with a
-#       runtime's allocator (strings from tests_r04's test_string8 and test_string16).
+#       runtime's allocator (strings from tests_strings's test_string8 and test_string16).
 #
 #==============================================================================================
 

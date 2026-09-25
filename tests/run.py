@@ -37,8 +37,8 @@ TESTS = [
     ("test_conformance.js", []),
 ]
 
-# file -> why it cannot pass yet. Keep the classification: (a) needs an unported region,
-# (b) a port bug, (c) a compiler bug, (d) a host feature deliberately not ported.
+# file -> why it cannot pass. Keep the classification: (a) a port bug, (b) a compiler bug,
+# (c) a host feature deliberately not ported.
 KNOWN_FAILURES = {
 }
 

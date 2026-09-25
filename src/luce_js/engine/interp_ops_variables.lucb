@@ -11,7 +11,7 @@
 #
 #==============================================================================================
 
-# mark: Global variables ======================================================================
+# mark: Global variables ========================================================================
 
 ## The body of OP_get_var_undef, OP_get_var in JS_CallInternal.
 noinline func interp_get_var_undef(st: InterpState*) -> bool:
@@ -66,7 +66,7 @@ noinline func interp_put_var(st: InterpState*) -> bool:
         st.sp = st.sp - 1
     return true
 
-# mark: Locals and arguments ==================================================================
+# mark: Locals and arguments ====================================================================
 
 ## The body of OP_get_loc in JS_CallInternal.
 noinline func interp_get_loc(st: InterpState*):
@@ -295,7 +295,7 @@ noinline func interp_set_var_ref2(st: InterpState*):
 noinline func interp_set_var_ref3(st: InterpState*):
     set_value(st.ctx, var_ref_at(st.var_refs, 3).pvalue, js_dup_value(st.ctx, st.sp[(isize)-1]))
 
-# mark: Closure variables =====================================================================
+# mark: Closure variables =======================================================================
 
 ## The body of OP_get_var_ref in JS_CallInternal.
 noinline func interp_get_var_ref(st: InterpState*):
@@ -318,7 +318,7 @@ noinline func interp_set_var_ref(st: InterpState*):
     st.pc = st.pc + 2
     set_value(st.ctx, var_ref_at(st.var_refs, idx).pvalue, js_dup_value(st.ctx, st.sp[(isize)-1]))
 
-# mark: Checked variables and references ======================================================
+# mark: Checked variables and references ========================================================
 
 ## The body of OP_get_var_ref_check in JS_CallInternal.
 noinline func interp_get_var_ref_check(st: InterpState*) -> bool:

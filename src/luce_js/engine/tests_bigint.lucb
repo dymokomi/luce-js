@@ -3,7 +3,7 @@
 #   tests_bigint - Unit tests of the BigInt limb arithmetic and conversions
 #
 #   DESCRIPTION:
-#       Checks for the parts of the BigInt region that run without a runtime: the limb
+#       Checks for the parts of the BigInt support that run without a runtime: the limb
 #       primitives, and the conversions and comparisons that only read a BigInt (the
 #       BigInts are laid out in local arrays, header then limbs). The expected values in
 #       tests_bigint_vectors were produced by a C driver that includes upstream quickjs.c

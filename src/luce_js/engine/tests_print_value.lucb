@@ -1,13 +1,13 @@
 #==============================================================================================
 #
-#   tests_r12 - Tests of the conversion helpers and the value printer
+#   tests_print_value - Tests of the conversion helpers and the value printer
 #
 #   DESCRIPTION:
 #       The pure number helpers (is_safe_integer, js_pow, the float parts of the slow
 #       arithmetic operators), and js_print_value_rt on a real runtime without a context:
 #       numbers, booleans and the special values, short BigInts, strings with escapes,
-#       ropes, length limits, raw dumps and atoms. The runtime cannot be freed until the
-#       collector is ported, so each test leaves its runtime allocated.
+#       ropes, length limits, raw dumps and atoms. Each test leaves its runtime allocated
+#       (the values it builds by hand are not released one by one).
 #
 #==============================================================================================
 

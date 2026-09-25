@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r13 - Unit tests of the operator, iterator and closure helpers
+#   tests_operators_closures - Unit tests of the operator, iterator and closure helpers
 #
 #   DESCRIPTION:
 #       Tests of the parts of quickjs.c lines 15090-17746 that work on plain values

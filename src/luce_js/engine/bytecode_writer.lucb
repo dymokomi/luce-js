@@ -10,7 +10,7 @@
 #       functions and modules. The byte format is QuickJS's exactly, so files written by
 #       the C qjsc can be read and the reverse.
 #
-#       is_be (quickjs.c 37551) belongs to the region before this one.
+#       is_be (quickjs.c 37551), the byte order test, is in object_list.lucb.
 #
 #       A writer function that returns -1 in C (an exception is pending) is fallible here.
 #       C ignores the result of bc_put_atom where it only fails when out of memory; the

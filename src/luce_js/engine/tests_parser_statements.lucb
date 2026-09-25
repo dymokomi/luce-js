@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r17b - Unit tests of the expression and statement parser helpers
+#   tests_parser_statements - Unit tests of the expression and statement parser helpers
 #
 #   DESCRIPTION:
 #       What the second half of the parser (parser_postfix, parser_expr,

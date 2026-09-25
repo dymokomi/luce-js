@@ -43,7 +43,7 @@ enum FrameExit:
     ## `exception`: no handler caught the pending exception.
     exception
 
-# mark: Interpreter state =====================================================================
+# mark: Interpreter state =======================================================================
 
 ## The locals of C's JS_CallInternal that its opcodes read and write: the interpreter keeps
 ## them in one record so the bodies of the less frequent opcodes can be functions of their

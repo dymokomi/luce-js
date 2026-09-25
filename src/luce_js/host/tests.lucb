@@ -10,6 +10,8 @@
 #
 #==============================================================================================
 
+# mark: Helpers =================================================================================
+
 ## A runtime and a standard context with the host state and the system modules.
 func test_context() -> Context*:
     let rt = js.js_new_runtime() else trap("no runtime")
@@ -43,6 +45,8 @@ func eval_to_text(ctx: Context*, source: str, out: u8[]) -> str:
     js.js_free_c_string(ctx, text)
     return (str)out[0..<len]
 
+# mark: std =====================================================================================
+
 test "sprintf passes each conversion to C as test_std.js expects":
     let ctx = test_context()
     var buf: u8[256]
@@ -70,6 +74,8 @@ test "sprintf reports invalid and missing conversions":
         """, buf)
     assert(text == "TypeError,ReferenceError")
     free_test_context(ctx)
+
+# mark: os ======================================================================================
 
 test "stat and readdir decode this target's layouts":
     let ctx = test_context()

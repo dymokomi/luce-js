@@ -9,7 +9,7 @@
 #
 #==============================================================================================
 
-# mark: Digits =================================================================================
+# mark: Digits ==================================================================================
 
 func to_digit(c: u8) -> i32:
     if c >= '0' and c <= '9':
@@ -38,7 +38,7 @@ func mpb_mul1_base(r: Mpb*, radix_base: u32, a: u32):
         r.len += 1
         mpb_renorm(r)
 
-# mark: js_atod ================================================================================
+# mark: js_atod =================================================================================
 
 ## Parse a number from the NUL-terminated `text` in `radix` (0 means 10 with an optional
 ## 0x prefix, or the prefixes `flags` allow) and answer it, NaN when there is no number. When

@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r24 - Tests of the region r24 helpers that need no runtime
+#   tests_math_string - Tests of the Math, string search and time zone helpers
 #
 #   DESCRIPTION:
 #       The Math helpers (round, sign, the signed-zero min and max, fround, xorshift64*),
@@ -12,7 +12,7 @@
 
 # mark: Helpers =================================================================================
 
-# The strings are built by tests_r04's test_string8 and test_string16.
+# The strings are built by tests_strings's test_string8 and test_string16.
 
 # The exact sum of `values` as Math.sumPrecise computes it.
 func test_sum_precise(values: const f64[]) -> f64:

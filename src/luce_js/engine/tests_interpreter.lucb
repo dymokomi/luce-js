@@ -3,13 +3,13 @@
 #   tests_interpreter - Tests of JS_CallInternal on hand-assembled bytecode
 #
 #   DESCRIPTION:
-#       Small bytecode functions run on a real runtime and a raw context (JS_NewContextRaw
-#       up to the basic objects, whose port is not there yet), using no intrinsic:
-#       integer arithmetic and comparisons, locals and branches, argument padding and the
-#       slow arithmetic path, a frame too large for the inline frame space, calls between
-#       bytecode functions, catching and propagating exceptions, and a suspended async
-#       frame resumed by call_flag_generator. The runtime cannot be freed until the
-#       collector is complete, so each test leaves its runtime allocated.
+#       Small bytecode functions run on a real runtime and a raw context (what
+#       JS_NewContextRaw makes before it adds the basic objects), using no intrinsic: integer
+#       arithmetic and comparisons, locals and branches, argument padding and the slow
+#       arithmetic path, a frame too large for the inline frame space, calls between bytecode
+#       functions, catching and propagating exceptions, and a suspended async frame resumed by
+#       call_flag_generator. Each test leaves its runtime allocated (the raw context and the
+#       functions it builds by hand are not released).
 #
 #==============================================================================================
 

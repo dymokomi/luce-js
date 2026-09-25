@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r19 - Unit tests of the bytecode passes' helpers that need no runtime
+#   tests_bytecode_passes - Unit tests of the bytecode passes' helpers that need no runtime
 #
 #   DESCRIPTION:
 #       The pattern matcher (code_match, code_has_label), the short opcode writers, the

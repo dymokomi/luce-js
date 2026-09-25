@@ -13,7 +13,7 @@
 #
 #==============================================================================================
 
-# mark: Checks =================================================================================
+# mark: Checks ==================================================================================
 
 func check_dtoa(bits: u64, radix: i32, n_digits: i32, flags: i32, max_len: i32, expected: str):
     var mem: DTOATempMem
@@ -68,7 +68,7 @@ func check_i64toa_radix(v: u64, radix: u32, expected: str):
     var buf: u8[80]
     check_text(buf, i64toa_radix(&buf[0], (i64)v, radix), expected)
 
-# mark: Round trips ============================================================================
+# mark: Round trips =============================================================================
 
 var test_seed: u64 = 88172645463325252
 
@@ -123,7 +123,7 @@ test "subnormals and extremes round trip":
         round_trip(bits, 2)
         round_trip(bits, 16)
 
-# mark: Internals ==============================================================================
+# mark: Internals ===============================================================================
 
 test "pow_ui and mul_log2_radix":
     assert(pow_ui(5, 17) == 762939453125)

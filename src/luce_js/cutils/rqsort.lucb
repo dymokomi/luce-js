@@ -13,7 +13,7 @@ pub type CmpF = func(const void*, const void*, void*?) -> i32
 
 type ExchangeF = func(void*, void*, usize) -> unit
 
-# mark: Exchange functions =====================================================================
+# mark: Exchange functions ======================================================================
 
 func exchange_bytes(a: void*, b: void*, size: usize):
     var ap = (u8*)a
@@ -144,7 +144,7 @@ func exchange_func(base: const void*, size: usize) -> ExchangeF:
             else:
                 return exchange_bytes
 
-# mark: Heapsort ===============================================================================
+# mark: Heapsort ================================================================================
 
 func heapsortx(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*?):
     let basep = (u8*)base
@@ -189,7 +189,7 @@ func med3(a: u8*, b: u8*, c: u8*, cmp: CmpF, opaque: void*?) -> u8*:
         return b if cmp(b, c, opaque) < 0 else (c if cmp(a, c, opaque) < 0 else a)
     return b if cmp(b, c, opaque) > 0 else (a if cmp(a, c, opaque) < 0 else c)
 
-# mark: rqsort =================================================================================
+# mark: rqsort ==================================================================================
 
 struct RqsortSegment:
     var base: u8*?

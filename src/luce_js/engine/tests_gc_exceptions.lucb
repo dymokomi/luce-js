@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_gc_exceptions - Unit tests of the collector and exception regions' plain helpers
+#   tests_gc_exceptions - Unit tests of the collector and exception helpers
 #
 #   DESCRIPTION:
 #       What runs without a runtime: the GC bits of the block header, the LEB128 coding of
@@ -10,7 +10,7 @@
 #
 #==============================================================================================
 
-# mark: Helpers ================================================================================
+# mark: Helpers =================================================================================
 
 # The bytes a DynBuf holds, copied into `out`; answers the count.
 func dbuf_bytes(s: cutils.DynBuf*, out: u8[]) -> usize:
@@ -42,7 +42,7 @@ func line_col_at(s: cutils.DynBuf*, len: usize, pc_value: u32, has_debug: bool) 
         return line_col
     return (0, 0)
 
-# mark: Block header bits ======================================================================
+# mark: Block header bits =======================================================================
 
 test "gc_obj_type and mark share one byte":
     var h = MallocBlockHeader(block_idx = 0, block_size_idx = 0, gc_bits = 0, ref_count = 1)
@@ -56,7 +56,7 @@ test "gc_obj_type and mark share one byte":
     h.set_mark(0)
     assert(h.gc_bits == 0 and h.ref_count == 1)
 
-# mark: LEB128 =================================================================================
+# mark: LEB128 ==================================================================================
 
 test "leb128 round trip":
     let values: u32[8] = [0, 1, 0x7f, 0x80, 0x3fff, 0x4000, 0x0fffffff, 0xffffffff]
@@ -96,7 +96,7 @@ test "sleb128 round trip":
         assert(v == values[i])
         cutils.dbuf_free(&s)
 
-# mark: pc2line ================================================================================
+# mark: pc2line =================================================================================
 
 test "find_line_num walks the pc2line table":
     var s: cutils.DynBuf = ---
@@ -118,7 +118,7 @@ test "find_line_num walks the pc2line table":
     assert(line_col_at(&s, 1, 0xffffffff, true) == (0, 0))
     cutils.dbuf_free(&s)
 
-# mark: Error messages =========================================================================
+# mark: Error messages ==========================================================================
 
 test "the atom macros replace one %s":
     let (a, b) = split_percent_s("'%s' is read-only")
@@ -134,7 +134,7 @@ test "C string views":
     assert(cutils.c_str_view("hello".bytes.data) == "hello")
     assert(cutils.c_str_view("".bytes.data) == "")
 
-# mark: Memory report ==========================================================================
+# mark: Memory report ===========================================================================
 
 test "printf %0.1f":
     var buf: u8[448]

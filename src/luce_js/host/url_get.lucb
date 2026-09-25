@@ -9,6 +9,8 @@
 #
 #==============================================================================================
 
+# mark: Requests and headers ====================================================================
+
 let url_get_program = "curl -s -i --"
 let url_get_buf_size: usize = 4096
 
@@ -81,6 +83,8 @@ func url_get_headers(f: void*, buf: u8*, header_buf: DynBuf*, full_flag: bool, p
         if strcmp(buf, "\r\n".bytes.data) == 0:
             break
     return true
+
+# mark: std.urlGet ==============================================================================
 
 ## urlGet(url[, options]) -> the response text, ArrayBuffer (`binary`) or, with `full`,
 ## `{response, responseHeaders, status}`; null (or response null) on a failed request.

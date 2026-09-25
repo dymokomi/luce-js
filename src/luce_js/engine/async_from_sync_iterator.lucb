@@ -7,7 +7,8 @@
 #       Port of quickjs.c lines 54385-54708: the AsyncFunction and AsyncIterator
 #       prototype tables, the async-from-sync iterator that `for await` wraps around a
 #       sync iterator, the AsyncGeneratorFunction and AsyncGenerator tables, the classes
-#       of the async region and JS_AddIntrinsicPromise, which adds all of them.
+#       of the Promise and async builtins, and JS_AddIntrinsicPromise, which adds all of
+#       them.
 #
 #==============================================================================================
 

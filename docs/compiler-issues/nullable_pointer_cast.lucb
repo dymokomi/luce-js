@@ -6,7 +6,7 @@
 # Actual:   both forms are rejected:
 #               nullable_pointer_cast.lucb:12:12: expected `void*?`, got `u8*?`
 #           and `(void*)p` says "a nullable pointer needs `if let`, not a cast".
-# Workaround: an `if let` helper (luce_js.cutils dynbuf.lucb `nullable_void`).
+# Workaround: an `if let` helper (`cutils.nullable_void` in luce_js.cutils module.lucb).
 
 func as_void(p: u8*?) -> void*?:
     return (void*?)p

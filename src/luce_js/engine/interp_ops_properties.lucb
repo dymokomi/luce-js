@@ -11,7 +11,7 @@
 #
 #==============================================================================================
 
-# mark: Fields ================================================================================
+# mark: Fields ==================================================================================
 
 ## The body of OP_get_field in JS_CallInternal.
 noinline func interp_get_field(st: InterpState*) -> bool:
@@ -66,7 +66,7 @@ noinline func interp_put_field(st: InterpState*) -> bool:
             return false
     return true
 
-# mark: Private fields, names, methods and classes ============================================
+# mark: Private fields, names, methods and classes ==============================================
 
 ## The body of OP_private_symbol in JS_CallInternal.
 noinline func interp_private_symbol(st: InterpState*) -> bool:
@@ -205,7 +205,7 @@ noinline func interp_define_class(st: InterpState*) -> bool:
     js_op_define_class(st.ctx, st.sp, atom, class_flags, st.var_refs, st.sf, st.opcode == Op.define_class_computed) catch: return false
     return true
 
-# mark: Elements and references ===============================================================
+# mark: Elements and references =================================================================
 
 ## The body of OP_get_array_el in JS_CallInternal.
 noinline func interp_get_array_el(st: InterpState*) -> bool:

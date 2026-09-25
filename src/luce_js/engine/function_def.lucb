@@ -5,8 +5,8 @@
 #   DESCRIPTION:
 #       Port of quickjs.c free_bytecode_atoms (lines 32127-32160), which js_free_function_def
 #       uses to release the atoms a function's bytecode holds. js_new_function_def and
-#       js_free_function_def (lines 32062-32221) are ported in module_parse.lucb. The DUMP_BYTECODE dump (dump_byte_code)
-#       is not ported.
+#       js_free_function_def (lines 32062-32221) are ported in module_parse.lucb. The
+#       DUMP_BYTECODE dump (dump_byte_code) is not ported.
 #
 #==============================================================================================
 

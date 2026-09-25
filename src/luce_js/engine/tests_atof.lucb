@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r10 - Tests of the region r10 helpers that need no runtime
+#   tests_atof - Tests of the number parser's helpers and the opaque accessors
 #
 #   DESCRIPTION:
 #       The number parser's helpers skip_spaces and to_digit, and the opaque accessors

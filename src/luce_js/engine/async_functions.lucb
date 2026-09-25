@@ -38,7 +38,7 @@ func js_async_function_resolve_create(ctx: Context*, s: AsyncFunctionState*, res
         js_rc(s).ref_count += 1
         p.u.async_function_data = s
 
-# mark: Resuming =================================================================================
+# mark: Resuming ================================================================================
 
 # Reject the promise of the async function `s` with the pending exception (the `fail`
 # label of js_async_function_resume).
@@ -107,7 +107,7 @@ func js_async_function_resolve_call(ctx: Context*, func_obj: Value, this_obj: Va
     js_async_function_resume(ctx, s)
     return js_undefined()
 
-# mark: Calls =====================================================================================
+# mark: Calls ===================================================================================
 
 ## The call of an async function: run it up to its first await and answer the promise
 ## of its result.

@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r09 - Unit tests of the property write helpers
+#   tests_property_write - Unit tests of the property write helpers
 #
 #   DESCRIPTION:
 #       Tests of the parts of quickjs.c lines 9000-10350 that work on plain data without a

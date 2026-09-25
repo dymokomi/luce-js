@@ -11,7 +11,7 @@
 #
 #==============================================================================================
 
-# mark: Addition ==============================================================================
+# mark: Addition ================================================================================
 
 ## The body of OP_add in JS_CallInternal.
 noinline func interp_add(st: InterpState*) -> bool:
@@ -94,7 +94,7 @@ noinline func interp_add_loc(st: InterpState*) -> bool:
         set_value(st.ctx, pv, ops[0])
     return true
 
-# mark: Other arithmetic ======================================================================
+# mark: Other arithmetic ========================================================================
 
 ## The body of OP_sub in JS_CallInternal.
 noinline func interp_sub(st: InterpState*) -> bool:
@@ -274,7 +274,7 @@ noinline func interp_neg(st: InterpState*) -> bool:
         st.sp[(isize)-1] = js_new_float64_raw(d)
     return true
 
-# mark: Increments ============================================================================
+# mark: Increments ==============================================================================
 
 ## The body of OP_inc in JS_CallInternal.
 noinline func interp_inc(st: InterpState*) -> bool:
@@ -358,7 +358,7 @@ noinline func interp_dec_loc(st: InterpState*) -> bool:
         set_value(st.ctx, st.var_buf + idx, op1)
     return true
 
-# mark: Bitwise operators =====================================================================
+# mark: Bitwise operators =======================================================================
 
 ## The body of OP_not in JS_CallInternal.
 noinline func interp_not(st: InterpState*) -> bool:

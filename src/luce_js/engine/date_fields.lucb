@@ -3,13 +3,12 @@
 #   date_fields - Date time values: the calendar arithmetic, fields and their accessors
 #
 #   DESCRIPTION:
-#       Port of quickjs.c lines 55014-55288: the time value of a Date object, the
-#       conversions between a time value (milliseconds since 1970, UTC) and its fields
-#       (year, month, date, hours, minutes, seconds, milliseconds, week day, time zone
-#       offset), and the getters and setters of Date.prototype that go through them. The
-#       local time zone offset is get_timezone_offset (region r24). The C computation of
-#       fields from a time is split out as date_fields_of_time, a pure function the tests
-#       drive.
+#       Port of quickjs.c lines 55014-55288: the time value of a Date object, the conversions
+#       between a time value (milliseconds since 1970, UTC) and its fields (year, month, date,
+#       hours, minutes, seconds, milliseconds, week day, time zone offset), and the getters
+#       and setters of Date.prototype that go through them. The local time zone offset is
+#       get_timezone_offset (timezone_regexp_objects.lucb). The C computation of fields from a
+#       time is split out as date_fields_of_time, a pure function the tests drive.
 #
 #==============================================================================================
 

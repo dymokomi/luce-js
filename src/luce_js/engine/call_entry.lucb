@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   calls - Calling functions and constructors, and async function frames
+#   call_entry - Calling functions and constructors, and async function frames
 #
 #   DESCRIPTION:
 #       Port of quickjs.c lines 20711-20951: the entry points around the interpreter
