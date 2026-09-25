@@ -1,0 +1,194 @@
+#==============================================================================================
+#
+#   property_create - Creating properties, and preparing shapes for in-place updates
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 10118-10348: get_prop_flags, JS_CreateProperty (with the
+#       array length update and the exotic define_own_property hook),
+#       check_define_prop_flags, js_shape_prepare_update and js_update_property_flags.
+#       QuickJS's labels in JS_CreateProperty (convert_to_array, generic_array,
+#       not_extensible) become flags and a helper.
+#
+#==============================================================================================
+
+# mark: Property flags ==========================================================================
+
+# compute the property flags. For each flag: (prop_has_x forces
+# it, otherwise def_flags is used)
+# Note: makes assumption about the bit pattern of the flags
+func get_prop_flags(flags: i32, def_flags: i32) -> i32:
+    let mask = (flags >> prop_has_shift) & prop_c_w_e
+    return (flags & mask) | (def_flags & ~mask)
+
+# mark: Creating properties =====================================================================
+
+## Report that `p` is not extensible (the not_extensible label of JS_CreateProperty).
+func create_property_not_extensible(ctx: Context*, flags: i32) -> bool!:
+    return try js_throw_type_error_or_false(ctx, flags, "object is not extensible")
+
+## Update the length of the array `p` for a new element `idx` (the generic_array label of
+## JS_CreateProperty); false (or an exception) if the length is read-only.
+func create_property_array_length(ctx: Context*, p: Object*, idx: u32, flags: i32) -> bool!:
+    # update the length field
+    let plen = p.prop
+    # JS_ToUint32: the length of an array is always a number, so this cannot fail
+    var len: u32 = 0
+    discard(js_to_int32(ctx, (i32*)&len, plen.u.value) else 0)
+    if (idx + 1) > len:
+        let pslen = get_shape_prop(p.shape)
+        if ((i32)pslen.flags & prop_writable) == 0:
+            return try js_throw_type_error_read_only(ctx, flags, atom_length)
+        # XXX: should update the length after defining
+        # the property
+        len = idx + 1
+        set_value(ctx, &plen.u.value, js_new_uint32(len))
+    return true
+
+## Add the new property `prop` to `p` with the value `val` or the accessors `getter` and
+## `setter` (as the prop_has_* bits of `flags` say), or let an exotic object define it.
+## `val`, `getter` and `setter` are not freed. Answers true, false (only without
+## prop_throw) or fails with the exception pending.
+func js_create_property(ctx: Context*, p: Object*, prop: Atom, val: Value, getter: Value, setter: Value, flags: i32) -> bool!:
+    # add a new property or modify an existing exotic one
+    if p.is_exotic:
+        if p.class_id == ClassId.array:
+            var idx: u32 = 0
+            # generic_array: the property is an array index and the length may grow
+            var generic_array = false
+            if p.fast_array:
+                var convert_to_array = false
+                if js_atom_is_tagged_int_raw(prop):
+                    idx = js_atom_to_uint32_raw(prop)
+                    if idx == p.u.array.count:
+                        if not p.extensible:
+                            return try create_property_not_extensible(ctx, flags)
+                        if (flags & (prop_has_get | prop_has_set)) != 0:
+                            convert_to_array = true
+                        elif get_prop_flags(flags, 0) != prop_c_w_e:
+                            convert_to_array = true
+                        else:
+                            return try add_fast_array_element(ctx, p, js_dup_value(ctx, val), flags)
+                    else:
+                        convert_to_array = true
+                elif js_atom_is_array_index(ctx, &idx, prop):
+                    # convert the fast array to normal array
+                    convert_to_array = true
+                if convert_to_array:
+                    try convert_fast_array_to_array(ctx, p)
+                    generic_array = true
+            elif js_atom_is_array_index(ctx, &idx, prop):
+                generic_array = true
+            if generic_array:
+                if not try create_property_array_length(ctx, p, idx, flags):
+                    return false
+        elif ((u16)p.class_id >= (u16)ClassId.uint8c_array and
+                (u16)p.class_id <= (u16)ClassId.float64_array):
+            if try js_atom_is_numeric_index(ctx, prop):
+                return try js_throw_type_error_or_false(ctx, flags, "cannot create numeric index in typed array")
+        elif (flags & prop_no_exotic) == 0:
+            let class_array = ctx.rt.class_array else trap("the class array is not allocated")
+            if let em = class_array[(usize)p.class_id].exotic:
+                if let define_fn = em.define_own_property:
+                    return try define_fn(ctx, js_mkptr(Tag.object, p), prop, val, getter, setter, flags)
+                if not try js_is_extensible(ctx, js_mkptr(Tag.object, p)):
+                    return try create_property_not_extensible(ctx, flags)
+
+    if not p.extensible:
+        return try create_property_not_extensible(ctx, flags)
+
+    var var_ref: VarRef*? = none
+    var delete_obj: Object*? = none
+    var prop_flags: i32 = 0
+    if (flags & (prop_has_get | prop_has_set)) != 0:
+        prop_flags = (flags & (prop_configurable | prop_enumerable)) | prop_getset
+    else:
+        prop_flags = flags & prop_c_w_e
+        if p.class_id == ClassId.global_object:
+            let p1 = p.u.global_object.uninitialized_vars.u.obj
+            var pr1: Property*? = none
+            var vr: VarRef* = ---
+            if find_own_property(&pr1, p1, prop) != none:
+                delete_obj = p1
+                vr = (pr1 else trap("own property without storage")).u.var_ref
+                js_rc(vr).ref_count += 1
+            else:
+                vr = try js_create_var_ref(ctx, false)
+            vr.is_const = 1 if (prop_flags & prop_writable) == 0 else 0
+            var_ref = vr
+            prop_flags |= prop_varref
+    let pr = add_property(ctx, p, prop, prop_flags) catch failure:
+        free_var_ref(ctx.rt, var_ref)
+        error(failure.code, failure.message)
+    if (flags & (prop_has_get | prop_has_set)) != 0:
+        pr.u.getset.getter = none
+        if (flags & prop_has_get) != 0 and js_is_function(ctx, getter):
+            pr.u.getset.getter = js_dup_value(ctx, getter).u.obj
+        pr.u.getset.setter = none
+        if (flags & prop_has_set) != 0 and js_is_function(ctx, setter):
+            pr.u.getset.setter = js_dup_value(ctx, setter).u.obj
+    elif p.class_id == ClassId.global_object:
+        # (as in QuickJS, the result of the deletion is ignored)
+        if let d = delete_obj:
+            discard(delete_property(ctx, d, prop) else false)
+        let vr = var_ref else trap("global variable without a reference")
+        pr.u.var_ref = vr
+        if (flags & prop_has_value) != 0:
+            *vr.pvalue = js_dup_value(ctx, val)
+        else:
+            *vr.pvalue = js_undefined()
+    else:
+        if (flags & prop_has_value) != 0:
+            pr.u.value = js_dup_value(ctx, val)
+        else:
+            pr.u.value = js_undefined()
+    return true
+
+# mark: Checking and updating flags =============================================================
+
+# return false if not OK
+## Whether a define with `flags` may change a property of flags `prop_flags`.
+func check_define_prop_flags(prop_flags: i32, flags: i32) -> bool:
+    if (prop_flags & prop_configurable) == 0:
+        if ((flags & (prop_has_configurable | prop_configurable)) ==
+                (prop_has_configurable | prop_configurable)):
+            return false
+        if ((flags & prop_has_enumerable) != 0 and
+                (flags & prop_enumerable) != (prop_flags & prop_enumerable)):
+            return false
+        if (flags & (prop_has_value | prop_has_writable | prop_has_get | prop_has_set)) != 0:
+            let has_accessor = (flags & (prop_has_get | prop_has_set)) != 0
+            let is_getset = (prop_flags & prop_tmask) == prop_getset
+            if has_accessor != is_getset:
+                return false
+            if not is_getset and (prop_flags & prop_writable) == 0:
+                # not writable: cannot set the writable bit
+                if ((flags & (prop_has_writable | prop_writable)) ==
+                        (prop_has_writable | prop_writable)):
+                    return false
+    return true
+
+# ensure that the shape can be safely modified
+## A shared hashed shape is cloned (and `*pprs`, if given, moved to the clone); an
+## unshared one is taken out of the shape hash table.
+func js_shape_prepare_update(ctx: Context*, p: Object*, pprs: ShapeProperty**?) -> !:
+    var sh = p.shape
+    if sh.is_hashed != 0:
+        if js_rc(sh).ref_count != 1:
+            var idx: usize = 0 # prevent warning
+            if let pp = pprs:
+                idx = (usize)(*pp - get_shape_prop(sh))
+            # clone the shape (the resulting one is no longer hashed)
+            sh = try js_clone_shape(ctx, sh)
+            js_free_shape(ctx.rt, p.shape)
+            p.shape = sh
+            if let pp = pprs:
+                *pp = get_shape_prop(sh) + idx
+        else:
+            js_shape_hash_unlink(ctx.rt, sh)
+            sh.is_hashed = 0
+
+## Set the flags of the shape property `*pprs` of `p` to `flags`, preparing the shape.
+func js_update_property_flags(ctx: Context*, p: Object*, pprs: ShapeProperty**, flags: i32) -> !:
+    if flags != (i32)(*pprs).flags:
+        try js_shape_prepare_update(ctx, p, pprs)
+        (*pprs).flags = (u8)flags

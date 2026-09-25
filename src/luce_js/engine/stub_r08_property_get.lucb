@@ -57,19 +57,19 @@ func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum**, ple
 func js_get_own_property_names(ctx: Context*, ptab: PropertyEnum**, plen: u32*, obj: Value, flags: i32) -> i32!:
     trap("unported: JS_GetOwnPropertyNames")
 ## Ported from quickjs.c:8817 JS_GetOwnPropertyInternal.
-func js_get_own_property_internal(ctx: Context*, desc: PropertyDescriptor*, p: Object*, prop: Atom) -> i32!:
+func js_get_own_property_internal(ctx: Context*, desc: PropertyDescriptor*, p: Object*, prop: Atom) -> bool!:
     trap("unported: JS_GetOwnPropertyInternal")
 ## Ported from quickjs.c:8895 JS_GetOwnProperty.
 func js_get_own_property(ctx: Context*, desc: PropertyDescriptor*, obj: Value, prop: Atom) -> i32!:
     trap("unported: JS_GetOwnProperty")
 ## Ported from quickjs.c:8906 JS_IsExtensible.
-func js_is_extensible(ctx: Context*, obj: Value) -> i32:
+func js_is_extensible(ctx: Context*, obj: Value) -> bool!:
     trap("unported: JS_IsExtensible")
 ## Ported from quickjs.c:8923 JS_PreventExtensions.
 func js_prevent_extensions(ctx: Context*, obj: Value) -> i32:
     trap("unported: JS_PreventExtensions")
 ## Ported from quickjs.c:8953 JS_HasProperty.
-func js_has_property(ctx: Context*, obj: Value, prop: Atom) -> i32!:
+func js_has_property(ctx: Context*, obj: Value, prop: Atom) -> bool!:
     trap("unported: JS_HasProperty")
 ## Ported from quickjs.c:8996 js_symbol_to_atom.
 func js_symbol_to_atom(ctx: Context*, val: Value) -> Atom:

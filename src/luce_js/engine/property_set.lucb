@@ -1,0 +1,255 @@
+#==============================================================================================
+#
+#   property_set - The core property write: JS_SetPropertyInternal
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 9659-9933. JS_SetPropertyInternal looks the property up
+#       on the receiver, then along the prototype chain (setters, read-only properties,
+#       fast arrays, typed arrays and exotic objects), then creates it on the receiver.
+#       QuickJS's labels become code: `retry` and `retry2` are loops, the prototype walk
+#       is the labeled loop `chain`, and `typed_array_oob`, `read_only_prop` and
+#       `generic_create_prop` are the helpers below. Every path takes ownership of `val`.
+#
+#==============================================================================================
+
+# mark: Shared exits ============================================================================
+
+## Free `val` and report the read-only property `prop` (the read_only_prop label).
+func set_property_read_only(ctx: Context*, val: Value, flags: i32, prop: Atom) -> bool!:
+    js_free_value(ctx, val)
+    return try js_throw_type_error_read_only(ctx, flags, prop)
+
+## A numeric index out of the bounds of the typed array `p1` (the typed_array_oob label):
+## nothing is written, but when `p1` is the receiver the value is still converted.
+func set_property_typed_array_oob(ctx: Context*, is_receiver: bool, p1: Object*, val: Value) -> bool!:
+    if is_receiver:
+        # must convert the argument even if out of bound access
+        if p1.class_id == ClassId.big_int64_array or p1.class_id == ClassId.big_uint64_array:
+            var v: i64 = 0
+            discard(try js_to_bigint64_free(ctx, &v, val))
+        else:
+            let num = try js_to_number_free(ctx, val)
+            js_free_value(ctx, num)
+    else:
+        js_free_value(ctx, val)
+    return true
+
+## Create the property `prop` of `p` with the value `val` (the generic_create_prop label).
+func set_property_generic_create(ctx: Context*, p: Object*, prop: Atom, val: Value, flags: i32) -> bool!:
+    defer js_free_value(ctx, val)
+    return try js_create_property(ctx, p, prop, val, js_undefined(), js_undefined(),
+        flags | prop_has_value | prop_has_enumerable | prop_has_writable |
+        prop_has_configurable | prop_c_w_e)
+
+## Whether `p` is one of the typed array classes.
+func set_property_is_typed_array(p: Object*) -> bool:
+    return ((u16)p.class_id >= (u16)ClassId.uint8c_array and
+        (u16)p.class_id <= (u16)ClassId.float64_array)
+
+# mark: JS_SetPropertyInternal ==================================================================
+
+# return true or false, or fail in case of exception. Warning: 'val' is
+# freed by the function. 'flags' is a bitmask of prop_throw and
+# prop_throw_strict. 'this_obj' is the receiver. If obj !=
+# this_obj, then obj must be an object (Reflect.set case).
+## Set the property `prop` of `obj` with receiver `this_obj` (JS_SetPropertyInternal).
+pub func js_set_property_internal(ctx: Context*, obj: Value, prop: Atom, val: Value, this_obj: Value, flags: i32) -> bool!:
+    # p is the receiver (none for a primitive), p1 the object being searched
+    var p: Object*? = none
+    var p1: Object*? = none
+    # true when the search starts at prototype_lookup instead of the own properties
+    var in_chain = false
+    let tag = this_obj.tag
+    if tag != Tag.object:
+        if obj.tag == Tag.object:
+            p1 = obj.u.obj
+            in_chain = true
+        else:
+            match tag:
+                .null:
+                    js_free_value(ctx, val)
+                    var buf: u8[atom_get_str_buf_size] = ---
+                    try js_throw_type_error(ctx, f"cannot set property '{js_atom_get_str(ctx, buf, prop)}' of null")
+                .undefined:
+                    js_free_value(ctx, val)
+                    var buf: u8[atom_get_str_buf_size] = ---
+                    try js_throw_type_error(ctx, f"cannot set property '{js_atom_get_str(ctx, buf, prop)}' of undefined")
+                _:
+                    # even on a primitive type we can have setters on the prototype
+                    let proto = js_get_prototype_primitive(ctx, obj) catch failure:
+                        js_free_value(ctx, val)
+                        error(failure.code, failure.message)
+                    p1 = get_proto_obj(proto)
+                    in_chain = true
+    else:
+        p = this_obj.u.obj
+        p1 = obj.u.obj
+        in_chain = p != p1
+
+    if not in_chain:
+        # fast path if obj == this_obj
+        let po = p else trap("no receiver")
+        retry: while true:
+            var pr_opt: Property*? = none
+            let prs = find_own_property(&pr_opt, po, prop) else break retry
+            let pr = pr_opt else trap("own property without storage")
+            let prs_flags = (i32)prs.flags
+            if (prs_flags & (prop_tmask | prop_writable | prop_length)) == prop_writable:
+                # fast case
+                set_value(ctx, &pr.u.value, val)
+                return true
+            elif (prs_flags & prop_length) != 0:
+                assert(po.class_id == ClassId.array)
+                assert(prop == atom_length)
+                return try set_array_length(ctx, po, val, flags)
+            elif (prs_flags & prop_tmask) == prop_getset:
+                return try call_setter(ctx, pr.u.getset.setter, this_obj, val, flags)
+            elif (prs_flags & prop_tmask) == prop_varref:
+                # XXX: already use var_ref->is_const. Cannot simplify use the
+                # writable flag for ClassId.module_ns.
+                if po.class_id == ClassId.module_ns or pr.u.var_ref.is_const != 0:
+                    return try set_property_read_only(ctx, val, flags, prop)
+                set_value(ctx, pr.u.var_ref.pvalue, val)
+                return true
+            elif (prs_flags & prop_tmask) == prop_autoinit:
+                # Instantiate property and retry (potentially useless)
+                discard(js_auto_init_property(ctx, po, prop, pr, prs) catch failure:
+                    js_free_value(ctx, val)
+                    error(failure.code, failure.message))
+                continue retry
+            else:
+                return try set_property_read_only(ctx, val, flags, prop)
+
+    chain: while true:
+        if not in_chain:
+            let cur = p1 else trap("no object in the prototype chain")
+            if cur.is_exotic:
+                if cur.fast_array:
+                    if js_atom_is_tagged_int_raw(prop):
+                        let idx = js_atom_to_uint32_raw(prop)
+                        if idx < cur.u.array.count:
+                            if p == cur:
+                                return try js_set_property_value(ctx, this_obj, js_new_int32((i32)idx), val, flags)
+                            else:
+                                break chain
+                        elif set_property_is_typed_array(cur):
+                            return try set_property_typed_array_oob(ctx, p == cur, cur, val)
+                    elif set_property_is_typed_array(cur):
+                        let ret = js_atom_is_numeric_index(ctx, prop) catch failure:
+                            js_free_value(ctx, val)
+                            error(failure.code, failure.message)
+                        if ret:
+                            return try set_property_typed_array_oob(ctx, p == cur, cur, val)
+                else:
+                    let class_array = ctx.rt.class_array else trap("the class array is not allocated")
+                    if let em = class_array[(usize)cur.class_id].exotic:
+                        if let set_fn = em.set_property:
+                            # set_property can free the prototype
+                            let obj1 = js_dup_value(ctx, js_mkptr(Tag.object, cur))
+                            defer js_free_value(ctx, val)
+                            defer js_free_value(ctx, obj1)
+                            return try set_fn(ctx, obj1, prop, val, this_obj, flags)
+                        if let get_own_fn = em.get_own_property:
+                            # get_own_property can free the prototype
+                            let obj1 = js_dup_value(ctx, js_mkptr(Tag.object, cur))
+                            var desc: PropertyDescriptor = ---
+                            let ret = get_own_fn(ctx, &desc, obj1, prop) catch failure:
+                                js_free_value(ctx, obj1)
+                                js_free_value(ctx, val)
+                                error(failure.code, failure.message)
+                            js_free_value(ctx, obj1)
+                            if ret:
+                                if (desc.flags & prop_getset) != 0:
+                                    var setter: Object*? = none
+                                    if not js_is_undefined(desc.setter):
+                                        setter = desc.setter.u.obj
+                                    defer js_free_value(ctx, desc.setter)
+                                    defer js_free_value(ctx, desc.getter)
+                                    return try call_setter(ctx, setter, this_obj, val, flags)
+                                else:
+                                    js_free_value(ctx, desc.value)
+                                    if (desc.flags & prop_writable) == 0:
+                                        return try set_property_read_only(ctx, val, flags, prop)
+                                    if p == cur:
+                                        defer js_free_value(ctx, val)
+                                        return try js_define_property(ctx, this_obj, prop, val,
+                                            js_undefined(), js_undefined(), prop_has_value)
+                                    else:
+                                        break chain
+            p1 = cur.shape.proto
+        in_chain = false
+
+        # prototype_lookup:
+        let cur = p1 else break chain
+
+        # retry2:
+        while true:
+            var pr_opt: Property*? = none
+            let prs = find_own_property(&pr_opt, cur, prop) else break
+            let pr = pr_opt else trap("own property without storage")
+            let prs_flags = (i32)prs.flags
+            if (prs_flags & prop_tmask) == prop_getset:
+                return try call_setter(ctx, pr.u.getset.setter, this_obj, val, flags)
+            elif (prs_flags & prop_tmask) == prop_autoinit:
+                # Instantiate property and retry (potentially useless). QuickJS does not
+                # free 'val' when this fails; the port does, as the function owns it.
+                discard(js_auto_init_property(ctx, cur, prop, pr, prs) catch failure:
+                    js_free_value(ctx, val)
+                    error(failure.code, failure.message))
+                continue
+            elif (prs_flags & prop_writable) == 0:
+                return try set_property_read_only(ctx, val, flags, prop)
+            else:
+                break chain
+
+    if let po = p:
+        return try set_property_on_receiver(ctx, obj, po, prop, val, this_obj, flags)
+    js_free_value(ctx, val)
+    return try js_throw_type_error_or_false(ctx, flags, "not an object")
+
+# mark: Creating on the receiver ================================================================
+
+## The end of JS_SetPropertyInternal: nothing on the prototype chain handled the write, so
+## set or create the property on the receiver `p` (the object of `this_obj`).
+func set_property_on_receiver(ctx: Context*, obj: Value, p: Object*, prop: Atom, val: Value, this_obj: Value, flags: i32) -> bool!:
+    if not p.extensible:
+        js_free_value(ctx, val)
+        return try js_throw_type_error_or_false(ctx, flags, "object is not extensible")
+
+    if p == obj.u.obj:
+        if p.is_exotic:
+            if p.class_id == ClassId.array and p.fast_array and js_atom_is_tagged_int_raw(prop):
+                let idx = js_atom_to_uint32_raw(prop)
+                if idx == p.u.array.count:
+                    # fast case
+                    return try add_fast_array_element(ctx, p, val, flags)
+            return try set_property_generic_create(ctx, p, prop, val, flags)
+        else:
+            if p.class_id == ClassId.global_object:
+                return try set_property_generic_create(ctx, p, prop, val, flags)
+            let pr = add_property(ctx, p, prop, prop_c_w_e) catch failure:
+                js_free_value(ctx, val)
+                error(failure.code, failure.message)
+            pr.u.value = val
+            return true
+    else:
+        # generic case: modify the property in this_obj if it already exists
+        var desc: PropertyDescriptor = ---
+        let ret = js_get_own_property_internal(ctx, &desc, p, prop) catch failure:
+            js_free_value(ctx, val)
+            error(failure.code, failure.message)
+        if ret:
+            if (desc.flags & prop_getset) != 0:
+                js_free_value(ctx, desc.getter)
+                js_free_value(ctx, desc.setter)
+                js_free_value(ctx, val)
+                return try js_throw_type_error_or_false(ctx, flags, "setter is forbidden")
+            else:
+                js_free_value(ctx, desc.value)
+                if (desc.flags & prop_writable) == 0 or p.class_id == ClassId.module_ns:
+                    return try set_property_read_only(ctx, val, flags, prop)
+            defer js_free_value(ctx, val)
+            return try js_define_property(ctx, this_obj, prop, val,
+                js_undefined(), js_undefined(), prop_has_value)
+        else:
+            return try set_property_generic_create(ctx, p, prop, val, flags)

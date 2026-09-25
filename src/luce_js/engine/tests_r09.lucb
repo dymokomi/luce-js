@@ -1,0 +1,86 @@
+#==============================================================================================
+#
+#   tests_r09 - Unit tests of the property write helpers
+#
+#   DESCRIPTION:
+#       Tests of the parts of quickjs.c lines 9000-10350 that work on plain data without a
+#       runtime: the descriptor flag arithmetic of get_prop_flags, the define checks of
+#       check_define_prop_flags, and can_extend_fast_array over objects and shapes laid
+#       out by hand in buffers. Expected values follow the C expressions.
+#
+#==============================================================================================
+
+# mark: Flags ===================================================================================
+
+test "get_prop_flags: a prop_has_* bit forces its flag, the default fills the rest":
+    # nothing forced: the defaults
+    assert(get_prop_flags(0, prop_c_w_e) == prop_c_w_e)
+    assert(get_prop_flags(0, 0) == 0)
+    # forced off
+    assert(get_prop_flags(prop_has_writable, prop_c_w_e) == (prop_configurable | prop_enumerable))
+    # forced on
+    assert(get_prop_flags(prop_has_enumerable | prop_enumerable, 0) == prop_enumerable)
+    # every flag forced
+    let all_has = prop_has_configurable | prop_has_writable | prop_has_enumerable
+    assert(get_prop_flags(all_has | prop_writable, prop_c_w_e) == prop_writable)
+    assert(get_prop_flags(all_has | prop_c_w_e, 0) == prop_c_w_e)
+    # bits other than C, W and E in 'flags' are kept only where forced
+    assert(get_prop_flags(prop_has_value | prop_throw, 0) == 0)
+
+test "check_define_prop_flags: a configurable property accepts any change":
+    assert(check_define_prop_flags(prop_configurable, prop_has_configurable))
+    assert(check_define_prop_flags(prop_configurable | prop_getset, prop_has_value | prop_has_writable))
+    assert(check_define_prop_flags(prop_c_w_e, prop_has_get | prop_has_set))
+
+test "check_define_prop_flags: a non-configurable property":
+    # cannot become configurable
+    assert(not check_define_prop_flags(prop_writable, prop_has_configurable | prop_configurable))
+    assert(check_define_prop_flags(prop_writable, prop_has_configurable))
+    # cannot change enumerable
+    assert(not check_define_prop_flags(prop_writable, prop_has_enumerable | prop_enumerable))
+    assert(check_define_prop_flags(prop_enumerable, prop_has_enumerable | prop_enumerable))
+    assert(not check_define_prop_flags(prop_enumerable, prop_has_enumerable))
+    # cannot switch between data and accessor
+    assert(not check_define_prop_flags(prop_writable, prop_has_get))
+    assert(not check_define_prop_flags(prop_getset, prop_has_value))
+    assert(check_define_prop_flags(prop_getset, prop_has_set))
+    # a writable data property may be written and made read-only
+    assert(check_define_prop_flags(prop_writable, prop_has_value | prop_has_writable))
+    # a read-only data property cannot become writable
+    assert(not check_define_prop_flags(0, prop_has_writable | prop_writable))
+    assert(check_define_prop_flags(0, prop_has_writable))
+    assert(check_define_prop_flags(0, prop_has_value))
+
+# mark: Fast arrays =============================================================================
+
+## Lay out an object whose shape (also in a buffer) has prototype `proto`.
+func test_array_object(object_buf: u64*, shape_buf: u64*, proto: Object*?, extensible: bool) -> Object*:
+    let sh = (Shape*)shape_buf
+    sh.is_hashed = 0
+    sh.prop_hash_mask = 0
+    sh.prop_count = 0
+    sh.proto = proto
+    let p = (Object*)object_buf
+    p.shape = sh
+    p.extensible = extensible
+    p.is_std_array_prototype = false
+    return p
+
+test "can_extend_fast_array: extensible, with a standard or no prototype":
+    var proto_buf: u64[16] = ---
+    var proto_shape_buf: u64[16] = ---
+    let proto = test_array_object(&proto_buf[0], &proto_shape_buf[0], none, true)
+
+    var object_buf: u64[16] = ---
+    var shape_buf: u64[16] = ---
+    let p = test_array_object(&object_buf[0], &shape_buf[0], none, true)
+    assert(can_extend_fast_array(p))
+    p.extensible = false
+    assert(not can_extend_fast_array(p))
+
+    let q = test_array_object(&object_buf[0], &shape_buf[0], proto, true)
+    assert(not can_extend_fast_array(q))
+    proto.is_std_array_prototype = true
+    assert(can_extend_fast_array(q))
+    q.extensible = false
+    assert(not can_extend_fast_array(q))

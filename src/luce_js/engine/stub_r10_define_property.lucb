@@ -9,7 +9,7 @@
 #==============================================================================================
 
 ## Ported from quickjs.c:10350 JS_DefineProperty.
-func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val: Value, getter: Value, setter: Value, flags: i32) -> i32!:
+func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val: Value, getter: Value, setter: Value, flags: i32) -> bool!:
     trap("unported: JS_DefineProperty")
 ## Ported from quickjs.c:10648 JS_DefineAutoInitProperty.
 func js_define_auto_init_property(ctx: Context*, this_obj: Value, prop: Atom, id: AutoInitId, opaque: void*, flags: i32) -> i32!:

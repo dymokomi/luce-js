@@ -24,7 +24,12 @@ object_free.lucb
 stub_r06_gc.lucb
 stub_r07_exceptions.lucb
 stub_r08_property_get.lucb
-stub_r09_property_set.lucb
+property_values.lucb
+property_add_delete.lucb
+fast_arrays.lucb
+property_set.lucb
+property_set_value.lucb
+property_create.lucb
 stub_r10_define_property.lucb
 stub_r11_bigint.lucb
 stub_r12_conversions.lucb
@@ -49,3 +54,4 @@ tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
+tests_r09.lucb

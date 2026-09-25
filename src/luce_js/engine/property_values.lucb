@@ -1,0 +1,140 @@
+#==============================================================================================
+#
+#   property_values - Property keys from values, and reading properties by value or index
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 9002-9177: JS_ValueToAtom, JS_GetPropertyValue (with its
+#       fast path for fast arrays and typed arrays), JS_GetPropertyUint32,
+#       JS_TryGetPropertyInt64, JS_GetPropertyInt64 and JS_GetPropertyStr. Where QuickJS
+#       answers JS_ATOM_NULL or JS_EXCEPTION the port fails with the exception pending.
+#
+#==============================================================================================
+
+# mark: Property keys ===========================================================================
+
+## The atom of the property key `val` (JS_ValueToAtom). Fails with the exception pending
+## where QuickJS answers JS_ATOM_NULL. The atom is a new reference.
+pub func js_value_to_atom(ctx: Context*, val: Value) -> Atom!:
+    let tag = val.tag
+    if tag == Tag.int and (u32)js_value_get_int(val) <= js_atom_max_int:
+        # fast path for integer values
+        return js_atom_from_uint32_raw((u32)js_value_get_int(val))
+    elif tag == Tag.symbol:
+        let p = val.u.string
+        return js_dup_atom(ctx, js_get_atom_index(ctx.rt, p))
+    else:
+        let key = try js_to_property_key(ctx, val)
+        if key.tag == Tag.symbol:
+            return js_symbol_to_atom(ctx, key)
+        else:
+            return try js_new_atom_str(ctx, key.u.string)
+
+# mark: Reading by value ========================================================================
+
+## The property `prop` of `this_obj`, taking ownership of `prop` (JS_GetPropertyValue).
+## Integer keys on fast arrays and typed arrays are read directly.
+func js_get_property_value(ctx: Context*, this_obj: Value, prop: Value) -> Value!:
+    if this_obj.tag == Tag.object and prop.tag == Tag.int:
+        # fast path for array access; an index out of bounds takes the slow path
+        let p = this_obj.u.obj
+        let idx = (u32)js_value_get_int(prop)
+        let i = (usize)idx
+        match p.class_id:
+            .array, .arguments:
+                if idx < p.u.array.count:
+                    return js_dup_value(ctx, p.u.array.u.values[i])
+            .mapped_arguments:
+                if idx < p.u.array.count:
+                    return js_dup_value(ctx, *p.u.array.u.var_refs[i].pvalue)
+            .int8_array:
+                if idx < p.u.array.count:
+                    return js_new_int32((i32)p.u.array.u.int8_ptr[i])
+            .uint8c_array, .uint8_array:
+                if idx < p.u.array.count:
+                    return js_new_int32((i32)p.u.array.u.uint8_ptr[i])
+            .int16_array:
+                if idx < p.u.array.count:
+                    return js_new_int32((i32)p.u.array.u.int16_ptr[i])
+            .uint16_array:
+                if idx < p.u.array.count:
+                    return js_new_int32((i32)p.u.array.u.uint16_ptr[i])
+            .int32_array:
+                if idx < p.u.array.count:
+                    return js_new_int32(p.u.array.u.int32_ptr[i])
+            .uint32_array:
+                if idx < p.u.array.count:
+                    return js_new_uint32(p.u.array.u.uint32_ptr[i])
+            .big_int64_array:
+                if idx < p.u.array.count:
+                    return try js_new_bigint64(ctx, p.u.array.u.int64_ptr[i])
+            .big_uint64_array:
+                if idx < p.u.array.count:
+                    return try js_new_big_uint64(ctx, p.u.array.u.uint64_ptr[i])
+            .float16_array:
+                if idx < p.u.array.count:
+                    return js_new_float64_raw(cutils.fromfp16(p.u.array.u.fp16_ptr[i]))
+            .float32_array:
+                if idx < p.u.array.count:
+                    return js_new_float64_raw((f64)p.u.array.u.float_ptr[i])
+            .float64_array:
+                if idx < p.u.array.count:
+                    return js_new_float64_raw(p.u.array.u.double_ptr[i])
+            _:
+                discard(0)
+
+    # slow_path:
+    # ToObject() must be done before ToPropertyKey()
+    if js_is_null(this_obj) or js_is_undefined(this_obj):
+        js_free_value(ctx, prop)
+        let kind = "null" if js_is_null(this_obj) else "undefined"
+        try js_throw_type_error(ctx, f"cannot read property of {kind}")
+    let atom = js_value_to_atom(ctx, prop) catch failure:
+        js_free_value(ctx, prop)
+        error(failure.code, failure.message)
+    js_free_value(ctx, prop)
+    defer js_free_atom(ctx, atom)
+    return try js_get_property(ctx, this_obj, atom)
+
+## The element `idx` of `this_obj` (JS_GetPropertyUint32).
+pub func js_get_property_uint32(ctx: Context*, this_obj: Value, idx: u32) -> Value!:
+    return try js_get_property_value(ctx, this_obj, js_new_uint32(idx))
+
+# mark: Reading by 64-bit index =================================================================
+
+# Check if an object has a generalized numeric property. Return value:
+#   fails for exception,
+#   true if property exists, stored into *pval,
+#   false if property does not exist.
+## `*pval` is undefined unless the property exists (also when the call fails).
+func js_try_get_property_int64(ctx: Context*, obj: Value, idx: i64, pval: Value*) -> bool!:
+    var val = js_undefined()
+    var present = false
+    *pval = val
+    if (u64)idx <= (u64)js_atom_max_int:
+        # fast path
+        present = try js_has_property(ctx, obj, js_atom_from_uint32_raw((u32)idx))
+        if present:
+            val = try js_get_property_value(ctx, obj, js_new_int32((i32)idx))
+    else:
+        let prop = try js_new_atom_int64(ctx, idx)
+        defer js_free_atom(ctx, prop)
+        present = try js_has_property(ctx, obj, prop)
+        if present:
+            val = try js_get_property(ctx, obj, prop)
+    *pval = val
+    return present
+
+## The element `idx` of `obj`, for any index a 64-bit integer holds (JS_GetPropertyInt64).
+func js_get_property_int64(ctx: Context*, obj: Value, idx: i64) -> Value!:
+    if (u64)idx <= 0x7fffffff:
+        # fast path for fast arrays
+        return try js_get_property_value(ctx, obj, js_new_int32((i32)idx))
+    let prop = try js_new_atom_int64(ctx, idx)
+    defer js_free_atom(ctx, prop)
+    return try js_get_property(ctx, obj, prop)
+
+## The property named `prop` of `this_obj` (JS_GetPropertyStr).
+pub func js_get_property_str(ctx: Context*, this_obj: Value, prop: str) -> Value!:
+    let atom = try js_new_atom(ctx, prop)
+    defer js_free_atom(ctx, atom)
+    return try js_get_property(ctx, this_obj, atom)

@@ -1,0 +1,109 @@
+#==============================================================================================
+#
+#   fast_arrays - Growing fast arrays and creating arrays from values
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 9522-9657: expand_fast_array, add_fast_array_element,
+#       js_allocate_fast_array, js_create_array, js_create_array_free and js_free_desc.
+#       A fast array keeps its elements in `u.array.u.values` (`u.array.count` used,
+#       `u.array.u1.size` allocated) and its length in its first property.
+#
+#==============================================================================================
+
+# mark: Growing =================================================================================
+
+## Grow the element storage of the fast array `p` to hold at least `new_len` elements.
+func expand_fast_array(ctx: Context*, p: Object*, new_len: u32) -> !:
+    # XXX: potential arithmetic overflow
+    var new_size = (u32)cutils.max_int((i32)new_len, (i32)(p.u.array.u1.size *% 3 // 2))
+    var slack: usize = 0
+    let new_array_prop = try js_realloc2(ctx, p.u.array.u.ptr, sizeof(Value) * (usize)new_size, &slack)
+    new_size += (u32)(slack // sizeof(Value))
+    p.u.array.u.ptr = new_array_prop
+    p.u.array.u1.size = new_size
+
+# Preconditions: 'p' must be of class ClassId.array, p.fast_array = true and
+# p.extensible = true
+## Append `val` to the fast array `p`, taking ownership of it.
+func add_fast_array_element(ctx: Context*, p: Object*, val: Value, flags: i32) -> bool!:
+    # extend the array by one
+    # XXX: convert to slow array if new_len > 2^31-1 elements
+    let new_len = p.u.array.count + 1
+    # update the length if necessary. We assume that if the length is
+    # not an integer, then if it >= 2^31.
+    if p.prop[0].u.value.tag == Tag.int:
+        let array_len = (u32)js_value_get_int(p.prop[0].u.value)
+        if new_len > array_len:
+            if ((i32)get_shape_prop(p.shape).flags & prop_writable) == 0:
+                js_free_value(ctx, val)
+                return try js_throw_type_error_read_only(ctx, flags, atom_length)
+            p.prop[0].u.value = js_new_int32((i32)new_len)
+    if new_len > p.u.array.u1.size:
+        expand_fast_array(ctx, p, new_len) catch failure:
+            js_free_value(ctx, val)
+            error(failure.code, failure.message)
+    p.u.array.u.values[(usize)(new_len - 1)] = val
+    p.u.array.count = new_len
+    return true
+
+# mark: Creating arrays =========================================================================
+
+# Allocate a new fast array initialized to JS_UNDEFINED. Its maximum
+# size is 2^31-1 elements. For convenience, 'len' is a 64 bit
+# integer.
+func js_allocate_fast_array(ctx: Context*, len: i64) -> Value!:
+    if len > 0x7fffffff:
+        try js_throw_range_error(ctx, "invalid array length")
+    let arr = try js_new_array(ctx)
+    if len > 0:
+        errdefer js_free_value(ctx, arr)
+        let p = arr.u.obj
+        try expand_fast_array(ctx, p, (u32)len)
+        p.u.array.count = (u32)len
+        for i in 0..<(usize)len:
+            p.u.array.u.values[i] = js_undefined()
+        # update the 'length' field
+        set_value(ctx, &p.prop[0].u.value, js_new_int32((i32)len))
+    return arr
+
+## A new array holding new references to the `len` values of `tab`.
+func js_create_array(ctx: Context*, len: i32, tab: Value*) -> Value!:
+    let obj = try js_new_array(ctx)
+    if len > 0:
+        errdefer js_free_value(ctx, obj)
+        let p = obj.u.obj
+        try expand_fast_array(ctx, p, (u32)len)
+        p.u.array.count = (u32)len
+        for i in 0..<(usize)len:
+            p.u.array.u.values[i] = js_dup_value(ctx, tab[i])
+        # update the 'length' field
+        set_value(ctx, &p.prop[0].u.value, js_new_int32(len))
+    return obj
+
+## Release the `len` values of `tab` (the fail label of js_create_array_free).
+func create_array_free_tab(ctx: Context*, len: i32, tab: Value*):
+    for i in 0..<(usize)cutils.max_int(len, 0):
+        js_free_value(ctx, tab[i])
+
+## A new array taking ownership of the `len` values of `tab`, also on failure.
+func js_create_array_free(ctx: Context*, len: i32, tab: Value*) -> Value!:
+    errdefer create_array_free_tab(ctx, len, tab)
+    let obj = try js_new_array(ctx)
+    if len > 0:
+        errdefer js_free_value(ctx, obj)
+        let p = obj.u.obj
+        try expand_fast_array(ctx, p, (u32)len)
+        p.u.array.count = (u32)len
+        for i in 0..<(usize)len:
+            p.u.array.u.values[i] = tab[i]
+        # update the 'length' field
+        set_value(ctx, &p.prop[0].u.value, js_new_int32(len))
+    return obj
+
+# mark: Descriptors =============================================================================
+
+## Release the values of a property descriptor.
+func js_free_desc(ctx: Context*, desc: PropertyDescriptor*):
+    js_free_value(ctx, desc.getter)
+    js_free_value(ctx, desc.setter)
+    js_free_value(ctx, desc.value)

@@ -21,7 +21,7 @@ func js_to_numeric(ctx: Context*, val: Value) -> Value!:
 func js_to_float64_free_raw(ctx: Context*, pres: f64*, val: Value) -> i32!:
     trap("unported: __JS_ToFloat64Free")
 ## Ported from quickjs.c:13062 JS_ToFloat64Free.
-func js_to_float64_free(ctx: Context*, pres: f64*, val: Value) -> i32:
+func js_to_float64_free(ctx: Context*, pres: f64*, val: Value) -> i32!:
     trap("unported: JS_ToFloat64Free")
 ## Ported from quickjs.c:13078 JS_ToFloat64.
 func js_to_float64(ctx: Context*, pres: f64*, val: Value) -> i32:
@@ -63,7 +63,7 @@ func js_to_int64_ext(ctx: Context*, pres: i64*, val: Value) -> i32:
 func js_to_int32_free(ctx: Context*, pres: i32*, val: Value) -> i32!:
     trap("unported: JS_ToInt32Free")
 ## Ported from quickjs.c:13371 JS_ToInt32.
-func js_to_int32(ctx: Context*, pres: i32*, val: Value) -> i32:
+func js_to_int32(ctx: Context*, pres: i32*, val: Value) -> i32!:
     trap("unported: JS_ToInt32")
 ## Ported from quickjs.c:13376 JS_ToUint32Free.
 func js_to_uint32_free(ctx: Context*, pres: u32*, val: Value) -> i32:

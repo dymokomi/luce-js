@@ -44,7 +44,7 @@ pub func js_get_property(ctx: Context*, this_obj: Value, prop: Atom) -> Value!:
     return try js_get_property_internal(ctx, this_obj, prop, this_obj, false)
 
 ## Set the property `prop` of `this_obj`, taking ownership of `val` (JS_SetProperty).
-pub func js_set_property(ctx: Context*, this_obj: Value, prop: Atom, val: Value) -> i32!:
+pub func js_set_property(ctx: Context*, this_obj: Value, prop: Atom, val: Value) -> bool!:
     return try js_set_property_internal(ctx, this_obj, prop, val, this_obj, prop_throw)
 
 ## A C function object (JS_NewCFunction).
