@@ -1,0 +1,153 @@
+#==============================================================================================
+#
+#   array_iterator_tables - The builtin tables of Iterator, Array and the Array Iterator
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 44719-44811: the function lists the intrinsics setup
+#       installs on Iterator, Iterator.prototype, the Iterator Helper prototype,
+#       Array.prototype (with its [Symbol.unscopables] object) and the Array Iterator
+#       prototype. Each entry spells its C macro as api_types.lucb documents.
+#
+#==============================================================================================
+
+# mark: Iterator ================================================================================
+
+## The static methods of the Iterator constructor.
+let js_iterator_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "concat", def_type = def_cfunc, length = 0, generic = js_iterator_concat),
+    CFunctionListEntry(name = "from", def_type = def_cfunc, length = 1, generic = js_iterator_from),
+]
+
+## Iterator.prototype.
+let js_iterator_proto_funcs: CFunctionListEntry[13] = [
+    CFunctionListEntry(name = "drop", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_iterator_helper, magic = (i16)IteratorHelperKind.drop),
+    CFunctionListEntry(name = "filter", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_iterator_helper, magic = (i16)IteratorHelperKind.filter),
+    CFunctionListEntry(name = "flatMap", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_iterator_helper, magic = (i16)IteratorHelperKind.flat_map),
+    CFunctionListEntry(name = "map", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_iterator_helper, magic = (i16)IteratorHelperKind.map),
+    CFunctionListEntry(name = "take", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_iterator_helper, magic = (i16)IteratorHelperKind.take),
+    CFunctionListEntry(name = "every", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_iterator_proto_func, magic = (i16)IteratorHelperKind.every),
+    CFunctionListEntry(name = "find", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_iterator_proto_func, magic = (i16)IteratorHelperKind.find),
+    CFunctionListEntry(name = "forEach", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_iterator_proto_func, magic = (i16)IteratorHelperKind.for_each),
+    CFunctionListEntry(name = "some", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_iterator_proto_func, magic = (i16)IteratorHelperKind.some),
+    CFunctionListEntry(name = "reduce", def_type = def_cfunc, length = 1, generic = js_iterator_proto_reduce),
+    CFunctionListEntry(name = "toArray", def_type = def_cfunc, length = 0, generic = js_iterator_proto_to_array),
+    CFunctionListEntry(name = "[Symbol.iterator]", def_type = def_cfunc, length = 0, generic = js_iterator_proto_iterator),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_iterator_proto_get_to_string_tag, setter = js_iterator_proto_set_to_string_tag),
+]
+
+## The prototype of the Iterator Helper objects.
+let js_iterator_helper_proto_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_iterator_helper_next, magic = (i16)gen_magic_next),
+    CFunctionListEntry(name = "return", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_iterator_helper_next, magic = (i16)gen_magic_return),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string,
+                       string_value = "Iterator Helper"),
+]
+
+# mark: Array ===================================================================================
+
+## Array.prototype[Symbol.unscopables]: the methods a `with` statement does not expose.
+let js_array_unscopables_funcs: CFunctionListEntry[16] = [
+    CFunctionListEntry(name = "at", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "copyWithin", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "entries", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "fill", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "find", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "findIndex", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "findLast", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "findLastIndex", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "flat", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "flatMap", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "includes", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "keys", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "toReversed", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "toSorted", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "toSpliced", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+    CFunctionListEntry(name = "values", prop_flags = (u8)prop_c_w_e, def_type = def_prop_bool, i32_value = 1),
+]
+
+## Array.prototype.
+let js_array_proto_funcs: CFunctionListEntry[40] = [
+    CFunctionListEntry(name = "at", def_type = def_cfunc, length = 1, generic = js_array_at),
+    CFunctionListEntry(name = "with", def_type = def_cfunc, length = 2, generic = js_array_with),
+    CFunctionListEntry(name = "concat", def_type = def_cfunc, length = 1, generic = js_array_concat),
+    CFunctionListEntry(name = "every", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)special_every),
+    CFunctionListEntry(name = "some", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)special_some),
+    CFunctionListEntry(name = "forEach", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)special_for_each),
+    CFunctionListEntry(name = "map", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)special_map),
+    CFunctionListEntry(name = "filter", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_every, magic = (i16)special_filter),
+    CFunctionListEntry(name = "reduce", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_reduce, magic = (i16)special_reduce),
+    CFunctionListEntry(name = "reduceRight", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_reduce, magic = (i16)special_reduce_right),
+    CFunctionListEntry(name = "fill", def_type = def_cfunc, length = 1, generic = js_array_fill),
+    CFunctionListEntry(name = "find", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_find, magic = (i16)array_find),
+    CFunctionListEntry(name = "findIndex", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_find, magic = (i16)array_find_index),
+    CFunctionListEntry(name = "findLast", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_find, magic = (i16)array_find_last),
+    CFunctionListEntry(name = "findLastIndex", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_find, magic = (i16)array_find_last_index),
+    CFunctionListEntry(name = "indexOf", def_type = def_cfunc, length = 1, generic = js_array_index_of),
+    CFunctionListEntry(name = "lastIndexOf", def_type = def_cfunc, length = 1, generic = js_array_last_index_of),
+    CFunctionListEntry(name = "includes", def_type = def_cfunc, length = 1, generic = js_array_includes),
+    CFunctionListEntry(name = "join", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_join, magic = 0),
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_array_to_string),
+    CFunctionListEntry(name = "toLocaleString", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_join, magic = 1),
+    CFunctionListEntry(name = "pop", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_pop, magic = 0),
+    CFunctionListEntry(name = "push", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_push, magic = 0),
+    CFunctionListEntry(name = "shift", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_pop, magic = 1),
+    CFunctionListEntry(name = "unshift", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_push, magic = 1),
+    CFunctionListEntry(name = "reverse", def_type = def_cfunc, length = 0, generic = js_array_reverse),
+    CFunctionListEntry(name = "toReversed", def_type = def_cfunc, length = 0, generic = js_array_to_reversed),
+    CFunctionListEntry(name = "sort", def_type = def_cfunc, length = 1, generic = js_array_sort),
+    CFunctionListEntry(name = "toSorted", def_type = def_cfunc, length = 1, generic = js_array_to_sorted),
+    CFunctionListEntry(name = "slice", def_type = def_cfunc, length = 2, generic = js_array_slice),
+    CFunctionListEntry(name = "splice", def_type = def_cfunc, length = 2, generic = js_array_splice),
+    CFunctionListEntry(name = "toSpliced", def_type = def_cfunc, length = 2, generic = js_array_to_spliced),
+    CFunctionListEntry(name = "copyWithin", def_type = def_cfunc, length = 2, generic = js_array_copy_within),
+    CFunctionListEntry(name = "flatMap", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_flatten, magic = 1),
+    CFunctionListEntry(name = "flat", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_array_flatten, magic = 0),
+    CFunctionListEntry(name = "values", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_array_iterator, magic = (i16)IteratorKind.value),
+    CFunctionListEntry(name = "[Symbol.iterator]", def_type = def_alias, alias_name = "values"),
+    CFunctionListEntry(name = "keys", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_array_iterator, magic = (i16)IteratorKind.key),
+    CFunctionListEntry(name = "entries", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_create_array_iterator, magic = (i16)IteratorKind.key_and_value),
+    CFunctionListEntry(name = "[Symbol.unscopables]", prop_flags = (u8)prop_configurable, def_type = def_object,
+                       prop_list = js_array_unscopables_funcs),
+]
+
+## The prototype of the Array Iterator objects.
+let js_array_iterator_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_array_iterator_next, magic = 0),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string,
+                       string_value = "Array Iterator"),
+]

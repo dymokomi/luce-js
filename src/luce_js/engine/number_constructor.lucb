@@ -1,0 +1,61 @@
+#==============================================================================================
+#
+#   number_constructor - The Number constructor and its static methods
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Number" (lines 44813-44927): js_number_constructor,
+#       Number.isNaN, isFinite, isInteger and isSafeInteger. The constructor's table
+#       (js_number_funcs, line 44909) is in number_boolean.lucb.
+#       js_number___toInteger and js_number___toLength are under `#if 0` in QuickJS
+#       and are not ported.
+#
+#==============================================================================================
+
+## `new Number(value)` and `Number(value)`: ToNumeric, with a BigInt converted to a number.
+func js_number_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    var val: Value = ---
+    if argc == 0:
+        val = js_new_int32(0)
+    else:
+        val = try js_to_numeric(ctx, argv[0])
+        match val.tag:
+            .short_big_int:
+                val = js_new_int64((i64)js_value_get_short_big_int(val))
+            .big_int:
+                let p = val.u.big_int
+                let d = js_bigint_to_float64(ctx, p)
+                js_free_value(ctx, val)
+                val = js_new_float64(d)
+            _:
+                discard(0)
+    if not js_is_undefined(new_target):
+        let obj = try js_create_from_ctor(ctx, new_target, (u32)ClassId.number)
+        # QuickJS ignores a failure to set the value: the object is returned as it is.
+        js_set_object_data(ctx, obj, val) catch: recover ()
+        return obj
+    return val
+
+## Number.isNaN(value): false for a non-number.
+func js_number_is_na_n(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_number(argv[0]):
+        return js_false()
+    return try js_global_is_na_n(ctx, this_val, argc, argv)
+
+## Number.isFinite(value): false for a non-number.
+func js_number_is_finite(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_number(argv[0]):
+        return js_false()
+    return try js_global_is_finite(ctx, this_val, argc, argv)
+
+## Number.isInteger(value).
+func js_number_is_integer_builtin(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let ret = try js_number_is_integer(ctx, argv[0])
+    return js_new_bool(ret)
+
+## Number.isSafeInteger(value).
+func js_number_is_safe_integer(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_number(argv[0]):
+        return js_false()
+    var d: f64 = 0.0
+    try js_to_float64(ctx, &d, argv[0])
+    return js_new_bool(is_safe_integer(d))

@@ -1,0 +1,297 @@
+#==============================================================================================
+#
+#   iterator_helpers - Iterator.prototype methods
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 44031-44435: the kinds and state of the Iterator Helper
+#       objects that drop/filter/flatMap/map/take return, the eager methods
+#       every/find/forEach/some, reduce and toArray, and Iterator.prototype's
+#       [Symbol.iterator] and [Symbol.toStringTag] accessor.
+#
+#==============================================================================================
+
+# mark: Iterator helper state ===================================================================
+
+## The Iterator.prototype methods an Iterator Helper or js_iterator_proto_func implements
+## (JSIteratorHelperKindEnum); the magic of their table entries.
+enum IteratorHelperKind as i32:
+    drop = 0
+    every = 1
+    filter = 2
+    find = 3
+    flat_map = 4
+    for_each = 5
+    map = 6
+    some = 7
+    take = 8
+
+## The state of an Iterator Helper object (JSIteratorHelperData).
+struct IteratorHelperData:
+    ## The underlying iterator and its next method.
+    var obj: Value
+    var next: Value
+    ## Predicate (filter) or mapper (flatMap, map).
+    var func_: Value
+    ## innerValue (flatMap).
+    var inner: Value
+    ## Limit (drop, take) or counter (filter, map, flatMap).
+    var count: i64
+    var kind: IteratorHelperKind
+    var executing: bool
+    var done: bool
+
+## drop, filter, flatMap, map and take (magic: the IteratorHelperKind): a new Iterator
+## Helper over `this`.
+func js_create_iterator_helper(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    let obj = iterator_helper_new(ctx, this_val, argv, magic) catch:
+        # fail: close the iterator, preserving the pending exception
+        try js_iterator_close_fail(ctx, this_val)
+    return obj
+
+# The body of js_create_iterator_helper after the object check; a failure closes `this_val`.
+func iterator_helper_new(ctx: Context*, this_val: Value, argv: Value*, magic: i32) -> Value!:
+    var func_ = js_undefined()
+    var count: i64 = 0
+
+    match (IteratorHelperKind)magic:
+        .drop, .take:
+            let v = try js_to_number(ctx, argv[0])
+            var dlimit: f64 = 0.0
+            # Check for Infinity.
+            js_to_float64(ctx, &dlimit, v) catch failure:
+                js_free_value(ctx, v)
+                error(failure.code, failure.message)
+            if dlimit != dlimit:
+                # isnan
+                js_free_value(ctx, v)
+                try js_throw_range_error(ctx, "must be positive")
+            if dlimit > 1.7976931348623157e308 or dlimit < -1.7976931348623157e308:
+                # not isfinite
+                js_free_value(ctx, v)
+                if dlimit < 0.0:
+                    try js_throw_range_error(ctx, "must be positive")
+                count = max_safe_integer
+            else:
+                let v1 = try js_to_integer_free(ctx, v)
+                try js_to_int64_free(ctx, &count, v1)
+            if count < 0:
+                try js_throw_range_error(ctx, "must be positive")
+        .filter, .flat_map, .map:
+            func_ = argv[0]
+            try check_function(ctx, func_)
+        _:
+            trap("abort: not an Iterator Helper kind")
+
+    let method = try js_get_property(ctx, this_val, atom_next)
+    errdefer js_free_value(ctx, method)
+    let obj = try js_new_object_class(ctx, (i32)ClassId.iterator_helper)
+    errdefer js_free_value(ctx, obj)
+    let it = (IteratorHelperData*)(try js_malloc(ctx, sizeof(IteratorHelperData)))
+    it.kind = (IteratorHelperKind)magic
+    it.obj = js_dup_value(ctx, this_val)
+    it.func_ = js_dup_value(ctx, func_)
+    it.next = method
+    it.inner = js_undefined()
+    it.count = count
+    it.executing = false
+    it.done = false
+    js_set_opaque(obj, it)
+    return obj
+
+# mark: every, find, forEach, some ==============================================================
+
+## every, find, forEach and some (magic: the IteratorHelperKind), which consume `this`.
+func js_iterator_proto_func(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    var args: Value[2] = ---
+
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+
+    check_function(ctx, argv[0]) catch:
+        try js_iterator_close_fail(ctx, this_val)
+    let func_ = js_dup_value(ctx, argv[0])
+    defer js_free_value(ctx, func_)
+    let method = try js_get_property(ctx, this_val, atom_next)
+    defer js_free_value(ctx, method)
+
+    var r = js_undefined()
+    var done = false
+    var idx: i64 = 0
+
+    match (IteratorHelperKind)magic:
+        .every:
+            r = js_true()
+            while true:
+                let item = try js_iterator_next(ctx, this_val, method, 0, argv, &done)
+                if done:
+                    break
+                let index_val = js_new_int64(idx)
+                args[0] = item
+                args[1] = index_val
+                let ret = js_call(ctx, func_, js_undefined(), 2, &args[0]) catch:
+                    js_free_value(ctx, item)
+                    js_free_value(ctx, index_val)
+                    try js_iterator_close_fail(ctx, this_val)
+                js_free_value(ctx, item)
+                js_free_value(ctx, index_val)
+                if not try js_to_bool_free(ctx, ret):
+                    try js_iterator_close_checked(ctx, this_val, false)
+                    r = js_false()
+                    break
+                idx += 1
+        .find:
+            while true:
+                let item = try js_iterator_next(ctx, this_val, method, 0, argv, &done)
+                if done:
+                    break
+                let index_val = js_new_int64(idx)
+                args[0] = item
+                args[1] = index_val
+                let ret = js_call(ctx, func_, js_undefined(), 2, &args[0]) catch:
+                    js_free_value(ctx, index_val)
+                    js_free_value(ctx, item)
+                    try js_iterator_close_fail(ctx, this_val)
+                js_free_value(ctx, index_val)
+                let found = js_to_bool_free(ctx, ret) catch failure:
+                    js_free_value(ctx, item)
+                    error(failure.code, failure.message)
+                if found:
+                    js_iterator_close_checked(ctx, this_val, false) catch failure:
+                        js_free_value(ctx, item)
+                        error(failure.code, failure.message)
+                    r = item
+                    break
+                js_free_value(ctx, item)
+                idx += 1
+        .for_each:
+            while true:
+                let item = try js_iterator_next(ctx, this_val, method, 0, argv, &done)
+                if done:
+                    break
+                let index_val = js_new_int64(idx)
+                args[0] = item
+                args[1] = index_val
+                let ret = js_call(ctx, func_, js_undefined(), 2, &args[0]) catch:
+                    js_free_value(ctx, item)
+                    js_free_value(ctx, index_val)
+                    try js_iterator_close_fail(ctx, this_val)
+                js_free_value(ctx, item)
+                js_free_value(ctx, index_val)
+                js_free_value(ctx, ret)
+                idx += 1
+        .some:
+            r = js_false()
+            while true:
+                let item = try js_iterator_next(ctx, this_val, method, 0, argv, &done)
+                if done:
+                    break
+                let index_val = js_new_int64(idx)
+                args[0] = item
+                args[1] = index_val
+                let ret = js_call(ctx, func_, js_undefined(), 2, &args[0]) catch:
+                    js_free_value(ctx, item)
+                    js_free_value(ctx, index_val)
+                    try js_iterator_close_fail(ctx, this_val)
+                js_free_value(ctx, item)
+                js_free_value(ctx, index_val)
+                if try js_to_bool_free(ctx, ret):
+                    try js_iterator_close_checked(ctx, this_val, false)
+                    r = js_true()
+                    break
+                idx += 1
+        _:
+            trap("abort: not an eager Iterator method")
+
+    return r
+
+# mark: reduce, toArray =========================================================================
+
+## Iterator.prototype.reduce(reducer, initialValue).
+func js_iterator_proto_reduce(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var args: Value[3] = ---
+
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    var acc = js_undefined()
+    errdefer free_value_at(ctx, &acc)
+    check_function(ctx, argv[0]) catch:
+        try js_iterator_close_fail(ctx, this_val)
+    let func_ = js_dup_value(ctx, argv[0])
+    defer js_free_value(ctx, func_)
+    let method = js_get_property(ctx, this_val, atom_next) catch:
+        try js_iterator_close_fail(ctx, this_val)
+    defer js_free_value(ctx, method)
+    var done = false
+    var idx: i64 = 0
+    if argc > 1:
+        acc = js_dup_value(ctx, argv[1])
+        idx = 0
+    else:
+        acc = try js_iterator_next(ctx, this_val, method, 0, argv, &done)
+        if done:
+            js_throw_type_error(ctx, "empty iterator") catch:
+                try js_iterator_close_fail(ctx, this_val)
+        idx = 1
+    while true:
+        let item = try js_iterator_next(ctx, this_val, method, 0, argv, &done)
+        if done:
+            break
+        let index_val = js_new_int64(idx)
+        args[0] = acc
+        args[1] = item
+        args[2] = index_val
+        let ret = js_call(ctx, func_, js_undefined(), 3, &args[0]) catch:
+            js_free_value(ctx, item)
+            js_free_value(ctx, index_val)
+            try js_iterator_close_fail(ctx, this_val)
+        js_free_value(ctx, item)
+        js_free_value(ctx, index_val)
+        js_free_value(ctx, acc)
+        acc = ret
+        idx += 1
+    return acc
+
+## Iterator.prototype.toArray().
+func js_iterator_proto_to_array(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    let method = try js_get_property(ctx, this_val, atom_next)
+    defer js_free_value(ctx, method)
+    let result = try js_new_array(ctx)
+    errdefer js_free_value(ctx, result)
+    var done = false
+    var idx: i64 = 0
+    while true:
+        let item = try js_iterator_next(ctx, this_val, method, 0, argv, &done)
+        if done:
+            break
+        try js_define_property_value_int64(ctx, result, idx, item, prop_c_w_e | prop_throw)
+        idx += 1
+    try js_set_property(ctx, result, atom_length, js_new_uint32((u32)idx))
+    return result
+
+# mark: [Symbol.iterator], [Symbol.toStringTag] =================================================
+
+## Iterator.prototype[Symbol.iterator](): `this`.
+func js_iterator_proto_iterator(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return js_dup_value(ctx, this_val)
+
+## The getter of Iterator.prototype[Symbol.toStringTag]: "Iterator".
+func js_iterator_proto_get_to_string_tag(ctx: Context*, this_val: Value) -> Value!:
+    return try js_atom_to_string(ctx, atom_Iterator)
+
+## The setter of Iterator.prototype[Symbol.toStringTag]: defines or sets the own property
+## of any object but Iterator.prototype itself.
+func js_iterator_proto_set_to_string_tag(ctx: Context*, this_val: Value, val: Value) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    if js_same_value(ctx, this_val, context_class_proto(ctx)[(usize)ClassId.iterator]):
+        try js_throw_type_error(ctx, "Cannot assign to read only property")
+    let res = try js_get_own_property(ctx, none, this_val, atom_Symbol_toStringTag)
+    if res:
+        try js_set_property(ctx, this_val, atom_Symbol_toStringTag, js_dup_value(ctx, val))
+    else:
+        try js_define_property_value(ctx, this_val, atom_Symbol_toStringTag, js_dup_value(ctx, val), prop_c_w_e)
+    return js_undefined()

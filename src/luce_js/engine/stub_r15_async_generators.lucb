@@ -8,6 +8,12 @@
 #
 #==============================================================================================
 
+# Constants of this region, declared ahead for the regions that use them
+# (quickjs.c:21073, GEN_MAGIC_*).
+let gen_magic_next: i32 = 0
+let gen_magic_return: i32 = 1
+let gen_magic_throw: i32 = 2
+
 ## Ported from quickjs.c:20951 async_func_resume.
 func async_func_resume(ctx: Context*, s: AsyncFunctionState*) -> Value!:
     trap("unported: async_func_resume")

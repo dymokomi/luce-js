@@ -102,7 +102,6 @@ parse_function.lucb
 parse_function_decl.lucb
 eval.lucb
 object_list.lucb
-stub_r23_array_iterator.lucb
 number_boolean.lucb
 string_exotic.lucb
 string_search.lucb
@@ -112,6 +111,17 @@ string_normalize_iterator.lucb
 math.lucb
 math_sum_precise.lucb
 timezone_regexp_objects.lucb
+array_constructor.lucb
+array_iteration.lucb
+array_methods.lucb
+array_splice.lucb
+array_sort.lucb
+array_iterator.lucb
+iterator_wrap_concat.lucb
+iterator_helpers.lucb
+iterator_helper_next.lucb
+array_iterator_tables.lucb
+number_constructor.lucb
 stub_r25_regexp_json_reflect.lucb
 stub_r26_proxy_symbol_map.lucb
 stub_r27_promise_date.lucb
@@ -141,3 +151,4 @@ tests_r20.lucb
 tests_r17b.lucb
 tests_r17a.lucb
 tests_r24.lucb
+tests_r23.lucb

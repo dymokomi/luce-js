@@ -1,0 +1,290 @@
+#==============================================================================================
+#
+#   iterator_wrap_concat - Iterator wrappers, the Iterator constructor, concat and from
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 43691-44029: the wrapper Iterator.from puts around an
+#       iterator that does not inherit from Iterator.prototype, the abstract Iterator
+#       constructor and its `constructor` accessor, Iterator.concat and its iterator,
+#       and Iterator.from.
+#
+#==============================================================================================
+
+# mark: Iterator Wrap ===========================================================================
+
+## The iterator an Iterator Wrap object forwards to (JSIteratorWrapData).
+struct IteratorWrapData:
+    var wrapped_iter: Value
+    var wrapped_next: Value
+
+## Finalizer of the Iterator Wrap class.
+func js_iterator_wrap_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (IteratorWrapData*)raw
+        js_free_value_rt(rt, it.wrapped_iter)
+        js_free_value_rt(rt, it.wrapped_next)
+        js_free_rt(rt, it)
+
+## Marker of the Iterator Wrap class.
+func js_iterator_wrap_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (IteratorWrapData*)raw
+        js_mark_value(rt, it.wrapped_iter, mark_func)
+        js_mark_value(rt, it.wrapped_next, mark_func)
+
+## `next` (magic gen_magic_next) and `return` (gen_magic_return) of an Iterator Wrap.
+func js_iterator_wrap_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*, magic: i32) -> Value!:
+    let it = (IteratorWrapData*)(try js_get_opaque2(ctx, this_val, (u32)ClassId.iterator_wrap))
+    if magic == gen_magic_next:
+        return try js_iterator_next_pdone(ctx, it.wrapped_iter, it.wrapped_next, pdone)
+    let method = try js_get_property(ctx, it.wrapped_iter, atom_return)
+    if js_is_null(method) or js_is_undefined(method):
+        *pdone = 1
+        return js_undefined()
+    defer js_free_value(ctx, method)
+    return try js_iterator_next2(ctx, it.wrapped_iter, method, 0, argv, pdone)
+
+## The prototype of the Iterator Wrap objects.
+let js_iterator_wrap_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_iterator_wrap_next, magic = (i16)gen_magic_next),
+    CFunctionListEntry(name = "return", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_iterator_wrap_next, magic = (i16)gen_magic_return),
+]
+
+# mark: Iterator ================================================================================
+
+## The `constructor` accessor of Iterator.prototype: a getter answering `func_data[0]`
+## (the Iterator constructor), and a setter (called with an argument) defining an own
+## `constructor` property.
+func js_iterator_constructor_getset(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    if argc > 0:
+        # if setter
+        if not js_is_object(argv[0]):
+            try js_throw_type_error_not_an_object(ctx)
+        try js_define_property_value(ctx, this_val, atom_constructor, js_dup_value(ctx, argv[0]),
+                                     prop_writable | prop_configurable)
+        return js_undefined()
+    return js_dup_value(ctx, func_data[0])
+
+## The Iterator constructor: abstract, it can only construct the objects of a subclass.
+func js_iterator_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    if new_target.tag != Tag.object:
+        try js_throw_type_error(ctx, "constructor requires 'new'")
+    let p = new_target.u.obj
+    if p.class_id == ClassId.c_function and (void*)p.u.cfunc.c_function.generic == (void*)js_iterator_constructor:
+        try js_throw_type_error(ctx, "abstract class not constructable")
+    return try js_create_from_ctor(ctx, new_target, (u32)ClassId.iterator)
+
+# mark: Iterator Concat =========================================================================
+
+# note: deliberately doesn't use space-saving bit fields for
+# |index|, |count| and |running| because tcc miscompiles them
+## The state of an Iterator Concat object (JSIteratorConcatData). `count` values follow
+## the struct: the (object, method) pairs still to iterate from `index` on.
+struct IteratorConcatData:
+    ## Index of the current pair's object: elements (not pairs!) in the values array.
+    var index: i32
+    ## Number of elements (not pairs!) in the values array.
+    var count: i32
+    var running: bool
+    ## The current iterator and its next method, undefined between two iterables.
+    var iter: Value
+    var next: Value
+
+# The values array of an Iterator Concat state (its flexible array member `values[]`).
+func iterator_concat_values(it: IteratorConcatData*) -> Value*:
+    return (Value*)((u8*)it + sizeof(IteratorConcatData))
+
+## Finalizer of the Iterator Concat class.
+func js_iterator_concat_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (IteratorConcatData*)raw
+        js_free_value_rt(rt, it.iter)
+        js_free_value_rt(rt, it.next)
+        let values = iterator_concat_values(it)
+        for i in it.index..<it.count:
+            js_free_value_rt(rt, values[(usize)i])
+        js_free_rt(rt, it)
+
+## Marker of the Iterator Concat class.
+func js_iterator_concat_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (IteratorConcatData*)raw
+        js_mark_value(rt, it.iter, mark_func)
+        js_mark_value(rt, it.next, mark_func)
+        let values = iterator_concat_values(it)
+        for i in it.index..<it.count:
+            js_mark_value(rt, values[(usize)i], mark_func)
+
+## `next` of an Iterator Concat.
+func js_iterator_concat_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*, magic: i32) -> Value!:
+    *pdone = 0
+
+    let it = (IteratorConcatData*)(try js_get_opaque2(ctx, this_val, (u32)ClassId.iterator_concat))
+    if it.running:
+        try js_throw_type_error(ctx, "already running")
+
+    it.running = true
+    let ret = iterator_concat_step(ctx, it, argv, pdone) catch failure:
+        it.running = false
+        error(failure.code, failure.message)
+    it.running = false
+    return ret
+
+# The loop of js_iterator_concat_next, run while `it` is marked running: the next value of
+# the current iterable, moving to the following ones as they finish.
+func iterator_concat_step(ctx: Context*, it: IteratorConcatData*, argv: Value*, pdone: i32*) -> Value!:
+    let values = iterator_concat_values(it)
+    while true:
+        if it.index >= it.count:
+            *pdone = 1
+            return js_undefined()
+        let obj = values + (usize)(it.index + 0)
+        let meth = values + (usize)(it.index + 1)
+        var iter = it.iter
+        if js_is_undefined(iter):
+            iter = try js_get_iterator2(ctx, *obj, *meth)
+            it.iter = iter
+        var next_method = it.next
+        if js_is_undefined(next_method):
+            next_method = try js_get_property(ctx, iter, atom_next)
+            it.next = next_method
+        var done: i32 = 0
+        let item = try js_iterator_next2(ctx, iter, next_method, 0, argv, &done)
+        if done == 0:
+            return item
+        if done == 2:
+            let val = js_get_property(ctx, item, atom_done) catch failure:
+                js_free_value(ctx, item)
+                error(failure.code, failure.message)
+            let finished = js_to_bool_free(ctx, val) catch failure:
+                js_free_value(ctx, item)
+                error(failure.code, failure.message)
+            if not finished:
+                defer js_free_value(ctx, item)
+                return try js_get_property(ctx, item, atom_value)
+        # done_next
+        js_free_value(ctx, item)
+        js_free_value(ctx, iter)
+        js_free_value(ctx, next_method)
+        it.iter = js_undefined()
+        it.next = js_undefined()
+        js_free_value(ctx, *meth)
+        js_free_value(ctx, *obj)
+        it.index += 2
+
+# Release the pairs not iterated yet and the current iterator of `it`.
+func iterator_concat_release(ctx: Context*, it: IteratorConcatData*):
+    let values = iterator_concat_values(it)
+    while it.index < it.count:
+        js_free_value(ctx, values[(usize)it.index])
+        it.index += 1
+    js_free_value(ctx, it.iter)
+    js_free_value(ctx, it.next)
+    it.iter = js_undefined()
+    it.next = js_undefined()
+
+## `return` of an Iterator Concat: close the current iterator and drop the rest.
+func js_iterator_concat_return(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let it = (IteratorConcatData*)(try js_get_opaque2(ctx, this_val, (u32)ClassId.iterator_concat))
+    if it.running:
+        try js_throw_type_error(ctx, "already running")
+    var ret = js_undefined()
+    if not js_is_undefined(it.iter):
+        it.running = true
+        let method = js_get_property(ctx, it.iter, atom_return) catch failure:
+            it.running = false
+            error(failure.code, failure.message)
+        ret = js_call_free(ctx, method, it.iter, 0, argv) catch failure:
+            it.running = false
+            iterator_concat_release(ctx, it)
+            error(failure.code, failure.message)
+        it.running = false
+    iterator_concat_release(ctx, it)
+    return ret
+
+## The prototype of the Iterator Concat objects.
+let js_iterator_concat_proto_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_iterator_concat_next, magic = 0),
+    CFunctionListEntry(name = "return", def_type = def_cfunc, length = 0, generic = js_iterator_concat_return),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string,
+                       string_value = "Iterator Concat"),
+]
+
+# Release the values taken so far and the state itself: the fail label of
+# js_iterator_concat.
+func iterator_concat_free(ctx: Context*, it: IteratorConcatData*):
+    let values = iterator_concat_values(it)
+    for i in 0..<it.count:
+        js_free_value(ctx, values[(usize)i])
+    js_free(ctx, it)
+
+## Iterator.concat(...iterables).
+func js_iterator_concat(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let raw = try js_malloc(ctx, sizeof(IteratorConcatData) + 2 * (usize)argc * sizeof(Value))
+    let it = (IteratorConcatData*)raw
+    it.running = false
+    it.index = 0
+    it.count = 0
+    it.iter = js_undefined()
+    it.next = js_undefined()
+    errdefer iterator_concat_free(ctx, it)
+    let values = iterator_concat_values(it)
+    for i in 0..<argc:
+        let item = argv[(usize)i]
+        if not js_is_object(item):
+            try js_throw_type_error_not_an_object(ctx)
+        let method = try js_get_property(ctx, item, atom_Symbol_iterator)
+        if not js_is_function(ctx, method):
+            js_free_value(ctx, method)
+            try js_throw_type_error(ctx, "not a function")
+        values[(usize)it.count] = js_dup_value(ctx, item)
+        it.count += 1
+        values[(usize)it.count] = method
+        it.count += 1
+    let obj = try js_new_object_class(ctx, (i32)ClassId.iterator_concat)
+    js_set_opaque(obj, it)
+    return obj
+
+# mark: Iterator.from ===========================================================================
+
+## Iterator.from(value): the iterator of `value`, wrapped when it does not inherit from
+## Iterator.prototype.
+func js_iterator_from(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = argv[0]
+
+    if not js_is_object(obj):
+        if not js_is_string(obj):
+            try js_throw_type_error(ctx, "Iterator.from called on non-object")
+    let method = try js_get_property(ctx, obj, atom_Symbol_iterator)
+    var iter: Value = ---
+    if js_is_null(method) or js_is_undefined(method):
+        iter = js_dup_value(ctx, obj)
+    else:
+        iter = js_get_iterator2(ctx, obj, method) catch failure:
+            js_free_value(ctx, method)
+            error(failure.code, failure.message)
+        js_free_value(ctx, method)
+    errdefer js_free_value(ctx, iter)
+
+    let next_method = try js_get_property(ctx, iter, atom_next)
+    errdefer js_free_value(ctx, next_method)
+
+    let ret = try js_ordinary_is_instance_of(ctx, iter, ctx.iterator_ctor)
+    if ret:
+        js_free_value(ctx, next_method)
+        return iter
+
+    let wrapper = try js_new_object_class(ctx, (i32)ClassId.iterator_wrap)
+    errdefer js_free_value(ctx, wrapper)
+    let it = (IteratorWrapData*)(try js_malloc(ctx, sizeof(IteratorWrapData)))
+    it.wrapped_iter = iter
+    it.wrapped_next = next_method
+    js_set_opaque(wrapper, it)
+    return wrapper

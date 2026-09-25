@@ -1,0 +1,359 @@
+#==============================================================================================
+#
+#   array_iteration - Array.prototype methods that visit the elements in order
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 42112-42626: every/some/forEach/map/filter (shared with
+#       the typed arrays through `special_ta`), reduce/reduceRight, fill, includes,
+#       indexOf, lastIndexOf and the find family.
+#
+#==============================================================================================
+
+# mark: every, some, forEach, map, filter =======================================================
+
+# The magic of js_array_every: which method it is. The typed arrays add `special_ta`.
+let special_every: i32 = 0
+let special_some: i32 = 1
+let special_for_each: i32 = 2
+let special_map: i32 = 3
+let special_filter: i32 = 4
+let special_ta: i32 = 8
+
+## Array.prototype.every, some, forEach, map and filter, and their typed array versions
+## (`special` is one of the special_* values, with `special_ta` for a typed array).
+func js_array_every(ctx: Context*, this_val: Value, argc: i32, argv: Value*, special: i32) -> Value!:
+    var args: Value[3] = ---
+    var ret = js_undefined()
+    var val = js_undefined()
+    errdefer free_value_at(ctx, &ret)
+    errdefer free_value_at(ctx, &val)
+    var obj: Value = ---
+    if (special & special_ta) != 0:
+        obj = js_dup_value(ctx, this_val)
+    else:
+        obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    if (special & special_ta) != 0:
+        len = (i64)(try js_typed_array_get_length_unsafe(ctx, obj))
+    else:
+        try js_get_length64(ctx, &len, obj)
+    let func_ = argv[0]
+    var this_arg = js_undefined()
+    if argc > 1:
+        this_arg = argv[1]
+
+    try check_function(ctx, func_)
+
+    if special == special_every or special == (special_every | special_ta):
+        ret = js_true()
+    elif special == special_some or special == (special_some | special_ta):
+        ret = js_false()
+    elif special == special_map:
+        ret = try js_array_species_create(ctx, obj, len)
+    elif special == special_filter:
+        ret = try js_array_species_create(ctx, obj, 0)
+    elif special == (special_map | special_ta):
+        args[0] = obj
+        args[1] = js_new_int32((i32)len)
+        ret = try js_typed_array__species_create(ctx, js_undefined(), 2, &args[0])
+    elif special == (special_filter | special_ta):
+        ret = try js_new_array(ctx)
+    var n: i64 = 0
+
+    var k: i64 = 0
+    while k < len:
+        var present = false
+        if (special & special_ta) != 0:
+            val = try js_get_property_int64(ctx, obj, k)
+            present = true
+        else:
+            present = try js_try_get_property_int64(ctx, obj, k, &val)
+        if present:
+            let index_val = js_new_int64(k)
+            args[0] = val
+            args[1] = index_val
+            args[2] = obj
+            let res = js_call(ctx, func_, this_arg, 3, &args[0]) catch failure:
+                js_free_value(ctx, index_val)
+                error(failure.code, failure.message)
+            js_free_value(ctx, index_val)
+            if special == special_every or special == (special_every | special_ta):
+                if not try js_to_bool_free(ctx, res):
+                    ret = js_false()
+                    break
+            elif special == special_some or special == (special_some | special_ta):
+                if try js_to_bool_free(ctx, res):
+                    ret = js_true()
+                    break
+            elif special == special_map:
+                try js_define_property_value_int64(ctx, ret, k, res, prop_c_w_e | prop_throw)
+            elif special == (special_map | special_ta):
+                try js_set_property_value(ctx, ret, js_new_int32((i32)k), res, prop_throw)
+            elif special == special_filter or special == (special_filter | special_ta):
+                if try js_to_bool_free(ctx, res):
+                    let idx = n
+                    n += 1
+                    try js_define_property_value_int64(ctx, ret, idx, js_dup_value(ctx, val), prop_c_w_e | prop_throw)
+            else:
+                js_free_value(ctx, res)
+            js_free_value(ctx, val)
+            val = js_undefined()
+        k += 1
+    # done
+    if special == (special_filter | special_ta):
+        args[0] = obj
+        args[1] = js_new_int32((i32)n)
+        let arr = try js_typed_array__species_create(ctx, js_undefined(), 2, &args[0])
+        args[0] = ret
+        let res = js_invoke(ctx, arr, atom_set, 1, &args[0]) catch failure:
+            js_free_value(ctx, arr)
+            error(failure.code, failure.message)
+        js_free_value(ctx, res)
+        js_free_value(ctx, ret)
+        ret = arr
+    js_free_value(ctx, val)
+    return ret
+
+# mark: reduce, reduceRight =====================================================================
+
+# The magic of js_array_reduce; the typed arrays add `special_ta`.
+let special_reduce: i32 = 0
+let special_reduce_right: i32 = 1
+
+## Array.prototype.reduce and reduceRight, and their typed array versions.
+func js_array_reduce(ctx: Context*, this_val: Value, argc: i32, argv: Value*, special: i32) -> Value!:
+    var args: Value[4] = ---
+    var acc = js_undefined()
+    var val = js_undefined()
+    errdefer free_value_at(ctx, &acc)
+    errdefer free_value_at(ctx, &val)
+    var obj: Value = ---
+    if (special & special_ta) != 0:
+        obj = js_dup_value(ctx, this_val)
+    else:
+        obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    if (special & special_ta) != 0:
+        len = (i64)(try js_typed_array_get_length_unsafe(ctx, obj))
+    else:
+        try js_get_length64(ctx, &len, obj)
+    let func_ = argv[0]
+
+    try check_function(ctx, func_)
+
+    var k: i64 = 0
+    if argc > 1:
+        acc = js_dup_value(ctx, argv[1])
+    else:
+        while true:
+            if k >= len:
+                try js_throw_type_error(ctx, "empty array")
+            let k0 = len - k - 1 if (special & special_reduce_right) != 0 else k
+            k += 1
+            if (special & special_ta) != 0:
+                acc = try js_get_property_int64(ctx, obj, k0)
+                break
+            elif try js_try_get_property_int64(ctx, obj, k0, &acc):
+                break
+    while k < len:
+        let k1 = len - k - 1 if (special & special_reduce_right) != 0 else k
+        var present = false
+        if (special & special_ta) != 0:
+            val = try js_get_property_int64(ctx, obj, k1)
+            present = true
+        else:
+            present = try js_try_get_property_int64(ctx, obj, k1, &val)
+        if present:
+            let index_val = js_new_int64(k1)
+            args[0] = acc
+            args[1] = val
+            args[2] = index_val
+            args[3] = obj
+            let acc1 = js_call(ctx, func_, js_undefined(), 4, &args[0]) catch failure:
+                js_free_value(ctx, index_val)
+                js_free_value(ctx, val)
+                val = js_undefined()
+                error(failure.code, failure.message)
+            js_free_value(ctx, index_val)
+            js_free_value(ctx, val)
+            val = js_undefined()
+            js_free_value(ctx, acc)
+            acc = acc1
+        k += 1
+    return acc
+
+# mark: fill, includes, indexOf, lastIndexOf ====================================================
+
+## Array.prototype.fill(value, start, end).
+func js_array_fill(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    errdefer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var start: i64 = 0
+    if argc > 1 and not js_is_undefined(argv[1]):
+        try js_to_int64_clamp(ctx, &start, argv[1], 0, len, len)
+
+    var end: i64 = len
+    if argc > 2 and not js_is_undefined(argv[2]):
+        try js_to_int64_clamp(ctx, &end, argv[2], 0, len, len)
+
+    # XXX: should special case fast arrays
+    while start < end:
+        try js_set_property_int64(ctx, obj, start, js_dup_value(ctx, argv[0]))
+        start += 1
+    return obj
+
+## Array.prototype.includes(value, fromIndex), comparing with SameValueZero.
+func js_array_includes(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var res = false
+    if len > 0:
+        var n: i64 = 0
+        if argc > 1:
+            try js_to_int64_clamp(ctx, &n, argv[1], 0, len, len)
+        var arrp_opt: Value*? = none
+        var count: u32 = 0
+        if js_get_fast_array(ctx, obj, &arrp_opt, &count):
+            # none only for an empty array, whose elements are never read
+            let arrp = arrp_opt else argv
+            while n < (i64)count:
+                if js_strict_eq2(ctx, argv[0], arrp[(usize)n], StrictEqMode.same_value_zero):
+                    res = true
+                    break
+                n += 1
+        # done: the fast path found it
+        if not res:
+            while n < len:
+                let val = try js_get_property_int64(ctx, obj, n)
+                if js_strict_eq2(ctx, argv[0], val, StrictEqMode.same_value_zero):
+                    js_free_value(ctx, val)
+                    res = true
+                    break
+                js_free_value(ctx, val)
+                n += 1
+    return js_new_bool(res)
+
+## Array.prototype.indexOf(value, fromIndex), comparing with ===.
+func js_array_index_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var res: i64 = -1
+    if len > 0:
+        var n: i64 = 0
+        if argc > 1:
+            try js_to_int64_clamp(ctx, &n, argv[1], 0, len, len)
+        var arrp_opt: Value*? = none
+        var count: u32 = 0
+        if js_get_fast_array(ctx, obj, &arrp_opt, &count):
+            # none only for an empty array, whose elements are never read
+            let arrp = arrp_opt else argv
+            while n < (i64)count:
+                if js_strict_eq2(ctx, argv[0], arrp[(usize)n], StrictEqMode.strict):
+                    res = n
+                    break
+                n += 1
+        # done: the fast path found it
+        if res < 0:
+            while n < len:
+                var val = js_undefined()
+                let present = try js_try_get_property_int64(ctx, obj, n, &val)
+                if present:
+                    if js_strict_eq2(ctx, argv[0], val, StrictEqMode.strict):
+                        js_free_value(ctx, val)
+                        res = n
+                        break
+                    js_free_value(ctx, val)
+                n += 1
+    return js_new_int64(res)
+
+## Array.prototype.lastIndexOf(value, fromIndex), comparing with ===.
+func js_array_last_index_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var res: i64 = -1
+    if len > 0:
+        var n = len - 1
+        if argc > 1:
+            try js_to_int64_clamp(ctx, &n, argv[1], -1, len - 1, len)
+        # XXX: should special case fast arrays
+        while n >= 0:
+            var val = js_undefined()
+            let present = try js_try_get_property_int64(ctx, obj, n, &val)
+            if present:
+                if js_strict_eq2(ctx, argv[0], val, StrictEqMode.strict):
+                    js_free_value(ctx, val)
+                    res = n
+                    break
+                js_free_value(ctx, val)
+            n -= 1
+    return js_new_int64(res)
+
+# mark: find ====================================================================================
+
+# The magic of js_array_find.
+let array_find: i32 = 0
+let array_find_index: i32 = 1
+let array_find_last: i32 = 2
+let array_find_last_index: i32 = 3
+
+## Array.prototype.find, findIndex, findLast and findLastIndex (`mode` is one of the
+## array_find* values).
+func js_array_find(ctx: Context*, this_val: Value, argc: i32, argv: Value*, mode: i32) -> Value!:
+    var args: Value[3] = ---
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    let func_ = argv[0]
+    try check_function(ctx, func_)
+
+    var this_arg = js_undefined()
+    if argc > 1:
+        this_arg = argv[1]
+
+    var k: i64 = 0
+    var dir: i64 = 1
+    var end = len
+    if mode == array_find_last or mode == array_find_last_index:
+        k = len - 1
+        dir = -1
+        end = -1
+
+    # TODO(bnoordhuis) add fast path for fast arrays
+    while k != end:
+        let index_val = js_new_int64(k)
+        errdefer js_free_value(ctx, index_val)
+        # index_val is a number: js_get_property_value taking it leaves it valid
+        let val = try js_get_property_value(ctx, obj, index_val)
+        errdefer js_free_value(ctx, val)
+        args[0] = val
+        args[1] = index_val
+        args[2] = this_val
+        let res = try js_call(ctx, func_, this_arg, 3, &args[0])
+        if try js_to_bool_free(ctx, res):
+            if mode == array_find_index or mode == array_find_last_index:
+                js_free_value(ctx, val)
+                return index_val
+            js_free_value(ctx, index_val)
+            return val
+        js_free_value(ctx, val)
+        js_free_value(ctx, index_val)
+        k += dir
+    if mode == array_find_index or mode == array_find_last_index:
+        return js_new_int32(-1)
+    return js_undefined()

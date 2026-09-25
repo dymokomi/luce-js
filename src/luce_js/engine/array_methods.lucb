@@ -1,0 +1,268 @@
+#==============================================================================================
+#
+#   array_methods - Array.prototype toString, join, pop/shift, push/unshift, reverse, slice
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 42628-42998: toString, join/toLocaleString, pop and
+#       shift, push and unshift, reverse, toReversed and slice. Fast arrays whose
+#       elements are all present are handled in place.
+#
+#==============================================================================================
+
+# mark: toString, join ==========================================================================
+
+## Array.prototype.toString(): `this.join()`, or Object.prototype.toString when there is
+## no callable join.
+func js_array_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    let method = try js_get_property(ctx, obj, atom_join)
+    if not js_is_function(ctx, method):
+        # Use intrinsic Object.prototype.toString
+        js_free_value(ctx, method)
+        return try js_object_to_string(ctx, obj, 0, argv)
+    return try js_call_free(ctx, method, obj, 0, argv)
+
+## Array.prototype.join(separator), and toLocaleString when `to_locale_string` is 1.
+func js_array_join(ctx: Context*, this_val: Value, argc: i32, argv: Value*, to_locale_string: i32) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var n: i64 = 0
+    try js_get_length64(ctx, &n, obj)
+
+    var c: i32 = (i32)','    # default separator
+    var sep = js_undefined()
+    defer free_value_at(ctx, &sep)
+    var p: String*? = none
+    if to_locale_string == 0 and argc > 0 and not js_is_undefined(argv[0]):
+        sep = try js_to_string(ctx, argv[0])
+        let sp = sep.u.string
+        p = sp
+        if sp.len == 1 and not sp.is_wide_char:
+            c = (i32)str8(sp)[0]
+        else:
+            c = -1
+    var b: StringBuffer = ---
+    try string_buffer_init(ctx, &b, 0)
+    errdefer string_buffer_free(&b)
+
+    for i: i64 in 0..<n:
+        if i > 0:
+            if c >= 0:
+                try string_buffer_putc8(&b, (u32)c)
+            else:
+                let sp = p else trap("a separator string when c < 0")
+                try string_buffer_concat(&b, sp, 0, sp.len)
+        var el = try js_get_property_uint32(ctx, obj, (u32)i)
+        if not js_is_null(el) and not js_is_undefined(el):
+            if to_locale_string != 0:
+                el = try js_to_locale_string_free(ctx, el)
+            try string_buffer_concat_value_free(&b, el)
+    return try string_buffer_end(&b)
+
+# mark: pop, shift, push, unshift ===============================================================
+
+## Array.prototype.pop(), and shift() when `shift` is 1.
+func js_array_pop(ctx: Context*, this_val: Value, argc: i32, argv: Value*, shift: i32) -> Value!:
+    var res = js_undefined()
+    errdefer free_value_at(ctx, &res)
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+    var new_len: i64 = 0
+    if len > 0:
+        new_len = len - 1
+        # Special case fast arrays
+        var arrp_opt: Value*? = none
+        var count32: u32 = 0
+        if js_get_fast_array(ctx, obj, &arrp_opt, &count32) and (i64)count32 == len:
+            # none only for an empty array, whose elements are never read
+            let arrp = arrp_opt else argv
+            let p = obj.u.obj
+            if shift != 0:
+                res = arrp[0]
+                discard(cutils.memmove(arrp, arrp + 1, (usize)(count32 - 1) * sizeof(Value)))
+                p.u.array.count -= 1
+            else:
+                res = arrp[(usize)(count32 - 1)]
+                p.u.array.count -= 1
+        else:
+            if shift != 0:
+                res = try js_get_property_int64(ctx, obj, 0)
+                try js_copy_sub_array(ctx, obj, 0, 1, len - 1, 1)
+            else:
+                res = try js_get_property_int64(ctx, obj, new_len)
+            try js_delete_property_int64(ctx, obj, new_len, prop_throw)
+    try js_set_property(ctx, obj, atom_length, js_new_int64(new_len))
+    return res
+
+## Array.prototype.push(...items), and unshift(...items) when `unshift` is 1.
+func js_array_push(ctx: Context*, this_val: Value, argc: i32, argv: Value*, unshift: i32) -> Value!:
+    if this_val.tag == Tag.object and unshift == 0:
+        let p = this_val.u.obj
+        if (p.class_id == ClassId.array and p.fast_array and can_extend_fast_array(p) and
+                p.prop[0].u.value.tag == Tag.int and
+                (u32)js_value_get_int(p.prop[0].u.value) == p.u.array.count and
+                ((i32)get_shape_prop(p.shape).flags & prop_writable) != 0):
+            # fast case
+            let new_len = p.u.array.count + (u32)argc
+            if new_len <= 0x7fffffff:
+                if new_len > p.u.array.u1.size:
+                    try expand_fast_array(ctx, p, new_len)
+                for i in 0..<argc:
+                    p.u.array.u.values[(usize)p.u.array.count + (usize)i] = js_dup_value(ctx, argv[(usize)i])
+                p.prop[0].u.value = js_new_int32((i32)new_len)
+                p.u.array.count = new_len
+                return js_new_int32((i32)new_len)
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+    let new_len = len + (i64)argc
+    if new_len > max_safe_integer:
+        try js_throw_type_error(ctx, "Array loo long")
+    var from_: i64 = len
+    if unshift != 0 and argc > 0:
+        try js_copy_sub_array(ctx, obj, (i64)argc, 0, len, -1)
+        from_ = 0
+    for i in 0..<argc:
+        try js_set_property_int64(ctx, obj, from_ + (i64)i, js_dup_value(ctx, argv[(usize)i]))
+    try js_set_property(ctx, obj, atom_length, js_new_int64(new_len))
+    return js_new_int64(new_len)
+
+# mark: reverse, toReversed =====================================================================
+
+## Array.prototype.reverse().
+func js_array_reverse(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var lval = js_undefined()
+    errdefer free_value_at(ctx, &lval)
+    let obj = try js_to_object(ctx, this_val)
+    errdefer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    # Special case fast arrays
+    var arrp_opt: Value*? = none
+    var count32: u32 = 0
+    if js_get_fast_array(ctx, obj, &arrp_opt, &count32) and (i64)count32 == len:
+        # none only for an empty array, whose elements are never read
+        let arrp = arrp_opt else argv
+        if count32 > 1:
+            var ll: u32 = 0
+            var hh = count32 - 1
+            while ll < hh:
+                let tmp = arrp[(usize)ll]
+                arrp[(usize)ll] = arrp[(usize)hh]
+                arrp[(usize)hh] = tmp
+                ll += 1
+                hh -= 1
+        return obj
+
+    var l: i64 = 0
+    var h = len - 1
+    while l < h:
+        let l_present = try js_try_get_property_int64(ctx, obj, l, &lval)
+        var hval = js_undefined()
+        let h_present = try js_try_get_property_int64(ctx, obj, h, &hval)
+        if h_present:
+            try js_set_property_int64(ctx, obj, l, hval)
+
+            if l_present:
+                js_set_property_int64(ctx, obj, h, lval) catch failure:
+                    lval = js_undefined()
+                    error(failure.code, failure.message)
+                lval = js_undefined()
+            else:
+                try js_delete_property_int64(ctx, obj, h, prop_throw)
+        else:
+            if l_present:
+                try js_delete_property_int64(ctx, obj, l, prop_throw)
+                js_set_property_int64(ctx, obj, h, lval) catch failure:
+                    lval = js_undefined()
+                    error(failure.code, failure.message)
+                lval = js_undefined()
+        l += 1
+        h -= 1
+    return obj
+
+# Note: a.toReversed() is a.slice().reverse() with the twist that a.slice()
+# leaves holes in sparse arrays intact whereas a.toReversed() replaces them
+# with undefined, thus in effect creating a dense array.
+# Does not use Array[@@species], always returns a base Array.
+## Array.prototype.toReversed().
+func js_array_to_reversed(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    let arr = try js_allocate_fast_array(ctx, len)
+    errdefer js_free_value(ctx, arr)
+
+    if len > 0:
+        let p = arr.u.obj
+
+        var i = len - 1
+        var pval = p.u.array.u.values
+        var arrp_opt: Value*? = none
+        var count32: u32 = 0
+        if js_get_fast_array(ctx, obj, &arrp_opt, &count32) and (i64)count32 == len:
+            # none only for an empty array, whose elements are never read
+            let arrp = arrp_opt else argv
+            while i >= 0:
+                *pval = js_dup_value(ctx, arrp[(usize)i])
+                i -= 1
+                pval = pval + 1
+        else:
+            # Query order is observable; test262 expects descending order.
+            while i >= 0:
+                try js_try_get_property_int64(ctx, obj, i, pval)
+                i -= 1
+                pval = pval + 1
+    return arr
+
+# mark: slice ===================================================================================
+
+## Array.prototype.slice(start, end).
+func js_array_slice(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js_to_object(ctx, this_val)
+    defer js_free_value(ctx, obj)
+    var len: i64 = 0
+    try js_get_length64(ctx, &len, obj)
+
+    var start: i64 = 0
+    try js_to_int64_clamp(ctx, &start, argv[0], 0, len, len)
+
+    var final: i64 = len
+    if not js_is_undefined(argv[1]):
+        try js_to_int64_clamp(ctx, &final, argv[1], 0, len, len)
+    let count = cutils.max_int64(final - start, 0)
+
+    let ctor = try js_array_species_get_ctor(ctx, obj)
+
+    final = start + count
+    var arrp_opt: Value*? = none
+    var count32: u32 = 0
+    if js_is_undefined(ctor) and js_get_fast_array(ctx, obj, &arrp_opt, &count32) and final <= (i64)count32:
+        # none only for an empty array, whose elements are never read
+        let arrp = arrp_opt else argv
+        # fast case
+        return try js_create_array(ctx, (i32)count, arrp + (usize)start)
+    let arr = js_array_create_from_ctor(ctx, ctor, count) catch failure:
+        js_free_value(ctx, ctor)
+        error(failure.code, failure.message)
+    js_free_value(ctx, ctor)
+    errdefer js_free_value(ctx, arr)
+
+    var n: i64 = 0
+    var k = start
+    while k < final:
+        var val = js_undefined()
+        let k_present = try js_try_get_property_int64(ctx, obj, k, &val)
+        if k_present:
+            try js_create_data_property_uint32(ctx, arr, n, val, prop_throw)
+        k += 1
+        n += 1
+    try js_set_property(ctx, arr, atom_length, js_new_int64(n))
+    return arr
