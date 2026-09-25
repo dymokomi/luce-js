@@ -5,7 +5,8 @@
 #   DESCRIPTION:
 #       Port of quickjs-libc.c lines 1735-1830 (open, close, seek, read, write, isatty),
 #       1879-1937 (ttyGetWinSize, ttySetRaw), 1939-1983 (remove, rename) and 1985-2130
-#       (is_main_thread, setReadHandler, setWriteHandler, signal). The timers and js_os_poll are in
+#       (is_main_thread, setReadHandler, setWriteHandler, signal), with the _WIN32
+#       branches of open, the ttys (the console) and remove. The timers and js_os_poll are in
 #       `os_poll`, the file system in `os_files`, the processes in `os_process` and the
 #       module's table in `os_tables`.
 #
@@ -21,6 +22,10 @@ func js_os_open(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Valu
     var mode: i32 = 0o666
     if argc >= 3 and not js.js_is_undefined(argv[2]):
         try js.js_to_int32(ctx, &mode, argv[2])
+    if platform.windows:
+        # force binary mode by default
+        if (flags & o_text) == 0:
+            flags |= o_binary
     let ret = js_get_errno((i64)c_open(filename, flags, mode))
     return js.js_new_int32((i32)ret)
 
@@ -37,7 +42,7 @@ func js_os_seek(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Valu
     try js.js_to_int64_ext(ctx, &pos, argv[1])
     var whence: i32 = 0
     try js.js_to_int32(ctx, &whence, argv[2])
-    var ret = lseek(fd, pos, whence)
+    var ret = fd_seek(fd, pos, whence)
     if ret == -1:
         ret = -(i64)c.errno()
     if is_bigint:
@@ -59,9 +64,9 @@ func js_os_read_write(ctx: Context*, this_val: Value, argc: i32, argv: Value*, m
     let data = buf else return js.js_new_int64(0)
     var ret: i64 = 0
     if magic != 0:
-        ret = js_get_errno((i64)write(fd, data + (usize)pos, (usize)len))
+        ret = js_get_errno(fd_write(fd, data + (usize)pos, (usize)len))
     else:
-        ret = js_get_errno((i64)read(fd, data + (usize)pos, (usize)len))
+        ret = js_get_errno(fd_read(fd, data + (usize)pos, (usize)len))
     return js.js_new_int64(ret)
 
 func js_os_isatty(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
@@ -74,19 +79,23 @@ func js_os_isatty(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
 func js_os_tty_get_win_size(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var fd: i32 = 0
     try js.js_to_int32(ctx, &fd, argv[0])
-    var ws: WinSize
-    if ioctl(fd, tiocgwinsz, &ws) == 0 and ws.ws_col >= 4 and ws.ws_row >= 4:
-        let obj = try js.js_new_array(ctx)
-        discard(js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32((i32)ws.ws_col), js.prop_c_w_e) catch: recover false)
-        discard(js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32((i32)ws.ws_row), js.prop_c_w_e) catch: recover false)
-        return obj
-    return js.js_null()
+    if platform.windows:
+        return try js_os_tty_get_win_size_windows(ctx, fd)
+    else:
+        var ws: WinSize
+        if ioctl(fd, tiocgwinsz, &ws) == 0 and ws.ws_col >= 4 and ws.ws_row >= 4:
+            let obj = try js.js_new_array(ctx)
+            discard(js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32((i32)ws.ws_col), js.prop_c_w_e) catch: recover false)
+            discard(js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32((i32)ws.ws_row), js.prop_c_w_e) catch: recover false)
+            return obj
+        return js.js_null()
 
 ## The terminal state before os.ttySetRaw, restored at exit (a `struct termios`).
 var oldtty: u8[128]
 
 func term_exit():
-    discard(tcsetattr(0, tcsanow, &oldtty[0]))
+    if not platform.windows:
+        discard(tcsetattr(0, tcsanow, &oldtty[0]))
 
 ## Clear the bits `clear` and set the bits `set` of the tcflag_t `index` of `tty`.
 func termios_update_flag(tty: u8*, index: usize, clear: u32, set: u32):
@@ -97,30 +106,71 @@ func termios_update_flag(tty: u8*, index: usize, clear: u32, set: u32):
 func js_os_tty_set_raw(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var fd: i32 = 0
     try js.js_to_int32(ctx, &fd, argv[0])
-
-    var tty: u8[128]
-    discard(tcgetattr(fd, &tty[0]))
-    oldtty = tty
-
-    termios_update_flag(&tty[0], 0, tc_ignbrk | tc_brkint | tc_parmrk | tc_istrip
-                                    | tc_inlcr | tc_igncr | tc_icrnl | tc_ixon, 0)
-    termios_update_flag(&tty[0], 1, 0, tc_opost)
-    termios_update_flag(&tty[0], 3, tc_echo | tc_echonl | tc_icanon | tc_iexten, 0)
-    termios_update_flag(&tty[0], 2, tc_csize | tc_parenb, 0)
-    termios_update_flag(&tty[0], 2, 0, tc_cs8)
-    tty[termios_cc_offset + tc_vmin] = 1
-    tty[termios_cc_offset + tc_vtime] = 0
-
-    discard(tcsetattr(fd, tcsanow, &tty[0]))
-
-    discard(atexit(term_exit))
+    if platform.windows:
+        js_os_tty_set_raw_windows(fd)
+    else:
+        tty_set_raw_posix(fd)
     return js.js_undefined()
+
+## ttySetRaw on a POSIX terminal: termios in raw mode, restored at exit.
+func tty_set_raw_posix(fd: i32):
+    if not platform.windows:
+        var tty: u8[128]
+        discard(tcgetattr(fd, &tty[0]))
+        oldtty = tty
+
+        termios_update_flag(&tty[0], 0, tc_ignbrk | tc_brkint | tc_parmrk | tc_istrip
+                                        | tc_inlcr | tc_igncr | tc_icrnl | tc_ixon, 0)
+        termios_update_flag(&tty[0], 1, 0, tc_opost)
+        termios_update_flag(&tty[0], 3, tc_echo | tc_echonl | tc_icanon | tc_iexten, 0)
+        termios_update_flag(&tty[0], 2, tc_csize | tc_parenb, 0)
+        termios_update_flag(&tty[0], 2, 0, tc_cs8)
+        tty[termios_cc_offset + tc_vmin] = 1
+        tty[termios_cc_offset + tc_vtime] = 0
+
+        discard(tcsetattr(fd, tcsanow, &tty[0]))
+
+        discard(atexit(term_exit))
 
 func js_os_remove(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let filename = try js.js_to_c_string(ctx, argv[0])
-    let ret = js_get_errno((i64)remove(filename))
+    var ret: i64 = 0
+    if platform.windows:
+        var st: u8[56] = ---
+        if win_stat64(filename, &st[0]) == 0 and (stat_info(&st[0]).mode & s_ifmt) == s_ifdir:
+            ret = (i64)win_rmdir(filename)
+        else:
+            ret = (i64)win_unlink(filename)
+    else:
+        ret = (i64)remove(filename)
+    ret = js_get_errno(ret)
     js.js_free_c_string(ctx, filename)
     return js.js_new_int32((i32)ret)
+
+# The Windows ttys: the console behind the descriptor's handle.
+
+func js_os_tty_get_win_size_windows(ctx: Context*, fd: i32) -> Value!:
+    if platform.windows:
+        let handle = (void*?)(usize)win_get_osfhandle(fd)
+        var info: u8[22] = ---
+        if GetConsoleScreenBufferInfo(handle, &info[0]) == 0:
+            return js.js_null()
+        let obj = try js.js_new_array(ctx)
+        discard(js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32(cutils.get_i16(&info[0])), js.prop_c_w_e) catch: recover false)
+        discard(js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32(cutils.get_i16(&info[2])), js.prop_c_w_e) catch: recover false)
+        return obj
+    else:
+        return js.js_null()
+
+func js_os_tty_set_raw_windows(fd: i32):
+    if platform.windows:
+        var handle = (void*?)(usize)win_get_osfhandle(fd)
+        discard(SetConsoleMode(handle, enable_window_input | enable_virtual_terminal_input))
+        discard(win_setmode(fd, o_binary))
+        if fd == 0:
+            handle = (void*?)(usize)win_get_osfhandle(1) # corresponding output
+            discard(SetConsoleMode(handle, enable_processed_output | enable_wrap_at_eol_output
+                                           | enable_virtual_terminal_processing))
 
 func js_os_rename(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let oldpath = try js.js_to_c_string(ctx, argv[0])

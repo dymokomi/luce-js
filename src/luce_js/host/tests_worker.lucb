@@ -56,8 +56,12 @@ test "a message posted to a pipe wakes its port and reaches onmessage":
     assert(text == "1,1+2,false,2,,false")
     # the queue is empty and the waker cleared
     assert(cutils.list_empty(&ps.msg_queue))
-    var fds = PollFd(fd = ps.waker.read_fd, events = poll_in, revents = 0)
-    assert(c_poll(&fds, 1, 0) == 0)
+    if platform.windows:
+        var handle = ps.waker.handle
+        assert(WaitForMultipleObjects(1, &handle, 0, 0) == 258)    # WAIT_TIMEOUT
+    else:
+        var fds = PollFd(fd = ps.waker.read_fd, events = poll_in, revents = 0)
+        assert(c_poll(&fds, 1, 0) == 0)
     # removing onmessage freed the port
     assert(ps.ref_count.load() == 3)
     free_test_context(ctx)

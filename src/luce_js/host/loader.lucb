@@ -20,9 +20,9 @@
 pub func js_load_file(ctx: Context*?, pbuf_len: usize*, filename: const u8*) -> u8*?:
     let f = fopen(filename, "rb".bytes.data) else return none
     defer discard(fclose(f))
-    if fseeko(f, 0, seek_end) < 0:
+    if file_seek(f, 0, seek_end) < 0:
         return none
-    let lret = ftello(f)
+    let lret = file_tell(f)
     if lret < 0:
         return none
     # XXX: on Linux, ftell() return LONG_MAX for directories
@@ -30,7 +30,7 @@ pub func js_load_file(ctx: Context*?, pbuf_len: usize*, filename: const u8*) -> 
         c.set_errno(e_isdir)
         return none
     let buf_len = (usize)lret
-    if fseeko(f, 0, seek_set) < 0:
+    if file_seek(f, 0, seek_set) < 0:
         return none
     var block: void*? = none
     if let context = ctx:
@@ -85,8 +85,11 @@ pub func js_module_set_import_meta(ctx: Context*, func_val: Value, use_realpath:
     if strchr(module_name, (i32)':') == none:
         cutils.pstrcpy(&buf[0], 4112, "file://".bytes.data)
         # realpath() cannot be used with modules compiled with qjsc because the
-        # corresponding module source code is not necessarily present
-        if use_realpath:
+        # corresponding module source code is not necessarily present (Windows does
+        # not use it)
+        if platform.windows:
+            discard(cutils.pstrcat(&buf[0], 4112, module_name))
+        elif use_realpath:
             if realpath(module_name, &buf[7]) == none:
                 js.js_free_c_string(ctx, module_name)
                 try js.js_throw_type_error(ctx, "realpath failure")

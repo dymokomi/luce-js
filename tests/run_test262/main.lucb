@@ -122,7 +122,16 @@ func get_opt_arg(option: const u8*, argv: const u8*[], index: usize) -> const u8
     return argv[index]
 
 func cpu_count() -> i32:
-    return (i32)sysconf(sc_nprocessors_onln)
+    if platform.windows:
+        var procmask: usize = 0
+        var sysmask: usize = 0
+        var count: i32 = 0
+        if GetProcessAffinityMask(GetCurrentProcess(), &procmask, &sysmask) != 0:
+            for i in 0..<64:
+                count += (i32)((procmask >> (usize)i) & 1)
+        return count
+    else:
+        return (i32)sysconf(sc_nprocessors_onln)
 
 pub func main(arguments: c.str[]) -> i32:
     var args: (const u8*)[256] = ---
@@ -143,9 +152,10 @@ pub func main(arguments: c.str[]) -> i32:
     var can_block = true
     var count_skipped_features = false
 
-    compact = isatty(stderr_fileno) == 0
-    # Date tests assume California local time
-    discard(setenv(z("TZ"), z("America/Los_Angeles"), 1))
+    if not platform.windows:
+        compact = isatty(stderr_fileno) == 0
+        # Date tests assume California local time
+        discard(setenv(z("TZ"), z("America/Los_Angeles"), 1))
 
     var optind: usize = 1
     while optind < argc:

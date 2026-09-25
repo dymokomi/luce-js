@@ -4,7 +4,8 @@
 #
 #   DESCRIPTION:
 #       Port of quickjs-libc.c lines 2660-3033: getcwd, chdir, mkdir, readdir, stat and
-#       lstat, utimes, sleep, realpath, symlink and readlink.
+#       lstat, utimes, sleep, realpath, symlink and readlink, with their _WIN32 branches
+#       (Windows has no lstat, symlink or readlink: those are not in its `os` table).
 #
 #==============================================================================================
 
@@ -42,7 +43,11 @@ func js_os_mkdir(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Val
     if argc >= 2:
         try js.js_to_int32(ctx, &mode, argv[1])
     let path = try js.js_to_c_string(ctx, argv[0])
-    let ret = js_get_errno((i64)mkdir(path, (u32)mode))
+    var ret: i64 = 0
+    if platform.windows:
+        ret = js_get_errno((i64)win_mkdir(path))
+    else:
+        ret = js_get_errno((i64)mkdir(path, (u32)mode))
     js.js_free_c_string(ctx, path)
     return js.js_new_int32((i32)ret)
 
@@ -76,11 +81,7 @@ func js_os_readdir(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
 func js_os_stat(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_lstat: i32) -> Value!:
     let path = try js.js_to_c_string(ctx, argv[0])
     var buf: u8[256] = ---
-    var res: i32 = 0
-    if is_lstat != 0:
-        res = lstat(path, &buf[0])
-    else:
-        res = stat(path, &buf[0])
+    let res = stat_path(path, &buf[0], is_lstat)
     var err: i32 = 0
     if res < 0:
         err = c.errno()
@@ -97,7 +98,8 @@ func js_os_stat(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_lsta
     try define_stat_field(ctx, obj, "gid", js.js_new_int64(st.gid))
     try define_stat_field(ctx, obj, "rdev", js.js_new_int64(st.rdev))
     try define_stat_field(ctx, obj, "size", js.js_new_int64(st.size))
-    try define_stat_field(ctx, obj, "blocks", js.js_new_int64(st.blocks))
+    if not platform.windows:
+        try define_stat_field(ctx, obj, "blocks", js.js_new_int64(st.blocks))
     try define_stat_field(ctx, obj, "atime", js.js_new_int64(st.atime))
     try define_stat_field(ctx, obj, "mtime", js.js_new_int64(st.mtime))
     try define_stat_field(ctx, obj, "ctime", js.js_new_int64(st.ctime))
@@ -112,11 +114,16 @@ func js_os_utimes(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
     var mtime: i64 = 0
     try js.js_to_int64(ctx, &mtime, argv[2])
     let path = try js.js_to_c_string(ctx, argv[0])
-    let times: Timeval[2] = [
-        Timeval(tv_sec = atime // 1000, tv_usec = (atime % 1000) * 1000),
-        Timeval(tv_sec = mtime // 1000, tv_usec = (mtime % 1000) * 1000),
-    ]
-    let ret = js_get_errno((i64)utimes(path, &times[0]))
+    var ret: i64 = 0
+    if platform.windows:
+        let times = Utimbuf64(actime = atime // 1000, modtime = mtime // 1000)
+        ret = js_get_errno((i64)win_utime64(path, &times))
+    else:
+        let times: Timeval[2] = [
+            Timeval(tv_sec = atime // 1000, tv_usec = (atime % 1000) * 1000),
+            Timeval(tv_sec = mtime // 1000, tv_usec = (mtime % 1000) * 1000),
+        ]
+        ret = js_get_errno((i64)utimes(path, &times[0]))
     js.js_free_c_string(ctx, path)
     return js.js_new_int32((i32)ret)
 
@@ -126,6 +133,9 @@ func js_os_sleep(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Val
     try js.js_to_int64(ctx, &delay, argv[0])
     if delay < 0:
         delay = 0
+    if platform.windows:
+        if delay > 0x7fffffff:
+            delay = 0x7fffffff
     thread.sleep((u64)delay)
     return js.js_new_int32(0)
 
@@ -133,7 +143,13 @@ func js_os_sleep(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Val
 func js_os_realpath(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let path = try js.js_to_c_string(ctx, argv[0])
     var buf: u8[4096] = ---
-    let res = realpath(path, &buf[0])
+    var res: u8*? = none
+    if platform.windows:
+        res = win_fullpath(&buf[0], path, path_max)
+        if res == none:
+            c.set_errno(e_noent)
+    else:
+        res = realpath(path, &buf[0])
     js.js_free_c_string(ctx, path)
     var err: i32 = 0
     if res == none:
@@ -142,22 +158,28 @@ func js_os_realpath(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
     return try make_string_error(ctx, &buf[0], err)
 
 func js_os_symlink(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
-    let target = try js.js_to_c_string(ctx, argv[0])
-    defer js.js_free_c_string(ctx, target)
-    let linkpath = try js.js_to_c_string(ctx, argv[1])
-    defer js.js_free_c_string(ctx, linkpath)
-    return js.js_new_int32((i32)js_get_errno((i64)symlink(target, linkpath)))
+    if platform.windows:
+        return js.js_undefined()    # not in the Windows table
+    else:
+        let target = try js.js_to_c_string(ctx, argv[0])
+        defer js.js_free_c_string(ctx, target)
+        let linkpath = try js.js_to_c_string(ctx, argv[1])
+        defer js.js_free_c_string(ctx, linkpath)
+        return js.js_new_int32((i32)js_get_errno((i64)symlink(target, linkpath)))
 
 ## return [path, errorcode]
 func js_os_readlink(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
-    let path = try js.js_to_c_string(ctx, argv[0])
-    var buf: u8[4096] = ---
-    let res = readlink(path, &buf[0], path_max - 1)
-    var err: i32 = 0
-    if res < 0:
-        buf[0] = 0
-        err = c.errno()
+    if platform.windows:
+        return js.js_undefined()    # not in the Windows table
     else:
-        buf[(usize)res] = 0
-    js.js_free_c_string(ctx, path)
-    return try make_string_error(ctx, &buf[0], err)
+        let path = try js.js_to_c_string(ctx, argv[0])
+        var buf: u8[4096] = ---
+        let res = readlink(path, &buf[0], path_max - 1)
+        var err: i32 = 0
+        if res < 0:
+            buf[0] = 0
+            err = c.errno()
+        else:
+            buf[(usize)res] = 0
+        js.js_free_c_string(ctx, path)
+        return try make_string_error(ctx, &buf[0], err)

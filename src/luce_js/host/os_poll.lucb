@@ -4,9 +4,11 @@
 #
 #   DESCRIPTION:
 #       Port of quickjs-libc.c lines 2131-2277 (now, setTimeout, clearTimeout, sleepAsync,
-#       call_handler) and 2515-2658 (the POSIX js_os_poll): one call runs one pending
-#       signal handler, one expired timer, or waits in poll() for the nearest timer or a
-#       ready read/write handler or message port and runs it.
+#       call_handler), 2420-2513 (the Windows js_os_poll) and 2515-2658 (the POSIX
+#       js_os_poll): one call runs one pending signal handler, one expired timer, or waits
+#       in poll() for the nearest timer or a ready read/write handler or message port and
+#       runs it. On Windows it waits in WaitForMultipleObjects for the timer, the standard
+#       input's read handler or a message port.
 #
 #==============================================================================================
 
@@ -124,95 +126,188 @@ func js_poll_add_poll_fd(ts: ThreadState*, pnfds: i32*, fd: i32, events: i16) ->
 ## Run one pending signal handler, one expired timer or one ready read/write handler,
 ## waiting for the nearest one; -1 when there are no more events (js_os_poll).
 func js_os_poll(ctx: Context*) -> i32:
-    let rt = js.js_get_runtime(ctx)
-    let ts = thread_state(rt)
-
-    # only check signals in the main thread
-    if ts.recv_pipe == none and os_pending_signals != 0:
-        var el = ts.os_signal_handlers.next else return -1
-        while el != &ts.os_signal_handlers:
-            let sh = signal_handler_of(el)
-            let mask = (u64)1 << (u64)sh.sig_num
-            if (os_pending_signals & mask) != 0:
-                os_pending_signals &= ~mask
-                call_handler(ctx, sh.func_)
-                return 0
-            el = el.next else return -1
-
-    if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers)
-            and cutils.list_empty(&ts.port_list)):
-        return -1 # no more events
-
-    var min_delay: i32 = 0
-    if not cutils.list_empty(&ts.os_timers):
-        let cur_time = get_time_ms()
-        min_delay = 10000
-        var el = ts.os_timers.next else return -1
-        while el != &ts.os_timers:
-            let th = timer_of(el)
-            let delay = th.timeout - cur_time
-            if delay <= 0:
-                # the timer expired
-                let func_ = th.func_
-                th.func_ = js.js_undefined()
-                free_timer(rt, th)
-                call_handler(ctx, func_)
-                js.js_free_value(ctx, func_)
-                return 0
-            elif delay < (i64)min_delay:
-                min_delay = (i32)delay
-            el = el.next else return -1
+    if platform.windows:
+        return -1
     else:
-        min_delay = -1 # infinite
+        let rt = js.js_get_runtime(ctx)
+        let ts = thread_state(rt)
 
-    var nfds: i32 = 0
-    var el = ts.os_rw_handlers.next else return -1
-    while el != &ts.os_rw_handlers:
-        let rh = rw_handler_of(el)
-        var events: i16 = 0
-        if not js.js_is_null(rh.rw_func[0]):
-            events |= poll_in
-        if not js.js_is_null(rh.rw_func[1]):
-            events |= poll_out
-        if events != 0:
-            rh.poll_fd_index = nfds
-            if js_poll_add_poll_fd(ts, &nfds, rh.fd, events) != 0:
-                return -1
-        el = el.next else return -1
+        # only check signals in the main thread
+        if ts.recv_pipe == none and os_pending_signals != 0:
+            var el = ts.os_signal_handlers.next else return -1
+            while el != &ts.os_signal_handlers:
+                let sh = signal_handler_of(el)
+                let mask = (u64)1 << (u64)sh.sig_num
+                if (os_pending_signals & mask) != 0:
+                    os_pending_signals &= ~mask
+                    call_handler(ctx, sh.func_)
+                    return 0
+                el = el.next else return -1
 
-    el = ts.port_list.next else return -1
-    while el != &ts.port_list:
-        let port = message_handler_of(el)
-        if not js.js_is_null(port.on_message_func):
-            let ps = port.recv_pipe else return -1
-            port.poll_fd_index = nfds
-            if js_poll_add_poll_fd(ts, &nfds, ps.waker.read_fd, poll_in) != 0:
-                return -1
-        el = el.next else return -1
+        if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers)
+                and cutils.list_empty(&ts.port_list)):
+            return -1 # no more events
 
-    nfds = c_poll(ts.poll_fds, (usize)nfds, min_delay)
-    if nfds > 0:
-        let poll_fds = ts.poll_fds else return 0
-        el = ts.os_rw_handlers.next else return 0
+        var min_delay: i32 = 0
+        if not cutils.list_empty(&ts.os_timers):
+            let cur_time = get_time_ms()
+            min_delay = 10000
+            var el = ts.os_timers.next else return -1
+            while el != &ts.os_timers:
+                let th = timer_of(el)
+                let delay = th.timeout - cur_time
+                if delay <= 0:
+                    # the timer expired
+                    let func_ = th.func_
+                    th.func_ = js.js_undefined()
+                    free_timer(rt, th)
+                    call_handler(ctx, func_)
+                    js.js_free_value(ctx, func_)
+                    return 0
+                elif delay < (i64)min_delay:
+                    min_delay = (i32)delay
+                el = el.next else return -1
+        else:
+            min_delay = -1 # infinite
+
+        var nfds: i32 = 0
+        var el = ts.os_rw_handlers.next else return -1
         while el != &ts.os_rw_handlers:
             let rh = rw_handler_of(el)
-            let revents = poll_fds[(usize)rh.poll_fd_index].revents
-            if not js.js_is_null(rh.rw_func[0]) and (revents & (poll_err | poll_hup | poll_nval | poll_in)) != 0:
-                call_handler(ctx, rh.rw_func[0])
-                # must stop because the list may have been modified
-                return 0
-            if not js.js_is_null(rh.rw_func[1]) and (revents & (poll_err | poll_hup | poll_nval | poll_out)) != 0:
-                call_handler(ctx, rh.rw_func[1])
-                # must stop because the list may have been modified
-                return 0
-            el = el.next else return 0
+            var events: i16 = 0
+            if not js.js_is_null(rh.rw_func[0]):
+                events |= poll_in
+            if not js.js_is_null(rh.rw_func[1]):
+                events |= poll_out
+            if events != 0:
+                rh.poll_fd_index = nfds
+                if js_poll_add_poll_fd(ts, &nfds, rh.fd, events) != 0:
+                    return -1
+            el = el.next else return -1
 
-        el = ts.port_list.next else return 0
+        el = ts.port_list.next else return -1
         while el != &ts.port_list:
             let port = message_handler_of(el)
             if not js.js_is_null(port.on_message_func):
-                if poll_fds[(usize)port.poll_fd_index].revents != 0:
-                    if handle_posted_message(rt, ctx, port) != 0:
+                let ps = port.recv_pipe else return -1
+                port.poll_fd_index = nfds
+                if js_poll_add_poll_fd(ts, &nfds, ps.waker.read_fd, poll_in) != 0:
+                    return -1
+            el = el.next else return -1
+
+        nfds = c_poll(ts.poll_fds, (usize)nfds, min_delay)
+        if nfds > 0:
+            let poll_fds = ts.poll_fds else return 0
+            el = ts.os_rw_handlers.next else return 0
+            while el != &ts.os_rw_handlers:
+                let rh = rw_handler_of(el)
+                let revents = poll_fds[(usize)rh.poll_fd_index].revents
+                if not js.js_is_null(rh.rw_func[0]) and (revents & (poll_err | poll_hup | poll_nval | poll_in)) != 0:
+                    call_handler(ctx, rh.rw_func[0])
+                    # must stop because the list may have been modified
+                    return 0
+                if not js.js_is_null(rh.rw_func[1]) and (revents & (poll_err | poll_hup | poll_nval | poll_out)) != 0:
+                    call_handler(ctx, rh.rw_func[1])
+                    # must stop because the list may have been modified
+                    return 0
+                el = el.next else return 0
+
+            el = ts.port_list.next else return 0
+            while el != &ts.port_list:
+                let port = message_handler_of(el)
+                if not js.js_is_null(port.on_message_func):
+                    if poll_fds[(usize)port.poll_fd_index].revents != 0:
+                        if handle_posted_message(rt, ctx, port) != 0:
+                            return 0
+                el = el.next else return 0
+        return 0
+
+## js_os_poll on Windows: timers, a read handler of the console's standard input and the
+## message ports, waited for with WaitForMultipleObjects. Signals are not handled.
+func js_os_poll_windows(ctx: Context*) -> i32:
+    if platform.windows:
+        let rt = js.js_get_runtime(ctx)
+        let ts = thread_state(rt)
+        var handles: (void*?)[64] = ---
+
+        # XXX: handle signals if useful
+
+        if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers)
+                and cutils.list_empty(&ts.port_list)):
+            return -1 # no more events
+
+        var min_delay: i32 = 0
+        if not cutils.list_empty(&ts.os_timers):
+            let cur_time = get_time_ms()
+            min_delay = 10000
+            var el = ts.os_timers.next else return -1
+            while el != &ts.os_timers:
+                let th = timer_of(el)
+                let delay = th.timeout - cur_time
+                if delay <= 0:
+                    # the timer expired
+                    let func_ = th.func_
+                    th.func_ = js.js_undefined()
+                    free_timer(rt, th)
+                    call_handler(ctx, func_)
+                    js.js_free_value(ctx, func_)
+                    return 0
+                elif delay < (i64)min_delay:
+                    min_delay = (i32)delay
+                el = el.next else return -1
+        else:
+            min_delay = -1
+
+        var count: usize = 0
+        var el = ts.os_rw_handlers.next else return -1
+        while el != &ts.os_rw_handlers:
+            let rh = rw_handler_of(el)
+            if rh.fd == 0 and not js.js_is_null(rh.rw_func[0]):
+                handles[count] = (void*?)(usize)win_get_osfhandle(rh.fd) # stdin
+                count += 1
+                if count == maximum_wait_objects:
+                    break
+            el = el.next else return -1
+
+        el = ts.port_list.next else return -1
+        while el != &ts.port_list:
+            let port = message_handler_of(el)
+            el = el.next else return -1
+            if js.js_is_null(port.on_message_func):
+                continue
+            let ps = port.recv_pipe else return -1
+            handles[count] = ps.waker.handle
+            count += 1
+            if count == maximum_wait_objects:
+                break
+
+        if count > 0:
+            var timeout: u32 = 0xffffffff # INFINITE
+            if min_delay != -1:
+                timeout = (u32)min_delay
+            let ret = WaitForMultipleObjects((u32)count, &handles[0], 0, timeout)
+
+            if (usize)ret < count:
+                el = ts.os_rw_handlers.next else return 0
+                while el != &ts.os_rw_handlers:
+                    let rh = rw_handler_of(el)
+                    if rh.fd == 0 and not js.js_is_null(rh.rw_func[0]):
+                        call_handler(ctx, rh.rw_func[0])
+                        # must stop because the list may have been modified
                         return 0
-            el = el.next else return 0
-    return 0
+                    el = el.next else return 0
+
+                el = ts.port_list.next else return 0
+                while el != &ts.port_list:
+                    let port = message_handler_of(el)
+                    if not js.js_is_null(port.on_message_func):
+                        let ps = port.recv_pipe else return 0
+                        if ps.waker.handle == handles[(usize)ret]:
+                            if handle_posted_message(rt, ctx, port) != 0:
+                                return 0
+                    el = el.next else return 0
+        else:
+            Sleep((u32)min_delay)
+        return 0
+    else:
+        return -1

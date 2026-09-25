@@ -47,7 +47,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = os.path.join(ROOT, "tests")
-RUNNER = os.path.join(ROOT, "build", "run-test262")
+RUNNER = os.path.join(ROOT, "build", "run-test262.exe" if sys.platform == "win32" else "run-test262")
 LINK = os.path.join(TESTS, "test262")
 
 # QuickJS 2026-06-04 Makefile: TEST262_COMMIT and TEST262_SINCE
@@ -73,10 +73,20 @@ def fetch(directory):
     checkout = os.path.join(directory, "test262")
     if not os.path.exists(os.path.join(checkout, "features.txt")):
         os.makedirs(directory, exist_ok=True)
-        run(["git", "clone", "--single-branch", f"--shallow-since={TEST262_SINCE}", TEST262_URL, checkout])
+        # the files as committed, also on Windows (no CRLF conversion)
+        run(["git", "clone", "-c", "core.autocrlf=false", "--single-branch",
+             f"--shallow-since={TEST262_SINCE}", TEST262_URL, checkout])
         run(["git", "checkout", "-q", TEST262_COMMIT], cwd=checkout)
     else:
         run(["git", "reset", "-q", "--hard", TEST262_COMMIT], cwd=checkout)
+    if sys.platform == "win32":
+        # Windows has no `patch`, and a directory symlink needs a privilege: git applies
+        # the patch and the link is a junction
+        run(["git", "apply", "-p1", patch], cwd=checkout)
+        if os.path.lexists(LINK):
+            os.rmdir(LINK)
+        run(["cmd", "/c", "mklink", "/J", LINK, checkout])
+        return
     with open(patch, "rb") as f:
         print(f"+ patch -p1 < {patch}", flush=True)
         if subprocess.run(["patch", "-p1"], stdin=f, cwd=checkout).returncode != 0:

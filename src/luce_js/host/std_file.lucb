@@ -165,7 +165,7 @@ func js_std_file_flush(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
 ## FILE.prototype.tell (magic 0) and tello (magic 1, a BigInt).
 func js_std_file_tell(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_bigint: i32) -> Value!:
     let f = try js_std_file_get(ctx, this_val)
-    let pos = ftello(f)
+    let pos = file_tell(f)
     if is_bigint != 0:
         return try js.js_new_bigint64(ctx, pos)
     return js.js_new_int64(pos)
@@ -176,7 +176,7 @@ func js_std_file_seek(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -
     try js.js_to_int64_ext(ctx, &pos, argv[0])
     var whence: i32 = 0
     try js.js_to_int32(ctx, &whence, argv[1])
-    var ret = fseeko(f, pos, whence)
+    var ret = file_seek(f, pos, whence)
     if ret < 0:
         ret = -c.errno()
     return js.js_new_int32(ret)

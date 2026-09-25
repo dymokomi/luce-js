@@ -1,6 +1,7 @@
 module.lucb
 libc.lucb
 libc_process.lucb
+libc_windows.lucb
 printf.lucb
 loader.lucb
 native_modules.lucb

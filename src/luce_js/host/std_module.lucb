@@ -29,12 +29,12 @@ func js_std_setenv(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
     defer js.js_free_c_string(ctx, name)
     let value = try js.js_to_c_string(ctx, argv[1])
     defer js.js_free_c_string(ctx, value)
-    discard(setenv(name, value, 1))
+    set_env(name, value)
     return js.js_undefined()
 
 func js_std_unsetenv(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let name = try js.js_to_c_string(ctx, argv[0])
-    discard(unsetenv(name))
+    unset_env(name)
     js.js_free_c_string(ctx, name)
     return js.js_undefined()
 
