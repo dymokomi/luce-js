@@ -12,6 +12,11 @@ upstream's Makefile targets test2-bootstrap and test2 do:
   - run it from tests/ with tests/test262.conf, whose known-errors file is
     tests/test262_errors.txt (QuickJS's own list; luce-js aims at exactly that list).
 
+`--suite es5` runs the old ES5 suite instead, as upstream's `make test2o` does: the
+es5-tests branch of tc39/test262 (QuickJS's doc/quickjs.texi) cloned into DIR/test262o and
+linked from tests/test262o, run with tests/test262o.conf in the conf's default mode; its
+known-errors file is tests/test262o_errors.txt (empty upstream).
+
 Two ways to run:
 
   - split (the default for the whole suite): the sorted test list is cut into index ranges
@@ -26,6 +31,7 @@ Two ways to run:
 Usage:
   tests/test262.py [--fetch-only] [--no-build] [--dir DIR] [-j JOBS] [-u] [-a|-s]
   tests/test262.py [--no-build] --direct [-- runner options]
+  tests/test262.py --suite es5 [--direct] [-u]
 
 Examples:
   tests/test262.py                          # the whole suite, strict and sloppy, split
@@ -33,6 +39,7 @@ Examples:
   tests/test262.py -- -c test262.conf -a -E # only the tests of the errors file
   tests/test262.py -- -c test262.conf -f test262/test/built-ins/Array/length.js
   tests/test262.py -- -c test262.conf -a -d test262/test/built-ins/Proxy
+  tests/test262.py --suite es5              # the ES5 suite (make test2o)
 """
 
 import argparse
@@ -54,6 +61,26 @@ LINK = os.path.join(TESTS, "test262")
 TEST262_COMMIT = "5c8206929d81b2d3d727ca6aac56c18358c8d790"
 TEST262_SINCE = "2025-09-01"
 TEST262_URL = "https://github.com/tc39/test262.git"
+# the old ES5 suite (QuickJS doc/quickjs.texi: git clone --single-branch --branch es5-tests)
+TEST262O_BRANCH = "es5-tests"
+
+
+class Suite:
+    """What differs between the ES2015+ suite (test262) and the old ES5 one (test262o)."""
+    def __init__(self, name, conf, errors, marker, default_mode):
+        self.name = name                      # the checkout and link name
+        self.conf = conf                      # the runner configuration, in tests/
+        self.errors = errors                  # the known-errors file, in tests/
+        self.marker = marker                  # a file that exists in a complete checkout
+        self.default_mode = default_mode      # the mode option of a split run
+        self.link = os.path.join(TESTS, name)
+        self.error_line = re.compile(r"^" + name + r"/\S+\.js:\d+: ")
+
+
+SUITES = {
+    "test262": Suite("test262", "test262.conf", "test262_errors.txt", "features.txt", "-a"),
+    "es5": Suite("test262o", "test262o.conf", "test262o_errors.txt", "test/harness/sta.js", ""),
+}
 
 
 def default_dir():
@@ -65,6 +92,17 @@ def run(command, cwd=None):
     result = subprocess.run(command, cwd=cwd)
     if result.returncode != 0:
         sys.exit(f"FAIL: {' '.join(command)} exited with {result.returncode}")
+
+
+def fetch_es5(directory, suite):
+    """Clone the es5-tests branch of test262, as QuickJS's documentation says."""
+    checkout = os.path.join(directory, suite.name)
+    if not os.path.exists(os.path.join(checkout, suite.marker)):
+        os.makedirs(directory, exist_ok=True)
+        run(["git", "clone", "--single-branch", "--branch", TEST262O_BRANCH, TEST262_URL, checkout])
+    if os.path.islink(suite.link) or os.path.exists(suite.link):
+        os.remove(suite.link)
+    os.symlink(checkout, suite.link)
 
 
 def fetch(directory):
@@ -97,17 +135,16 @@ def namelist_key(name):
             for part in re.split(r"(\d+)", name) if part != ""]
 
 
-def count_tests():
+def count_tests(suite):
     """An upper bound of the runner's test list: every .js file but the fixtures."""
     count = 0
-    for _, _, files in os.walk(os.path.join(LINK, "test")):
+    for _, _, files in os.walk(os.path.join(suite.link, "test")):
         count += sum(1 for f in files if f.endswith(".js") and not f.endswith("_FIXTURE.js"))
     return count
 
 
 HEADER = re.compile(r"^(\d+): (\S+\.js)")
 RESULT = re.compile(r"Result: (\d+)/(\d+) errors?(.*)")
-ERROR_LINE = re.compile(r"^test262/\S+\.js:\d+: ")
 
 
 class Totals:
@@ -118,10 +155,10 @@ class Totals:
         self.crashes = []    # (index, file, reason)
 
 
-def run_range(mode_args, start, stop, totals, empty_errors, timeout):
+def run_range(suite, mode_args, start, stop, totals, empty_errors, timeout):
     """Run the tests [start, stop]; restart after a test that kills the runner."""
     while start <= stop:
-        command = [RUNNER, "-c", "test262.conf"] + mode_args + ["-T", "1", "-r", "-"]
+        command = [RUNNER, "-c", suite.conf] + mode_args + ["-T", "1", "-r", "-"]
         if empty_errors:
             # every error is reported as new, as with -u
             command += ["-e", empty_errors]
@@ -142,7 +179,7 @@ def run_range(mode_args, start, stop, totals, empty_errors, timeout):
             m = HEADER.match(line)
             if m:
                 last_index, last_file = int(m.group(1)), m.group(2)
-            elif ERROR_LINE.match(line):
+            elif suite.error_line.match(line):
                 lines.append(line)
             elif line == "  FAILED":
                 failed_runs += 1
@@ -180,8 +217,8 @@ def run_range(mode_args, start, stop, totals, empty_errors, timeout):
 UNEXPECTED = re.compile(r"^(\S+:\d+: (?:strict mode: )?)unexpected error: ")
 
 
-def run_split(mode_args, jobs, chunk, update, timeout):
-    total = count_tests()
+def run_split(suite, mode_args, jobs, chunk, update, timeout):
+    total = count_tests(suite)
     totals = Totals()
     empty_errors = None
     if update:
@@ -190,7 +227,7 @@ def run_split(mode_args, jobs, chunk, update, timeout):
     ranges = [(s, min(s + chunk - 1, total)) for s in range(0, total + 1, chunk)]
     started = time.time()
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        futures = [pool.submit(run_range, mode_args, s, e, totals, empty_errors, timeout) for s, e in ranges]
+        futures = [pool.submit(run_range, suite, mode_args, s, e, totals, empty_errors, timeout) for s, e in ranges]
         for n, future in enumerate(concurrent.futures.as_completed(futures), 1):
             future.result()
             print(f"\r{n}/{len(ranges)} ranges, {totals.failed}/{totals.count} errors, "
@@ -202,7 +239,7 @@ def run_split(mode_args, jobs, chunk, update, timeout):
         # the lines the runner writes with -u: no "unexpected error: " prefix
         errors = [UNEXPECTED.sub(r"\1", l) for l in totals.lines
                   if " previous error: " not in l and ": unknown feature: " not in l]
-        with open(os.path.join(TESTS, "test262_errors.txt"), "w") as f:
+        with open(os.path.join(TESTS, suite.errors), "w") as f:
             for line in sorted(errors + crash_lines, key=namelist_key):
                 f.write(line + "\n")
     else:
@@ -229,6 +266,8 @@ def main():
         runner_args = argv[split + 1:]
         argv = argv[:split]
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--suite", choices=["test262", "es5"], default="test262",
+                        help="test262 (default) or es5, the old ES5 suite of make test2o")
     parser.add_argument("--fetch-only", action="store_true", help="only clone and patch test262")
     parser.add_argument("--no-build", action="store_true", help="use the existing build/run-test262")
     parser.add_argument("--dir", default=default_dir(), help="where test262 is cloned")
@@ -236,26 +275,36 @@ def main():
     parser.add_argument("-j", "--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     parser.add_argument("--chunk", type=int, default=400, help="tests per runner process")
     parser.add_argument("--timeout", type=int, default=600, help="seconds per runner process")
-    parser.add_argument("-u", "--update", action="store_true", help="update tests/test262_errors.txt")
-    parser.add_argument("-a", dest="mode", action="store_const", const="-a", default="-a",
-                        help="strict and sloppy (default)")
+    parser.add_argument("-u", "--update", action="store_true",
+                        help="update the known-errors file (tests/test262_errors.txt)")
+    parser.add_argument("-a", dest="mode", action="store_const", const="-a", default=None,
+                        help="strict and sloppy (the default of test262)")
     parser.add_argument("-s", dest="mode", action="store_const", const="-s", help="strict only")
     parser.add_argument("--default-mode", dest="mode", action="store_const", const="",
-                        help="the mode of test262.conf")
+                        help="the mode of the configuration file (the default of es5)")
     args = parser.parse_args(argv)
+    suite = SUITES[args.suite]
 
-    if not os.path.exists(os.path.join(LINK, "features.txt")) or args.fetch_only:
-        fetch(args.dir)
+    if not os.path.exists(os.path.join(suite.link, suite.marker)) or args.fetch_only:
+        if args.suite == "es5":
+            fetch_es5(args.dir, suite)
+        else:
+            fetch(args.dir)
     if args.fetch_only:
         return
     if not args.no_build:
         build()
     if args.direct or runner_args is not None:
-        command = [RUNNER] + (runner_args if runner_args is not None else ["-t", "-c", "test262.conf", "-a"])
+        if runner_args is None:
+            # make test2 / make test2o
+            runner_args = ["-t", "-c", "test262.conf", "-a"] if args.suite == "test262" else \
+                ["-t", "-m", "-c", suite.conf]
+        command = [RUNNER] + runner_args
         print("+ (cd tests && " + " ".join(command) + ")", flush=True)
         sys.exit(subprocess.run(command, cwd=TESTS).returncode)
-    mode_args = [args.mode] if args.mode else []
-    sys.exit(run_split(mode_args, args.jobs, args.chunk, args.update, args.timeout))
+    mode = args.mode if args.mode is not None else suite.default_mode
+    mode_args = [mode] if mode else []
+    sys.exit(run_split(suite, mode_args, args.jobs, args.chunk, args.update, args.timeout))
 
 
 if __name__ == "__main__":

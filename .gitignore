@@ -3,3 +3,6 @@ build/
 __pycache__/
 tests/test262
 tests/test262_report.txt
+tests/test262o
+tests/test262o_report.txt
+microbench-new.txt
