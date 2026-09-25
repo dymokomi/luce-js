@@ -59,6 +59,8 @@ module's first fragment (imports in `module.lucb` apply to every fragment) and m
     `JS_AddIntrinsicRegExp` → `js_add_intrinsic_reg_exp`, `JS_ThrowTypeError` →
     `js_throw_type_error` (and the builtin `js_throw_type_error` →
     `js_throw_type_error_internal`).
+  - `JS_ATOM_NULL` (no atom) is `no_atom`; the atom of the text "null" (`JS_ATOM_null`)
+    is `atom_null_keyword`. Every other `JS_ATOM_x` is `atom_x`.
   - The complete table of every quickjs.c function whose name changes is
     `docs/namemap.txt` (`CName luce_name`). Use it; do not invent names.
   - quickjs.h's macros and inline functions follow the same rule: `JS_VALUE_GET_INT` →

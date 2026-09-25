@@ -40,7 +40,7 @@ test "get_line_col_cached agrees with get_line_col in both directions":
 
 test "keyword tokens follow the keyword atoms":
     let first = (i32)tok_first_keyword
-    assert((TokenType)((i32)atom_null - 1 + first) == TokenType.null)
+    assert((TokenType)((i32)atom_null_keyword - 1 + first) == TokenType.null)
     assert((TokenType)((i32)atom_with - 1 + first) == TokenType.with_)
     assert((TokenType)((i32)atom_super - 1 + first) == TokenType.super)
     assert((TokenType)((i32)atom_last_keyword - 1 + first) == TokenType.super)

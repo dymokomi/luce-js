@@ -49,7 +49,7 @@ func js_to_string_internal(ctx: Context*, val: Value, is_to_property_key: bool) 
         .boolean:
             return try js_atom_to_string(ctx, atom_true if js_value_get_bool(val) else atom_false)
         .null:
-            return try js_atom_to_string(ctx, atom_null)
+            return try js_atom_to_string(ctx, atom_null_keyword)
         .undefined:
             return try js_atom_to_string(ctx, atom_undefined)
         .exception:

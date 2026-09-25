@@ -187,7 +187,7 @@ func emit_push_const(s: ParseState*, val: Value, as_atom: bool) -> !:
         # warning: JS_NewAtomStr frees the string value
         discard(js_dup_value(s.ctx, val))
         let atom = try js_new_atom_str(s.ctx, val.u.string)
-        if atom != atom_null and not js_atom_is_tagged_int_raw(atom):
+        if atom != no_atom and not js_atom_is_tagged_int_raw(atom):
             emit_op(s, (u8)Op.push_atom_value)
             emit_u32(s, atom)
             return

@@ -11,7 +11,8 @@
 
 ## JS_ATOM_NULL: no atom.
 let no_atom: Atom = 0
-let atom_null: Atom = 1
+## The atom of the keyword "null" (JS_ATOM_null); JS_ATOM_NULL is `no_atom`.
+let atom_null_keyword: Atom = 1
 let atom_false: Atom = 2
 let atom_true: Atom = 3
 let atom_if: Atom = 4

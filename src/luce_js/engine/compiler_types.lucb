@@ -191,7 +191,7 @@ let cp_ps: u32 = 0x2029
 ## An entry of the break/continue label stack (BlockEnv).
 struct BlockEnv:
     var prev: BlockEnv*?
-    ## atom_null if none.
+    ## no_atom if none.
     var label_name: Atom
     ## -1 if none.
     var label_break: i32
@@ -368,7 +368,7 @@ struct FunctionDef:
     var func_type: ParseFunctionKind
     ## Bitmap of js_mode_*.
     var js_mode: u8
-    ## atom_null if no name.
+    ## no_atom if no name.
     var func_name: Atom
 
     var vars: VarDef*?

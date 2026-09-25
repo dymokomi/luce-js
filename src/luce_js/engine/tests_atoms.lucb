@@ -19,7 +19,7 @@ test "tagged integer atoms round trip":
 
 test "constant atoms are the predefined ones and the tagged integers":
     assert(js_atom_is_const_raw(no_atom))
-    assert(js_atom_is_const_raw(atom_null))
+    assert(js_atom_is_const_raw(atom_null_keyword))
     assert(js_atom_is_const_raw(atom_end - 1))
     assert(not js_atom_is_const_raw(atom_end))
     assert(not js_atom_is_const_raw(js_atom_max))

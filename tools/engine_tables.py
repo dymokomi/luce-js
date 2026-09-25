@@ -41,6 +41,11 @@ def atoms(source):
                 "order and `atom_end` is the first dynamically allocated atom."])]
     out.append("## JS_ATOM_NULL: no atom.\nlet no_atom: Atom = 0\n")
     for index, (name, _) in enumerate(entries, start=1):
+        if name == "null":
+            # the atom of the text "null" (JS_ATOM_null); JS_ATOM_NULL is `no_atom`
+            out.append(f"## The atom of the keyword \"null\" (JS_ATOM_null); JS_ATOM_NULL is `no_atom`.\n")
+            out.append(f"let atom_null_keyword: Atom = {index}\n")
+            continue
         out.append(f"let atom_{name}: Atom = {index}\n")
     out.append(f"## The first atom that is not predefined.\nlet atom_end: Atom = {len(entries) + 1}\n")
     out.append("## The last keyword atom (JS_ATOM_LAST_KEYWORD).\nlet atom_last_keyword: Atom = atom_super\n")

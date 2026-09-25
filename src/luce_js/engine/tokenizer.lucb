@@ -541,11 +541,11 @@ func parse_ident(s: ParseState*, pp: const u8**, pident_has_escape: bool*, c0: i
                 recover ()
             if failed:
                 break
-    var atom = atom_null
+    var atom = no_atom
     if not failed:
         atom = js_new_atom_len(s.ctx, buf, ident_pos) catch failure:
             failed = true
-            recover atom_null
+            recover no_atom
     if buf != static_buf:
         js_free(s.ctx, buf)
     *pp = p
