@@ -83,8 +83,8 @@ func js_new_object_from_shape(ctx: Context*, sh: Shape*, class_id: u32, props: P
             p.u.object_data = js_undefined()
             set_exotic_from_class(ctx, p, class_id)
         .regexp:
-            # pattern = NULL, bytecode = NULL: the fields are never null once the regexp
-            # is built, so they are cleared as bytes.
+            # pattern = NULL, program = none: the pattern is never null once the regexp
+            # is built, so the fields are cleared as bytes.
             discard(cutils.memset(&p.u.regexp, 0, sizeof(RegExp)))
         .global_object:
             p.u.global_object.uninitialized_vars = js_undefined()

@@ -393,8 +393,9 @@ let js_interrupt_counter_init: i32 = 10000
 
 # mark: The context =============================================================================
 
-## Compiles a RegExp: `(ctx, pattern, flags)` to its bytecode string.
-type CompileRegExpFunc = func(Context*, Value, Value) -> Value!
+## Compiles a RegExp: `(ctx, pattern, flags)` to its program, which the caller frees with
+## regex.free_ecmascript.
+type CompileRegExpFunc = func(Context*, Value, Value) -> regex.Regex*!
 ## Evaluates source text: `(ctx, this_obj, input, input_len, filename, flags, scope_idx)`.
 type EvalInternalFunc = func(Context*, Value, const u8*, usize, const u8*, i32, i32) -> Value!
 

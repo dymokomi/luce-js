@@ -270,7 +270,7 @@ func js_print_regexp(s: PrintValueState*, p1: Object*):
     let re = &p1.u.regexp
     # the regexp fields are zeroed at init: the port's never-null fields are read as
     # addresses to see it
-    if (usize)re.pattern == 0 or (usize)re.bytecode == 0:
+    if (usize)re.pattern == 0 or re.program == none:
         js_puts(s, "[uninitialized_regexp]")
         return
     let p = re.pattern
@@ -315,7 +315,7 @@ func js_print_regexp(s: PrintValueState*, p1: Object*):
                 js_putc(s, (u8)c2)
     js_putc(s, (u8)'/')
 
-    let flags = lre_get_flags(str8(re.bytecode))
+    let flags = lre_get_flags(js_regexp_program(re))
     for i in 0..<js_print_regexp_flags.length:
         if ((flags >> (i32)i) & 1) != 0:
             js_putc(s, js_print_regexp_flags[i])

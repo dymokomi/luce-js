@@ -6,7 +6,6 @@ types_runtime.lucb
 types_object.lucb
 atoms_table.lucb
 opcodes_table.lucb
-stub_types.lucb
 compiler_types.lucb
 atoms.lucb
 atoms_convert.lucb
@@ -139,7 +138,15 @@ iterator_helpers.lucb
 iterator_helper_next.lucb
 array_iterator_tables.lucb
 number_constructor.lucb
-stub_r25_regexp_json_reflect.lucb
+regexp_bridge.lucb
+regexp_constructor.lucb
+regexp_exec.lucb
+regexp_symbols.lucb
+regexp_search_split.lucb
+json_parse.lucb
+json_builtins.lucb
+json_stringify.lucb
+reflect.lucb
 proxy_traps.lucb
 proxy.lucb
 symbol.lucb
@@ -203,3 +210,4 @@ tests_r27.lucb
 tests_r19.lucb
 tests_r28.lucb
 tests_r15.lucb
+tests_r25.lucb

@@ -219,11 +219,13 @@ struct ForInIterator:
     ## When is_array is false.
     var tab_atom: PropertyEnum*?
 
-## A regular expression's pattern and bytecode (JSRegExp).
+## A regular expression's pattern and compiled program (JSRegExp). QuickJS keeps the
+## program as a bytecode JSString; the port holds luce-regex's program, which the object
+## owns (see regexp_bridge.lucb).
 struct RegExp:
     var pattern: String*
-    ## Also contains the flags.
-    var bytecode: String*
+    ## Also contains the flags; none until the object is set.
+    var program: regex.Regex*?
 
 ## A proxy's target and handler (JSProxyData).
 struct ProxyData:

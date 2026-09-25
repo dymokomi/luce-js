@@ -133,17 +133,17 @@ func js_parse_regexp_literal(s: ParseState*) -> !:
         # is not reported.
         emit_push_const(s, s.token.u.regexp.body, false) catch failure:
             recover ()
-        let text = compile_regexp(ctx, s.token.u.regexp.body, s.token.u.regexp.flags) catch failure:
+        # the literal is compiled now to report its syntax errors; its program is built
+        # again from the pattern and flags constants by OP_regexp (regexp_bridge.lucb)
+        let program = compile_regexp(ctx, s.token.u.regexp.body, s.token.u.regexp.flags) catch failure:
             # add the line number info
             var col_num: i32 = 0
             let line_num = get_line_col(&col_num, s.buf_start, (usize)(s.token.ptr - s.buf_start))
             build_backtrace(ctx, ctx.rt.current_exception, s.filename, line_num + 1,
                             col_num + 1, 0)
             error(failure.code, failure.message)
-        emit_push_const(s, text, false) catch failure:
-            js_free_value(ctx, text)
-            error(failure.code, failure.message)
-        js_free_value(ctx, text)
+        regex.free_ecmascript(program)
+        try emit_push_const(s, s.token.u.regexp.flags, false)
         # we use a specific opcode to be sure the correct function is called (otherwise
         # the bytecode would have to be verified by the RegExp constructor)
         emit_op(s, (u8)Op.regexp)

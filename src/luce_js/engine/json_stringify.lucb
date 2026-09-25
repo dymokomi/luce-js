@@ -1,0 +1,372 @@
+#==============================================================================================
+#
+#   json_stringify - JSON.stringify, and the JSON object's table and setup
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 49922-50410: the stringify state, JS_ToQuotedString (a
+#       string as a JSON string literal), js_json_check (toJSON and the replacer
+#       function), js_json_to_str (the recursive serialization of objects and arrays),
+#       JS_JSONStringify with its replacer array and gap, JSON.stringify, the JSON
+#       object's builtin table and JS_AddIntrinsicJSON.
+#
+#==============================================================================================
+
+# mark: Quoting =================================================================================
+
+## The state of one JSON.stringify (JSONStringifyContext).
+struct JSONStringifyContext:
+    var replacer_func: Value
+    ## The objects being serialized, to detect cycles.
+    var stack: Value
+    ## The keys to serialize, from a replacer array; undefined for all.
+    var property_list: Value
+    var gap: Value
+    var empty: Value
+    var b: StringBuffer*
+
+# Append `val1` (converted to a string) to `b` as a JSON string literal.
+func js_to_quoted_string(ctx: Context*, b: StringBuffer*, val1: Value) -> !:
+    var buf: u8[16] = ---
+
+    let val = try js_to_string_check_object(ctx, val1)
+    defer js_free_value(ctx, val)
+    let p = val.u.string
+
+    try string_buffer_putc8(b, (u32)'"')
+    var i: i32 = 0
+    while i < (i32)p.len:
+        let c = (u32)string_getc(p, &i)
+        var quote: u32 = 0
+        match c:
+            9: # '\t'
+                quote = (u32)'t'
+            13: # '\r'
+                quote = (u32)'r'
+            10: # '\n'
+                quote = (u32)'n'
+            8: # '\b'
+                quote = (u32)'b'
+            12: # '\f'
+                quote = (u32)'f'
+            34, 92: # '"', '\\'
+                quote = c
+            _:
+                discard(0)
+        if quote != 0:
+            try string_buffer_putc8(b, (u32)'\\')
+            try string_buffer_putc8(b, quote)
+        elif c < 32 or cutils.is_surrogate(c):
+            discard(format_hex_escape(buf, 'u', c, 4))
+            try string_buffer_puts8(b, &buf[0])
+        else:
+            try string_buffer_putc(b, c)
+    try string_buffer_putc8(b, (u32)'"')
+
+func js_to_quoted_string_free(ctx: Context*, b: StringBuffer*, val: Value) -> !:
+    defer js_free_value(ctx, val)
+    try js_to_quoted_string(ctx, b, val)
+
+# mark: Serializing =============================================================================
+
+# SerializeJSONProperty's first steps: call toJSON and the replacer function on `val`
+# (which is taken), and answer it, or undefined when it is not serializable.
+func js_json_check(ctx: Context*, jsc: JSONStringifyContext*, holder: Value, val0: Value, key: Value) -> Value!:
+    var val = val0
+    var args: Value[2] = ---
+
+    errdefer js_free_value_at(ctx, &val)
+
+    # check for object.toJSON method
+    # ECMA specifies this is done only for Object and BigInt
+    if js_is_object(val) or js_is_big_int(val):
+        let f = try js_get_property(ctx, val, atom_toJSON)
+        if js_is_function(ctx, f):
+            var key_arg = key
+            let v = try js_call_free(ctx, f, val, 1, &key_arg)
+            js_free_value(ctx, val)
+            val = v
+        else:
+            js_free_value(ctx, f)
+
+    if not js_is_undefined(jsc.replacer_func):
+        args[0] = key
+        args[1] = val
+        let v = try js_call(ctx, jsc.replacer_func, holder, 2, &args[0])
+        js_free_value(ctx, val)
+        val = v
+
+    match val.tag:
+        .object:
+            if not js_is_function(ctx, val):
+                return val
+        .string, .string_rope, .int, .float64, .boolean, .null, .short_big_int, .big_int, .exception:
+            return val
+        _:
+            discard(0)
+    js_free_value(ctx, val)
+    return js_undefined()
+
+# Serialize the object or array `val0` (which is taken) at the indentation `indent`.
+func js_json_to_str_object(ctx: Context*, jsc: JSONStringifyContext*, val0: Value, indent: Value) -> !:
+    var val = val0
+    var indent1 = js_undefined()
+    var sep = js_undefined()
+    var sep1 = js_undefined()
+    var tab = js_undefined()
+    var prop = js_undefined()
+    var no_args = js_undefined()
+    defer js_free_value_at(ctx, &prop)
+    defer js_free_value_at(ctx, &indent1)
+    defer js_free_value_at(ctx, &sep1)
+    defer js_free_value_at(ctx, &sep)
+    defer js_free_value_at(ctx, &tab)
+    defer js_free_value_at(ctx, &val)
+
+    let v = try js_array_includes(ctx, jsc.stack, 1, &val)
+    if try js_to_bool_free(ctx, v):
+        try js_throw_type_error(ctx, "circular reference")
+    indent1 = try js_concat_string(ctx, js_dup_value(ctx, indent), js_dup_value(ctx, jsc.gap))
+    if not js_is_empty_string(jsc.gap):
+        sep = try js_concat_string3(ctx, "\n".bytes.data, js_dup_value(ctx, indent1), "".bytes.data)
+        sep1 = try js_new_string8(ctx, " ".bytes.data)
+    else:
+        sep = js_dup_value(ctx, jsc.empty)
+        sep1 = js_dup_value(ctx, jsc.empty)
+    js_free_value(ctx, try js_array_push(ctx, jsc.stack, 1, &val, 0))
+    # as upstream, the unchecked appends below are reported by string_buffer_end
+    if try js_is_array(ctx, val):
+        var len: i64 = 0
+        try js_get_length64(ctx, &len, val)
+        string_buffer_putc8(jsc.b, (u32)'[') catch: recover ()
+        for i: i64 in 0..<len:
+            if i > 0:
+                string_buffer_putc8(jsc.b, (u32)',') catch: recover ()
+            string_buffer_concat_value(jsc.b, sep) catch: recover ()
+            var el = try js_get_property_int64(ctx, val, i)
+            # XXX: could do this string conversion only when needed
+            # (upstream leaks `el` when this conversion fails)
+            prop = js_to_string_free(ctx, js_new_int64(i)) catch failure:
+                js_free_value(ctx, el)
+                error(failure.code, failure.message)
+            el = try js_json_check(ctx, jsc, val, el, prop)
+            js_free_value(ctx, prop)
+            prop = js_undefined()
+            if js_is_undefined(el):
+                el = js_null()
+            try js_json_to_str(ctx, jsc, val, el, indent1)
+        if len > 0 and not js_is_empty_string(jsc.gap):
+            string_buffer_putc8(jsc.b, (u32)'\n') catch: recover ()
+            string_buffer_concat_value(jsc.b, indent) catch: recover ()
+        string_buffer_putc8(jsc.b, (u32)']') catch: recover ()
+    else:
+        if not js_is_undefined(jsc.property_list):
+            tab = js_dup_value(ctx, jsc.property_list)
+        else:
+            tab = try js_object_keys(ctx, js_undefined(), 1, &val, (i32)IteratorKind.key)
+        var len: i64 = 0
+        try js_get_length64(ctx, &len, tab)
+        string_buffer_putc8(jsc.b, (u32)'{') catch: recover ()
+        var has_content = false
+        for i: i64 in 0..<len:
+            js_free_value(ctx, prop)
+            prop = js_undefined()
+            prop = try js_get_property_int64(ctx, tab, i)
+            var v1 = try js_get_property_value(ctx, val, js_dup_value(ctx, prop))
+            v1 = try js_json_check(ctx, jsc, val, v1, prop)
+            if not js_is_undefined(v1):
+                if has_content:
+                    string_buffer_putc8(jsc.b, (u32)',') catch: recover ()
+                string_buffer_concat_value(jsc.b, sep) catch: recover ()
+                js_to_quoted_string(ctx, jsc.b, prop) catch failure:
+                    js_free_value(ctx, v1)
+                    error(failure.code, failure.message)
+                string_buffer_putc8(jsc.b, (u32)':') catch: recover ()
+                string_buffer_concat_value(jsc.b, sep1) catch: recover ()
+                try js_json_to_str(ctx, jsc, val, v1, indent1)
+                has_content = true
+        if has_content and not js_is_empty_string(jsc.gap):
+            string_buffer_putc8(jsc.b, (u32)'\n') catch: recover ()
+            string_buffer_concat_value(jsc.b, indent) catch: recover ()
+        string_buffer_putc8(jsc.b, (u32)'}') catch: recover ()
+    js_free_value(ctx, try js_array_pop(ctx, jsc.stack, 0, &no_args, 0))
+
+# Serialize `val0` (which is taken) at the indentation `indent`, `holder` holding it.
+func js_json_to_str(ctx: Context*, jsc: JSONStringifyContext*, holder: Value, val0: Value, indent: Value) -> !:
+    var val = val0
+
+    if js_check_stack_overflow(ctx.rt, 0):
+        js_free_value(ctx, val)
+        try js_throw_stack_overflow(ctx)
+
+    if js_is_object(val):
+        let p = val.u.obj
+        let cl = p.class_id
+        if cl == ClassId.string:
+            val = try js_to_string_free(ctx, val)
+        elif cl == ClassId.number:
+            val = try js_to_number_free(ctx, val)
+        elif cl == ClassId.boolean or cl == ClassId.big_int:
+            # This will thow the same error as for the primitive object
+            set_value(ctx, &val, js_dup_value(ctx, p.u.object_data))
+        elif cl == ClassId.rawjson:
+            let val1 = js_get_property(ctx, val, atom_rawJSON) catch failure:
+                js_free_value(ctx, val)
+                error(failure.code, failure.message)
+            js_free_value(ctx, val)
+            # concat_value
+            try string_buffer_concat_value_free(jsc.b, val1)
+            return
+        else:
+            try js_json_to_str_object(ctx, jsc, val, indent)
+            return
+    # concat_primitive
+    match val.tag:
+        .string, .string_rope:
+            try js_to_quoted_string_free(ctx, jsc.b, val)
+        .float64:
+            if not math.is_finite(js_value_get_float64(val)):
+                val = js_null()
+            try string_buffer_concat_value_free(jsc.b, val)
+        .int, .boolean, .null:
+            try string_buffer_concat_value_free(jsc.b, val)
+        .short_big_int, .big_int:
+            # reject big numbers: use toJSON method to override
+            js_free_value(ctx, val)
+            try js_throw_type_error(ctx, "Do not know how to serialize a BigInt")
+        _:
+            js_free_value(ctx, val)
+
+# mark: JSON.stringify ==========================================================================
+
+# The gap of JSON.stringify from its `space` argument (already unwrapped from a Number or
+# String object): up to 10 spaces for a number, the first 10 characters of a string.
+func json_space_to_gap(ctx: Context*, empty: Value, space: Value) -> Value!:
+    if js_is_number(space):
+        var n: i32 = 0
+        try js_to_int32_clamp(ctx, &n, space, 0, 10, 0)
+        return try js_new_string8_len(ctx, "          ".bytes.data, n)
+    elif js_is_string(space):
+        let p = space.u.string
+        return try js_sub_string(ctx, p, 0, cutils.min_int((i32)p.len, 10))
+    return js_dup_value(ctx, empty)
+
+# Fill the replacer and the gap of `jsc`, then serialize `obj` into jsc.b; false when the
+# result is undefined.
+func js_json_stringify_body(ctx: Context*, jsc: JSONStringifyContext*, obj: Value, replacer: Value, space0: Value,
+                            pwrapper: Value*) -> bool!:
+    jsc.stack = try js_new_array(ctx)
+    if js_is_function(ctx, replacer):
+        jsc.replacer_func = replacer
+    else:
+        let res = try js_is_array(ctx, replacer)
+        if res:
+            # XXX: enumeration is not fully correct
+            jsc.property_list = try js_new_array(ctx)
+            var n: i64 = 0
+            try js_get_length64(ctx, &n, replacer)
+            var j: i64 = 0
+            for i: i64 in 0..<n:
+                var v = try js_get_property_int64(ctx, replacer, i)
+                if js_is_object(v):
+                    let p = v.u.obj
+                    if p.class_id == ClassId.string or p.class_id == ClassId.number:
+                        v = try js_to_string_free(ctx, v)
+                    else:
+                        js_free_value(ctx, v)
+                        continue
+                elif js_is_number(v):
+                    v = try js_to_string_free(ctx, v)
+                elif not js_is_string(v):
+                    js_free_value(ctx, v)
+                    continue
+                let present = js_array_includes(ctx, jsc.property_list, 1, &v) catch failure:
+                    js_free_value(ctx, v)
+                    error(failure.code, failure.message)
+                # a failure is read as true, as C reads -1 (it cannot fail for a boolean)
+                let found = js_to_bool_free(ctx, present) catch: recover true
+                if not found:
+                    # as upstream, the result is not checked
+                    discard(js_set_property_int64(ctx, jsc.property_list, j, v) catch: recover false)
+                    j += 1
+                else:
+                    js_free_value(ctx, v)
+    var space = js_dup_value(ctx, space0)
+    if js_is_object(space):
+        let p = space.u.obj
+        if p.class_id == ClassId.number:
+            space = try js_to_number_free(ctx, space)
+        elif p.class_id == ClassId.string:
+            space = try js_to_string_free(ctx, space)
+    jsc.gap = json_space_to_gap(ctx, jsc.empty, space) catch failure:
+        js_free_value(ctx, space)
+        error(failure.code, failure.message)
+    js_free_value(ctx, space)
+    *pwrapper = try js_new_object(ctx)
+    let wrapper = *pwrapper
+    discard(try js_define_property_value(ctx, wrapper, atom_empty_string, js_dup_value(ctx, obj), prop_c_w_e))
+    var val = js_dup_value(ctx, obj)
+
+    val = try js_json_check(ctx, jsc, wrapper, val, jsc.empty)
+    if js_is_undefined(val):
+        return false
+    try js_json_to_str(ctx, jsc, wrapper, val, jsc.empty)
+    return true
+
+# Release what JS_JSONStringify holds: the done label.
+func js_json_stringify_free(ctx: Context*, jsc: JSONStringifyContext*, pwrapper: const Value*):
+    js_free_value(ctx, *pwrapper)
+    js_free_value(ctx, jsc.empty)
+    js_free_value(ctx, jsc.gap)
+    js_free_value(ctx, jsc.property_list)
+    js_free_value(ctx, jsc.stack)
+
+## JSON.stringify(obj, replacer, space): the JSON text of `obj`, or undefined
+## (JS_JSONStringify).
+pub func js_json_stringify(ctx: Context*, obj: Value, replacer: Value, space0: Value) -> Value!:
+    var b_s: StringBuffer = ---
+    var jsc_s: JSONStringifyContext = ---
+    let jsc = &jsc_s
+    var wrapper = js_undefined()
+
+    jsc_s.replacer_func = js_undefined()
+    jsc_s.stack = js_undefined()
+    jsc_s.property_list = js_undefined()
+    jsc_s.gap = js_undefined()
+    jsc_s.b = &b_s
+    jsc_s.empty = try js_atom_to_string(ctx, atom_empty_string)
+
+    # as upstream, a failed append is reported by string_buffer_end
+    string_buffer_init(ctx, jsc.b, 0) catch: recover ()
+    defer js_json_stringify_free(ctx, jsc, &wrapper)
+    # done1; a no-op after string_buffer_end
+    defer string_buffer_free(jsc.b)
+    if not (try js_json_stringify_body(ctx, jsc, obj, replacer, space0, &wrapper)):
+        return js_undefined()
+    return try string_buffer_end(jsc.b)
+
+# JSON.stringify(val, replacer, space)
+func js_json_stringify_internal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # stringify(val, replacer, space)
+    return try js_json_stringify(ctx, argv[0], argv[1], argv[2])
+
+# mark: Tables ==================================================================================
+
+## The JSON object.
+let js_json_funcs: CFunctionListEntry[5] = [
+    CFunctionListEntry(name = "isRawJSON", def_type = def_cfunc, length = 1, generic = js_json_is_raw_json),
+    CFunctionListEntry(name = "parse", def_type = def_cfunc, length = 2, generic = js_json_parse),
+    CFunctionListEntry(name = "rawJSON", def_type = def_cfunc, length = 1, generic = js_json_raw_json),
+    CFunctionListEntry(name = "stringify", def_type = def_cfunc, length = 3, generic = js_json_stringify_internal),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string,
+                       string_value = "JSON"),
+]
+
+# prop_flags 3: JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE.
+let js_json_obj: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "JSON", prop_flags = 3, def_type = def_object, prop_list = js_json_funcs),
+]
+
+## Add the JSON object to the global object of `ctx` (JS_AddIntrinsicJSON).
+pub func js_add_intrinsic_json(ctx: Context*) -> !:
+    # add JSON as autoinit object
+    try js_set_property_function_list(ctx, ctx.global_obj, js_json_obj)

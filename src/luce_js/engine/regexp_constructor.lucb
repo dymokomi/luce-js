@@ -1,0 +1,358 @@
+#==============================================================================================
+#
+#   regexp_constructor - The RegExp constructor, compile, the flag getters and escape
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 47700-48074: reading a RegExp object's record, IsRegExp,
+#       the RegExp constructor and RegExp.prototype.compile, the `source`, `flags` and
+#       per-flag getters, toString, the host hooks the regular expression engine calls
+#       (with the Runtime as its opaque pointer, see regexp_bridge.lucb) and RegExp.escape.
+#       Where QuickJS shares a RegExp's bytecode string with another RegExp, the port
+#       compiles the pattern again: each RegExp object owns its program.
+#
+#==============================================================================================
+
+# mark: RegExp records ==========================================================================
+
+# The RegExp record of `obj`, or none when it is not a RegExp: then a TypeError is thrown
+# first when `throw_error`.
+func js_get_regexp(ctx: Context*, obj: Value, throw_error: bool) -> RegExp*?!:
+    if obj.tag == Tag.object:
+        let p = obj.u.obj
+        if p.class_id == ClassId.regexp:
+            return &p.u.regexp
+    if throw_error:
+        try js_throw_type_error_invalid_class(ctx, (i32)ClassId.regexp)
+    return none
+
+# IsRegExp: whether `obj` has a truthy Symbol.match, or is a RegExp when Symbol.match is
+# undefined.
+func js_is_regexp(ctx: Context*, obj: Value) -> bool!:
+    if not js_is_object(obj):
+        return false
+    let m = try js_get_property(ctx, obj, atom_Symbol_match)
+    if not js_is_undefined(m):
+        return try js_to_bool_free(ctx, m)
+    return (try js_get_regexp(ctx, obj, false)) != none
+
+# mark: Constructor and compile =================================================================
+
+# The no_compilation exit of the constructor: hand the object and the pattern held in
+# `*pobj` and `*ppattern` (then cleared) and the program to js_regexp_set_internal, which
+# owns them from here, also on failure.
+func js_regexp_set_internal_moved(ctx: Context*, pobj: Value*, ppattern: Value*,
+                                  program: regex.Regex*) -> Value!:
+    let obj = *pobj
+    *pobj = js_undefined()
+    let pattern = *ppattern
+    *ppattern = js_undefined()
+    return try js_regexp_set_internal(ctx, obj, pattern, program)
+
+# The lre_flag_* flags a RegExp was compiled with, to compile its pattern again: QuickJS
+# shares the bytecode string, the port gives each RegExp object its own program.
+func js_regexp_compile_flags(re: const RegExp*) -> i32:
+    return lre_get_flags(js_regexp_program(re)) & ~lre_flag_named_groups
+
+# RegExp(pattern, flags), as a constructor or a function.
+func js_regexp_constructor(ctx: Context*, new_target0: Value, argc: i32, argv: Value*) -> Value!:
+    var new_target = new_target0
+    let pat = argv[0]
+    let flags1 = argv[1]
+    let pat_is_regexp = try js_is_regexp(ctx, pat)
+    if js_is_undefined(new_target):
+        # called as a function
+        new_target = js_get_active_function(ctx)
+        if pat_is_regexp and js_is_undefined(flags1):
+            let ctor = try js_get_property(ctx, pat, atom_constructor)
+            let res = js_same_value(ctx, ctor, new_target)
+            js_free_value(ctx, ctor)
+            if res:
+                return js_dup_value(ctx, pat)
+
+    let re = try js_get_regexp(ctx, pat, false)
+    var pattern = js_undefined()
+    var flags = js_undefined()
+    var obj = js_undefined()
+    errdefer js_free_value_at(ctx, &obj)
+    errdefer js_free_value_at(ctx, &flags)
+    errdefer js_free_value_at(ctx, &pattern)
+    if let r = re:
+        pattern = js_dup_value(ctx, js_mkptr(Tag.string, r.pattern))
+        if js_is_undefined(flags1):
+            obj = try js_create_from_ctor(ctx, new_target, (u32)ClassId.regexp)
+            let program = try js_compile_regexp_flags(ctx, pattern, js_regexp_compile_flags(r))
+            return try js_regexp_set_internal_moved(ctx, &obj, &pattern, program)
+        flags = js_dup_value(ctx, flags1)
+    else:
+        if pat_is_regexp:
+            pattern = try js_get_property(ctx, pat, atom_source)
+            if js_is_undefined(flags1):
+                flags = try js_get_property(ctx, pat, atom_flags)
+            else:
+                flags = js_dup_value(ctx, flags1)
+        else:
+            pattern = js_dup_value(ctx, pat)
+            flags = js_dup_value(ctx, flags1)
+        if js_is_undefined(pattern):
+            pattern = try js_atom_to_string(ctx, atom_empty_string)
+        else:
+            let val = pattern
+            pattern = js_undefined()
+            pattern = try js_to_string_free(ctx, val)
+    obj = try js_create_from_ctor(ctx, new_target, (u32)ClassId.regexp)
+    let program = try js_compile_regexp(ctx, pattern, flags)
+    js_free_value(ctx, flags)
+    flags = js_undefined()
+    return try js_regexp_set_internal_moved(ctx, &obj, &pattern, program)
+
+# RegExp.prototype.compile(pattern, flags) (Annex B).
+func js_regexp_compile(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let re = try js_get_regexp(ctx, this_val, true) else trap("js_regexp_compile: no RegExp")
+    let pattern1 = argv[0]
+    let flags1 = argv[1]
+    var pattern = js_undefined()
+    var program: regex.Regex*? = none
+    if let re1 = try js_get_regexp(ctx, pattern1, false):
+        if not js_is_undefined(flags1):
+            try js_throw_type_error(ctx, "flags must be undefined")
+        pattern = js_dup_value(ctx, js_mkptr(Tag.string, re1.pattern))
+        program = js_compile_regexp_flags(ctx, pattern, js_regexp_compile_flags(re1)) catch failure:
+            js_free_value(ctx, pattern)
+            error(failure.code, failure.message)
+    else:
+        if js_is_undefined(pattern1):
+            pattern = try js_atom_to_string(ctx, atom_empty_string)
+        else:
+            pattern = try js_to_string(ctx, pattern1)
+        program = js_compile_regexp(ctx, pattern, flags1) catch failure:
+            js_free_value(ctx, pattern)
+            error(failure.code, failure.message)
+    js_free_value(ctx, js_mkptr(Tag.string, re.pattern))
+    if let old_program = re.program:
+        regex.free_ecmascript(old_program)
+    re.pattern = pattern.u.string
+    re.program = program
+    discard(try js_set_property(ctx, this_val, atom_lastIndex, js_new_int32(0)))
+    return js_dup_value(ctx, this_val)
+
+# mark: source, flags and toString ==============================================================
+
+# Whether `this_val` is %RegExp.prototype% of the context.
+func js_is_regexp_prototype(ctx: Context*, this_val: Value) -> bool:
+    return js_same_value(ctx, this_val, context_class_proto(ctx)[(usize)ClassId.regexp])
+
+# get RegExp.prototype.source
+func js_regexp_get_source(ctx: Context*, this_val: Value) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    if this_val.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+
+    if js_is_regexp_prototype(ctx, this_val):
+        return try js_new_string8(ctx, "(?:)".bytes.data)
+
+    let re = try js_get_regexp(ctx, this_val, true) else trap("js_regexp_get_source: no RegExp")
+
+    let p = re.pattern
+
+    if p.len == 0:
+        return try js_new_string8(ctx, "(?:)".bytes.data)
+    # as upstream, a failed append is reported by string_buffer_end
+    string_buffer_init2(ctx, b, (i32)p.len, p.is_wide_char) catch: recover ()
+
+    # Escape '/' and newline sequences as needed
+    var bra = false
+    var i: i32 = 0
+    let n = (i32)p.len
+    while i < n:
+        var c2: i32 = -1
+        var c = string_get(p, i)
+        i += 1
+        match c:
+            92: # '\\'
+                if i < n:
+                    c2 = string_get(p, i)
+                    i += 1
+            93: # ']'
+                bra = false
+            91: # '['
+                if not bra:
+                    if i < n and string_get(p, i) == (i32)']':
+                        c2 = string_get(p, i)
+                        i += 1
+                    bra = true
+            10: # '\n'
+                c = (i32)'\\'
+                c2 = (i32)'n'
+            13: # '\r'
+                c = (i32)'\\'
+                c2 = (i32)'r'
+            47: # '/'
+                if not bra:
+                    c = (i32)'\\'
+                    c2 = (i32)'/'
+            _:
+                discard(0)
+        string_buffer_putc16(b, (u32)c) catch: recover ()
+        if c2 >= 0:
+            string_buffer_putc16(b, (u32)c2) catch: recover ()
+    return try string_buffer_end(b)
+
+# The getters of the flags (global, ignoreCase, ...): `mask` is the lre_flag_* bit.
+func js_regexp_get_flag(ctx: Context*, this_val: Value, mask: i32) -> Value!:
+    if this_val.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+
+    let re = try js_get_regexp(ctx, this_val, false)
+    if let r = re:
+        let flags = lre_get_flags(js_regexp_program(r))
+        return js_new_bool((flags & mask) != 0)
+    if js_is_regexp_prototype(ctx, this_val):
+        return js_undefined()
+    try js_throw_type_error_invalid_class(ctx, (i32)ClassId.regexp)
+
+# RE_FLAG_COUNT: the flags the `flags` getter reads, in the order of its result.
+let re_flag_atom: Atom[8] = [
+    atom_hasIndices,
+    atom_global,
+    atom_ignoreCase,
+    atom_multiline,
+    atom_dotAll,
+    atom_unicode,
+    atom_unicodeSets,
+    atom_sticky,
+]
+let re_flag_char: u8[8] = ['d', 'g', 'i', 'm', 's', 'u', 'v', 'y']
+
+# get RegExp.prototype.flags
+func js_regexp_get_flags(ctx: Context*, this_val: Value) -> Value!:
+    var text: u8[8] = ---
+    var n: usize = 0
+
+    if this_val.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+
+    for i in 0..<re_flag_atom.length:
+        let res = try js_to_bool_free(ctx, js_get_property(ctx, this_val, re_flag_atom[i]))
+        if res:
+            text[n] = re_flag_char[i]
+            n += 1
+    return try js_new_string_len(ctx, &text[0], n)
+
+# RegExp.prototype.toString()
+func js_regexp_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+
+    string_buffer_init(ctx, b, 0) catch: recover ()
+    errdefer string_buffer_free(b)
+    string_buffer_putc8(b, (u32)'/') catch: recover ()
+    try string_buffer_concat_value_free(b, js_get_property(ctx, this_val, atom_source))
+    string_buffer_putc8(b, (u32)'/') catch: recover ()
+    try string_buffer_concat_value_free(b, js_get_property(ctx, this_val, atom_flags))
+    return try string_buffer_end(b)
+
+# mark: Host hooks of the regex engine ==========================================================
+
+# The callbacks of regex.Host (js_regexp_host); `opaque` is the Runtime (QuickJS passes the
+# Context: see regexp_bridge.lucb).
+
+# true if the native stack is about to overflow
+func lre_check_stack_overflow(opaque: void*?, alloca_size: usize) -> bool:
+    let rt = (Runtime*)(opaque else trap("lre_check_stack_overflow: no runtime"))
+    return js_check_stack_overflow(rt, alloca_size)
+
+# true if the match must stop (time out)
+func lre_check_timeout(opaque: void*?) -> bool:
+    let rt = (Runtime*)(opaque else trap("lre_check_timeout: no runtime"))
+    if let handler = rt.interrupt_handler:
+        return handler(rt, rt.interrupt_opaque) != 0
+    return false
+
+# The regex engine's allocator: the runtime heap.
+func lre_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    let rt = (Runtime*)(opaque else trap("lre_realloc: no runtime"))
+    # No JS exception is raised here
+    return js_realloc_rt(rt, ptr, size)
+
+# mark: RegExp.escape ===========================================================================
+
+# The punctuators RegExp.escape writes as a hex escape (C's strchr(",-=<>#&!%:;@~'`\"", c)).
+func regexp_escape_is_hex_punctuator(c: u32) -> bool:
+    match c:
+        44, 45, 61, 60, 62, 35, 38, 33, 37, 58, 59, 64, 126, 39, 96, 34: # , - = < > # & ! % : ; @ ~ ' ` "
+            return true
+        _:
+            return false
+
+let hex_digits_lower: const u8[] = b"0123456789abcdef"
+
+# Write into `buf` the escape '\\' `prefix` followed by `c` in lowercase hex with at least
+# `n_digits` digits and a NUL (snprintf's "\\x%02x" and "\\u%04x"); answers its length.
+func format_hex_escape(buf: u8[], prefix: u8, c: u32, n_digits: usize) -> usize:
+    var digits: usize = 1
+    while digits < 8 and (c >> (u32)(4 * digits)) != 0:
+        digits += 1
+    if digits < n_digits:
+        digits = n_digits
+    buf[0] = '\\'
+    buf[1] = prefix
+    for k in 0..<digits:
+        let shift = (u32)(4 * (digits - 1 - k))
+        buf[2 + k] = hex_digits_lower[(usize)((c >> shift) & 15)]
+    buf[2 + digits] = 0
+    return 2 + digits
+
+# Append the hex escape of `c` to `b` (see format_hex_escape).
+func string_buffer_put_hex_escape(b: StringBuffer*, prefix: u8, c: u32, n_digits: usize) -> !:
+    var s: u8[16] = ---
+    discard(format_hex_escape(s, prefix, c, n_digits))
+    try string_buffer_puts8(b, &s[0])
+
+# RegExp.escape(string)
+func js_regexp_escape(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    if not js_is_string(argv[0]):
+        try js_throw_type_error(ctx, "not a string")
+    let text = try js_to_string(ctx, argv[0]) # must call it to linearlize ropes
+    defer js_free_value(ctx, text)
+    let p = text.u.string
+    # as upstream, a failed append is reported by string_buffer_end
+    string_buffer_init2(ctx, b, 0, p.is_wide_char) catch: recover ()
+    var i: i32 = 0
+    while i < (i32)p.len:
+        let i0 = i
+        let c = (u32)string_getc(p, &i)
+        var hex2 = false
+        if c < 33:
+            if c >= 9 and c <= 13:
+                string_buffer_putc8(b, (u32)'\\') catch: recover ()
+                string_buffer_putc8(b, (u32)"tnvfr".bytes[(usize)(c - 9)]) catch: recover ()
+            else:
+                hex2 = true
+        elif c < 128:
+            if ((c >= (u32)'0' and c <= (u32)'9') or (c >= (u32)'A' and c <= (u32)'Z') or
+                (c >= (u32)'a' and c <= (u32)'z')):
+                if i0 == 0:
+                    hex2 = true
+            elif regexp_escape_is_hex_punctuator(c):
+                hex2 = true
+            elif c != (u32)'_':
+                string_buffer_putc8(b, (u32)'\\') catch: recover ()
+            if not hex2:
+                string_buffer_putc8(b, c) catch: recover ()
+        elif c < 256:
+            hex2 = true
+        elif cutils.is_surrogate(c) or unicode.lre_is_space(c):
+            string_buffer_put_hex_escape(b, 'u', c, 4) catch: recover ()
+        else:
+            string_buffer_putc(b, c) catch: recover ()
+        if hex2:
+            string_buffer_put_hex_escape(b, 'x', c, 2) catch: recover ()
+    return try string_buffer_end(b)
