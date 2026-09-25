@@ -9,7 +9,7 @@
 #==============================================================================================
 
 ## Ported from quickjs.c:9003 JS_ValueToAtom.
-func js_value_to_atom(ctx: Context*, val: Value) -> Atom:
+func js_value_to_atom(ctx: Context*, val: Value) -> Atom!:
     trap("unported: JS_ValueToAtom")
 ## Ported from quickjs.c:9029 JS_GetPropertyValue.
 func js_get_property_value(ctx: Context*, this_obj: Value, prop: Value) -> Value!:

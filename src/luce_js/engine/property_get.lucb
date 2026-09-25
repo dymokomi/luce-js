@@ -88,7 +88,7 @@ pub func js_is_instance_of(ctx: Context*, val: Value, obj: Value) -> bool!:
     if not js_is_null(method) and not js_is_undefined(method):
         var arg = val
         let ret = try js_call_free(ctx, method, obj, 1, &arg)
-        return try js_to_bool_free(ctx, ret) != 0
+        return try js_to_bool_free(ctx, ret)
 
     # legacy case
     if not js_is_function(ctx, obj):

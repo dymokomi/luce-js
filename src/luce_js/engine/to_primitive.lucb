@@ -1,0 +1,173 @@
+#==============================================================================================
+#
+#   to_primitive - ToPrimitive, ToBoolean, [[IsHTMLDDA]] and two parsing helpers
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 11063-11262: JS_ToPrimitive (Symbol.toPrimitive, then
+#       OrdinaryToPrimitive's toString/valueOf), the annex B [[IsHTMLDDA]] slot,
+#       JS_ToBool, and the number parser's helpers skip_spaces and to_digit. The HINT_*
+#       values (quickjs.c line 1244) are declared here with their first user.
+#
+#==============================================================================================
+
+# mark: ToPrimitive =============================================================================
+
+# The primitive value of `val` for the hint `hint` (hint_string, hint_number or
+# hint_none, optionally with hint_force_ordinary). Takes ownership of `val`, also on
+# failure.
+func js_to_primitive_free(ctx: Context*, val: Value, hint_arg: i32) -> Value!:
+    if val.tag != Tag.object:
+        return val
+    # every path below releases `val` once
+    defer js_free_value(ctx, val)
+    let force_ordinary = (hint_arg & hint_force_ordinary) != 0
+    var hint = hint_arg & ~hint_force_ordinary
+    if not force_ordinary:
+        let method = try js_get_property(ctx, val, atom_Symbol_toPrimitive)
+        # ECMA says *If exoticToPrim is not undefined* but tests in
+        # test262 use null as a non callable converter
+        if not js_is_undefined(method) and not js_is_null(method):
+            var atom: Atom = atom_default
+            if hint == hint_string:
+                atom = atom_string
+            elif hint == hint_number:
+                atom = atom_number
+            var arg = js_atom_to_string(ctx, atom) catch failure:
+                js_free_value(ctx, method)
+                error(failure.code, failure.message)
+            let ret = js_call_free(ctx, method, val, 1, &arg) catch failure:
+                js_free_value(ctx, arg)
+                error(failure.code, failure.message)
+            js_free_value(ctx, arg)
+            if ret.tag != Tag.object:
+                return ret
+            js_free_value(ctx, ret)
+            try js_throw_type_error(ctx, "toPrimitive")
+    if hint != hint_string:
+        hint = hint_number
+    for i: i32 in 0..<2:
+        var method_name = atom_valueOf
+        if (i ^ hint) == 0:
+            method_name = atom_toString
+        let method = try js_get_property(ctx, val, method_name)
+        if js_is_function(ctx, method):
+            # no arguments: any valid pointer for argv
+            var no_args = js_undefined()
+            let ret = try js_call_free(ctx, method, val, 0, &no_args)
+            if ret.tag != Tag.object:
+                return ret
+            js_free_value(ctx, ret)
+        else:
+            js_free_value(ctx, method)
+    try js_throw_type_error(ctx, "toPrimitive")
+
+# The primitive value of `val` (see js_to_primitive_free); does not take ownership.
+func js_to_primitive(ctx: Context*, val: Value, hint: i32) -> Value!:
+    return try js_to_primitive_free(ctx, js_dup_value(ctx, val), hint)
+
+# mark: IsHTMLDDA ===============================================================================
+
+# set the [IsHTMLDDA] internal slot
+## Give the object `obj` the annex B [[IsHTMLDDA]] slot: typeof answers "undefined" and
+## ToBoolean false (JS_SetIsHTMLDDA).
+pub func js_set_is_htmldda(ctx: Context*, obj: Value):
+    if obj.tag != Tag.object:
+        return
+    let p = obj.u.obj
+    p.is_htmldda = true
+
+# Whether `obj` is an object with the [[IsHTMLDDA]] slot.
+func js_is_htmldda(ctx: Context*, obj: Value) -> bool:
+    if obj.tag != Tag.object:
+        return false
+    let p = obj.u.obj
+    return p.is_htmldda
+
+# mark: ToBoolean ===============================================================================
+
+# ToBoolean of `val`; takes ownership of `val`. Fails when `val` is the exception marker
+# (QuickJS's -1).
+func js_to_bool_free(ctx: Context*, val: Value) -> bool!:
+    match val.tag:
+        .int:
+            return js_value_get_int(val) != 0
+        .boolean, .null, .undefined:
+            return js_value_get_int(val) != 0
+        .exception:
+            error(exception, "")
+        .string:
+            let ret = val.u.string.len != 0
+            js_free_value(ctx, val)
+            return ret
+        .string_rope:
+            let ret = val.u.rope.len != 0
+            js_free_value(ctx, val)
+            return ret
+        .short_big_int:
+            return js_value_get_short_big_int(val) != 0
+        .big_int:
+            let p = val.u.big_int
+            let tab = js_bigint_tab(p)
+            # fail safe: we assume it is not necessarily
+            # normalized. Beginning from the MSB ensures that the
+            # test is fast.
+            var ret = false
+            var i = (i64)p.len - 1
+            while i >= 0:
+                if tab[(usize)i] != 0:
+                    ret = true
+                    break
+                i -= 1
+            js_free_value(ctx, val)
+            return ret
+        .object:
+            let p = val.u.obj
+            let ret = not p.is_htmldda
+            js_free_value(ctx, val)
+            return ret
+        _:
+            if js_tag_is_float64(val.tag):
+                let d = js_value_get_float64(val)
+                # NaN is the one value unequal to itself
+                return d == d and d != 0.0
+            else:
+                js_free_value(ctx, val)
+                return true
+
+## ToBoolean of `val` (JS_ToBool). Fails when `val` is the exception marker (QuickJS
+## answers -1).
+pub func js_to_bool(ctx: Context*, val: Value) -> bool!:
+    return try js_to_bool_free(ctx, js_dup_value(ctx, val))
+
+# mark: Parsing helpers =========================================================================
+
+# The number of bytes of white space (ASCII and Unicode, as lre_is_space) at the start of
+# the NUL-terminated UTF-8 text `pc`.
+func skip_spaces(pc: const u8*) -> i32:
+    let p_start = pc
+    var p = pc
+    while true:
+        let c = (u32)*p
+        if c < 128:
+            if not ((c >= 0x09 and c <= 0x0d) or c == 0x20):
+                break
+            p = p + 1
+        else:
+            var p_next: const u8* = p
+            let uc = (u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p_next)
+            if not unicode.lre_is_space(uc):
+                break
+            p = p_next
+    return (i32)(p - p_start)
+
+# The value of the digit `c` in bases up to 36 ('0'-'9', then 'a'-'z' or 'A'-'Z'), or 36
+# if `c` is not one.
+func to_digit(c: i32) -> i32:
+    if c >= (i32)'0' and c <= (i32)'9':
+        return c - (i32)'0'
+    elif c >= (i32)'A' and c <= (i32)'Z':
+        return c - (i32)'A' + 10
+    elif c >= (i32)'a' and c <= (i32)'z':
+        return c - (i32)'a' + 10
+    else:
+        return 36

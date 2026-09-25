@@ -30,13 +30,17 @@ property_get.lucb
 private_fields.lucb
 own_properties.lucb
 stub_r09_property_set.lucb
-stub_r10_define_property.lucb
 bigint_limbs.lucb
 bigint_alloc.lucb
 bigint_ops.lucb
 bigint_convert.lucb
 bigint_string.lucb
 atof.lucb
+define_property.lucb
+define_property_wrappers.lucb
+global_vars.lucb
+object_predicates.lucb
+to_primitive.lucb
 stub_r12_conversions.lucb
 stub_r13_operators.lucb
 stub_r14_interpreter.lucb
@@ -63,3 +67,4 @@ tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
 tests_r08.lucb
+tests_r10.lucb

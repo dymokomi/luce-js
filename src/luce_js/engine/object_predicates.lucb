@@ -1,0 +1,103 @@
+#==============================================================================================
+#
+#   object_predicates - What kind of object a value is, and the class opaque pointer
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 10959-11061: JS_IsFunction, JS_IsCFunction,
+#       JS_IsConstructor and JS_SetConstructorBit, JS_IsError,
+#       JS_SetUncatchableException, and the accessors of an object's opaque class data
+#       (JS_SetOpaque, JS_GetOpaque, JS_GetOpaque2, JS_GetAnyOpaque).
+#
+#==============================================================================================
+
+# mark: Predicates ==============================================================================
+
+## Whether `val` is callable: a bytecode function, a callable proxy, or an object of a
+## class with a call handler (JS_IsFunction).
+pub func js_is_function(ctx: Context*, val: Value) -> bool:
+    if val.tag != Tag.object:
+        return false
+    let p = val.u.obj
+    match p.class_id:
+        .bytecode_function:
+            return true
+        .proxy:
+            return p.u.proxy_data.is_func != 0
+        _:
+            let class_array = ctx.rt.class_array else trap("runtime without class_array")
+            return class_array[(usize)(u16)p.class_id].call != none
+
+# Whether `val` is the C function `func_` with the magic number `magic`.
+func js_is_c_function(ctx: Context*, val: Value, func_: CFunction, magic: i32) -> bool:
+    if val.tag != Tag.object:
+        return false
+    let p = val.u.obj
+    if p.class_id == ClassId.c_function:
+        return (void*)p.u.cfunc.c_function.generic == (void*)func_ and (i32)p.u.cfunc.magic == magic
+    else:
+        return false
+
+## Whether `val` is a constructor (JS_IsConstructor).
+pub func js_is_constructor(ctx: Context*, val: Value) -> bool:
+    if val.tag != Tag.object:
+        return false
+    let p = val.u.obj
+    return p.is_constructor
+
+## Mark or unmark the function `func_obj` as a constructor; false if it is not an object
+## (JS_SetConstructorBit).
+pub func js_set_constructor_bit(ctx: Context*, func_obj: Value, val: bool) -> bool:
+    if func_obj.tag != Tag.object:
+        return false
+    let p = func_obj.u.obj
+    p.is_constructor = val
+    return true
+
+## Whether `val` is an Error object (JS_IsError).
+pub func js_is_error(ctx: Context*, val: Value) -> bool:
+    if val.tag != Tag.object:
+        return false
+    let p = val.u.obj
+    return p.class_id == ClassId.error_
+
+# must be called after JS_Throw()
+## Make the pending exception uncatchable by JavaScript code, or catchable again
+## (JS_SetUncatchableException).
+pub func js_set_uncatchable_exception(ctx: Context*, flag: bool):
+    ctx.rt.current_exception_is_uncatchable = flag
+
+# mark: Opaque class data =======================================================================
+
+## Set the opaque class data of the object `obj`; nothing if it is not an object
+## (JS_SetOpaque).
+pub func js_set_opaque(obj: Value, opaque: void*?):
+    if obj.tag == Tag.object:
+        let p = obj.u.obj
+        p.u.opaque = opaque
+
+# return NULL if not an object of class class_id
+## The opaque class data of `obj` if it is an object of class `class_id`, else none
+## (JS_GetOpaque).
+pub func js_get_opaque(obj: Value, class_id: ClassIdValue) -> void*?:
+    if obj.tag != Tag.object:
+        return none
+    let p = obj.u.obj
+    if (u32)(u16)p.class_id != class_id:
+        return none
+    return p.u.opaque
+
+## JS_GetOpaque, throwing a TypeError when `obj` is not an object of class `class_id`
+## or has no opaque data (JS_GetOpaque2).
+pub func js_get_opaque2(ctx: Context*, obj: Value, class_id: ClassIdValue) -> void*!:
+    let p = js_get_opaque(obj, class_id) else try js_throw_type_error_invalid_class(ctx, (i32)class_id)
+    return p
+
+## The opaque class data of `obj` whatever its class, which `*class_id` receives (0 and
+## none if `obj` is not an object) (JS_GetAnyOpaque).
+pub func js_get_any_opaque(obj: Value, class_id: ClassIdValue*) -> void*?:
+    if obj.tag != Tag.object:
+        *class_id = 0
+        return none
+    let p = obj.u.obj
+    *class_id = (u32)(u16)p.class_id
+    return p.u.opaque

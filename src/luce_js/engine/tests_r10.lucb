@@ -1,0 +1,46 @@
+#==============================================================================================
+#
+#   tests_r10 - Tests of the region r10 helpers that need no runtime
+#
+#   DESCRIPTION:
+#       The number parser's helpers skip_spaces and to_digit, and the opaque accessors
+#       on values that are not objects.
+#
+#==============================================================================================
+
+test "to_digit reads digits of bases up to 36":
+    assert(to_digit((i32)'0') == 0)
+    assert(to_digit((i32)'9') == 9)
+    assert(to_digit((i32)'a') == 10)
+    assert(to_digit((i32)'A') == 10)
+    assert(to_digit((i32)'z') == 35)
+    assert(to_digit((i32)'Z') == 35)
+    assert(to_digit((i32)'/') == 36)
+    assert(to_digit((i32)':') == 36)
+    assert(to_digit((i32)'@') == 36)
+    assert(to_digit((i32)'[') == 36)
+    assert(to_digit((i32)'`') == 36)
+    assert(to_digit((i32)'{') == 36)
+    assert(to_digit(0) == 36)
+    assert(to_digit(0x100) == 36)
+
+test "skip_spaces skips ASCII white space":
+    assert(skip_spaces("".bytes.data) == 0)
+    assert(skip_spaces("12".bytes.data) == 0)
+    assert(skip_spaces(" \t\n\r12".bytes.data) == 4)
+    assert(skip_spaces("   ".bytes.data) == 3)
+    # 0x09..0x0d and 0x20 only
+    assert(skip_spaces("\u{1}x".bytes.data) == 0)
+
+test "skip_spaces skips Unicode white space":
+    # U+00A0 (2 bytes), U+3000 (3 bytes), U+FEFF (3 bytes), U+2028 (3 bytes)
+    assert(skip_spaces("\u{a0}\u{3000}\u{feff}\u{2028}1".bytes.data) == 11)
+    # U+00E9 is not a space
+    assert(skip_spaces(" \u{e9}".bytes.data) == 1)
+
+test "the opaque accessors answer none for non-objects":
+    assert(js_get_opaque(js_new_int32(1), (u32)ClassId.object) == none)
+    var class_id: ClassIdValue = 7
+    assert(js_get_any_opaque(js_undefined(), &class_id) == none)
+    assert(class_id == 0)
+    js_set_opaque(js_null(), none)

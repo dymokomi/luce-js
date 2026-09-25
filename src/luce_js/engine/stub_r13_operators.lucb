@@ -171,7 +171,7 @@ func js_global_object_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
 func js_global_object_get_uninitialized_var(ctx: Context*, p1: Object*, atom: Atom) -> VarRef*?:
     trap("unported: js_global_object_get_uninitialized_var")
 ## Ported from quickjs.c:17100 js_global_object_find_uninitialized_var.
-func js_global_object_find_uninitialized_var(ctx: Context*, p: Object*, atom: Atom, is_lexical: bool) -> VarRef*?:
+func js_global_object_find_uninitialized_var(ctx: Context*, p: Object*, atom: Atom, is_lexical: bool) -> VarRef*!:
     trap("unported: js_global_object_find_uninitialized_var")
 ## Ported from quickjs.c:17125 js_closure_define_global_var.
 func js_closure_define_global_var(ctx: Context*, cv: ClosureVar*, is_direct_or_indirect_eval: bool) -> VarRef*?:
