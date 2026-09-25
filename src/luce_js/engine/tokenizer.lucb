@@ -1,0 +1,554 @@
+#==============================================================================================
+#
+#   tokenizer - Tokens, source positions, parse errors and the literal scanners
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "JS parser" lines 22188-22826: releasing and dumping tokens,
+#       line and column numbers, the js_parse_error family, js_parse_expect, template,
+#       string and regular expression literals, and identifiers (with the keyword
+#       conversion). next_token is in tokenizer_next.lucb.
+#
+#       A C function that answers -1 on a syntax error is fallible here: the error is a
+#       SyntaxError thrown in the context. The literal scanners run their loop in a
+#       helper that the caller wraps, so the StringBuffer is freed on every failure and
+#       never after string_buffer_end consumed it.
+#
+#==============================================================================================
+
+# mark: Tokens ==================================================================================
+
+# The escape parser of libregexp (lre_parse_escape), until luce_js.regexp is merged:
+# then `regexp.lre_parse_escape` replaces it, with this signature.
+func lre_parse_escape(pp: const u8**, allow_utf16: i32) -> i32:
+    trap("unported: lre_parse_escape (luce_js.regexp is not merged yet)")
+
+# Whether `tok` is a keyword token (TOK_FIRST_KEYWORD to TOK_LAST_KEYWORD).
+func tok_is_keyword(tok: TokenType) -> bool:
+    return (i32)tok >= (i32)tok_first_keyword and (i32)tok <= (i32)tok_last_keyword
+
+# The character a one-character token is, as printf's "%c" prints it: the low byte,
+# read as Latin-1.
+func tok_char(tok: TokenType) -> char:
+    return char((u32)(u8)(i32)tok)
+
+# The text of a NUL-terminated C string, for printing.
+func c_text(p: const u8*) -> str:
+    let bytes: const u8[] = u8[]((u8*)p, cutils.strlen(p))
+    return (str)bytes
+
+func free_token(s: ParseState*, token: Token*):
+    match token.val:
+        .number:
+            js_free_value(s.ctx, token.u.num.val)
+        .string, .template:
+            js_free_value(s.ctx, token.u.str_.str)
+        .regexp:
+            js_free_value(s.ctx, token.u.regexp.body)
+            js_free_value(s.ctx, token.u.regexp.flags)
+        .ident, .private_name:
+            js_free_atom(s.ctx, token.u.ident.atom)
+        _:
+            if tok_is_keyword(token.val):
+                js_free_atom(s.ctx, token.u.ident.atom)
+
+# The identifier or keyword of `token`, printed.
+func dump_token_atom(s: ParseState*, token: const Token*):
+    var buf: u8[atom_get_str_buf_size] = ---
+    print(f"ident: '{js_atom_get_str(s.ctx, buf, token.u.ident.atom)}'")
+
+# The value of a string token, printed with `label` (JS_ToCString, then printf).
+func dump_token_text(s: ParseState*, label: str, val: Value):
+    let text = js_to_c_string_len2(s.ctx, none, val, false) else return
+    print(f"{label}{c_text(text)}")
+    js_free_c_string(s.ctx, text)
+
+# A debugging aid, unused (as in QuickJS). A number prints in the shortest form that
+# reads back, where QuickJS prints "%.14g".
+func dump_token(s: ParseState*, token: const Token*):
+    match token.val:
+        .number:
+            var d: f64 = 0.0
+            # no exception possible
+            discard(js_to_float64(s.ctx, &d, token.u.num.val))
+            print(f"number: {d}")
+        .ident:
+            dump_token_atom(s, token)
+        .string:
+            # XXX: quote the string
+            dump_token_text(s, "string: ", token.u.str_.str)
+        .template:
+            dump_token_text(s, "template: ", token.u.str_.str)
+        .regexp:
+            let body = js_to_c_string_len2(s.ctx, none, token.u.regexp.body, false) else return
+            let flags = js_to_c_string_len2(s.ctx, none, token.u.regexp.flags, false) else return
+            print(f"regexp: '{c_text(body)}' '{c_text(flags)}'")
+            js_free_c_string(s.ctx, body)
+            js_free_c_string(s.ctx, flags)
+        .eof:
+            print("eof")
+        _:
+            if tok_is_keyword(s.token.val):
+                dump_token_atom(s, token)
+            elif (i32)s.token.val >= 256:
+                print(f"token: {(i32)token.val}")
+            else:
+                print(f"token: '{tok_char(token.val)}'")
+
+# mark: Source positions ========================================================================
+
+# return the zero based line and column number in the source.
+# Note: we no longer support '\r' as line terminator
+func get_line_col(pcol_num: i32*, buf: const u8*, len: usize) -> i32:
+    var line_num: i32 = 0
+    var col_num: i32 = 0
+    for i in 0..<len:
+        let c = buf[i]
+        if c == '\n':
+            line_num += 1
+            col_num = 0
+        elif c < 0x80 or c >= 0xc0:
+            col_num += 1
+    *pcol_num = col_num
+    return line_num
+
+# The zero based line and column of `ptr`, computed from the last position the cache
+# holds, which moves to `ptr`.
+func get_line_col_cached(s: GetLineColCache*, pcol_num: i32*, ptr: const u8*) -> i32:
+    var col_num: i32 = 0
+    if ptr >= s.ptr:
+        let line_num = get_line_col(&col_num, s.ptr, (usize)(ptr - s.ptr))
+        if line_num == 0:
+            s.col_num += col_num
+        else:
+            s.line_num += line_num
+            s.col_num = col_num
+    else:
+        let line_num = get_line_col(&col_num, ptr, (usize)(s.ptr - ptr))
+        if line_num == 0:
+            s.col_num -= col_num
+        else:
+            s.line_num -= line_num
+            # find the absolute column position
+            col_num = 0
+            var p = ptr - 1
+            while p >= s.buf_start:
+                if *p == '\n':
+                    break
+                elif *p < 0x80 or *p >= 0xc0:
+                    col_num += 1
+                p = p - 1
+            s.col_num = col_num
+    s.ptr = ptr
+    *pcol_num = s.col_num
+    return s.line_num
+
+# mark: Parse errors ============================================================================
+
+# 'ptr' is the position of the error in the source. Throw a SyntaxError whose backtrace
+# names that position.
+func js_parse_error_v(s: ParseState*, ptr: const u8*, message: fmt) -> never!:
+    let ctx = s.ctx
+    var col_num: i32 = 0
+    let line_num = get_line_col(&col_num, s.buf_start, (usize)(ptr - s.buf_start))
+    js_throw_error2(ctx, ErrorKind.syntax_error, message, false) catch failure:
+        build_backtrace(ctx, ctx.rt.current_exception, s.filename, line_num + 1, col_num + 1, 0)
+        error(failure.code, failure.message)
+
+# Throw a SyntaxError at `ptr`.
+func js_parse_error_pos(s: ParseState*, ptr: const u8*, message: fmt) -> never!:
+    try js_parse_error_v(s, ptr, message)
+
+# Throw a SyntaxError at the current token.
+func js_parse_error(s: ParseState*, message: fmt) -> never!:
+    try js_parse_error_v(s, s.token.ptr, message)
+
+# Read the next token after checking that the current one is `tok`.
+func js_parse_expect(s: ParseState*, tok: TokenType) -> !:
+    if s.token.val != tok:
+        # XXX: dump token correctly in all cases
+        try js_parse_error(s, f"expecting '{tok_char(tok)}'")
+    try next_token(s)
+
+# Read the next token after a ';', or accept its automatic insertion.
+func js_parse_expect_semi(s: ParseState*) -> !:
+    if s.token.val != TokenType.semicolon:
+        # automatic insertion of ';'
+        if s.token.val == TokenType.eof or s.token.val == TokenType.rbrace or s.got_lf:
+            return
+        try js_parse_error(s, "expecting ';'")
+    try next_token(s)
+
+func js_parse_error_reserved_identifier(s: ParseState*) -> never!:
+    var buf1: u8[atom_get_str_buf_size] = ---
+    try js_parse_error(s, f"'{js_atom_get_str(s.ctx, buf1, s.token.u.ident.atom)}' is a reserved identifier")
+
+# mark: Template and string literals ============================================================
+
+# The characters of a template part into `b`, from its first byte `p0`: answers the
+# position after the part and its last character ('`' at the end, '$' before a
+# substitution).
+func js_parse_template_chars(s: ParseState*, b: StringBuffer*, p0: const u8*) -> (const u8*, u32)!:
+    var p = p0
+    var c: u32 = 0
+    while true:
+        if p >= s.buf_end:
+            try js_parse_error(s, "unexpected end of string")
+        c = (u32)*p
+        p = p + 1
+        if c == (u32)'`':
+            # template end part
+            break
+        if c == (u32)'$' and *p == '{':
+            # template start or middle part
+            p = p + 1
+            break
+        if c == (u32)'\\':
+            try string_buffer_putc8(b, c)
+            if p >= s.buf_end:
+                try js_parse_error(s, "unexpected end of string")
+            c = (u32)*p
+            p = p + 1
+        # newline sequences are normalized as single '\n' bytes
+        if c == (u32)'\r':
+            if *p == '\n':
+                p = p + 1
+            c = (u32)'\n'
+        if c >= 0x80:
+            var p_next = p
+            c = (u32)cutils.unicode_from_utf8(p - 1, cutils.utf8_char_len_max, &p_next)
+            if c > 0x10FFFF:
+                try js_parse_error_pos(s, p - 1, "invalid UTF-8 sequence")
+            p = p_next
+        try string_buffer_putc(b, c)
+    return (p, c)
+
+# Scan a template part; 'p' points to the first byte of the template part.
+func js_parse_template_part(s: ParseState*, p: const u8*) -> !:
+    var b: StringBuffer = ---
+    string_buffer_init(s.ctx, &b, 32) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    let (p_end, c) = js_parse_template_chars(s, &b, p) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    let text = try string_buffer_end(&b)
+    s.token.val = TokenType.template
+    s.token.u.str_.sep = (i32)c
+    s.token.u.str_.str = text
+    s.buf_ptr = p_end
+
+# A malformed string literal: a SyntaxError at `ptr` when `do_throw`, else a failure
+# with no exception.
+func js_parse_string_fail(s: ParseState*, do_throw: bool, ptr: const u8*, message: fmt) -> never!:
+    if do_throw:
+        try js_parse_error_pos(s, ptr, message)
+    error(exception, "")
+
+# The characters of a string literal into `b`, from the byte after the opening quote:
+# answers the position after the literal and its last character.
+func js_parse_string_chars(s: ParseState*, b: StringBuffer*, sep: i32, do_throw: bool,
+                           p0: const u8*) -> (const u8*, u32)!:
+    var p = p0
+    var c: u32 = 0
+    while true:
+        if p >= s.buf_end:
+            try js_parse_string_fail(s, do_throw, s.token.ptr, "unexpected end of string")
+        c = (u32)*p
+        if c < 0x20:
+            if sep == (i32)'`':
+                if c == (u32)'\r':
+                    if p[1] == '\n':
+                        p = p + 1
+                    c = (u32)'\n'
+                # do not update s->line_num
+            elif c == (u32)'\n' or c == (u32)'\r':
+                try js_parse_string_fail(s, do_throw, s.token.ptr, "unexpected end of string")
+        p = p + 1
+        if c == (u32)sep:
+            break
+        if c == (u32)'$' and *p == '{' and sep == (i32)'`':
+            # template start or middle part
+            p = p + 1
+            break
+        if c == (u32)'\\':
+            let p_escape = p - 1
+            c = (u32)*p
+            # XXX: need a specific JSON case to avoid accepting invalid escapes
+            match *p:
+                0:
+                    if p >= s.buf_end:
+                        try js_parse_string_fail(s, do_throw, s.token.ptr, "unexpected end of string")
+                    p = p + 1
+                '\'', '"', '\\':
+                    p = p + 1
+                '\r', '\n':
+                    # accept DOS and MAC newline sequences
+                    if c == (u32)'\r' and p[1] == '\n':
+                        p = p + 1
+                    # ignore escaped newline sequence
+                    p = p + 1
+                    continue
+                _:
+                    var parse_escape = false
+                    if c >= (u32)'0' and c <= (u32)'9':
+                        if ((i32)s.fd().js_mode & js_mode_strict) == 0 and sep != (i32)'`':
+                            parse_escape = true
+                        elif c == (u32)'0' and not (p[1] >= '0' and p[1] <= '9'):
+                            p = p + 1
+                            c = 0
+                        elif c >= (u32)'8' or sep == (i32)'`':
+                            # Note: according to ES2021, \8 and \9 are not accepted in
+                            # strict mode or in templates.
+                            try js_parse_string_fail(s, do_throw, p_escape, "malformed escape sequence in string literal")
+                        else:
+                            try js_parse_string_fail(s, do_throw, p_escape, "octal escape sequences are not allowed in strict mode")
+                    elif c >= 0x80:
+                        var p_next = p
+                        c = (u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p_next)
+                        if c > 0x10FFFF:
+                            try js_parse_string_fail(s, do_throw, s.token.ptr, "invalid UTF-8 sequence")
+                        p = p_next
+                        # LS or PS are skipped
+                        if c == cp_ls or c == cp_ps:
+                            continue
+                    else:
+                        parse_escape = true
+                    if parse_escape:
+                        let ret = lre_parse_escape(&p, 1)
+                        if ret == -1:
+                            try js_parse_string_fail(s, do_throw, p_escape, "malformed escape sequence in string literal")
+                        elif ret < 0:
+                            # ignore the '\' (could output a warning)
+                            p = p + 1
+                        else:
+                            c = (u32)ret
+        elif c >= 0x80:
+            var p_next = p
+            c = (u32)cutils.unicode_from_utf8(p - 1, cutils.utf8_char_len_max, &p_next)
+            if c > 0x10FFFF:
+                try js_parse_string_fail(s, do_throw, s.token.ptr, "invalid UTF-8 sequence")
+            p = p_next
+        try string_buffer_putc(b, c)
+    return (p, c)
+
+# Scan a string literal delimited by `sep` from `p` (after the opening quote) into
+# `token`, and store the position after it in `*pp`. When `do_throw` is false a
+# malformed literal fails without an exception.
+func js_parse_string(s: ParseState*, sep: i32, do_throw: bool, p: const u8*, token: Token*,
+                     pp: const u8**) -> !:
+    var b: StringBuffer = ---
+    # string
+    string_buffer_init(s.ctx, &b, 32) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    let (p_end, c) = js_parse_string_chars(s, &b, sep, do_throw, p) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    let text = try string_buffer_end(&b)
+    token.val = TokenType.string
+    token.u.str_.sep = (i32)c
+    token.u.str_.str = text
+    *pp = p_end
+
+func token_is_pseudo_keyword(s: ParseState*, atom: Atom) -> bool:
+    return (s.token.val == TokenType.ident and s.token.u.ident.atom == atom and
+            not s.token.u.ident.has_escape)
+
+# mark: Regular expression literals =============================================================
+
+# The body of a regular expression literal into `b` and its flags into `b2`, from the
+# byte after the opening '/': answers the position after the flags.
+func js_parse_regexp_chars(s: ParseState*, b: StringBuffer*, b2: StringBuffer*, p0: const u8*) -> const u8*!:
+    var p = p0
+    var in_class = false
+    while true:
+        if p >= s.buf_end:
+            try js_parse_error(s, "unexpected end of regexp")
+        var c = (u32)*p
+        p = p + 1
+        if c == (u32)'\n' or c == (u32)'\r':
+            try js_parse_error_pos(s, p - 1, "unexpected line terminator in regexp")
+        elif c == (u32)'/':
+            if not in_class:
+                break
+        elif c == (u32)'[':
+            in_class = true
+        elif c == (u32)']':
+            # XXX: incorrect as the first character in a class
+            in_class = false
+        elif c == (u32)'\\':
+            try string_buffer_putc8(b, c)
+            c = (u32)*p
+            p = p + 1
+            if c == (u32)'\n' or c == (u32)'\r':
+                try js_parse_error_pos(s, p - 1, "unexpected line terminator in regexp")
+            elif c == 0 and p >= s.buf_end:
+                try js_parse_error(s, "unexpected end of regexp")
+            elif c >= 0x80:
+                var p_next = p
+                c = (u32)cutils.unicode_from_utf8(p - 1, cutils.utf8_char_len_max, &p_next)
+                if c > 0x10FFFF:
+                    try js_parse_error_pos(s, p - 1, "invalid UTF-8 sequence")
+                p = p_next
+                if c == cp_ls or c == cp_ps:
+                    try js_parse_error_pos(s, p - 1, "unexpected line terminator in regexp")
+        elif c >= 0x80:
+            var p_next = p
+            c = (u32)cutils.unicode_from_utf8(p - 1, cutils.utf8_char_len_max, &p_next)
+            if c > 0x10FFFF:
+                try js_parse_error_pos(s, p - 1, "invalid UTF-8 sequence")
+            # LS or PS are considered as line terminator
+            if c == cp_ls or c == cp_ps:
+                try js_parse_error_pos(s, p - 1, "unexpected line terminator in regexp")
+            p = p_next
+        try string_buffer_putc(b, c)
+
+    # flags
+    while true:
+        var p_next = p
+        var c = (u32)*p_next
+        p_next = p_next + 1
+        if c >= 0x80:
+            c = (u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p_next)
+            if c > 0x10FFFF:
+                p = p + 1
+                try js_parse_error_pos(s, p - 1, "invalid UTF-8 sequence")
+        if not unicode.lre_js_is_ident_next(c):
+            break
+        try string_buffer_putc(b2, c)
+        p = p_next
+    return p
+
+# Scan the regular expression literal at s.buf_ptr (its opening '/').
+func js_parse_regexp(s: ParseState*) -> !:
+    var b: StringBuffer = ---
+    var b2: StringBuffer = ---
+    let p = s.buf_ptr + 1
+    try string_buffer_init(s.ctx, &b, 32)
+    string_buffer_init(s.ctx, &b2, 1) catch failure:
+        string_buffer_free(&b)
+        string_buffer_free(&b2)
+        error(failure.code, failure.message)
+    let p_end = js_parse_regexp_chars(s, &b, &b2, p) catch failure:
+        string_buffer_free(&b)
+        string_buffer_free(&b2)
+        error(failure.code, failure.message)
+
+    let body_str = string_buffer_end(&b) catch failure:
+        recover js_exception()
+    let flags_str = string_buffer_end(&b2) catch failure:
+        recover js_exception()
+    if js_is_exception(body_str) or js_is_exception(flags_str):
+        js_free_value(s.ctx, body_str)
+        js_free_value(s.ctx, flags_str)
+        error(exception, "")
+    s.token.val = TokenType.regexp
+    s.token.u.regexp.body = body_str
+    s.token.u.regexp.flags = flags_str
+    s.buf_ptr = p_end
+
+# mark: Identifiers =============================================================================
+
+# Grow the identifier buffer `*pbuf` of `*psize` bytes by half; the first growth copies
+# it out of the caller's `static_buf`.
+func ident_realloc(ctx: Context*, pbuf: u8**, psize: usize*, static_buf: u8*) -> !:
+    let buf = *pbuf
+    let size = *psize
+    var new_size: usize = 0
+    if size >= (~(usize)0 // 3) * 2:
+        new_size = ~(usize)0
+    else:
+        new_size = size + (size >> 1)
+    var new_buf = buf
+    if buf == static_buf:
+        new_buf = (u8*)(try js_malloc(ctx, new_size))
+        discard(cutils.memcpy(new_buf, buf, size))
+    else:
+        let p = try js_realloc(ctx, buf, new_size) else trap("ident_realloc: empty block")
+        new_buf = (u8*)p
+    *pbuf = new_buf
+    *psize = new_size
+
+# convert a TOK_IDENT to a keyword when needed
+func update_token_ident(s: ParseState*):
+    let fd = s.fd()
+    let atom = s.token.u.ident.atom
+    var parent_generator = false
+    var parent_async = false
+    if let parent = fd.parent:
+        parent_generator = (parent.func_kind & js_func_generator) != 0
+        parent_async = ((parent.func_kind & js_func_async) != 0 or
+                        parent.func_type == ParseFunctionKind.class_static_init)
+    let in_arrow_params = fd.func_type == ParseFunctionKind.arrow and not fd.in_function_body
+    if (atom <= atom_last_keyword or
+        (atom <= atom_last_strict_keyword and ((i32)fd.js_mode & js_mode_strict) != 0) or
+        (atom == atom_yield and
+         ((fd.func_kind & js_func_generator) != 0 or (in_arrow_params and parent_generator))) or
+        (atom == atom_await and
+         (s.is_module or (fd.func_kind & js_func_async) != 0 or
+          fd.func_type == ParseFunctionKind.class_static_init or
+          (in_arrow_params and parent_async)))):
+        if s.token.u.ident.has_escape:
+            s.token.u.ident.is_reserved = true
+            s.token.val = TokenType.ident
+        else:
+            # The keywords atoms are pre allocated
+            s.token.val = (TokenType)((i32)atom - 1 + (i32)tok_first_keyword)
+
+# if the current token is an identifier or keyword, reparse it according to the current
+# function type
+func reparse_ident_token(s: ParseState*):
+    if s.token.val == TokenType.ident or tok_is_keyword(s.token.val):
+        s.token.val = TokenType.ident
+        s.token.u.ident.is_reserved = false
+        update_token_ident(s)
+
+# 'c' is the first character. The atom of the identifier that continues at `*pp`,
+# which moves past it.
+func parse_ident(s: ParseState*, pp: const u8**, pident_has_escape: bool*, c0: i32,
+                 is_private: bool) -> Atom!:
+    var c = c0
+    var p = *pp
+    var ident_buf: u8[128] = ---
+    let static_buf: u8* = &ident_buf[0]
+    var buf = static_buf
+    var ident_size: usize = 128
+    var ident_pos: usize = 0
+    var failed = false
+    if is_private:
+        buf[ident_pos] = '#'
+        ident_pos += 1
+    while true:
+        var p1 = p
+        if c < 128:
+            buf[ident_pos] = (u8)c
+            ident_pos += 1
+        else:
+            ident_pos += (usize)cutils.unicode_to_utf8(buf + ident_pos, (u32)c)
+        c = (i32)*p1
+        p1 = p1 + 1
+        if c == (i32)'\\' and *p1 == 'u':
+            c = lre_parse_escape(&p1, 1)
+            *pident_has_escape = true
+        elif c >= 128:
+            c = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p1)
+        if not unicode.lre_js_is_ident_next((u32)c):
+            break
+        p = p1
+        if ident_pos >= ident_size - (usize)cutils.utf8_char_len_max:
+            ident_realloc(s.ctx, &buf, &ident_size, static_buf) catch failure:
+                failed = true
+                recover ()
+            if failed:
+                break
+    var atom = atom_null
+    if not failed:
+        atom = js_new_atom_len(s.ctx, buf, ident_pos) catch failure:
+            failed = true
+            recover atom_null
+    if buf != static_buf:
+        js_free(s.ctx, buf)
+    *pp = p
+    if failed:
+        error(exception, "")
+    return atom

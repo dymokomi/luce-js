@@ -42,7 +42,7 @@ func js_sub_string(ctx: Context*, p: String*, start: i32, end: i32) -> Value!:
 func string_buffer_init2(ctx: Context*, s: StringBuffer*, size: i32, is_wide: i32) -> i32:
     trap("unported: string_buffer_init2")
 ## Ported from quickjs.c:4026 string_buffer_init.
-func string_buffer_init(ctx: Context*, s: StringBuffer*, size: i32) -> i32:
+func string_buffer_init(ctx: Context*, s: StringBuffer*, size: i32) -> !:
     trap("unported: string_buffer_init")
 ## Ported from quickjs.c:4031 string_buffer_free.
 func string_buffer_free(s: StringBuffer*):
@@ -60,7 +60,7 @@ func string_buffer_realloc(s: StringBuffer*, new_len: i32, c: i32) -> i32:
 func string_buffer_putc16_slow(s: StringBuffer*, c: u32) -> i32:
     trap("unported: string_buffer_putc16_slow")
 ## Ported from quickjs.c:4114 string_buffer_putc8.
-func string_buffer_putc8(s: StringBuffer*, c: u32) -> i32:
+func string_buffer_putc8(s: StringBuffer*, c: u32) -> !:
     trap("unported: string_buffer_putc8")
 ## Ported from quickjs.c:4129 string_buffer_putc16.
 func string_buffer_putc16(s: StringBuffer*, c: u32) -> i32:
@@ -69,7 +69,7 @@ func string_buffer_putc16(s: StringBuffer*, c: u32) -> i32:
 func string_buffer_putc_slow(s: StringBuffer*, c: u32) -> i32:
     trap("unported: string_buffer_putc_slow")
 ## Ported from quickjs.c:4155 string_buffer_putc.
-func string_buffer_putc(s: StringBuffer*, c: u32) -> i32:
+func string_buffer_putc(s: StringBuffer*, c: u32) -> !:
     trap("unported: string_buffer_putc")
 ## Ported from quickjs.c:4175 string_getc.
 func string_getc(p: const String*, pidx: i32*) -> i32:

@@ -1,0 +1,376 @@
+#==============================================================================================
+#
+#   tokenizer_next - next_token: the JavaScript tokenizer
+#
+#   DESCRIPTION:
+#       Port of quickjs.c next_token (lines 22829-23270). QuickJS's labels become a
+#       `while true:` loop around the character switch: `goto redo` is `continue`, and
+#       the shared tails (identifiers, numbers, line comments) are the helpers below.
+#       On failure the token is TOK_ERROR.
+#
+#==============================================================================================
+
+# mark: Shared tails ============================================================================
+
+# Mark the current token as the error token after a failure.
+func set_token_error(s: ParseState*):
+    s.token.val = TokenType.error_
+
+# An identifier token whose first character `c` was read; `*pp` is after it (has_ident).
+func next_token_ident(s: ParseState*, pp: const u8**, c: i32, ident_has_escape: bool) -> !:
+    var has_escape = ident_has_escape
+    let atom = try parse_ident(s, pp, &has_escape, c, false)
+    s.token.u.ident.atom = atom
+    s.token.u.ident.has_escape = has_escape
+    s.token.u.ident.is_reserved = false
+    s.token.val = TokenType.ident
+    update_token_ident(s)
+
+# A number token at `*pp`, which moves past it (parse_number).
+func next_token_number(s: ParseState*, pp: const u8**) -> !:
+    var p = *pp
+    let flags = (atod_accept_bin_oct | atod_accept_legacy_octal | atod_accept_underscores |
+                 atod_accept_suffix)
+    let ret = try js_atof(s.ctx, p, &p, 0, flags)
+    # reject `10instanceof Number`
+    var p1 = p
+    if (js_value_is_nan(ret) or
+        unicode.lre_js_is_ident_next((u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p1))):
+        js_free_value(s.ctx, ret)
+        try js_parse_error(s, "invalid number literal")
+    s.token.val = TokenType.number
+    s.token.u.num.val = ret
+    *pp = p
+
+# The position of the line terminator (or the end) that ends the comment at `p0`
+# (skip_line_comment).
+func skip_line_comment(s: ParseState*, p0: const u8*) -> const u8*:
+    var p = p0
+    while true:
+        if *p == 0 and p >= s.buf_end:
+            break
+        if *p == '\r' or *p == '\n':
+            break
+        if *p >= 0x80:
+            let c = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
+            # LS or PS are considered as line terminator
+            if c == (i32)cp_ls or c == (i32)cp_ps:
+                break
+            elif c == -1:
+                # skip invalid UTF-8
+                p = p + 1
+        else:
+            p = p + 1
+    return p
+
+# mark: next_token ==============================================================================
+
+# Read the next token of the source into s.token.
+func next_token(s: ParseState*) -> !:
+    if js_check_stack_overflow(s.ctx.rt, 0):
+        try js_parse_error(s, "stack overflow")
+
+    free_token(s, &s.token)
+    errdefer set_token_error(s)
+
+    var p = s.buf_ptr
+    s.last_ptr = p
+    s.got_lf = false
+    # redo:
+    while true:
+        s.token.ptr = p
+        let c = *p
+        match c:
+            0:
+                if p >= s.buf_end:
+                    s.token.val = TokenType.eof
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '`':
+                try js_parse_template_part(s, p + 1)
+                p = s.buf_ptr
+            '\'', '"':
+                try js_parse_string(s, (i32)c, true, p + 1, &s.token, &p)
+            '\r', '\n':
+                # accept DOS and MAC newline sequences
+                if c == '\r' and p[1] == '\n':
+                    p = p + 1
+                p = p + 1
+                # line_terminator:
+                s.got_lf = true
+                continue
+            0x0c, 0x0b, ' ', '\t':
+                p = p + 1
+                continue
+            '/':
+                if p[1] == '*':
+                    # comment
+                    p = p + 2
+                    while true:
+                        if *p == 0 and p >= s.buf_end:
+                            try js_parse_error(s, "unexpected end of comment")
+                        if p[0] == '*' and p[1] == '/':
+                            p = p + 2
+                            break
+                        if *p == '\n' or *p == '\r':
+                            # considered as LF for ASI
+                            s.got_lf = true
+                            p = p + 1
+                        elif *p >= 0x80:
+                            let c1 = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
+                            if c1 == (i32)cp_ls or c1 == (i32)cp_ps:
+                                # considered as LF for ASI
+                                s.got_lf = true
+                            elif c1 == -1:
+                                # skip invalid UTF-8
+                                p = p + 1
+                        else:
+                            p = p + 1
+                    continue
+                elif p[1] == '/':
+                    # line comment
+                    p = skip_line_comment(s, p + 2)
+                    continue
+                elif p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.div_assign
+                else:
+                    p = p + 1
+                    s.token.val = (TokenType)(i32)c
+            '\\':
+                var is_ident = false
+                if p[1] == 'u':
+                    var p1 = p + 1
+                    let c1 = lre_parse_escape(&p1, 1)
+                    if c1 >= 0 and unicode.lre_js_is_ident_first((u32)c1):
+                        p = p1
+                        is_ident = true
+                        try next_token_ident(s, &p, c1, true)
+                    # else XXX: syntax error?
+                if not is_ident:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            'a'..='z', 'A'..='Z', '_', '$':
+                # identifier
+                p = p + 1
+                try next_token_ident(s, &p, (i32)c, false)
+            '#':
+                # private name
+                p = p + 1
+                var p1 = p
+                var c1 = (i32)*p1
+                p1 = p1 + 1
+                if c1 == (i32)'\\' and *p1 == 'u':
+                    c1 = lre_parse_escape(&p1, 1)
+                elif c1 >= 128:
+                    c1 = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p1)
+                if not unicode.lre_js_is_ident_first((u32)c1):
+                    try js_parse_error(s, "invalid first character of private name")
+                p = p1
+                # not used
+                var ident_has_escape = false
+                let atom = try parse_ident(s, &p, &ident_has_escape, c1, true)
+                s.token.u.ident.atom = atom
+                s.token.val = TokenType.private_name
+            '.':
+                if p[1] == '.' and p[2] == '.':
+                    p = p + 3
+                    s.token.val = TokenType.ellipsis
+                elif p[1] >= '0' and p[1] <= '9':
+                    try next_token_number(s, &p)
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '0':
+                # in strict mode, octal literals are not accepted
+                if is_digit((i32)p[1]) and ((i32)s.fd().js_mode & js_mode_strict) != 0:
+                    try js_parse_error(s, "octal literals are deprecated in strict mode")
+                try next_token_number(s, &p)
+            '1'..='9':
+                # number
+                try next_token_number(s, &p)
+            '*':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.mul_assign
+                elif p[1] == '*':
+                    if p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.pow_assign
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.pow
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '%':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.mod_assign
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '+':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.plus_assign
+                elif p[1] == '+':
+                    p = p + 2
+                    s.token.val = TokenType.inc
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '-':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.minus_assign
+                elif p[1] == '-':
+                    if (s.allow_html_comments and p[2] == '>' and
+                        (s.got_lf or s.last_ptr == s.buf_start)):
+                        # Annex B: `-->` at beginning of line is an html comment end.
+                        # It extends to the end of the line.
+                        p = skip_line_comment(s, p)
+                        continue
+                    p = p + 2
+                    s.token.val = TokenType.dec
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '<':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.lte
+                elif p[1] == '<':
+                    if p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.shl_assign
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.shl
+                elif s.allow_html_comments and p[1] == '!' and p[2] == '-' and p[3] == '-':
+                    # Annex B: handle `<!--` single line html comments
+                    p = skip_line_comment(s, p)
+                    continue
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '>':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.gte
+                elif p[1] == '>':
+                    if p[2] == '>':
+                        if p[3] == '=':
+                            p = p + 4
+                            s.token.val = TokenType.shr_assign
+                        else:
+                            p = p + 3
+                            s.token.val = TokenType.shr
+                    elif p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.sar_assign
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.sar
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '=':
+                if p[1] == '=':
+                    if p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.strict_eq
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.eq
+                elif p[1] == '>':
+                    p = p + 2
+                    s.token.val = TokenType.arrow
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '!':
+                if p[1] == '=':
+                    if p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.strict_neq
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.neq
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '&':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.and_assign
+                elif p[1] == '&':
+                    if p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.land_assign
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.land
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '^':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.xor_assign
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '|':
+                if p[1] == '=':
+                    p = p + 2
+                    s.token.val = TokenType.or_assign
+                elif p[1] == '|':
+                    if p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.lor_assign
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.lor
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '?':
+                if p[1] == '?':
+                    if p[2] == '=':
+                        p = p + 3
+                        s.token.val = TokenType.double_question_mark_assign
+                    else:
+                        p = p + 2
+                        s.token.val = TokenType.double_question_mark
+                elif p[1] == '.' and not (p[2] >= '0' and p[2] <= '9'):
+                    p = p + 2
+                    s.token.val = TokenType.question_mark_dot
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            _:
+                if c >= 128:
+                    # unicode value
+                    let c1 = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
+                    if c1 == (i32)cp_ps or c1 == (i32)cp_ls:
+                        # XXX: should avoid incrementing line_number, but needed to
+                        # handle HTML comments
+                        # line_terminator:
+                        s.got_lf = true
+                        continue
+                    elif unicode.lre_is_space((u32)c1):
+                        continue
+                    elif unicode.lre_js_is_ident_first((u32)c1):
+                        try next_token_ident(s, &p, c1, false)
+                    else:
+                        try js_parse_error(s, "unexpected character")
+                else:
+                    # def_token:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+        break
+    s.buf_ptr = p
+
+    # dump_token(s, &s.token)

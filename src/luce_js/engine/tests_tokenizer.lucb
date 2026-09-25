@@ -1,0 +1,248 @@
+#==============================================================================================
+#
+#   tests_tokenizer - Unit tests of the tokenizer and emitter helpers that need no runtime
+#
+#   DESCRIPTION:
+#       Line and column numbers, the keyword token order, the look-ahead scanner
+#       (simple_next_token), skip_shebang and JS_DetectModule, the variable and scope
+#       lookups on a FunctionDef laid out by hand, and the byte emitters on a bare
+#       bytecode buffer. Nothing here makes a runtime: the FunctionDef's context is never
+#       read by the functions tested.
+#
+#==============================================================================================
+
+# mark: Source positions ========================================================================
+
+test "get_line_col counts lines and UTF-8 characters":
+    let text = "ab\ncd\u{e9}\nf"
+    var col: i32 = -1
+    assert(get_line_col(&col, text.bytes.data, 0) == 0 and col == 0)
+    assert(get_line_col(&col, text.bytes.data, 2) == 0 and col == 2)
+    assert(get_line_col(&col, text.bytes.data, 3) == 1 and col == 0)
+    # 'é' is two bytes and one column
+    assert(get_line_col(&col, text.bytes.data, 7) == 1 and col == 3)
+    assert(get_line_col(&col, text.bytes.data, text.length) == 2 and col == 1)
+
+test "get_line_col_cached agrees with get_line_col in both directions":
+    let text = "one\ntwo \u{e9}\n\nfour five"
+    let start = text.bytes.data
+    var cache = GetLineColCache(ptr = start, line_num = 0, col_num = 0, buf_start = start)
+    let offsets: usize[8] = [5, 12, 13, 20, 2, 9, 0, 17]
+    for offset in offsets:
+        var col: i32 = -1
+        var expect_col: i32 = -2
+        let line = get_line_col_cached(&cache, &col, start + offset)
+        let expect_line = get_line_col(&expect_col, start, offset)
+        assert(line == expect_line)
+        assert(col == expect_col)
+
+# mark: Tokens ==================================================================================
+
+test "keyword tokens follow the keyword atoms":
+    let first = (i32)tok_first_keyword
+    assert((TokenType)((i32)atom_null - 1 + first) == TokenType.null)
+    assert((TokenType)((i32)atom_with - 1 + first) == TokenType.with_)
+    assert((TokenType)((i32)atom_super - 1 + first) == TokenType.super)
+    assert((TokenType)((i32)atom_last_keyword - 1 + first) == TokenType.super)
+    assert((TokenType)((i32)atom_yield - 1 + first) == TokenType.yield)
+    assert((TokenType)((i32)atom_await - 1 + first) == tok_last_keyword)
+    assert(tok_is_keyword(TokenType.null) and tok_is_keyword(TokenType.await))
+    assert(not tok_is_keyword(TokenType.eof) and not tok_is_keyword(TokenType.of))
+    assert(not tok_is_keyword(TokenType.lparen))
+
+test "one-character tokens are their character":
+    assert((i32)TokenType.lparen == (i32)'(')
+    assert((i32)TokenType.rbrace == (i32)'}')
+    assert((i32)TokenType.semicolon == (i32)';')
+    assert((i32)TokenType.newline == (i32)'\n')
+    assert(tok_char(TokenType.colon) == ':')
+
+# The token simple_next_token answers at the start of `text`.
+func simple_token(text: str, no_line_terminator: bool) -> TokenType:
+    var p = text.bytes.data
+    return simple_next_token(&p, no_line_terminator)
+
+test "simple_next_token skips spaces and comments":
+    assert(simple_token("  /* c */ => x", false) == TokenType.arrow)
+    assert(simple_token("\n\t// line\n  :", false) == TokenType.colon)
+    assert(simple_token(" // line\n:", true) == TokenType.newline)
+    assert(simple_token("/* a\nb */ x", true) == TokenType.newline)
+    assert(simple_token("/* a b */ x", true) == TokenType.ident)
+    assert(simple_token("\u{2028}x", true) == TokenType.newline)
+    assert(simple_token("\u{a0}x", true) == TokenType.ident)
+    assert(simple_token("= 1", false) == TokenType.assign)
+    assert(simple_token("/ 2", false) == TokenType.slash)
+    assert(simple_token("", false) == (TokenType)0)
+
+test "simple_next_token recognizes its words":
+    assert(simple_token(" in x", false) == TokenType.in_)
+    assert(simple_token("inner", false) == TokenType.ident)
+    assert(simple_token("of", false) == TokenType.of)
+    assert(simple_token("export {}", false) == TokenType.export_)
+    assert(simple_token("function f", false) == TokenType.function)
+    assert(simple_token("functional", false) == TokenType.ident)
+    assert(simple_token("\u{e9}t\u{e9}", false) == TokenType.ident)
+    var p = "import x".bytes.data
+    assert(simple_next_token(&p, false) == TokenType.import_)
+    assert(*p == ' ')
+
+test "match_identifier needs the whole word":
+    assert(match_identifier("n x".bytes.data, "n"))
+    assert(match_identifier("n".bytes.data, "n"))
+    assert(not match_identifier("nx".bytes.data, "n"))
+    assert(not match_identifier("n\u{e9}".bytes.data, "n"))
+    assert(not match_identifier("m".bytes.data, "n"))
+
+test "skip_shebang skips the first line only when it starts with #!":
+    let text = "#!/usr/bin/env qjs\nlet x"
+    var p = text.bytes.data
+    skip_shebang(&p, text.bytes.data + text.length)
+    assert(*p == '\n')
+    let other = "# not\nx"
+    var q = other.bytes.data
+    skip_shebang(&q, other.bytes.data + other.length)
+    assert(q == other.bytes.data)
+
+# Whether js_detect_module finds a module in `text`.
+func detect(text: str) -> bool:
+    return js_detect_module(text.bytes.data, text.length)
+
+test "JS_DetectModule finds import and export":
+    assert(detect("import x from 'y'"))
+    assert(detect("/* c */ import {a} from 'b'"))
+    assert(detect("export default 1"))
+    assert(detect("#!/usr/bin/env qjs\n// c\nexport {}"))
+    assert(not detect("import('x')"))
+    assert(not detect("import.meta"))
+    assert(not detect("var x = 1"))
+    assert(not detect(""))
+
+# mark: Variables and scopes ====================================================================
+
+# A zeroed FunctionDef over `vars` and `scope_count` scopes; the caller frees it with
+# cutils.c_free.
+func test_function_def(vars: VarDef*?, var_count: i32, scope_count: i32) -> FunctionDef*:
+    let raw = cutils.malloc(sizeof(FunctionDef)) else trap("out of memory")
+    discard(cutils.memset(raw, 0, sizeof(FunctionDef)))
+    let fd = (FunctionDef*)raw
+    fd.scopes = &fd.def_scope_array[0]
+    fd.scope_size = 4
+    fd.scope_count = scope_count
+    fd.vars = vars
+    fd.var_count = var_count
+    fd.var_size = var_count
+    fd.func_var_idx = -1
+    return fd
+
+# Give `fd` the `arg_count` arguments at `args`.
+func set_test_args(fd: FunctionDef*, args: VarDef*, arg_count: i32):
+    fd.args = args
+    fd.arg_count = arg_count
+    fd.arg_size = arg_count
+
+# Give `fd` the `count` global variables at `globals`.
+func set_test_globals(fd: FunctionDef*, globals: GlobalVar*, count: i32):
+    fd.global_vars = globals
+    fd.global_var_count = count
+    fd.global_var_size = count
+
+test "variables are found by scope":
+    # scope 0: the function; scope 1: a block in it; scope 2: a block in scope 1
+    var vars: VarDef[4]
+    vars[0] = VarDef(var_name = atom_length, scope_level = 0, scope_next = 1)
+    vars[1] = VarDef(var_name = atom_name, scope_level = 1, scope_next = -1,
+                     is_lexical = true)
+    vars[2] = VarDef(var_name = atom_length, scope_level = 2, scope_next = 1,
+                     is_lexical = true)
+    vars[3] = VarDef(var_name = atom_value, scope_level = 0, scope_next = 2)
+    let fd = test_function_def(&vars[0], 4, 3)
+    defer cutils.c_free(fd)
+    fd_scope(fd, 0).parent = -1
+    fd_scope(fd, 0).first = -1
+    fd_scope(fd, 1).parent = 0
+    fd_scope(fd, 1).first = 1
+    fd_scope(fd, 2).parent = 1
+    fd_scope(fd, 2).first = 2
+
+    assert(find_var(fd.ctx, fd, atom_length) == 0)
+    assert(find_var(fd.ctx, fd, atom_name) == -1)
+    assert(find_var_in_scope(fd.ctx, fd, atom_name, 1) == 1)
+    assert(find_var_in_scope(fd.ctx, fd, atom_length, 2) == 2)
+    assert(find_var_in_scope(fd.ctx, fd, atom_name, 2) == -1)
+    assert(is_child_scope(fd.ctx, fd, 2, 0) and is_child_scope(fd.ctx, fd, 1, 1))
+    assert(not is_child_scope(fd.ctx, fd, 0, 1))
+    # 'value' is a var of scope 2 (scope_next holds its scope)
+    assert(find_var_in_child_scope(fd.ctx, fd, atom_value, 1) == 3)
+    assert(find_var_in_child_scope(fd.ctx, fd, atom_value, 0) == 3)
+    assert(find_var_in_child_scope(fd.ctx, fd, atom_length, 2) == -1)
+    assert(find_lexical_decl(fd.ctx, fd, atom_name, 2, false) == 1)
+    assert(find_lexical_decl(fd.ctx, fd, atom_value, 2, false) == -1)
+    assert(get_first_lexical_var(fd, 2) == 2)
+    assert(get_first_lexical_var(fd, 0) == -1)
+
+test "arguments come after the variables and carry the argument offset":
+    var args: VarDef[2]
+    args[0] = VarDef(var_name = atom_length)
+    args[1] = VarDef(var_name = atom_name)
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    set_test_args(fd, &args[0], 2)
+    assert(find_arg(fd.ctx, fd, atom_name) == (1 | argument_var_offset))
+    assert(find_var(fd.ctx, fd, atom_length) == (0 | argument_var_offset))
+    assert(find_arg(fd.ctx, fd, atom_value) == -1)
+
+test "global variables":
+    var globals: GlobalVar[2]
+    globals[0] = GlobalVar(cpool_idx = -1, var_name = atom_length)
+    globals[1] = GlobalVar(cpool_idx = -1, var_name = atom_name, is_lexical = true)
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    set_test_globals(fd, &globals[0], 2)
+    assert(find_global_var(fd, atom_length) == &globals[0])
+    assert(find_lexical_global_var(fd, atom_length) == none)
+    assert(find_lexical_global_var(fd, atom_name) == &globals[1])
+    fd.is_eval = true
+    fd.eval_type = eval_type_global
+    assert(find_lexical_decl(fd.ctx, fd, atom_name, -1, false) == global_var_offset)
+
+# mark: Emitting ================================================================================
+
+test "emitted bytes and the live code test":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    cutils.dbuf_init(&fd.byte_code)
+    defer cutils.dbuf_free(&fd.byte_code)
+    fd.last_opcode_pos = -1
+    let source = "x = 1"
+    let raw = cutils.malloc(sizeof(ParseState)) else trap("out of memory")
+    defer cutils.c_free(raw)
+    discard(cutils.memset(raw, 0, sizeof(ParseState)))
+    let s = (ParseState*)raw
+    s.cur_func = fd
+    s.buf_start = source.bytes.data
+
+    assert(get_prev_opcode(fd) == (u8)Op.invalid)
+    assert(js_is_live_code(s))
+    emit_op(s, (u8)Op.push_i32)
+    emit_u32(s, 0x01020304)
+    emit_u16(s, 0x0506)
+    emit_u8(s, 7)
+    assert(fd.byte_code.size == 8)
+    assert(get_prev_opcode(fd) == (u8)Op.push_i32)
+    let buf = fd.byte_code.buf else trap("no bytecode")
+    assert(cutils.get_u32(buf + 1) == 0x01020304)
+    assert(cutils.get_u16(buf + 5) == 0x0506)
+    assert(buf[7] == 7)
+    emit_op(s, (u8)Op.return_)
+    assert(not js_is_live_code(s))
+    emit_op(s, (u8)Op.drop)
+    assert(js_is_live_code(s))
+
+    # a line number opcode only when the source position moves
+    emit_source_pos(s, source.bytes.data + 2)
+    assert(fd.byte_code.size == 15)
+    emit_source_pos(s, source.bytes.data + 2)
+    assert(fd.byte_code.size == 15)
+    let buf2 = fd.byte_code.buf else trap("no bytecode")
+    assert(buf2[10] == (u8)TempOp.line_num)
+    assert(cutils.get_u32(buf2 + 11) == 2)

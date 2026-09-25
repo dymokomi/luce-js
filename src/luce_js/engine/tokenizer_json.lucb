@@ -1,0 +1,456 @@
+#==============================================================================================
+#
+#   tokenizer_json - The JSON tokenizer, the look-ahead scanner and module detection
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 23270-23806: json_next_token and its identifier, string
+#       and number scanners (with the ext_json superset), simple_next_token (the
+#       look-ahead used for ':', '=>', 'let' and 'function'), peek_token, skip_shebang
+#       and JS_DetectModule.
+#
+#==============================================================================================
+
+# mark: JSON literals ===========================================================================
+
+# 'c' is the first character. The atom of the identifier that continues at `*pp`,
+# which moves past it.
+# XXX: accept unicode identifiers as JSON5 ?
+func json_parse_ident(s: ParseState*, pp: const u8**, c0: i32) -> Atom!:
+    var c = c0
+    var p = *pp
+    var ident_buf: u8[128] = ---
+    let static_buf: u8* = &ident_buf[0]
+    var buf = static_buf
+    var ident_size: usize = 128
+    var ident_pos: usize = 0
+    var failed = false
+    while true:
+        buf[ident_pos] = (u8)c
+        ident_pos += 1
+        c = (i32)*p
+        if c >= 128 or not unicode.lre_is_id_continue_byte((u8)c):
+            break
+        p = p + 1
+        if ident_pos >= ident_size - (usize)cutils.utf8_char_len_max:
+            ident_realloc(s.ctx, &buf, &ident_size, static_buf) catch failure:
+                failed = true
+                recover ()
+            if failed:
+                break
+    var atom = atom_null
+    if not failed:
+        atom = js_new_atom_len(s.ctx, buf, ident_pos) catch failure:
+            failed = true
+            recover atom_null
+    if buf != static_buf:
+        js_free(s.ctx, buf)
+    *pp = p
+    if failed:
+        error(exception, "")
+    return atom
+
+# The characters of a JSON string into `b`, from the byte after the opening quote:
+# answers the position after the closing quote.
+func json_parse_string_chars(s: ParseState*, b: StringBuffer*, p0: const u8*, sep: i32) -> const u8*!:
+    var p = p0
+    while true:
+        if p >= s.buf_end:
+            try js_parse_error(s, "Unexpected end of JSON input")
+        var c = (u32)*p
+        p = p + 1
+        if c == (u32)sep:
+            break
+        if c < 0x20:
+            try js_parse_error_pos(s, p - 1, "Bad control character in string literal")
+        if c == (u32)'\\':
+            c = (u32)*p
+            p = p + 1
+            match (u8)c:
+                'b':
+                    c = 0x08
+                'f':
+                    c = 0x0c
+                'n':
+                    c = (u32)'\n'
+                'r':
+                    c = (u32)'\r'
+                't':
+                    c = (u32)'\t'
+                '\\', '/':
+                    # the character itself
+                    c = c
+                'u':
+                    c = 0
+                    for _i in 0..<4:
+                        let h = cutils.from_hex((i32)*p)
+                        p = p + 1
+                        if h < 0:
+                            try js_parse_error_pos(s, p - 1, "Bad Unicode escape")
+                        c = (c << 4) | (u32)h
+                '\n':
+                    if s.ext_json:
+                        continue
+                    try js_parse_error_pos(s, p - 1, "Bad escaped character")
+                'v':
+                    if not s.ext_json:
+                        try js_parse_error_pos(s, p - 1, "Bad escaped character")
+                    c = 0x0b
+                _:
+                    if c != (u32)sep:
+                        if p > s.buf_end:
+                            try js_parse_error(s, "Unexpected end of JSON input")
+                        # bad_escape:
+                        try js_parse_error_pos(s, p - 1, "Bad escaped character")
+        elif c >= 0x80:
+            var p_next = p
+            c = (u32)cutils.unicode_from_utf8(p - 1, cutils.utf8_char_len_max, &p_next)
+            if c > 0x10FFFF:
+                try js_parse_error_pos(s, p - 1, "Bad UTF-8 sequence")
+            p = p_next
+        try string_buffer_putc(b, c)
+    return p
+
+# A JSON string token delimited by `sep` from `*pp` (after the opening quote), which
+# moves past it.
+func json_parse_string(s: ParseState*, pp: const u8**, sep: i32) -> !:
+    var b: StringBuffer = ---
+    string_buffer_init(s.ctx, &b, 32) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    let p = json_parse_string_chars(s, &b, *pp, sep) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    s.token.val = TokenType.string
+    s.token.u.str_.sep = sep
+    # as QuickJS, a failure of string_buffer_end is not reported here
+    s.token.u.str_.str = string_buffer_end(&b) catch failure:
+        recover js_exception()
+    *pp = p
+
+# A SyntaxError naming the character at `p`.
+func json_unexpected_token(s: ParseState*, p: const u8*) -> never!:
+    try js_parse_error_pos(s, p, f"Unexpected token '{char((u32)*p)}'")
+
+# A JSON number token at `*pp`, which moves past it.
+func json_parse_number(s: ParseState*, pp: const u8**) -> !:
+    var p = *pp
+    let p_start = p
+    var d: f64 = 0.0
+    var done = false
+    var atod_mem: dtoa.ATODTempMem = ---
+
+    if *p == '+' or *p == '-':
+        p = p + 1
+
+    if not is_digit((i32)*p):
+        if s.ext_json:
+            if cutils.strstart(p, "Infinity", &p):
+                d = f64.bits(0x7ff0000000000000)
+                if *p_start == '-':
+                    d = -d
+                done = true
+            elif cutils.strstart(p, "NaN", &p):
+                d = f64.bits(0x7ff8000000000000)
+                done = true
+            elif *p != '.':
+                try json_unexpected_token(s, p)
+        else:
+            try json_unexpected_token(s, p)
+
+    if not done and p[0] == '0':
+        if s.ext_json:
+            # also accepts base 16, 8 and 2 prefix for integers
+            var radix: i32 = 10
+            if p[1] == 'x' or p[1] == 'X':
+                p = p + 2
+                radix = 16
+            elif p[1] == 'o' or p[1] == 'O':
+                p = p + 2
+                radix = 8
+            elif p[1] == 'b' or p[1] == 'B':
+                p = p + 2
+                radix = 2
+            if radix != 10:
+                # prefix is present
+                if to_digit((i32)*p) >= radix:
+                    try json_unexpected_token(s, p)
+                d = dtoa.js_atod(p_start, &p, 0, dtoa.atod_int_only | dtoa.atod_accept_bin_oct,
+                                 &atod_mem)
+                done = true
+        if not done and is_digit((i32)p[1]):
+            try js_parse_error_pos(s, p, "Unexpected number")
+
+    if not done:
+        while is_digit((i32)*p):
+            p = p + 1
+
+        if *p == '.':
+            p = p + 1
+            if not is_digit((i32)*p):
+                try js_parse_error_pos(s, p, "Unterminated fractional number")
+            while is_digit((i32)*p):
+                p = p + 1
+        if *p == 'e' or *p == 'E':
+            p = p + 1
+            if *p == '+' or *p == '-':
+                p = p + 1
+            if not is_digit((i32)*p):
+                try js_parse_error_pos(s, p, "Exponent part is missing a number")
+            while is_digit((i32)*p):
+                p = p + 1
+        d = dtoa.js_atod(p_start, none, 10, 0, &atod_mem)
+    # done:
+    s.token.val = TokenType.number
+    s.token.u.num.val = js_new_float64(d)
+    *pp = p
+
+# mark: json_next_token =========================================================================
+
+# Read the next JSON token (or JSON superset token when s.ext_json) into s.token.
+func json_next_token(s: ParseState*) -> !:
+    if js_check_stack_overflow(s.ctx.rt, 0):
+        try js_parse_error(s, "stack overflow")
+
+    free_token(s, &s.token)
+    errdefer set_token_error(s)
+
+    var p = s.buf_ptr
+    s.last_ptr = p
+    # redo:
+    while true:
+        s.token.ptr = p
+        let c = *p
+        match c:
+            0:
+                if p >= s.buf_end:
+                    s.token.val = TokenType.eof
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '\'':
+                if not s.ext_json:
+                    # JSON does not accept single quoted strings
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+                else:
+                    p = p + 1
+                    try json_parse_string(s, &p, (i32)c)
+            '"':
+                p = p + 1
+                try json_parse_string(s, &p, (i32)c)
+            '\r', '\n':
+                # accept DOS and MAC newline sequences
+                if c == '\r' and p[1] == '\n':
+                    p = p + 1
+                p = p + 1
+                continue
+            0x0c, 0x0b:
+                if not s.ext_json:
+                    # JSONWhitespace does not match <VT>, nor <FF>
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+                else:
+                    p = p + 1
+                    continue
+            ' ', '\t':
+                p = p + 1
+                continue
+            '/':
+                if not s.ext_json:
+                    # JSON does not accept comments
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+                elif p[1] == '*':
+                    # comment
+                    p = p + 2
+                    while true:
+                        if *p == 0 and p >= s.buf_end:
+                            try js_parse_error(s, "unexpected end of comment")
+                        if p[0] == '*' and p[1] == '/':
+                            p = p + 2
+                            break
+                        if *p >= 0x80:
+                            let c1 = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
+                            if c1 == -1:
+                                # skip invalid UTF-8
+                                p = p + 1
+                        else:
+                            p = p + 1
+                    continue
+                elif p[1] == '/':
+                    # line comment
+                    p = skip_line_comment(s, p + 2)
+                    continue
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            'a'..='z', 'A'..='Z', '_', '$':
+                p = p + 1
+                let atom = try json_parse_ident(s, &p, (i32)c)
+                s.token.u.ident.atom = atom
+                s.token.u.ident.has_escape = false
+                s.token.u.ident.is_reserved = false
+                s.token.val = TokenType.ident
+            '+':
+                if not s.ext_json:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+                else:
+                    try json_parse_number(s, &p)
+            '.':
+                if s.ext_json and is_digit((i32)p[1]):
+                    try json_parse_number(s, &p)
+                else:
+                    s.token.val = (TokenType)(i32)c
+                    p = p + 1
+            '-', '0'..='9':
+                # number
+                try json_parse_number(s, &p)
+            _:
+                if c >= 128:
+                    try js_parse_error(s, "unexpected character")
+                # def_token:
+                s.token.val = (TokenType)(i32)c
+                p = p + 1
+        break
+    s.buf_ptr = p
+
+    # dump_token(s, &s.token)
+
+# mark: Look-ahead ==============================================================================
+
+# Whether the identifier at `p` is `text` followed by a character that cannot continue
+# an identifier.
+func match_identifier(p0: const u8*, text: str) -> bool:
+    var p = p0
+    for ch in text.bytes:
+        if ch != *p:
+            return false
+        p = p + 1
+    var c = (u32)*p
+    if c >= 128:
+        c = (u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
+    return not unicode.lre_js_is_ident_next(c)
+
+# simple_next_token() is used to check for the next token in simple cases.
+# It is only used for ':' and '=>', 'let' or 'function' look-ahead.
+# (*pp) is only set if TOK_IMPORT is returned for JS_DetectModule()
+# Whitespace and comments are skipped correctly.
+# Then the next token is analyzed, only for specific words.
+# Return values:
+# - '\n' if !no_line_terminator
+# - TOK_ARROW, TOK_IN, TOK_IMPORT, TOK_OF, TOK_EXPORT, TOK_FUNCTION
+# - TOK_IDENT is returned for other identifiers and keywords
+# - otherwise the next character or unicode codepoint is returned.
+func simple_next_token(pp: const u8**, no_line_terminator: bool) -> TokenType:
+    # skip spaces and comments
+    var p = *pp
+    while true:
+        let b = *p
+        p = p + 1
+        match b:
+            '\r', '\n':
+                if no_line_terminator:
+                    return TokenType.newline
+                continue
+            ' ', '\t', 0x0b, 0x0c:
+                continue
+            '/':
+                if *p == '/':
+                    if no_line_terminator:
+                        return TokenType.newline
+                    while *p != 0 and *p != '\r' and *p != '\n':
+                        p = p + 1
+                    continue
+                if *p == '*':
+                    while true:
+                        p = p + 1
+                        if *p == 0:
+                            break
+                        if (*p == '\r' or *p == '\n') and no_line_terminator:
+                            return TokenType.newline
+                        if *p == '*' and p[1] == '/':
+                            p = p + 2
+                            break
+                    continue
+                return (TokenType)(i32)b
+            '=':
+                if *p == '>':
+                    return TokenType.arrow
+                return (TokenType)(i32)b
+            'i':
+                if match_identifier(p, "n"):
+                    return TokenType.in_
+                if match_identifier(p, "mport"):
+                    *pp = p + 5
+                    return TokenType.import_
+                return TokenType.ident
+            'o':
+                if match_identifier(p, "f"):
+                    return TokenType.of
+                return TokenType.ident
+            'e':
+                if match_identifier(p, "xport"):
+                    return TokenType.export_
+                return TokenType.ident
+            'f':
+                if match_identifier(p, "unction"):
+                    return TokenType.function
+                return TokenType.ident
+            '\\':
+                if *p == 'u':
+                    if unicode.lre_js_is_ident_first((u32)lre_parse_escape(&p, 1)):
+                        return TokenType.ident
+                return (TokenType)(i32)b
+            _:
+                var c = (u32)b
+                if c >= 128:
+                    c = (u32)cutils.unicode_from_utf8(p - 1, cutils.utf8_char_len_max, &p)
+                    if no_line_terminator and (c == cp_ps or c == cp_ls):
+                        return TokenType.newline
+                if unicode.lre_is_space(c):
+                    continue
+                if unicode.lre_js_is_ident_first(c):
+                    return TokenType.ident
+                return (TokenType)(i32)c
+    # the loop only ends by returning
+    trap("simple_next_token: unreachable")
+
+# The kind of the token after the current one, by simple_next_token.
+func peek_token(s: ParseState*, no_line_terminator: bool) -> TokenType:
+    var p = s.buf_ptr
+    return simple_next_token(&p, no_line_terminator)
+
+# Move `*pp` past a "#!" line at the start of the source.
+func skip_shebang(pp: const u8**, buf_end: const u8*):
+    var p = *pp
+    if p[0] == '#' and p[1] == '!':
+        p = p + 2
+        while p < buf_end:
+            if *p == '\n' or *p == '\r':
+                break
+            elif *p >= 0x80:
+                let c = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
+                if c == (i32)cp_ls or c == (i32)cp_ps:
+                    break
+                elif c == -1:
+                    # skip invalid UTF-8
+                    p = p + 1
+            else:
+                p = p + 1
+        *pp = p
+
+## Whether `input` (`input_len` bytes, NUL-terminated) is the source of a module, by a
+## heuristic: after comments, the 'import' keyword not followed by '(' or '.', or the
+## 'export' keyword (JS_DetectModule).
+pub func js_detect_module(input: const u8*, input_len: usize) -> bool:
+    var p = input
+    skip_shebang(&p, p + input_len)
+    match simple_next_token(&p, false):
+        .import_:
+            let tok = simple_next_token(&p, false)
+            return tok != TokenType.dot and tok != TokenType.lparen
+        .export_:
+            return true
+        _:
+            return false
