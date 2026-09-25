@@ -154,10 +154,15 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                                 prs.flags = (u8)((i32)prs.flags & ~(prop_tmask | prop_writable))
                     elif ((i32)prs.flags & prop_length) != 0:
                         var res = true
+                        # set_array_length's exception is returned after the flag update,
+                        # as C returns its -1 there
+                        var length_failed = false
                         if (flags & prop_has_value) != 0:
                             # Note: no JS code is executable because
                             # 'val' is guaranted to be a Uint32
-                            res = try set_array_length(ctx, p, js_dup_value(ctx, val), flags)
+                            res = set_array_length(ctx, p, js_dup_value(ctx, val), flags) catch:
+                                length_failed = true
+                                recover false
                         # still need to reset the writable flag if
                         # needed. The JS_PROP_LENGTH is kept because the
                         # Uint32 test is still done if the length
@@ -165,6 +170,8 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         if (flags & (prop_has_writable | prop_writable)) == prop_has_writable:
                             prs = get_shape_prop(p.shape)
                             try js_update_property_flags(ctx, p, &prs, (i32)prs.flags & ~prop_writable)
+                        if length_failed:
+                            error(exception, "")
                         return res
                     else:
                         if (flags & prop_has_value) != 0:

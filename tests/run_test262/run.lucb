@@ -1,0 +1,434 @@
+#==============================================================================================
+#
+#   run - Running one test file: its metadata, its harness includes and its modes
+#
+#   DESCRIPTION:
+#       Port of run-test262.c lines 1601-2108: the YAML frontmatter (new style) or the
+#       old style description comment, the memory statistics, run_test_buf (one runtime
+#       per evaluation), run_test (strict and non-strict runs as the mode and the flags
+#       ask) and run_test262_harness_test (-N, for test262-harness with eshost).
+#
+#==============================================================================================
+
+# mark: Test metadata ===========================================================================
+
+func extract_desc(buf: const u8*, style: u8) -> u8*?:
+    var p = buf
+    while *p != 0:
+        if p[0] == '/' and p[1] == '*' and p[2] == style and p[3] != '/':
+            p = p + 3
+            let desc_start = p
+            while *p != 0 and (p[0] != '*' or p[1] != '/'):
+                p = p + 1
+            if *p == 0:
+                warning("Expecting end of desc comment")
+                return none
+            return strdup_len(desc_start, (usize)(p - desc_start))
+        p = p + 1
+    return none
+
+func find_tag(desc: const u8*, tag: const u8*, state: i32*) -> u8*?:
+    let p = strstr(desc, tag) else return none
+    *state = 0
+    return p + strlen(tag)
+
+func get_option(pp: (u8*?)*, state: i32*) -> u8*?:
+    var option: u8*? = none
+    let start = *pp else return none
+    var p: u8*? = start
+    var q = start
+    while true:
+        let ch = *q
+        if ch == '[':
+            *state += 1
+            q = q + 1
+            continue
+        if ch == ']':
+            *state -= 1
+            if *state > 0:
+                q = q + 1
+                continue
+            p = none
+            break
+        if ch == ' ' or ch == '\t' or ch == '\r' or ch == ',' or ch == '-':
+            q = q + 1
+            continue
+        if ch == '\n':
+            if *state > 0 or q[1] == ' ':
+                q = q + 1
+                continue
+            p = none
+            break
+        if ch == 0:
+            p = none
+            break
+        let p0 = q
+        q = q + strcspn(p0, z(" \t\r\n,]"))
+        option = strdup_len(p0, (usize)(q - p0))
+        p = q
+        break
+    *pp = p
+    return option
+
+# mark: Memory statistics =======================================================================
+
+func update_stats(rt: js.Runtime*, filename: const u8*):
+    var stats: js.MemoryUsage = ---
+    js.js_compute_memory_usage(rt, &stats)
+
+    stats_mutex.lock()
+    defer stats_mutex.unlock()
+    let first = stats_count == 0
+    stats_count += 1
+    if first:
+        stats_avg = stats
+        stats_all = stats
+        stats_min = stats
+        stats_max = stats
+        stats_min_filename = strdup(filename)
+        stats_max_filename = strdup(filename)
+        return
+    if stats_max.malloc_size < stats.malloc_size:
+        stats_max = stats
+        c_free(stats_max_filename)
+        stats_max_filename = strdup(filename)
+    if stats_min.malloc_size > stats.malloc_size:
+        stats_min = stats
+        c_free(stats_min_filename)
+        stats_min_filename = strdup(filename)
+
+    let n = (i64)stats_count
+    stats_all.malloc_count += stats.malloc_count
+    stats_avg.malloc_count = stats_all.malloc_count // n
+    stats_all.malloc_size += stats.malloc_size
+    stats_avg.malloc_size = stats_all.malloc_size // n
+    stats_all.memory_used_count += stats.memory_used_count
+    stats_avg.memory_used_count = stats_all.memory_used_count // n
+    stats_all.memory_used_size += stats.memory_used_size
+    stats_avg.memory_used_size = stats_all.memory_used_size // n
+    stats_all.atom_count += stats.atom_count
+    stats_avg.atom_count = stats_all.atom_count // n
+    stats_all.atom_size += stats.atom_size
+    stats_avg.atom_size = stats_all.atom_size // n
+    stats_all.str_count += stats.str_count
+    stats_avg.str_count = stats_all.str_count // n
+    stats_all.str_size += stats.str_size
+    stats_avg.str_size = stats_all.str_size // n
+    stats_all.obj_count += stats.obj_count
+    stats_avg.obj_count = stats_all.obj_count // n
+    stats_all.obj_size += stats.obj_size
+    stats_avg.obj_size = stats_all.obj_size // n
+    stats_all.prop_count += stats.prop_count
+    stats_avg.prop_count = stats_all.prop_count // n
+    stats_all.prop_size += stats.prop_size
+    stats_avg.prop_size = stats_all.prop_size // n
+    stats_all.shape_count += stats.shape_count
+    stats_avg.shape_count = stats_all.shape_count // n
+    stats_all.shape_size += stats.shape_size
+    stats_avg.shape_size = stats_all.shape_size // n
+    stats_all.js_func_count += stats.js_func_count
+    stats_avg.js_func_count = stats_all.js_func_count // n
+    stats_all.js_func_size += stats.js_func_size
+    stats_avg.js_func_size = stats_all.js_func_size // n
+    stats_all.js_func_code_size += stats.js_func_code_size
+    stats_avg.js_func_code_size = stats_all.js_func_code_size // n
+    stats_all.js_func_pc2line_count += stats.js_func_pc2line_count
+    stats_avg.js_func_pc2line_count = stats_all.js_func_pc2line_count // n
+    stats_all.js_func_pc2line_size += stats.js_func_pc2line_size
+    stats_avg.js_func_pc2line_size = stats_all.js_func_pc2line_size // n
+    stats_all.c_func_count += stats.c_func_count
+    stats_avg.c_func_count = stats_all.c_func_count // n
+    stats_all.array_count += stats.array_count
+    stats_avg.array_count = stats_all.array_count // n
+    stats_all.fast_array_count += stats.fast_array_count
+    stats_avg.fast_array_count = stats_all.fast_array_count // n
+    stats_all.fast_array_elements += stats.fast_array_elements
+    stats_avg.fast_array_elements = stats_all.fast_array_elements // n
+
+# mark: Running a test ==========================================================================
+
+func run_test_buf(tls: ThreadLocalStorage*, filename: const u8*, harness: const u8*?, ip: NameList*,
+                  buf: const u8*, buf_len: usize, error_type: const u8*?, eval_flags: i32,
+                  is_negative: bool, is_async: bool, can_block: bool) -> i32:
+    let rt = js.js_new_runtime() else fatal(1, "JS_NewRuntime failure")
+    js.js_set_runtime_opaque(rt, tls)
+    let ctx = js.js_new_context(rt) else context_failure(rt)
+    js.js_set_runtime_info(rt, filename)
+
+    js.js_set_can_block(rt, can_block)
+
+    # loader for ES6 modules
+    js.js_set_module_loader_func2(rt, none, js_module_loader_test, none, (void*)filename)
+
+    add_helpers(ctx)
+
+    if let arr = ip.array:
+        for i in 0..<ip.count:
+            if eval_file(ctx, harness, arr[(usize)i], js.eval_type_global) != 0:
+                fatal(1, f"error including {view(arr[(usize)i])} for {view(filename)}")
+
+    var ret = eval_buf(ctx, buf, buf_len, filename, true, is_negative, error_type, outfile, eval_flags,
+                       is_async)
+    ret = (i32)(ret != 0)
+
+    if dump_memory != 0:
+        update_stats(rt, filename)
+    js_agent_free(ctx)
+    js.js_free_context(ctx)
+    js.js_free_runtime(rt)
+
+    test_count += 1
+    if ret != 0:
+        test_failed += 1
+        if let fo = outfile:
+            # do not output a failure number to minimize diff
+            discard(fprintf(fo, z("  FAILED\n")))
+    return ret
+
+func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
+    var harnessbuf: u8[1024] = ---
+    var is_nostrict = false
+    var is_onlystrict = false
+    var is_negative = false
+    var is_async = false
+    var is_module = false
+    var skip = false
+    var can_block = true
+    var error_type: u8*? = none
+    var include_list: NameList = NameList(array = none, count = 0, size = 0)
+    let ip = &include_list
+    var buf_len: usize = 0
+    let buf = load_file(filename, &buf_len)
+
+    var harness: const u8*? = cnull(harness_dir)
+
+    if new_style:
+        if harness == none:
+            if let p = strstr(filename, z("test/")):
+                discard(snprintf(&harnessbuf[0], 1024, z("%.*s%s"), (i32)(p - filename), filename, z("harness")))
+            else:
+                harnessbuf[0] = 0
+            harness = &harnessbuf[0]
+        namelist_add(ip, none, z("sta.js"))
+        namelist_add(ip, none, z("assert.js"))
+        # extract the YAML frontmatter
+        if let desc = extract_desc(buf, '-'):
+            var state: i32 = 0
+            var p = find_tag(desc, z("includes:"), &state)
+            if p != none:
+                while let ifile = get_option(&p, &state):
+                    # skip unsupported harness files
+                    if find_word(cnull(harness_exclude), ifile) != none:
+                        skip = true
+                    else:
+                        namelist_add(ip, none, ifile)
+                    c_free(ifile)
+            p = find_tag(desc, z("flags:"), &state)
+            if p != none:
+                while let option = get_option(&p, &state):
+                    if str_equal(option, z("noStrict")) or str_equal(option, z("raw")):
+                        is_nostrict = true
+                        skip = skip or test_mode == test_strict
+                    elif str_equal(option, z("onlyStrict")):
+                        is_onlystrict = true
+                        skip = skip or test_mode == test_nostrict
+                    elif str_equal(option, z("async")):
+                        is_async = true
+                        skip = skip or skip_async
+                    elif str_equal(option, z("module")):
+                        is_module = true
+                        skip = skip or skip_module
+                    elif str_equal(option, z("CanBlockIsFalse")):
+                        can_block = false
+                    c_free(option)
+            p = find_tag(desc, z("negative:"), &state)
+            if let neg = p:
+                # XXX: should extract the phase
+                if let q0 = find_tag(neg, z("type:"), &state):
+                    var q = q0
+                    while is_space(*q):
+                        q = q + 1
+                    error_type = strdup_len(q, strcspn(q, z(" \n")))
+                is_negative = true
+            p = find_tag(desc, z("features:"), &state)
+            if p != none:
+                while let option = get_option(&p, &state):
+                    if find_word(cnull(harness_features), option) != none:
+                        discard(0)  # feature is enabled
+                    elif let p1 = find_word(cnull(harness_skip_features), option):
+                        # skip disabled feature
+                        if let counts = harness_skip_features_count:
+                            let base = harness_skip_features else trap("run-test262: no skip list")
+                            counts[(usize)(p1 - base)] += 1
+                        skip = true
+                    else:
+                        # feature is not listed: skip and warn
+                        discard(printf(z("%s:%d: unknown feature: %s\n"), filename, 1, option))
+                        skip = true
+                    c_free(option)
+            c_free(desc)
+        if is_async:
+            namelist_add(ip, none, z("doneprintHandle.js"))
+    else:
+        if harness == none:
+            if let p = strstr(filename, z("test/")):
+                discard(snprintf(&harnessbuf[0], 1024, z("%.*s%s"), (i32)(p - filename), filename,
+                                 z("test/harness")))
+            else:
+                harnessbuf[0] = 0
+            harness = &harnessbuf[0]
+
+        namelist_add(ip, none, z("sta.js"))
+
+        # include extra harness files
+        var p: const u8* = buf
+        while true:
+            let found = strstr(p, z("$INCLUDE(\"")) else break
+            p = found + 10
+            let ifile = strdup_len(p, strcspn(p, z("\"")))
+            # skip unsupported harness files
+            if find_word(cnull(harness_exclude), ifile) != none:
+                skip = true
+            else:
+                namelist_add(ip, none, ifile)
+            c_free(ifile)
+            p = p + 1
+
+        # locate the old style configuration comment
+        if let desc = extract_desc(buf, '*'):
+            if strstr(desc, z("@noStrict")) != none:
+                is_nostrict = true
+                skip = skip or test_mode == test_strict
+            if strstr(desc, z("@onlyStrict")) != none:
+                is_onlystrict = true
+                skip = skip or test_mode == test_nostrict
+            if strstr(desc, z("@negative")) != none:
+                # XXX: should extract the regex to check error type
+                is_negative = true
+            c_free(desc)
+
+    if let fo = outfile:
+        if index >= 0:
+            discard(fprintf(fo, z("%d: %s%s%s%s%s%s%s\n"), index, filename,
+                            z("  @noStrict") if is_nostrict else z(""),
+                            z("  @onlyStrict") if is_onlystrict else z(""),
+                            z("  async") if is_async else z(""),
+                            z("  module") if is_module else z(""),
+                            z("  @negative") if is_negative else z(""),
+                            z("  SKIPPED") if skip else z("")))
+            discard(fflush(fo))
+
+    var use_strict = false
+    var use_nostrict = false
+    # XXX: should remove 'test_mode' or simplify it just to force
+    # strict or non strict mode for single file tests
+    if test_mode == test_default_nostrict:
+        if is_onlystrict:
+            use_strict = true
+        else:
+            use_nostrict = true
+    elif test_mode == test_default_strict:
+        if is_nostrict:
+            use_nostrict = true
+        else:
+            use_strict = true
+    elif test_mode == test_nostrict:
+        if not is_onlystrict:
+            use_nostrict = true
+    elif test_mode == test_strict:
+        if not is_nostrict:
+            use_strict = true
+    elif test_mode == test_all:
+        if is_module:
+            use_nostrict = true
+        else:
+            if not is_nostrict:
+                use_strict = true
+            if not is_onlystrict:
+                use_nostrict = true
+
+    var ret: i32 = 0
+    if skip or not (use_strict or use_nostrict):
+        test_skipped += 1
+        ret = -2
+    else:
+        var eval_flags = js.eval_type_global
+        if is_module:
+            eval_flags = js.eval_type_module
+        let clocks = clock()
+        if use_nostrict:
+            ret = run_test_buf(tls, filename, harness, ip, buf, buf_len, cnull(error_type), eval_flags, is_negative,
+                               is_async, can_block)
+        if use_strict:
+            ret |= run_test_buf(tls, filename, harness, ip, buf, buf_len, cnull(error_type),
+                                eval_flags | js.eval_flag_strict, is_negative, is_async, can_block)
+        let elapsed = clock() -% clocks
+        if let fo = outfile:
+            if index >= 0 and elapsed >= clocks_per_sec // 10:
+                # output timings for tests that take more than 100 ms
+                discard(fprintf(fo, z(" time: %d ms\n"), (i32)(elapsed * 1000 // clocks_per_sec)))
+    namelist_free(&include_list)
+    c_free(error_type)
+    c_free(buf)
+
+    return ret
+
+## run a test when called by test262-harness+eshost
+func run_test262_harness_test(tls: ThreadLocalStorage*, filename: const u8*, is_module: bool,
+                              can_block: bool) -> i32:
+    outfile = stdout()  # for js_print
+
+    let rt = js.js_new_runtime() else fatal(1, "JS_NewRuntime failure")
+    js.js_set_runtime_opaque(rt, tls)
+    let ctx = js.js_new_context(rt) else context_failure(rt)
+    js.js_set_runtime_info(rt, filename)
+
+    js.js_set_can_block(rt, can_block)
+
+    # loader for ES6 modules
+    js.js_set_module_loader_func2(rt, none, js_module_loader_test, none, (void*)filename)
+
+    add_helpers(ctx)
+
+    var buf_len: usize = 0
+    let buf = load_file(filename, &buf_len)
+
+    var eval_flags = js.eval_type_global
+    if is_module:
+        eval_flags = js.eval_type_module
+    var ret_code: i32 = 0
+    var failed = false
+    let res_val = js.js_eval(ctx, buf, buf_len, filename, eval_flags) catch:
+        failed = true
+        recover js.js_undefined()
+    if failed:
+        host.js_std_dump_error(ctx)
+        ret_code = 1
+    else:
+        var promise = js.js_undefined()
+        if is_module:
+            promise = res_val
+        else:
+            js.js_free_value(ctx, res_val)
+        while true:
+            var job_failed = false
+            let ran = js.js_execute_pending_job(js.js_get_runtime(ctx), none) catch:
+                job_failed = true
+                recover true
+            if job_failed:
+                host.js_std_dump_error(ctx)
+                ret_code = 1
+            elif not ran:
+                break
+        # dump the error if the module returned an error.
+        if is_module:
+            if js.js_promise_state(ctx, promise) == js.PromiseState.rejected:
+                throw_value(ctx, js.js_promise_result(ctx, promise))
+                host.js_std_dump_error(ctx)
+                ret_code = 1
+        js.js_free_value(ctx, promise)
+    c_free(buf)
+    js_agent_free(ctx)
+    js.js_free_context(ctx)
+    js.js_free_runtime(rt)
+    return ret_code

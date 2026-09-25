@@ -1,0 +1,306 @@
+#==============================================================================================
+#
+#   config - The configuration file, the known-errors file and source scanning helpers
+#
+#   DESCRIPTION:
+#       Port of run-test262.c lines 1026-1378: word and line search, excluded directories,
+#       load_config (the [config], [exclude], [features] and [tests] sections), find_error
+#       (the known error of a test in the errors file), skip_comments and longest_match
+#       (the line an error message points at) and print_error.
+#
+#==============================================================================================
+
+# mark: Searching ===============================================================================
+
+func is_line_sep(ch: u8) -> bool:
+    return ch == 0 or ch == '\n' or ch == '\r'
+
+func find_line(text: const u8*?, line: const u8*) -> const u8*?:
+    let s = text else return none
+    let len = strlen(line)
+    var p: const u8* = s
+    while true:
+        let found = strstr(p, line) else return none
+        if (found == s or is_line_sep(*(found - 1))) and is_line_sep(found[len]):
+            return found
+        p = found + len + 1
+
+func is_word_sep(ch: u8) -> bool:
+    return ch == 0 or is_space(ch) or ch == ','
+
+func find_word(text: const u8*?, word: const u8*) -> const u8*?:
+    let len = strlen(word)
+    let s = text else return none
+    if len == 0:
+        return none
+    var p: const u8* = s
+    while true:
+        let found = strstr(p, word) else return none
+        if (found == s or is_word_sep(*(found - 1))) and is_word_sep(found[len]):
+            return found
+        p = found + len
+
+# mark: Configuration ===========================================================================
+
+## handle exclude directories
+func update_exclude_dirs():
+    let lp = &test_list
+    let ep = &exclude_list
+    let dp = &exclude_dir_list
+
+    # split directories from exclude_list
+    var count: i32 = 0
+    if let arr = ep.array:
+        for i in 0..<ep.count:
+            let name = arr[(usize)i]
+            if has_suffix(name, z("/")):
+                namelist_add(dp, none, name)
+                c_free(name)
+            else:
+                arr[(usize)count] = name
+                count += 1
+    ep.count = count
+
+    namelist_sort(dp, true)
+
+    # filter out excluded directories
+    count = 0
+    let arr = lp.array else return
+    for i in 0..<lp.count:
+        var name: u8*? = arr[(usize)i]
+        if let dirs = dp.array:
+            for j in 0..<dp.count:
+                if has_prefix(arr[(usize)i], dirs[(usize)j]):
+                    test_excluded += 1
+                    c_free(name)
+                    name = none
+                    break
+        if let kept = name:
+            arr[(usize)count] = kept
+            count += 1
+    lp.count = count
+
+let section_none: i32 = 0
+let section_config: i32 = 1
+let section_exclude: i32 = 2
+let section_features: i32 = 3
+let section_tests: i32 = 4
+
+func load_config(filename: const u8*, ignore: const u8*):
+    var buf: u8[1024] = ---
+    var section = section_none
+    var lineno: i32 = 0
+
+    let f = fopen(filename, z("rb")) else perror_exit(1, filename)
+    let base_name = get_basename(filename)
+
+    while fgets(&buf[0], 1024, f) != none:
+        lineno += 1
+        var p = str_strip(&buf[0])
+        if *p == '#' or *p == ';' or *p == 0:
+            continue  # line comment
+
+        if *p == '[':
+            # new section
+            p = p + 1
+            p[strcspn(p, z("]"))] = 0
+            if str_equal(p, z("config")):
+                section = section_config
+            elif str_equal(p, z("exclude")):
+                section = section_exclude
+            elif str_equal(p, z("features")):
+                section = section_features
+            elif str_equal(p, z("tests")):
+                section = section_tests
+            else:
+                section = section_none
+            continue
+        var q: u8*? = strchr(p, (i32)'=')
+        if let eq = q:
+            # setting: name=value
+            *eq = 0
+            q = str_strip(eq + 1)
+        if section == section_config:
+            if q == none:
+                discard(printf(z("%s:%d: syntax error\n"), filename, lineno))
+                continue
+            let value = q else continue
+            if strstr(ignore, p) != none:
+                discard(printf(z("%s:%d: ignoring %s=%s\n"), filename, lineno, p, value))
+                continue
+            if config_setting(cnull(base_name), p, value):
+                continue
+            # C falls through to the [exclude] case for an unknown setting
+            namelist_add(&exclude_list, cnull(base_name), p)
+        elif section == section_exclude:
+            namelist_add(&exclude_list, cnull(base_name), p)
+        elif section == section_features:
+            if q == none or str_equal(cnull(q) else z(""), z("yes")):
+                discard(str_append(&harness_features, z(" "), p))
+            else:
+                discard(str_append(&harness_skip_features, z(" "), p))
+        elif section == section_tests:
+            namelist_add(&test_list, cnull(base_name), p)
+        # ignore settings in other sections
+    discard(fclose(f))
+    c_free(base_name)
+
+## Apply the [config] setting `p`=`q`; false for an unknown name.
+func config_setting(base_name: const u8*?, p: const u8*, q: const u8*) -> bool:
+    if str_equal(p, z("style")):
+        new_style = str_equal(q, z("new"))
+    elif str_equal(p, z("testdir")):
+        let testdir = compose_path(base_name, q)
+        enumerate_tests(testdir)
+        c_free(testdir)
+    elif str_equal(p, z("harnessdir")):
+        harness_dir = compose_path(base_name, q)
+    elif str_equal(p, z("harnessexclude")):
+        discard(str_append(&harness_exclude, z(" "), q))
+    elif str_equal(p, z("features")):
+        discard(str_append(&harness_features, z(" "), q))
+    elif str_equal(p, z("skip-features")):
+        discard(str_append(&harness_skip_features, z(" "), q))
+    elif str_equal(p, z("mode")):
+        if str_equal(q, z("default")) or str_equal(q, z("default-nostrict")):
+            test_mode = test_default_nostrict
+        elif str_equal(q, z("default-strict")):
+            test_mode = test_default_strict
+        elif str_equal(q, z("nostrict")):
+            test_mode = test_nostrict
+        elif str_equal(q, z("strict")):
+            test_mode = test_strict
+        elif str_equal(q, z("all")) or str_equal(q, z("both")):
+            test_mode = test_all
+        else:
+            fatal(2, f"unknown test mode: {view(q)}")
+    elif str_equal(p, z("strict")):
+        if str_equal(q, z("skip")) or str_equal(q, z("no")):
+            test_mode = test_nostrict
+    elif str_equal(p, z("nostrict")):
+        if str_equal(q, z("skip")) or str_equal(q, z("no")):
+            test_mode = test_strict
+    elif str_equal(p, z("async")):
+        skip_async = not str_equal(q, z("yes"))
+    elif str_equal(p, z("module")):
+        skip_module = not str_equal(q, z("yes"))
+    elif str_equal(p, z("verbose")):
+        verbose = str_equal(q, z("yes"))
+    elif str_equal(p, z("errorfile")):
+        error_filename = compose_path(base_name, q)
+    elif str_equal(p, z("excludefile")):
+        let path = compose_path(base_name, q)
+        namelist_load(&exclude_list, path)
+        c_free(path)
+    elif str_equal(p, z("reportfile")):
+        report_filename = compose_path(base_name, q)
+    else:
+        return false
+    return true
+
+# mark: Known errors ============================================================================
+
+## The known error of `filename` in the errors file (strict or not), and its line.
+func find_error(filename: const u8*, pline: i32*?, is_strict: bool) -> u8*?:
+    let file = error_file else return none
+    let len = strlen(filename)
+    var p: const u8* = file
+    while true:
+        let found = strstr(p, filename) else return none
+        p = found
+        if (p == file or *(p - 1) == '\n' or *(p - 1) == '(') and p[len] == ':':
+            var q: const u8* = p + len
+            var line: i32 = 1
+            if *q == ':':
+                var end: u8* = (u8*)q
+                line = (i32)strtol(q + 1, &end, 10)
+                q = end
+                if *q == ':':
+                    q = q + 1
+            while *q == ' ':
+                q = q + 1
+            # check strict mode indicator
+            var rest: const u8* = q
+            let has_strict = strstart(q, z("strict mode: "), &rest)
+            if has_strict != is_strict:
+                p = p + len
+                continue
+            q = skip_prefix(rest, z("unexpected error: "))
+            var r = q
+            r = r + strcspn(r, z("\n"))
+            while r[0] == '\n' and r[1] != 0 and strncmp(r + 1, filename, 8) != 0:
+                r = r + 1
+                r = r + strcspn(r, z("\n"))
+            if let out = pline:
+                *out = line
+            return strdup_len(q, (usize)(r - q))
+        p = p + len
+
+# mark: Error lines =============================================================================
+
+func skip_comments(text: const u8*, line0: i32, pline: i32*?) -> i32:
+    var line = line0
+    var p = text
+    while true:
+        let ch = *p
+        p = p + 1
+        if ch == 0:
+            break
+        if is_space(ch):
+            if ch == '\n':
+                line += 1
+            continue
+        if ch == '/' and *p == '/':
+            while true:
+                p = p + 1
+                if *p == 0 or *p == '\n':
+                    break
+            continue
+        if ch == '/' and *p == '*':
+            p = p + 1
+            while *p != 0:
+                if *p == '\n':
+                    line += 1
+                    p = p + 1
+                    continue
+                if *p == '*' and p[1] == '/':
+                    p = p + 2
+                    break
+                p = p + 1
+            continue
+        break
+    if let out = pline:
+        *out = line
+    return (i32)(p - text)
+
+func longest_match(text: const u8*, find: const u8*, pos: i32, ppos: i32*?, line0: i32, pline: i32*?) -> i32:
+    var line = line0
+    var maxlen: i32 = 0
+    if *find != 0:
+        var p = text + (usize)pos
+        while *p != 0:
+            if *p == *find:
+                var len: usize = 1
+                while p[len] != 0 and p[len] == find[len]:
+                    len += 1
+                if (i32)len > maxlen:
+                    maxlen = (i32)len
+                    if let out = ppos:
+                        *out = (i32)(p - text)
+                    if let out = pline:
+                        *out = line
+                    if find[len] == 0:
+                        break
+            if *p == '\n':
+                line += 1
+            p = p + 1
+    return maxlen
+
+## Report an error line: into the new error list with -u, else on standard output.
+func print_error(buf: const u8*):
+    if update_errors != 0:
+        error_list_mutex.lock()
+        namelist_add(&error_list, none, buf)
+        error_list_mutex.unlock()
+    else:
+        discard(fputs(buf, stdout()))

@@ -108,51 +108,52 @@ func js_inner_module_linking(ctx: Context*, m: ModuleDef*, pstack_top: ModuleDef
 
     if not is_c_module:
         let p = js_value_get_obj(m.func_obj)
-        let var_refs = p.u.func_.var_refs else trap("js_inner_module_linking: no module variables")
-
-        for i in 0..<m.import_entries_count:
-            let mi = module_import_entry(m, i)
-            let m1 = req_entry_module(module_req_entry(m, mi.req_module_idx))
-            if mi.is_star:
-                # name space import
-                let val = try js_get_module_namespace(ctx, m1)
-                let var_ref = var_refs[(usize)mi.var_idx] else trap("namespace import without a variable")
-                set_value(ctx, &var_ref.u.value, val)
-            else:
-                var res_me: ExportEntry*? = none
-                var res_m: ModuleDef*? = none
-
-                let ret = try js_resolve_export(ctx, &res_m, &res_me, m1, mi.import_name)
-                if ret != ResolveResult.found:
-                    try js_resolve_export_throw_error(ctx, ret, m1, mi.import_name)
-                let me = res_me else trap("js_inner_module_linking: found without an entry")
-                let rm = res_m else trap("js_inner_module_linking: found without a module")
-                if me.local_name == atom__star_:
-                    # name space import from
-                    let m2 = req_entry_module(module_req_entry(rm, me.u.req_module_idx))
-                    let val = try js_get_module_namespace(ctx, m2)
-                    let var_ref = js_create_var_ref(ctx, true) catch failure:
-                        js_free_value(ctx, val)
-                        error(failure.code, failure.message)
+        # var_refs is NULL in C when the module has no closure variables; then it has no
+        # import and no local export either, and the loops below do nothing
+        if let var_refs = p.u.func_.var_refs:
+            for i in 0..<m.import_entries_count:
+                let mi = module_import_entry(m, i)
+                let m1 = req_entry_module(module_req_entry(m, mi.req_module_idx))
+                if mi.is_star:
+                    # name space import
+                    let val = try js_get_module_namespace(ctx, m1)
+                    let var_ref = var_refs[(usize)mi.var_idx] else trap("namespace import without a variable")
                     set_value(ctx, &var_ref.u.value, val)
-                    var_refs[(usize)mi.var_idx] = var_ref
                 else:
-                    var found_ref = me.u.local_.var_ref
-                    if found_ref == none:
-                        found_ref = module_func_var_ref(rm, me.u.local_.var_idx)
-                    let var_ref = found_ref else trap("js_inner_module_linking: export without a variable")
-                    js_rc(var_ref).ref_count += 1
-                    var_refs[(usize)mi.var_idx] = var_ref
+                    var res_me: ExportEntry*? = none
+                    var res_m: ModuleDef*? = none
 
-        # keep the exported variables in the module export entries (they are used when the
-        # eval function is deleted and cannot be initialized before in case imports are
-        # exported)
-        for i in 0..<m.export_entries_count:
-            let me = module_export_entry(m, i)
-            if me.export_type == ExportType.local_:
-                let var_ref = var_refs[(usize)me.u.local_.var_idx] else trap("export without a variable")
-                js_rc(var_ref).ref_count += 1
-                me.u.local_.var_ref = var_ref
+                    let ret = try js_resolve_export(ctx, &res_m, &res_me, m1, mi.import_name)
+                    if ret != ResolveResult.found:
+                        try js_resolve_export_throw_error(ctx, ret, m1, mi.import_name)
+                    let me = res_me else trap("js_inner_module_linking: found without an entry")
+                    let rm = res_m else trap("js_inner_module_linking: found without a module")
+                    if me.local_name == atom__star_:
+                        # name space import from
+                        let m2 = req_entry_module(module_req_entry(rm, me.u.req_module_idx))
+                        let val = try js_get_module_namespace(ctx, m2)
+                        let var_ref = js_create_var_ref(ctx, true) catch failure:
+                            js_free_value(ctx, val)
+                            error(failure.code, failure.message)
+                        set_value(ctx, &var_ref.u.value, val)
+                        var_refs[(usize)mi.var_idx] = var_ref
+                    else:
+                        var found_ref = me.u.local_.var_ref
+                        if found_ref == none:
+                            found_ref = module_func_var_ref(rm, me.u.local_.var_idx)
+                        let var_ref = found_ref else trap("js_inner_module_linking: export without a variable")
+                        js_rc(var_ref).ref_count += 1
+                        var_refs[(usize)mi.var_idx] = var_ref
+
+            # keep the exported variables in the module export entries (they are used when the
+            # eval function is deleted and cannot be initialized before in case imports are
+            # exported)
+            for i in 0..<m.export_entries_count:
+                let me = module_export_entry(m, i)
+                if me.export_type == ExportType.local_:
+                    let var_ref = var_refs[(usize)me.u.local_.var_idx] else trap("export without a variable")
+                    js_rc(var_ref).ref_count += 1
+                    me.u.local_.var_ref = var_ref
 
         # initialize the global variables
         var no_args = js_undefined()

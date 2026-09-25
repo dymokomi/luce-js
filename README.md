@@ -21,6 +21,16 @@ ported region by region (see `docs/PORTING.md`).
 Run the tests of a module with `luce-base test src/luce_js/<module>`; `./test.sh` runs every
 module's tests and then QuickJS's own JavaScript tests (`tests/run.py`).
 
+**test262**: luce-js passes test262 exactly as QuickJS does. `tests/test262.py` clones
+tc39/test262 at the commit QuickJS 2026-06-04 pins (outside the repository), applies
+QuickJS's `tests/test262.patch`, builds `build/run-test262` (`tests/run_test262/`, a port
+of QuickJS's `run-test262.c`) and runs the suite with QuickJS's `tests/test262.conf`;
+the expected failures are QuickJS's own list, `tests/test262_errors.txt` (58 lines; the
+conf, errors and patch files are copied from QuickJS, MIT). Result:
+`58/83558 errors, 3356 excluded, 6000 skipped`, the same as QuickJS. By default the run is
+split over processes so that a trap in one test cannot hide the others; `--direct` (or
+runner options after `--`) runs one threaded runner exactly as `make test2` does.
+
 `tests/ljs.lucb` is a small `qjs`: `luce-base build tests/ljs.lucb -o build/ljs`, then
 `build/ljs [--std] [-m] file.js [args]` or `build/ljs -e EXPR`.
 
