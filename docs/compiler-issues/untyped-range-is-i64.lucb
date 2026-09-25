@@ -6,7 +6,7 @@
 #   expected: compiles; `ext` is `usize` and `main` returns 1.
 #   actual:   untyped-range-is-i64.lucb:13:18: expected `usize`, got `i64`
 #
-# Workaround in luce_js.unicode tests: type the loop variable, `for ext: usize in 0..<2`.
+# Workaround in the libunicode tests (then luce_js.unicode, now in luce-regex): type the loop variable, `for ext: usize in 0..<2`.
 
 func main(arguments: str[]) -> i32:
     var total: usize = 0

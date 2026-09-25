@@ -23,7 +23,7 @@ def package "luce-js" {
 
     def dependency "luce-regex" {
         str owner = "dymokomi"
-        str version = "^0.2.0"
+        str version = "^0.2.1"
         str path = "../luce-regex"
     }
 }

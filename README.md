@@ -12,9 +12,9 @@ ported region by region (see `docs/PORTING.md`).
 | --- | --- | --- |
 | `luce_js.cutils` | `cutils.c`, `list.h` | ported, tested |
 | `luce_js.dtoa` | `dtoa.c` | ported, bit-exact with C on the pinned tables |
-| `luce_js.unicode` | `libunicode.c` | in progress |
 | `regex` (the luce-regex package) | `libregexp.c` | replaced by luce-regex's ECMAScript dialect |
-| `luce_js.engine` | `quickjs.c` | skeleton: types and typed stubs |
+| `libunicode` (the luce-regex package) | `libunicode.c` | ported in luce-regex |
+| `luce_js.engine` | `quickjs.c` | ported |
 
 | `luce_js.host` | `quickjs-libc.c` (parts) | helpers, module loader, job/timer loop, `std`, `os` |
 

@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")"
 
-for module in cutils dtoa unicode engine host; do
+for module in cutils dtoa engine host; do
     echo "== luce-base test src/luce_js/$module"
     luce-base test "src/luce_js/$module"
 done

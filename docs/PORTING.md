@@ -15,7 +15,7 @@ reference is `../luce-base/docs/LIBRARY.md`. Read §5–§12 of the language bef
 | --- | --- | --- |
 | `cutils.c`, `cutils.h`, `list.h` | `luce_js.cutils` | `src/luce_js/cutils/` |
 | `dtoa.c`, `dtoa.h` | `luce_js.dtoa` | `src/luce_js/dtoa/` |
-| `libunicode.c`, `libunicode-table.h` | `luce_js.unicode` | `src/luce_js/unicode/` |
+| `libunicode.c`, `libunicode-table.h` | `libunicode` (luce-regex package) | `../luce-regex/src/luce_regex/unicode/` |
 | `libregexp.c`, `libregexp-opcode.h` | not ported: the `regex` module of the luce-regex dependency (engine `regexp_bridge.lucb`) | `../luce-regex` |
 | `quickjs.c`, `quickjs.h`, `quickjs-atom.h`, `quickjs-opcode.h` | `luce_js.engine` | `src/luce_js/engine/` |
 
@@ -152,7 +152,7 @@ C and luce-base disagree in three places; get these right, they are where ports 
   labeled `break`. Never change behaviour to make the structure easier.
 - `switch` becomes `match` (integer patterns are literals; ranges `'0'..='9'`; several
   values `1, 2, 3:`; a `_` arm). C fallthrough is duplicated code or a shared helper.
-- The support libraries (`cutils`, `dtoa`, `unicode`) keep QuickJS's C contracts:
+- The support libraries (`cutils`, `dtoa`, luce-regex's `libunicode`) keep QuickJS's C contracts:
   a function that returns `-1` on failure still returns an `i32` status. Their callers are
   C-shaped code in the engine, and that keeps the port reviewable line by line.
 - In the engine, a JavaScript exception is a Luce failure: a C function that returns

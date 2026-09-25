@@ -5,7 +5,7 @@
 #   DESCRIPTION:
 #       Port of quickjs.c lines 46210-46531: String.prototype's substring, substr,
 #       slice, padStart/padEnd, repeat, trim/trimStart/trimEnd, and toLowerCase/
-#       toUpperCase with the final sigma rule (the case tables are luce_js.unicode's
+#       toUpperCase with the final sigma rule (the case tables are libunicode's
 #       lre_case_conv).
 #
 #==============================================================================================

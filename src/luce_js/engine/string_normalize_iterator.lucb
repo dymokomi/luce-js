@@ -6,7 +6,7 @@
 #   DESCRIPTION:
 #       Port of quickjs.c lines 46533-46923 (CONFIG_ALL_UNICODE is on, so normalize and
 #       the normalizing localeCompare are the ones ported): strings as UTF-32 buffers,
-#       String.prototype.normalize over luce_js.unicode's unicode_normalize,
+#       String.prototype.normalize over libunicode's unicode_normalize,
 #       localeCompare, toString/valueOf, the String Iterator's next, the annex B
 #       anchor/big/.../sup methods, the String function lists, and
 #       JS_AddIntrinsicStringNormalize.
