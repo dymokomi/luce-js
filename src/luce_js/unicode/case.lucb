@@ -1,0 +1,289 @@
+#==============================================================================================
+#
+#   case - Case conversion, regexp canonicalization and the run-length property lookup
+#
+#   DESCRIPTION:
+#       Port of QuickJS libunicode.c lines 34-377: lre_case_conv, lre_canonicalize, the
+#       index and run-length table lookup (get_index_pos, lre_is_in_table) and the Cased
+#       and Case_Ignorable predicates.
+#
+#==============================================================================================
+
+# mark: Run types ==============================================================================
+
+# The kind of a case_conv_table1 run (bits 4..7 of the entry).
+enum RunType as u32:
+    u = 0
+    l = 1
+    uf = 2
+    lf = 3
+    ul = 4
+    lsu = 5
+    u2l_399_ext2 = 6
+    uf_d20 = 7
+    uf_d1_ext = 8
+    u_ext = 9
+    lf_ext = 10
+    uf_ext2 = 11
+    lf_ext2 = 12
+    uf_ext3 = 13
+
+func lre_case_conv1(c: u32, conv_type: i32) -> u32:
+    var res: u32[3]
+    discard(lre_case_conv(res, c, conv_type))
+    return res[0]
+
+# mark: Case conversion ========================================================================
+
+# case conversion using the table entry 'idx' with value 'v'
+func lre_case_conv_entry(res: u32[], c0: u32, conv_type: i32, idx: u32, v: u32) -> i32:
+    var c = c0
+    let is_lower: u32 = (u32)(conv_type != 0)
+    let run_type: u32 = (v >> (32 - 17 - 7 - 4)) & 0xf
+    let data: u32 = ((v & 0xf) << 8) | case_conv_table2[idx]
+    let code: u32 = v >> (32 - 17)
+    match (RunType)run_type:
+        .u, .l, .uf, .lf:
+            if (conv_type == (i32)(run_type & 1) or
+                    (run_type >= (u32)RunType.uf and conv_type == 2)):
+                c = c - code + (case_conv_table1[data] >> (32 - 17))
+        .ul:
+            let a = c - code
+            if (a & 1) == (1 - is_lower):
+                c = (a ^ 1) + code
+        .lsu:
+            let a = c - code
+            if a == 1:
+                c = c +% (2 * is_lower -% 1)
+            elif a == (1 - is_lower) * 2:
+                c = c +% ((2 * is_lower -% 1) *% 2)
+        .u2l_399_ext2:
+            if is_lower == 0:
+                res[0] = c - code + case_conv_ext[data >> 6]
+                res[1] = 0x399
+                return 2
+            else:
+                c = c - code + case_conv_ext[data & 0x3f]
+        .uf_d20:
+            if conv_type != 1:
+                c = data + (u32)(conv_type == 2) * 0x20
+        .uf_d1_ext:
+            if conv_type != 1:
+                c = case_conv_ext[data] + (u32)(conv_type == 2)
+        .u_ext, .lf_ext:
+            if is_lower == (run_type - (u32)RunType.u_ext):
+                c = case_conv_ext[data]
+        .lf_ext2:
+            if is_lower != 0:
+                res[0] = c - code + case_conv_ext[data >> 6]
+                res[1] = case_conv_ext[data & 0x3f]
+                return 2
+        .uf_ext2:
+            if conv_type != 1:
+                res[0] = c - code + case_conv_ext[data >> 6]
+                res[1] = case_conv_ext[data & 0x3f]
+                if conv_type == 2:
+                    # convert to lower
+                    res[0] = lre_case_conv1(res[0], 1)
+                    res[1] = lre_case_conv1(res[1], 1)
+                return 2
+        _:
+            # RUN_TYPE_UF_EXT3 (and the C default)
+            if conv_type != 1:
+                res[0] = case_conv_ext[data >> 8]
+                res[1] = case_conv_ext[(data >> 4) & 0xf]
+                res[2] = case_conv_ext[data & 0xf]
+                if conv_type == 2:
+                    # convert to lower
+                    res[0] = lre_case_conv1(res[0], 1)
+                    res[1] = lre_case_conv1(res[1], 1)
+                    res[2] = lre_case_conv1(res[2], 1)
+                return 3
+    res[0] = c
+    return 1
+
+# conv_type:
+#    0 = to upper
+#    1 = to lower
+#    2 = case folding (= to lower with modifications)
+## Convert the case of `c` into `res` (room for `lre_cc_res_len_max` code points) and answer
+## how many code points were written. `conv_type` is 0 to upper, 1 to lower, 2 case folding.
+pub func lre_case_conv(res: u32[], c0: u32, conv_type: i32) -> i32:
+    var c = c0
+    if c < 128:
+        if conv_type != 0:
+            if c >= (u32)'A' and c <= (u32)'Z':
+                c = c - (u32)'A' + (u32)'a'
+        else:
+            if c >= (u32)'a' and c <= (u32)'z':
+                c = c - (u32)'a' + (u32)'A'
+    else:
+        var idx_min: i32 = 0
+        var idx_max: i32 = (i32)case_conv_table1.length - 1
+        while idx_min <= idx_max:
+            let idx = (i32)((u32)(idx_max + idx_min) // 2)
+            let v = case_conv_table1[(usize)idx]
+            let code = v >> (32 - 17)
+            let len = (v >> (32 - 17 - 7)) & 0x7f
+            if c < code:
+                idx_max = idx - 1
+            elif c >= code + len:
+                idx_min = idx + 1
+            else:
+                return lre_case_conv_entry(res, c, conv_type, (u32)idx, v)
+    res[0] = c
+    return 1
+
+func lre_case_folding_entry(c0: u32, idx: u32, v: u32, is_unicode: bool) -> u32:
+    var c = c0
+    var res: u32[3]
+    if is_unicode:
+        let len = lre_case_conv_entry(res, c, 2, idx, v)
+        if len == 1:
+            c = res[0]
+        else:
+            # handle the few specific multi-character cases (see
+            # unicode_gen.c:dump_case_folding_special_cases())
+            if c == 0xfb06:
+                c = 0xfb05
+            elif c == 0x01fd3:
+                c = 0x390
+            elif c == 0x01fe3:
+                c = 0x3b0
+    else:
+        if c < 128:
+            if c >= (u32)'a' and c <= (u32)'z':
+                c = c - (u32)'a' + (u32)'A'
+        else:
+            # legacy regexp: to upper case if single char >= 128
+            let len = lre_case_conv_entry(res, c, 0, idx, v)
+            if len == 1 and res[0] >= 128:
+                c = res[0]
+    return c
+
+# JS regexp specific rules for case folding
+## Canonicalize `c` for case-insensitive regexp matching: simple case folding when
+## `is_unicode`, else the legacy rule (upper case, unless that leaves ASCII).
+pub func lre_canonicalize(c0: u32, is_unicode: bool) -> i32:
+    var c = c0
+    if c < 128:
+        # fast case
+        if is_unicode:
+            if c >= (u32)'A' and c <= (u32)'Z':
+                c = c - (u32)'A' + (u32)'a'
+        else:
+            if c >= (u32)'a' and c <= (u32)'z':
+                c = c - (u32)'a' + (u32)'A'
+    else:
+        var idx_min: i32 = 0
+        var idx_max: i32 = (i32)case_conv_table1.length - 1
+        while idx_min <= idx_max:
+            let idx = (i32)((u32)(idx_max + idx_min) // 2)
+            let v = case_conv_table1[(usize)idx]
+            let code = v >> (32 - 17)
+            let len = (v >> (32 - 17 - 7)) & 0x7f
+            if c < code:
+                idx_max = idx - 1
+            elif c >= code + len:
+                idx_min = idx + 1
+            else:
+                return (i32)lre_case_folding_entry(c, (u32)idx, v, is_unicode)
+    return (i32)c
+
+# mark: Run-length tables ======================================================================
+
+func get_le24(ptr: const u8*) -> u32:
+    let b0: u32 = ptr[0]
+    let b1: u32 = ptr[1]
+    let b2: u32 = ptr[2]
+    return b0 | (b1 << 8) | (b2 << 16)
+
+let unicode_index_block_len: i32 = 32
+
+# return -1 if not in table, otherwise the offset in the block
+# (the C index_table_len, a count of 3-byte entries, is index_table.length // 3)
+func get_index_pos(pcode: u32*, c: u32, index_table: const u8[]) -> i32:
+    let index_table_len = (i32)(index_table.length // 3)
+    var idx_min: i32 = 0
+    var v = get_le24(&index_table[0])
+    var code = v & ((1 << 21) - 1)
+    if c < code:
+        *pcode = 0
+        return 0
+    var idx_max = index_table_len - 1
+    code = get_le24(&index_table[(usize)idx_max * 3])
+    if c >= code:
+        return -1
+    # invariant: tab[idx_min] <= c < tab2[idx_max]
+    while (idx_max - idx_min) > 1:
+        let idx = (idx_max + idx_min) // 2
+        v = get_le24(&index_table[(usize)idx * 3])
+        code = v & ((1 << 21) - 1)
+        if c < code:
+            idx_max = idx
+        else:
+            idx_min = idx
+    v = get_le24(&index_table[(usize)idx_min * 3])
+    *pcode = v & ((1 << 21) - 1)
+    return (idx_min + 1) * unicode_index_block_len + (i32)(v >> 21)
+
+func lre_is_in_table(c: u32, table: const u8[], index_table: const u8[]) -> bool:
+    var code: u32 = 0
+    let pos = get_index_pos(&code, c, index_table)
+    if pos < 0:
+        return false # outside the table
+    var p: const u8* = &table[(usize)pos]
+    var bit = false
+    # Compressed run length encoding:
+    #    00..3F: 2 packed lengths: 3-bit + 3-bit
+    #    40..5F: 5-bits plus extra byte for length
+    #    60..7F: 5-bits plus 2 extra bytes for length
+    #    80..FF: 7-bit length
+    #    lengths must be incremented to get character count
+    #    Ranges alternate between false and true return value.
+    while true:
+        let b: u32 = *p
+        p = p + 1
+        if b < 64:
+            code += (b >> 3) + 1
+            if c < code:
+                return bit
+            bit = not bit
+            code += (b & 7) + 1
+        elif b >= 0x80:
+            code += b - 0x80 + 1
+        elif b < 0x60:
+            let p0: u32 = p[0]
+            code += (((b - 0x40) << 8) | p0) + 1
+            p = p + 1
+        else:
+            let p0: u32 = p[0]
+            let p1: u32 = p[1]
+            code += (((b - 0x60) << 16) | (p0 << 8) | p1) + 1
+            p = p + 2
+        if c < code:
+            return bit
+        bit = not bit
+    return bit
+
+## True if `c` is cased (has a case mapping or the Cased property).
+pub func lre_is_cased(c: u32) -> bool:
+    var idx_min: i32 = 0
+    var idx_max: i32 = (i32)case_conv_table1.length - 1
+    while idx_min <= idx_max:
+        let idx = (i32)((u32)(idx_max + idx_min) // 2)
+        let v = case_conv_table1[(usize)idx]
+        let code = v >> (32 - 17)
+        let len = (v >> (32 - 17 - 7)) & 0x7f
+        if c < code:
+            idx_max = idx - 1
+        elif c >= code + len:
+            idx_min = idx + 1
+        else:
+            return true
+    return lre_is_in_table(c, unicode_prop_Cased1_table, unicode_prop_Cased1_index)
+
+## True if `c` has the Case_Ignorable property.
+pub func lre_is_case_ignorable(c: u32) -> bool:
+    return lre_is_in_table(c, unicode_prop_Case_Ignorable_table,
+                           unicode_prop_Case_Ignorable_index)

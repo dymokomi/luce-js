@@ -1,0 +1,99 @@
+#==============================================================================================
+#
+#   classify - Code point categorizing: the Latin-1 class bits and the non-ASCII spaces
+#
+#   DESCRIPTION:
+#       Port of QuickJS libunicode.c lines 1825-1917: lre_ctype_bits, the table behind the
+#       inline byte predicates of libunicode.h, and lre_is_space_non_ascii.
+#
+#==============================================================================================
+
+# mark: Latin-1 classes ========================================================================
+
+# lre codepoint categorizing functions
+
+# The C file's one-letter macros S, D, X, U, L, _ and d.
+let ct_s: u8 = unicode_c_space
+let ct_d: u8 = unicode_c_digit
+let ct_x: u8 = unicode_c_xdigit
+let ct_u: u8 = unicode_c_upper
+let ct_l: u8 = unicode_c_lower
+let ct_under: u8 = unicode_c_under
+let ct_dollar: u8 = unicode_c_dollar
+
+## The `unicode_c_*` class bits of each Latin-1 byte.
+pub let lre_ctype_bits: u8[256] = [
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, ct_s, ct_s, ct_s, ct_s, ct_s, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+
+    ct_s, 0, 0, 0, ct_dollar, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    ct_x | ct_d, ct_x | ct_d, ct_x | ct_d, ct_x | ct_d, ct_x | ct_d, ct_x | ct_d, ct_x | ct_d, ct_x | ct_d,
+    ct_x | ct_d, ct_x | ct_d, 0, 0, 0, 0, 0, 0,
+
+    0, ct_x | ct_u, ct_x | ct_u, ct_x | ct_u, ct_x | ct_u, ct_x | ct_u, ct_x | ct_u, ct_u,
+    ct_u, ct_u, ct_u, ct_u, ct_u, ct_u, ct_u, ct_u,
+    ct_u, ct_u, ct_u, ct_u, ct_u, ct_u, ct_u, ct_u,
+    ct_u, ct_u, ct_u, 0, 0, 0, 0, ct_under,
+
+    0, ct_x | ct_l, ct_x | ct_l, ct_x | ct_l, ct_x | ct_l, ct_x | ct_l, ct_x | ct_l, ct_l,
+    ct_l, ct_l, ct_l, ct_l, ct_l, ct_l, ct_l, ct_l,
+    ct_l, ct_l, ct_l, ct_l, ct_l, ct_l, ct_l, ct_l,
+    ct_l, ct_l, ct_l, 0, 0, 0, 0, 0,
+
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+
+    ct_s, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+]
+
+# mark: Spaces =================================================================================
+
+# code point ranges for Zs,Zl or Zp property
+let char_range_s: u16[21] = [
+    10,
+    0x0009, 0x000D + 1,
+    0x0020, 0x0020 + 1,
+    0x00A0, 0x00A0 + 1,
+    0x1680, 0x1680 + 1,
+    0x2000, 0x200A + 1,
+    # 2028;LINE SEPARATOR;Zl;0;WS;;;;;N;;;;;
+    # 2029;PARAGRAPH SEPARATOR;Zp;0;B;;;;;N;;;;;
+    0x2028, 0x2029 + 1,
+    0x202F, 0x202F + 1,
+    0x205F, 0x205F + 1,
+    0x3000, 0x3000 + 1,
+    # FEFF;ZERO WIDTH NO-BREAK SPACE;Cf;0;BN;;;;;N;BYTE ORDER MARK;;;;
+    0xFEFF, 0xFEFF + 1,
+]
+
+## True if the code point `c` (at least 256) is a JavaScript white space or line terminator.
+pub func lre_is_space_non_ascii(c: u32) -> bool:
+    let n = char_range_s.length
+    var i: usize = 5
+    while i < n:
+        let low: u32 = char_range_s[i]
+        let high: u32 = char_range_s[i + 1]
+        if c < low:
+            return false
+        if c < high:
+            return true
+        i += 2
+    return false

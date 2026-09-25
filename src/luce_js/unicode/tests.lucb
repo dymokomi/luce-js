@@ -1,0 +1,461 @@
+#==============================================================================================
+#
+#   tests - Unit tests of the Unicode utilities against upstream libunicode.c
+#
+#   DESCRIPTION:
+#       Every expectation comes from upstream libunicode.c (tests_expect_table.lucb): hashes
+#       of each lookup over all code points, pinned case conversions of the special cases,
+#       normalization of tricky sequences, and the ranges of every general category,
+#       script, binary property and sequence property. The character range operations are
+#       pinned by hand.
+#
+#==============================================================================================
+
+# mark: Helpers ================================================================================
+
+let fnv_offset: u32 = 2166136261
+let code_point_end: u32 = 0x110000
+
+func mix(h: u32, v: u32) -> u32:
+    return (h ^ v) *% 16777619
+
+func range_hash(cr: const CharRange*) -> u32:
+    var h = fnv_offset
+    for v in cr_points(cr):
+        h = mix(h, v)
+    return h
+
+# The first alias of entry `idx` of a NUL-separated name table.
+func first_alias(table: const u8[], idx: i32) -> str:
+    var p: usize = 0
+    for i: i32 in 0..<idx:
+        while table[p] != 0:
+            p += 1
+        p += 1
+    var e = p
+    while table[e] != 0 and table[e] != 0x2c:
+        e += 1
+    return (str)table[p..<e]
+
+func name_count(table: const u8[]) -> i32:
+    var p: usize = 0
+    var n: i32 = 0
+    while table[p] != 0:
+        while table[p] != 0:
+            p += 1
+        p += 1
+        n += 1
+    return n
+
+# Compare `cr` and the status `ret` with a row (ret, len, hash, first and last interval).
+func check_range_row(row: const u32[], ret: i32, cr: const CharRange*, what: str):
+    let points = cr_points(cr)
+    assert(row[0] == (u32)ret, what)
+    assert(row[1] == (u32)cr.len, what)
+    assert(row[2] == range_hash(cr), what)
+    if cr.len > 0:
+        assert(row[3] == points[0] and row[4] == points[1], what)
+        assert(row[5] == points[points.length - 2] and row[6] == points[points.length - 1], what)
+
+func range_of(values: const u32[]) -> CharRange:
+    var cr: CharRange
+    cr_init(&cr, none, none)
+    for v in values:
+        assert(cr_add_point(&cr, v) == 0)
+    return cr
+
+func range_is(cr: const CharRange*, values: const u32[]) -> bool:
+    let points = cr_points(cr)
+    if points.length != values.length:
+        return false
+    for i in 0..<values.length:
+        if points[i] != values[i]:
+            return false
+    return true
+
+# mark: Case conversion ========================================================================
+
+test "lre_case_conv over every code point":
+    let expected: u32[3] = [expect_case_conv0, expect_case_conv1, expect_case_conv2]
+    var res: u32[3]
+    for conv_type: i32 in 0..<3:
+        var h = fnv_offset
+        var c: u32 = 0
+        while c < code_point_end:
+            let l = lre_case_conv(res, c, conv_type)
+            h = mix(h, (u32)l)
+            for i in 0..<(usize)l:
+                h = mix(h, res[i])
+            c += 1
+        assert(h == expected[(usize)conv_type])
+
+test "lre_canonicalize over every code point":
+    for mode in 0..<2:
+        var h = fnv_offset
+        var c: u32 = 0
+        while c < code_point_end:
+            h = mix(h, (u32)lre_canonicalize(c, mode == 1))
+            c += 1
+        assert(h == (expect_canonicalize0 if mode == 0 else expect_canonicalize1))
+
+test "case conversion special cases":
+    # ß, İ, ı, ŉ, ſ, the DŽ titlecase triples, ǰ, ΐ, final sigma, ϐ, ϴ, և, Georgian,
+    # Cherokee, Greek extended with ypogegrammeni, K and Å signs, ﬀ..ﬆ, Deseret, Osage,
+    # Old Hungarian, Adlam and the table ends
+    let rows = expect_case_points
+    var res: u32[3]
+    var r: usize = 0
+    while r < rows.length:
+        let c = rows[r]
+        for conv_type: i32 in 0..<3:
+            res = [0, 0, 0]
+            let at = r + 1 + (usize)conv_type * 4
+            let l = lre_case_conv(res, c, conv_type)
+            assert((u32)l == rows[at], "case length")
+            assert(res[0] == rows[at + 1], "case r0")
+            if l > 1:
+                assert(res[1] == rows[at + 2], "case r1")
+            if l > 2:
+                assert(res[2] == rows[at + 3], "case r2")
+        assert((u32)lre_canonicalize(c, false) == rows[r + 13], "canonicalize legacy")
+        assert((u32)lre_canonicalize(c, true) == rows[r + 14], "canonicalize unicode")
+        r += 15
+
+test "case conversion examples":
+    var res: u32[3]
+    assert(lre_case_conv(res, 0xdf, 0) == 2 and res[0] == 0x53 and res[1] == 0x53)
+    assert(lre_case_conv(res, 0x130, 1) == 2 and res[0] == 0x69 and res[1] == 0x307)
+    assert(lre_case_conv(res, 0x3a3, 1) == 1 and res[0] == 0x3c3)
+    assert(lre_case_conv(res, 0x3c2, 0) == 1 and res[0] == 0x3a3)
+    assert(lre_case_conv(res, 0x3c2, 2) == 1 and res[0] == 0x3c3)
+    assert(lre_case_conv(res, 0x390, 0) == 3 and res[0] == 0x399 and res[1] == 0x308 and res[2] == 0x301)
+    assert(lre_case_conv(res, 0x13a0, 2) == 1 and res[0] == 0x13a0)
+    assert(lre_case_conv(res, 0xab70, 0) == 1 and res[0] == 0x13a0)
+    assert(lre_case_conv(res, 0x10400, 1) == 1 and res[0] == 0x10428)
+    assert(lre_case_conv(res, 0x1f80, 0) == 2 and res[0] == 0x1f08 and res[1] == 0x399)
+    assert(lre_canonicalize(0x17f, true) == 0x73)
+    assert(lre_canonicalize(0x17f, false) == 0x17f)
+    assert(lre_canonicalize(0x131, false) == 0x131)
+    assert(lre_canonicalize(0xfb06, true) == 0xfb05)
+    assert(lre_canonicalize(0x61, false) == 0x41)
+    assert(lre_canonicalize(0x41, true) == 0x61)
+
+# mark: Predicates =============================================================================
+
+test "predicates over every code point":
+    var cased = fnv_offset
+    var ignorable = fnv_offset
+    var id_start = fnv_offset
+    var id_continue = fnv_offset
+    var space = fnv_offset
+    var ident_first = fnv_offset
+    var ident_next = fnv_offset
+    var c: u32 = 0
+    while c < code_point_end:
+        cased = mix(cased, (u32)lre_is_cased(c))
+        ignorable = mix(ignorable, (u32)lre_is_case_ignorable(c))
+        id_start = mix(id_start, (u32)lre_is_id_start(c))
+        id_continue = mix(id_continue, (u32)lre_is_id_continue(c))
+        space = mix(space, (u32)lre_is_space(c))
+        ident_first = mix(ident_first, (u32)lre_js_is_ident_first(c))
+        ident_next = mix(ident_next, (u32)lre_js_is_ident_next(c))
+        c += 1
+    assert(cased == expect_is_cased)
+    assert(ignorable == expect_is_case_ignorable)
+    assert(id_start == expect_is_id_start)
+    assert(id_continue == expect_is_id_continue)
+    assert(space == expect_is_space)
+    assert(ident_first == expect_js_is_ident_first)
+    assert(ident_next == expect_js_is_ident_next)
+
+test "byte classes":
+    var h = fnv_offset
+    for b: usize in 0..<256:  # workaround: compiler-issues/untyped-range-is-i64
+        let c = (u8)b
+        h = mix(h, (u32)lre_is_id_start_byte(c))
+        h = mix(h, (u32)lre_is_id_continue_byte(c))
+        h = mix(h, (u32)lre_is_word_byte(c))
+        h = mix(h, lre_ctype_bits[b])
+    assert(h == expect_byte_classes)
+    assert(lre_is_space(0x2028) and lre_is_space(0xfeff) and lre_is_space(0xa0))
+    assert(not lre_is_space(0x200b) and not lre_is_space(0x78))
+    assert(lre_js_is_ident_next(0x200c) and not lre_js_is_ident_first(0x200c))
+    assert(lre_js_is_ident_first(0x24) and not lre_js_is_ident_first(0x31))
+
+# mark: Normalization ==========================================================================
+
+test "combining classes and decompositions over every code point":
+    var cc = fnv_offset
+    var d0 = fnv_offset
+    var d1 = fnv_offset
+    var res: u32[18]
+    var c: u32 = 0
+    while c < code_point_end:
+        cc = mix(cc, (u32)unicode_get_cc(c))
+        var l = unicode_decomp_char(res, c, false)
+        d0 = mix(d0, (u32)l)
+        for i in 0..<(usize)l:
+            d0 = mix(d0, res[i])
+        l = unicode_decomp_char(res, c, true)
+        d1 = mix(d1, (u32)l)
+        for i in 0..<(usize)l:
+            d1 = mix(d1, res[i])
+        c += 1
+    assert(cc == expect_cc)
+    assert(d0 == expect_decomp0)
+    assert(d1 == expect_decomp1)
+
+test "unicode_normalize of every code point":
+    let expected: u32[4] = [expect_normalize0, expect_normalize1, expect_normalize2,
+                            expect_normalize3]
+    for n_type: i32 in 0..<4:
+        var h = fnv_offset
+        var c: u32 = 0
+        while c < code_point_end:
+            let input: u32[1] = [c]
+            var out: u32*? = none
+            let l = unicode_normalize(&out, input, n_type, none, none)
+            assert(l >= 0)
+            h = mix(h, (u32)l)
+            let buf = out else trap("no output")
+            for i in 0..<(usize)l:
+                h = mix(h, buf[i])
+            cutils.c_free(buf)
+            c += 1
+        assert(h == expected[(usize)n_type])
+
+test "unicode_normalize of tricky sequences":
+    # Hangul syllables and jamo, canonical ordering of combining marks, singletons (Ω, Å),
+    # composition exclusions, compatibility forms (ﬁ, ①, ½, ㌀, ﷺ, halfwidth kana)
+    let rows = expect_normalize_sequences
+    var r: usize = 0
+    var count = 0
+    while r < rows.length:
+        let in_len = (usize)rows[r]
+        let input = rows[r + 1..<r + 1 + in_len]
+        r += 1 + in_len
+        for n_type: i32 in 0..<4:
+            var out: u32*? = none
+            let l = unicode_normalize(&out, input, n_type, none, none)
+            assert((u32)l == rows[r], "normalized length")
+            if l > 0:
+                let buf = out else trap("no output")
+                for i in 0..<(usize)l:
+                    assert(buf[i] == rows[r + 1 + i], "normalized code point")
+            if let buf = out:
+                cutils.c_free(buf)
+            r += 1 + (usize)rows[r]
+        count += 1
+    assert(count == 40)
+
+test "unicode_normalize examples":
+    var out: u32*? = none
+    let hangul: u32[3] = [0x1100, 0x1161, 0x11a8]
+    assert(unicode_normalize(&out, hangul, unicode_nfc, none, none) == 1)
+    var buf = out else trap("no output")
+    assert(buf[0] == 0xac01)
+    cutils.c_free(buf)
+    let marks: u32[3] = [0x65, 0x301, 0x327]
+    assert(unicode_normalize(&out, marks, unicode_nfd, none, none) == 3)
+    buf = out else trap("no output")
+    assert(buf[0] == 0x65 and buf[1] == 0x327 and buf[2] == 0x301)
+    cutils.c_free(buf)
+    let empty: u32[1] = [0]
+    assert(unicode_normalize(&out, empty[0..<0], unicode_nfkd, none, none) == 0)
+
+# mark: Character ranges =======================================================================
+
+test "cr_op on small ranges":
+    var a = range_of([0x10, 0x20, 0x30, 0x40])
+    let b: u32[2] = [0x18, 0x38]
+    var r: CharRange
+    cr_init(&r, none, none)
+    assert(cr_op(&r, cr_points(&a), b, cr_op_union) == 0)
+    assert(range_is(&r, [0x10, 0x40]))
+    r.len = 0
+    assert(cr_op(&r, cr_points(&a), b, cr_op_inter) == 0)
+    assert(range_is(&r, [0x18, 0x20, 0x30, 0x38]))
+    r.len = 0
+    assert(cr_op(&r, cr_points(&a), b, cr_op_xor) == 0)
+    assert(range_is(&r, [0x10, 0x18, 0x20, 0x30, 0x38, 0x40]))
+    r.len = 0
+    assert(cr_op(&r, cr_points(&a), b, cr_op_sub) == 0)
+    assert(range_is(&r, [0x10, 0x18, 0x38, 0x40]))
+    assert(cr_op1(&r, b, cr_op_union) == 0)
+    assert(range_is(&r, [0x10, 0x40]))
+    cr_free(&r)
+    cr_free(&a)
+
+test "cr_invert, cr_union_interval, cr_copy and cr_compress":
+    var a = range_of([0x10, 0x20, 0x30, 0x40])
+    assert(cr_invert(&a) == 0)
+    assert(range_is(&a, [0, 0x10, 0x20, 0x30, 0x40, 0xffffffff]))
+    assert(cr_invert(&a) == 0)
+    assert(range_is(&a, [0x10, 0x20, 0x30, 0x40]))
+    assert(cr_union_interval(&a, 0x20, 0x2f) == 0)
+    assert(range_is(&a, [0x10, 0x40]))
+    assert(cr_union_interval(&a, 0x50, 0x50) == 0)
+    assert(range_is(&a, [0x10, 0x40, 0x50, 0x51]))
+    var b: CharRange
+    cr_init(&b, none, none)
+    assert(cr_copy(&b, &a) == 0)
+    assert(range_is(&b, [0x10, 0x40, 0x50, 0x51]))
+    var c = range_of([1, 1, 2, 3, 3, 5, 7, 7])
+    cr_compress(&c)
+    assert(range_is(&c, [2, 5]))
+    var empty: CharRange
+    cr_init(&empty, none, none)
+    assert(cr_invert(&empty) == 0)
+    assert(range_is(&empty, [0, 0xffffffff]))
+    cr_free(&empty)
+    cr_free(&c)
+    cr_free(&b)
+    cr_free(&a)
+
+test "cr_regexp_canonicalize on small ranges":
+    var a = range_of([0x61, 0x7a + 1])
+    assert(cr_regexp_canonicalize(&a, false) == 0)
+    assert(range_is(&a, [0x41, 0x5a + 1]))
+    cr_free(&a)
+    var k = range_of([0x212a, 0x212b])
+    assert(cr_regexp_canonicalize(&k, true) == 0)
+    assert(range_is(&k, [0x6b, 0x6b + 1]))
+    cr_free(&k)
+
+# A realloc hook that counts its calls in `opaque` and fails once the count is reached.
+struct AllocBudget:
+    var calls: i32
+    var limit: i32
+
+func budget_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    let budget = (AllocBudget*)(opaque else trap("no budget"))
+    budget.calls += 1
+    if size != 0 and budget.calls > budget.limit:
+        return none
+    return cutils.realloc(ptr, size)
+
+test "allocation failures answer -1":
+    var budget = AllocBudget(calls = 0, limit = 1)
+    var cr: CharRange
+    cr_init(&cr, &budget, budget_realloc)
+    assert(cr_add_interval(&cr, 1, 2) == 0)
+    assert(cr_add_interval(&cr, 3, 4) == -1)
+    assert(budget.calls == 2)
+    cr_free(&cr)
+    budget = AllocBudget(calls = 0, limit = 0)
+    cr_init(&cr, &budget, budget_realloc)
+    assert(unicode_general_category(&cr, "L") == -1)
+    assert(unicode_prop(&cr, "Alphabetic") == -1)
+    assert(unicode_script(&cr, "Greek", true) == -1)
+    var out: u32*? = none
+    let input: u32[2] = [0x41, 0x30a]
+    assert(unicode_normalize(&out, input, unicode_nfc, &budget, budget_realloc) == -1)
+    assert(out == none)
+
+# mark: Properties =============================================================================
+
+test "general categories":
+    let rows = expect_general_categories
+    let n = name_count(unicode_gc_name_table)
+    assert((usize)n * 13 == rows.length)
+    for j: i32 in 0..<n:
+        let row = rows[(usize)j * 13..<(usize)j * 13 + 13]
+        let name = first_alias(unicode_gc_name_table, j)
+        var cr: CharRange
+        cr_init(&cr, none, none)
+        let ret = unicode_general_category(&cr, name)
+        check_range_row(row, ret, &cr, name)
+        var c2: CharRange
+        cr_init(&c2, none, none)
+        assert(cr_copy(&c2, &cr) == 0)
+        assert(cr_regexp_canonicalize(&cr, false) == 0)
+        assert(row[7] == (u32)cr.len and row[8] == range_hash(&cr), name)
+        assert(cr_regexp_canonicalize(&c2, true) == 0)
+        assert(row[9] == (u32)c2.len and row[10] == range_hash(&c2), name)
+        assert(cr_invert(&c2) == 0)
+        assert(row[11] == (u32)c2.len and row[12] == range_hash(&c2), name)
+        cr_free(&cr)
+        cr_free(&c2)
+
+test "scripts with and without extensions":
+    let rows = expect_scripts
+    let n = name_count(unicode_script_name_table)
+    assert((usize)n * 14 == rows.length)
+    for j: i32 in 0..<n:
+        let name = first_alias(unicode_script_name_table, j)
+        for ext: usize in 0..<2:  # workaround: compiler-issues/untyped-range-is-i64
+            let at = (usize)j * 14 + ext * 7
+            var cr: CharRange
+            cr_init(&cr, none, none)
+            let ret = unicode_script(&cr, name, ext == 1)
+            check_range_row(rows[at..<at + 7], ret, &cr, name)
+            cr_free(&cr)
+
+test "binary properties":
+    let rows = expect_properties
+    let n = name_count(unicode_prop_name_table)
+    assert((usize)n * 7 == rows.length)
+    for j: i32 in 0..<n:
+        let name = first_alias(unicode_prop_name_table, j)
+        var cr: CharRange
+        cr_init(&cr, none, none)
+        let ret = unicode_prop(&cr, name)
+        check_range_row(rows[(usize)j * 7..<(usize)j * 7 + 7], ret, &cr, name)
+        cr_free(&cr)
+
+test "aliases and unknown names":
+    var a: CharRange
+    var b: CharRange
+    cr_init(&a, none, none)
+    cr_init(&b, none, none)
+    assert(unicode_script(&a, "Greek", false) == 0)
+    assert(unicode_script(&b, "Grek", false) == 0)
+    assert(range_hash(&a) == range_hash(&b) and a.len > 0)
+    a.len = 0
+    b.len = 0
+    assert(unicode_general_category(&a, "Nd") == 0)
+    assert(unicode_general_category(&b, "digit") == 0)
+    assert(range_is(&a, cr_points(&b)))
+    a.len = 0
+    assert(unicode_prop(&a, "space") == 0)
+    assert(range_is(&a, [9, 14, 0x20, 0x21, 0x85, 0x86, 0xa0, 0xa1, 0x1680, 0x1681, 0x2000,
+                         0x200b, 0x2028, 0x202a, 0x202f, 0x2030, 0x205f, 0x2060, 0x3000, 0x3001]))
+    assert(unicode_script(&a, "Klingon", false) == -2)
+    assert(unicode_general_category(&a, "Lx") == -2)
+    assert(unicode_prop(&a, "Cased1") == -2)
+    assert(unicode_prop(&a, "") == -2)
+    cr_free(&a)
+    cr_free(&b)
+
+# The state of a sequence property callback: how many sequences and their hash.
+struct SequenceStats:
+    var count: u32
+    var h: u32
+
+func sequence_counter(opaque: void*?, sequence: const u32[]):
+    let stats = (SequenceStats*)(opaque else trap("no stats"))
+    stats.count += 1
+    stats.h = mix(stats.h, (u32)sequence.length)
+    for v in sequence:
+        stats.h = mix(stats.h, v)
+
+test "sequence properties":
+    let rows = expect_sequence_properties
+    let n = name_count(unicode_sequence_prop_name_table)
+    assert((usize)n * 3 == rows.length)
+    for j: i32 in 0..<n:
+        let name = first_alias(unicode_sequence_prop_name_table, j)
+        var stats = SequenceStats(count = 0, h = fnv_offset)
+        var cr: CharRange
+        cr_init(&cr, none, none)
+        let ret = unicode_sequence_prop(name, sequence_counter, &stats, &cr)
+        let at = (usize)j * 3
+        assert(rows[at] == (u32)ret, name)
+        assert(rows[at + 1] == stats.count, name)
+        assert(rows[at + 2] == stats.h, name)
+        cr_free(&cr)
+    var cr: CharRange
+    cr_init(&cr, none, none)
+    var stats = SequenceStats(count = 0, h = fnv_offset)
+    assert(unicode_sequence_prop("Emoji", sequence_counter, &stats, &cr) == -2)
+    cr_free(&cr)

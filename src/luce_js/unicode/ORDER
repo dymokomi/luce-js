@@ -1,0 +1,15 @@
+module.lucb
+case_table.lucb
+normalization_table.lucb
+category_table.lucb
+script_table.lucb
+property_table.lucb
+case.lucb
+char_range.lucb
+normalize.lucb
+properties.lucb
+binary_properties.lucb
+classify.lucb
+sequences.lucb
+tests_expect_table.lucb
+tests.lucb

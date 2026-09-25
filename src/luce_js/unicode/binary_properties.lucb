@@ -1,0 +1,288 @@
+#==============================================================================================
+#
+#   binary_properties - Character ranges for the binary properties
+#
+#   DESCRIPTION:
+#       Port of QuickJS libunicode.c lines 1459-1594 and 1625-1823: unicode_prop1 (the
+#       run-length property decoder), the range-expression evaluator unicode_prop_ops and
+#       unicode_prop, which builds the derived properties from the tables.
+#
+#==============================================================================================
+
+# mark: Binary properties ======================================================================
+
+func unicode_prop1(cr: CharRange*, prop_idx: i32) -> i32:
+    let table = unicode_prop_table[(usize)prop_idx]
+    var p: const u8* = &table[0]
+    let p_end = p + table.length
+    var c: u32 = 0
+    var bit = false
+    # Compressed range encoding:
+    #    00..3F: 2 packed lengths: 3-bit + 3-bit
+    #    40..5F: 5-bits plus extra byte for length
+    #    60..7F: 5-bits plus 2 extra bytes for length
+    #    80..FF: 7-bit length
+    #    lengths must be incremented to get character count
+    #    Ranges alternate between false and true return value.
+    while p < p_end:
+        var c0 = c
+        let b: u32 = *p
+        p = p + 1
+        if b < 64:
+            c += (b >> 3) + 1
+            if bit:
+                if cr_add_interval(cr, c0, c) != 0:
+                    return -1
+            bit = not bit
+            c0 = c
+            c += (b & 7) + 1
+        elif b >= 0x80:
+            c += b - 0x80 + 1
+        elif b < 0x60:
+            let p0: u32 = p[0]
+            c += (((b - 0x40) << 8) | p0) + 1
+            p = p + 1
+        else:
+            let p0: u32 = p[0]
+            let p1: u32 = p[1]
+            c += (((b - 0x60) << 16) | (p0 << 8) | p1) + 1
+            p = p + 2
+        if bit:
+            if cr_add_interval(cr, c0, c) != 0:
+                return -1
+        bit = not bit
+    return 0
+
+# PropOPEnum: the operations of unicode_prop_ops. Plain constants, because `union` cannot
+# be an enum case and the operations share one list with their `u32` arguments.
+let pop_gc: u32 = 0
+let pop_prop: u32 = 1
+let pop_case: u32 = 2
+let pop_union: u32 = 3
+let pop_inter: u32 = 4
+let pop_xor: u32 = 5
+let pop_invert: u32 = 6
+let pop_end: u32 = 7
+
+let pop_stack_len_max: usize = 4
+
+# Evaluate the postfix range expression `ops` (C: variadic arguments), leaving its value in
+# `cr`: POP_GC, POP_PROP and POP_CASE push a range and take one argument; POP_UNION,
+# POP_INTER and POP_XOR combine the top two; POP_INVERT complements the top; POP_END stops.
+func unicode_prop_ops(cr: CharRange*, ops: const u32[]) -> i32:
+    var stack: CharRange[4]
+    var stack_len: usize = 0
+    var ap: usize = 0
+    while true:
+        let op = ops[ap]
+        ap += 1
+        var failed = false  # the C `goto fail`
+        if op == pop_gc or op == pop_prop or op == pop_case:
+            assert(stack_len < pop_stack_len_max)
+            let a = ops[ap]
+            ap += 1
+            cr_init(&stack[stack_len], cr.mem_opaque, cr.realloc_func)
+            stack_len += 1
+            var ret: i32 = 0
+            if op == pop_gc:
+                ret = unicode_general_category1(&stack[stack_len - 1], a)
+            elif op == pop_prop:
+                ret = unicode_prop1(&stack[stack_len - 1], (i32)a)
+            else:
+                ret = unicode_case1(&stack[stack_len - 1], (i32)a)
+            failed = ret != 0
+        elif op == pop_union or op == pop_inter or op == pop_xor:
+            assert(stack_len >= 2)
+            assert(stack_len < pop_stack_len_max)
+            let cr1 = &stack[stack_len - 2]
+            let cr2 = &stack[stack_len - 1]
+            let cr3 = &stack[stack_len]
+            stack_len += 1
+            cr_init(cr3, cr.mem_opaque, cr.realloc_func)
+            # CR_OP_XOR may be used here
+            if cr_op(cr3, cr_points(cr1), cr_points(cr2),
+                     (i32)(op - pop_union) + cr_op_union) != 0:
+                failed = true
+            else:
+                cr_free(cr1)
+                cr_free(cr2)
+                *cr1 = *cr3
+                stack_len -= 2
+        elif op == pop_invert:
+            assert(stack_len >= 1)
+            failed = cr_invert(&stack[stack_len - 1]) != 0
+        elif op == pop_end:
+            break
+        else:
+            trap("unicode_prop_ops: invalid operation")
+        if failed:
+            for i in 0..<stack_len:
+                cr_free(&stack[i])
+            return -1
+    assert(stack_len == 1)
+    let ret = cr_copy(cr, &stack[0])
+    cr_free(&stack[0])
+    return ret
+
+# The `u32` argument of POP_PROP for the property `prop`.
+func prop_arg(prop: UnicodePropertyEnum) -> u32:
+    return (u32)prop
+
+# 'cr' must be initialized and empty. Return 0 if OK, -1 if error, -2
+# if not found
+## Add to `cr` (initialised and empty) the code points of the binary property `prop_name`
+## (a long or short name); 0, -1 when memory runs out, -2 when the name is unknown.
+pub func unicode_prop(cr: CharRange*, prop_name: str) -> i32:
+    var prop_idx = unicode_find_name(unicode_prop_name_table, prop_name)
+    if prop_idx < 0:
+        return -2
+    prop_idx += (i32)UnicodePropertyEnum.ascii_hex_digit
+
+    var ret: i32 = 0
+    match (UnicodePropertyEnum)prop_idx:
+        .ascii:
+            if cr_add_interval(cr, 0x00, 0x7f + 1) != 0:
+                return -1
+        .any:
+            if cr_add_interval(cr, 0x00000, 0x10ffff + 1) != 0:
+                return -1
+        .assigned:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_cn),
+                pop_invert,
+                pop_end,
+            ])
+        .math:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_sm),
+                pop_prop, prop_arg(.other_math),
+                pop_union,
+                pop_end,
+            ])
+        .lowercase:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_ll),
+                pop_prop, prop_arg(.other_lowercase),
+                pop_union,
+                pop_end,
+            ])
+        .uppercase:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_lu),
+                pop_prop, prop_arg(.other_uppercase),
+                pop_union,
+                pop_end,
+            ])
+        .cased:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_lu) | m(unicode_gc_ll) | m(unicode_gc_lt),
+                pop_prop, prop_arg(.other_uppercase),
+                pop_union,
+                pop_prop, prop_arg(.other_lowercase),
+                pop_union,
+                pop_end,
+            ])
+        .alphabetic:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_lu) | m(unicode_gc_ll) | m(unicode_gc_lt) | m(unicode_gc_lm) |
+                    m(unicode_gc_lo) | m(unicode_gc_nl),
+                pop_prop, prop_arg(.other_uppercase),
+                pop_union,
+                pop_prop, prop_arg(.other_lowercase),
+                pop_union,
+                pop_prop, prop_arg(.other_alphabetic),
+                pop_union,
+                pop_end,
+            ])
+        .grapheme_base:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_cc) | m(unicode_gc_cf) | m(unicode_gc_cs) | m(unicode_gc_co) |
+                    m(unicode_gc_cn) | m(unicode_gc_zl) | m(unicode_gc_zp) | m(unicode_gc_me) |
+                    m(unicode_gc_mn),
+                pop_prop, prop_arg(.other_grapheme_extend),
+                pop_union,
+                pop_invert,
+                pop_end,
+            ])
+        .grapheme_extend:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_me) | m(unicode_gc_mn),
+                pop_prop, prop_arg(.other_grapheme_extend),
+                pop_union,
+                pop_end,
+            ])
+        .xid_start:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_lu) | m(unicode_gc_ll) | m(unicode_gc_lt) | m(unicode_gc_lm) |
+                    m(unicode_gc_lo) | m(unicode_gc_nl),
+                pop_prop, prop_arg(.other_id_start),
+                pop_union,
+                pop_prop, prop_arg(.pattern_syntax),
+                pop_prop, prop_arg(.pattern_white_space),
+                pop_union,
+                pop_prop, prop_arg(.xid_start1),
+                pop_union,
+                pop_invert,
+                pop_inter,
+                pop_end,
+            ])
+        .xid_continue:
+            ret = unicode_prop_ops(cr, [
+                pop_gc, m(unicode_gc_lu) | m(unicode_gc_ll) | m(unicode_gc_lt) | m(unicode_gc_lm) |
+                    m(unicode_gc_lo) | m(unicode_gc_nl) |
+                    m(unicode_gc_mn) | m(unicode_gc_mc) | m(unicode_gc_nd) | m(unicode_gc_pc),
+                pop_prop, prop_arg(.other_id_start),
+                pop_union,
+                pop_prop, prop_arg(.other_id_continue),
+                pop_union,
+                pop_prop, prop_arg(.pattern_syntax),
+                pop_prop, prop_arg(.pattern_white_space),
+                pop_union,
+                pop_prop, prop_arg(.xid_continue1),
+                pop_union,
+                pop_invert,
+                pop_inter,
+                pop_end,
+            ])
+        .changes_when_uppercased:
+            ret = unicode_case1(cr, case_u)
+        .changes_when_lowercased:
+            ret = unicode_case1(cr, case_l)
+        .changes_when_casemapped:
+            ret = unicode_case1(cr, case_u | case_l | case_f)
+        .changes_when_titlecased:
+            ret = unicode_prop_ops(cr, [
+                pop_case, (u32)case_u,
+                pop_prop, prop_arg(.changes_when_titlecased1),
+                pop_xor,
+                pop_end,
+            ])
+        .changes_when_casefolded:
+            ret = unicode_prop_ops(cr, [
+                pop_case, (u32)case_f,
+                pop_prop, prop_arg(.changes_when_casefolded1),
+                pop_xor,
+                pop_end,
+            ])
+        .changes_when_nfkc_casefolded:
+            ret = unicode_prop_ops(cr, [
+                pop_case, (u32)case_f,
+                pop_prop, prop_arg(.changes_when_nfkc_casefolded1),
+                pop_xor,
+                pop_end,
+            ])
+        # (upstream keeps, under `#if 0`, derivations of ID_Start, ID_Continue and
+        # Case_Ignorable from the general categories)
+        # we use the existing tables
+        .id_continue:
+            ret = unicode_prop_ops(cr, [
+                pop_prop, prop_arg(.id_start),
+                pop_prop, prop_arg(.id_continue1),
+                pop_xor,
+                pop_end,
+            ])
+        _:
+            if (usize)prop_idx >= unicode_prop_table.length:
+                return -2
+            ret = unicode_prop1(cr, prop_idx)
+    return ret
