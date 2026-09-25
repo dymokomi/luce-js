@@ -1,0 +1,314 @@
+#==============================================================================================
+#
+#   worker - The os.Worker class: worker threads and posting messages between threads
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 3461-3910 (without the allocator and pipes, which
+#       are in `worker_pipes`): the Worker class, the worker thread (worker_func: a new
+#       runtime and a context made by the embedder's hook, js_std_set_worker_new_context_func,
+#       running the worker's module and then its event loop), the Worker constructor,
+#       postMessage (JS_WriteObject2 with SharedArrayBuffers shared, not copied) and the
+#       onmessage accessor. Inside a worker, `os.Worker.parent` is a Worker object for the
+#       pipes to the parent (see js_os_init).
+#
+#       Threads are luce-base's `thread` module (pthreads). A worker thread is started
+#       detached as in C, with an 8 MiB stack: the engine's stack limit
+#       (js_default_stack_size, 4 MiB) must be reached before the thread's own stack is
+#       exhausted, and macOS gives secondary threads 512 KiB by default.
+#
+#==============================================================================================
+
+# mark: The Worker class ========================================================================
+
+## The data of a Worker object (JSWorkerData).
+struct WorkerData:
+    var recv_pipe: WorkerMessagePipe*?
+    var send_pipe: WorkerMessagePipe*?
+    var msg_handler: WorkerMessageHandler*?
+
+## What a new worker thread starts from (WorkerFuncArgs).
+struct WorkerFuncArgs:
+    ## module filename
+    var filename: u8*?
+    ## module base name
+    var basename: u8*?
+    var recv_pipe: WorkerMessagePipe*?
+    var send_pipe: WorkerMessagePipe*?
+    var strip_flags: i32
+
+## Makes the context of a new worker's runtime, with the embedder's intrinsics and
+## modules; none on failure.
+pub type WorkerNewContextFunc = func(Runtime*) -> Context*?
+
+var js_worker_class_id: u32
+var js_worker_new_context_func: WorkerNewContextFunc?
+
+## The stack of a worker thread.
+let worker_stack_size: usize = 8 * 1024 * 1024
+
+func js_worker_finalizer(rt: Runtime*, val: Value):
+    let opaque = js.js_get_opaque(val, js_worker_class_id) else return
+    let worker = (WorkerData*)opaque
+    js_free_message_pipe(worker.recv_pipe)
+    js_free_message_pipe(worker.send_pipe)
+    js_free_port(rt, worker.msg_handler)
+    js.js_free_rt(rt, worker)
+
+func js_worker_mark(rt: Runtime*, val: Value, mark_func: js.MarkFunc):
+    let opaque = js.js_get_opaque(val, js_worker_class_id) else return
+    let worker = (WorkerData*)opaque
+    if let port = worker.msg_handler:
+        js.js_mark_value(rt, port.on_message_func, mark_func)
+
+let js_worker_class = ClassDef(class_name = "Worker", finalizer = js_worker_finalizer,
+                               gc_mark = js_worker_mark)
+
+# mark: The worker thread =======================================================================
+
+## Print `text` to standard error and exit.
+func worker_fatal(text: str) -> never:
+    discard(fwrite(text.bytes.data, 1, text.length, c.stderr()))
+    c_exit(1)
+
+func worker_func(opaque: void*?):
+    let args = (WorkerFuncArgs*)(opaque else trap("worker_func: no arguments"))
+
+    let rt = js.js_new_runtime() else worker_fatal("JS_NewRuntime failure")
+    js.js_set_strip_info(rt, args.strip_flags)
+    js_std_init_handlers(rt)
+
+    js.js_set_module_loader_func2(rt, none, js_module_loader, js_module_check_attributes, none)
+
+    # set the pipe to communicate with the parent
+    let ts = thread_state(rt)
+    ts.recv_pipe = args.recv_pipe
+    ts.send_pipe = args.send_pipe
+
+    # function pointer to avoid linking the whole JS_NewContext() if not needed. C goes on
+    # (and crashes) without a context; here the process exits.
+    var created: Context*? = none
+    if let new_context = js_worker_new_context_func:
+        created = new_context(rt)
+    let ctx = created else worker_fatal("JS_NewContext failure")
+
+    js.js_set_can_block(rt, true)
+
+    js_std_add_helpers(ctx, none) catch: pass_failure(ctx)
+
+    let filename = args.filename else trap("worker_func: no module name")
+    let basename = args.basename else trap("worker_func: no base name")
+    worker_run_module(ctx, basename, filename) catch: js_std_dump_error(ctx)
+    cutils.c_free(filename)
+    cutils.c_free(basename)
+    cutils.c_free(args)
+
+    js_std_loop(ctx)
+
+    js.js_free_context(ctx)
+    js_std_free_handlers(rt)
+    js.js_free_runtime(rt)
+
+## Load, link and evaluate the module `filename` relative to `basename` and wait for it.
+func worker_run_module(ctx: Context*, basename: const u8*, filename: const u8*) -> !:
+    let promise = try js.js_load_module(ctx, basename, filename)
+    let val = try js_std_await(ctx, promise)
+    js.js_free_value(ctx, val)
+
+# mark: Construction ============================================================================
+
+func js_worker_ctor_internal(ctx: Context*, new_target: Value, recv_pipe: WorkerMessagePipe*,
+                             send_pipe: WorkerMessagePipe*) -> Value!:
+    # create the object
+    var proto = js.js_undefined()
+    if js.js_is_undefined(new_target):
+        proto = js.js_get_class_proto(ctx, js_worker_class_id)
+    else:
+        proto = try js.js_get_property_str(ctx, new_target, "prototype")
+    let obj = js.js_new_object_proto_class(ctx, proto, js_worker_class_id) catch failure:
+        js.js_free_value(ctx, proto)
+        error(failure.code, failure.message)
+    js.js_free_value(ctx, proto)
+    errdefer js.js_free_value(ctx, obj)
+    let s = (WorkerData*)try js.js_mallocz(ctx, sizeof(WorkerData))
+    s.recv_pipe = js_dup_message_pipe(recv_pipe)
+    s.send_pipe = js_dup_message_pipe(send_pipe)
+
+    js.js_set_opaque(obj, s)
+    return obj
+
+## Free the arguments of a worker thread that could not be started.
+func free_worker_func_args(args: WorkerFuncArgs*):
+    cutils.c_free(args.filename)
+    cutils.c_free(args.basename)
+    js_free_message_pipe(args.recv_pipe)
+    js_free_message_pipe(args.send_pipe)
+    cutils.c_free(args)
+
+## new os.Worker(module_name): run the module in a new thread.
+func js_worker_ctor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    let rt = js.js_get_runtime(ctx)
+
+    # XXX: in order to avoid problems with resource liberation, we don't support creating
+    # workers inside workers
+    if not is_main_thread(rt):
+        try js.js_throw_type_error(ctx, "cannot create a worker inside a worker")
+
+    # base name, assuming the calling function is a normal JS function
+    let basename_atom = js.js_get_script_or_module_name(ctx, 1)
+    if basename_atom == 0:
+        try js.js_throw_type_error(ctx, "could not determine calling script or module name")
+    let basename = js.js_atom_to_c_string(ctx, basename_atom) catch failure:
+        js.js_free_atom(ctx, basename_atom)
+        error(failure.code, failure.message)
+    js.js_free_atom(ctx, basename_atom)
+    defer js.js_free_c_string(ctx, basename)
+
+    # module name
+    let filename = try js.js_to_c_string(ctx, argv[0])
+    defer js.js_free_c_string(ctx, filename)
+
+    let block = cutils.malloc(sizeof(WorkerFuncArgs)) else try js.js_throw_out_of_memory(ctx)
+    let args = (WorkerFuncArgs*)block
+    discard(cutils.memset(args, 0, sizeof(WorkerFuncArgs)))
+    errdefer free_worker_func_args(args)
+    args.filename = strdup(filename)
+    args.basename = strdup(basename)
+
+    # ports
+    let recv_pipe = js_new_message_pipe() else try js.js_throw_out_of_memory(ctx)
+    args.recv_pipe = recv_pipe
+    let send_pipe = js_new_message_pipe() else try js.js_throw_out_of_memory(ctx)
+    args.send_pipe = send_pipe
+
+    args.strip_flags = js.js_get_strip_info(rt)
+
+    let obj = try js_worker_ctor_internal(ctx, new_target, send_pipe, recv_pipe)
+    errdefer js.js_free_value(ctx, obj)
+
+    let handle = thread.spawn(worker_func, args, worker_stack_size, "js worker") catch:
+        try js.js_throw_type_error(ctx, "could not create worker")
+    # no join at the end
+    handle.detach()
+    return obj
+
+# mark: Messages ================================================================================
+
+func js_worker_post_message(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let worker = (WorkerData*)try js.js_get_opaque2(ctx, this_val, js_worker_class_id)
+
+    var data_len: usize = 0
+    var sab_tab: js.SabTab = none
+    var sab_tab_len: usize = 0
+    let data = try js.js_write_object2(ctx, &data_len, argv[0], js.write_obj_sab | js.write_obj_reference,
+                                       &sab_tab, &sab_tab_len)
+    defer js.js_free(ctx, data)
+    defer js.js_free(ctx, sab_tab)
+
+    # C answers an exception without throwing when malloc fails; here it is an
+    # out-of-memory error.
+    let block = cutils.malloc(sizeof(WorkerMessage)) else try js.js_throw_out_of_memory(ctx)
+    let msg = (WorkerMessage*)block
+    msg.data = none
+    msg.sab_tab = none
+    errdefer free_unsent_message(msg)
+
+    # must reallocate because the allocator may be different
+    let msg_data = cutils.malloc(data_len) else try js.js_throw_out_of_memory(ctx)
+    msg.data = (u8*)msg_data
+    discard(cutils.memcpy(msg_data, data, data_len))
+    msg.data_len = data_len
+
+    if sab_tab_len > 0:
+        let tab = cutils.malloc(sizeof(u8*?) * sab_tab_len) else try js.js_throw_out_of_memory(ctx)
+        msg.sab_tab = (u8*?*)tab
+        discard(cutils.memcpy(tab, sab_tab, sizeof(u8*?) * sab_tab_len))
+    msg.sab_tab_len = sab_tab_len
+
+    # increment the SAB reference counts
+    if let msg_sab_tab = msg.sab_tab:
+        for i in 0..<msg.sab_tab_len:
+            js_sab_dup(none, msg_sab_tab[i])
+
+    let ps = worker.send_pipe else trap("postMessage: worker without pipe")
+    ps.mutex.lock()
+    # indicate that data is present
+    if cutils.list_empty(&ps.msg_queue):
+        js_waker_signal(&ps.waker)
+    cutils.list_add_tail(&msg.link, &ps.msg_queue)
+    ps.mutex.unlock()
+    return js.js_undefined()
+
+## Free a message that postMessage could not queue.
+func free_unsent_message(msg: WorkerMessage*):
+    cutils.c_free(msg.data)
+    cutils.c_free(msg.sab_tab)
+    cutils.c_free(msg)
+
+func js_worker_set_onmessage(ctx: Context*, this_val: Value, func_: Value) -> Value!:
+    let rt = js.js_get_runtime(ctx)
+    let ts = thread_state(rt)
+    let worker = (WorkerData*)try js.js_get_opaque2(ctx, this_val, js_worker_class_id)
+
+    if js.js_is_null(func_):
+        if let port = worker.msg_handler:
+            js_free_port(rt, port)
+            worker.msg_handler = none
+    else:
+        if not js.js_is_function(ctx, func_):
+            try js.js_throw_type_error(ctx, "not a function")
+        var port_or_none = worker.msg_handler
+        if port_or_none == none:
+            let port = (WorkerMessageHandler*)try js.js_mallocz(ctx, sizeof(WorkerMessageHandler))
+            let recv_pipe = worker.recv_pipe else trap("onmessage: worker without pipe")
+            port.recv_pipe = js_dup_message_pipe(recv_pipe)
+            port.on_message_func = js.js_null()
+            cutils.list_add_tail(&port.link, &ts.port_list)
+            worker.msg_handler = port
+            port_or_none = port
+        let port = port_or_none else return js.js_undefined()
+        js.js_free_value(ctx, port.on_message_func)
+        port.on_message_func = js.js_dup_value(ctx, func_)
+    return js.js_undefined()
+
+func js_worker_get_onmessage(ctx: Context*, this_val: Value) -> Value!:
+    let worker = (WorkerData*)try js.js_get_opaque2(ctx, this_val, js_worker_class_id)
+    if let port = worker.msg_handler:
+        return js.js_dup_value(ctx, port.on_message_func)
+    return js.js_null()
+
+let js_worker_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "postMessage", def_type = js.def_cfunc, length = 1, generic = js_worker_post_message),
+    CFunctionListEntry(name = "onmessage", prop_flags = 1, def_type = js.def_cgetset,
+                       getter = js_worker_get_onmessage, setter = js_worker_set_onmessage),
+]
+
+## Set the function that makes the context of each new worker's runtime; os.Worker
+## needs it (js_std_set_worker_new_context_func).
+pub func js_std_set_worker_new_context_func(func_: WorkerNewContextFunc):
+    js_worker_new_context_func = func_
+
+# mark: Registration ============================================================================
+
+## Register the Worker class in the runtime of `ctx` and answer its constructor, with
+## `Worker.parent` inside a worker (the USE_WORKER part of js_os_init).
+func js_worker_init(ctx: Context*) -> Value!:
+    let rt = js.js_get_runtime(ctx)
+    let ts = thread_state(rt)
+    # Worker class
+    discard(js.js_new_class_id(&js_worker_class_id))
+    discard(js.js_new_class(rt, js_worker_class_id, &js_worker_class))
+    let proto = try js.js_new_object(ctx)
+    try js.js_set_property_function_list(ctx, proto, js_worker_proto_funcs)
+
+    let obj = try js.js_new_c_function2(ctx, js_worker_ctor, "Worker".bytes.data, 1,
+                                        CFunctionEnum.constructor, 0)
+    try js.js_set_constructor(ctx, obj, proto)
+
+    js.js_set_class_proto(ctx, js_worker_class_id, proto)
+
+    # set 'Worker.parent' if necessary
+    if let recv_pipe = ts.recv_pipe:
+        if let send_pipe = ts.send_pipe:
+            let parent = try js_worker_ctor_internal(ctx, js.js_undefined(), recv_pipe, send_pipe)
+            discard(try js.js_define_property_value_str(ctx, obj, "parent", parent, js.prop_c_w_e))
+    return obj

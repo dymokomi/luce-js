@@ -10,6 +10,9 @@ os_module.lucb
 os_poll.lucb
 os_files.lucb
 os_process.lucb
+worker_pipes.lucb
+worker.lucb
 os_tables.lucb
 helpers.lucb
 tests.lucb
+tests_worker.lucb

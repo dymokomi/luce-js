@@ -1,0 +1,192 @@
+#==============================================================================================
+#
+#   worker_pipes - Message pipes between a worker and its parent, and shared array buffers
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 2278-2418 (the POSIX JSWaker, handle_posted_message)
+#       and 3478-3587 (the reference-counted SharedArrayBuffer allocator, the message
+#       pipes, their messages and the message ports). A pipe is a queue of serialized
+#       messages guarded by a mutex (`sync.Mutex` for pthread_mutex_t); its waker is a
+#       POSIX pipe whose read end is readable while the queue is not empty, so that
+#       js_os_poll waits for messages with poll() beside the file descriptors. A pipe is
+#       shared by two threads and freed by the last one to drop it; a SharedArrayBuffer's
+#       storage likewise, whatever runtime it is referenced from.
+#
+#==============================================================================================
+
+# mark: Wakers ==================================================================================
+
+func js_waker_init(w: Waker*) -> i32:
+    var fds: i32[2] = [0, 0]
+    if pipe(&fds[0]) < 0:
+        return -1
+    w.read_fd = fds[0]
+    w.write_fd = fds[1]
+    return 0
+
+func js_waker_signal(w: Waker*):
+    var byte: u8 = 0
+    while true:
+        let ret = write(w.write_fd, &byte, 1)
+        if ret == 1:
+            break
+        # as in C, whose test (errno != EAGAIN || errno != EINTR) is always true: any
+        # failure stops
+        if ret < 0 and (c.errno() != e_again or c.errno() != e_intr):
+            break
+
+func js_waker_clear(w: Waker*):
+    var buf: u8[16] = ---
+    while true:
+        let ret = read(w.read_fd, &buf[0], 16)
+        if ret >= 0:
+            break
+        let err = c.errno()
+        if err != e_again and err != e_intr:
+            break
+
+func js_waker_close(w: Waker*):
+    discard(close(w.read_fd))
+    discard(close(w.write_fd))
+    w.read_fd = -1
+    w.write_fd = -1
+
+# mark: Receiving messages ======================================================================
+
+## The message whose queue link is `el`.
+func worker_message_of(el: ListHead*) -> WorkerMessage*:
+    return (WorkerMessage*)((u8*)el - offsetof(WorkerMessage, link))
+
+## The message port whose list link is `el`.
+func message_handler_of(el: ListHead*) -> WorkerMessageHandler*:
+    return (WorkerMessageHandler*)((u8*)el - offsetof(WorkerMessageHandler, link))
+
+## return 1 if a message was handled, 0 if no message
+func handle_posted_message(rt: Runtime*, ctx: Context*, port: WorkerMessageHandler*) -> i32:
+    let ps = port.recv_pipe else return 0
+    ps.mutex.lock()
+    if cutils.list_empty(&ps.msg_queue):
+        ps.mutex.unlock()
+        return 0
+    let el = ps.msg_queue.next else trap("handle_posted_message: unlinked queue")
+    let msg = worker_message_of(el)
+
+    # remove the message from the queue
+    cutils.list_del(&msg.link)
+
+    if cutils.list_empty(&ps.msg_queue):
+        js_waker_clear(&ps.waker)
+
+    ps.mutex.unlock()
+
+    var failed = false
+    let data = msg.data else trap("handle_posted_message: message without data")
+    let data_obj = js.js_read_object(ctx, data, msg.data_len, js.read_obj_sab | js.read_obj_reference) catch:
+        failed = true
+        recover js.js_undefined()
+
+    js_free_message(msg)
+
+    if failed:
+        js_std_dump_error(ctx)
+    else:
+        call_on_message(ctx, port, data_obj) catch: js_std_dump_error(ctx)
+    return 1
+
+## Call the onmessage handler of `port` with an event `{ data: data_obj }`; takes
+## `data_obj`.
+func call_on_message(ctx: Context*, port: WorkerMessageHandler*, data_obj: Value) -> !:
+    var obj = js.js_new_object(ctx) catch failure:
+        js.js_free_value(ctx, data_obj)
+        error(failure.code, failure.message)
+    defer js.js_free_value(ctx, obj)
+    discard(js.js_define_property_value_str(ctx, obj, "data", data_obj, js.prop_c_w_e) catch: recover false)
+
+    # 'func' might be destroyed when calling itself (if it frees the handler), so must
+    # take extra care
+    let func_ = js.js_dup_value(ctx, port.on_message_func)
+    defer js.js_free_value(ctx, func_)
+    let retval = try js.js_call(ctx, func_, js.js_undefined(), 1, &obj)
+    js.js_free_value(ctx, retval)
+
+# mark: SharedArrayBuffer allocator =============================================================
+
+## The header before the storage of a SharedArrayBuffer (JSSABHeader); the storage
+## (`uint64_t buf[0]`) starts 8-byte aligned after it.
+align(8) struct SABHeader:
+    var ref_count: @i32
+
+## Add `v` to the atomic `*ptr` and answer the new value (atomic_add_int).
+func atomic_add_int(ptr: (@i32)*, v: i32) -> i32:
+    return ptr.add(v) +% v
+
+## The header of the SharedArrayBuffer storage `ptr`.
+func sab_header_of(ptr: void*?) -> SABHeader*:
+    let p = ptr else trap("host: SharedArrayBuffer without storage")
+    return (SABHeader*)((u8*)p - sizeof(SABHeader))
+
+# shared array buffer allocator
+func js_sab_alloc(opaque: void*?, size: usize) -> void*?:
+    let block = cutils.malloc(sizeof(SABHeader) + size) else return none
+    let sab = (SABHeader*)block
+    sab.ref_count = 1
+    return (u8*)block + sizeof(SABHeader)
+
+func js_sab_free(opaque: void*?, ptr: void*?):
+    let sab = sab_header_of(ptr)
+    let ref_count = atomic_add_int(&sab.ref_count, -1)
+    assert(ref_count >= 0)
+    if ref_count == 0:
+        cutils.c_free(sab)
+
+func js_sab_dup(opaque: void*?, ptr: void*?):
+    let sab = sab_header_of(ptr)
+    discard(atomic_add_int(&sab.ref_count, 1))
+
+# mark: Message pipes ===========================================================================
+
+func js_new_message_pipe() -> WorkerMessagePipe*?:
+    let block = cutils.malloc(sizeof(WorkerMessagePipe)) else return none
+    let ps = (WorkerMessagePipe*)block
+    if js_waker_init(&ps.waker) != 0:
+        cutils.c_free(ps)
+        return none
+    ps.ref_count = 1
+    cutils.init_list_head(&ps.msg_queue)
+    ps.mutex = sync.Mutex()
+    return ps
+
+func js_dup_message_pipe(ps: WorkerMessagePipe*) -> WorkerMessagePipe*:
+    discard(atomic_add_int(&ps.ref_count, 1))
+    return ps
+
+func js_free_message(msg: WorkerMessage*):
+    # free the SAB
+    if let sab_tab = msg.sab_tab:
+        for i in 0..<msg.sab_tab_len:
+            js_sab_free(none, sab_tab[i])
+    cutils.c_free(msg.sab_tab)
+    cutils.c_free(msg.data)
+    cutils.c_free(msg)
+
+func js_free_message_pipe(pipe_or_none: WorkerMessagePipe*?):
+    let ps = pipe_or_none else return
+
+    let ref_count = atomic_add_int(&ps.ref_count, -1)
+    assert(ref_count >= 0)
+    if ref_count == 0:
+        var el = ps.msg_queue.next else trap("js_free_message_pipe: unlinked queue")
+        while el != &ps.msg_queue:
+            let el1 = el.next else trap("js_free_message_pipe: unlinked queue")
+            js_free_message(worker_message_of(el))
+            el = el1
+        js_waker_close(&ps.waker)
+        cutils.c_free(ps)
+
+func js_free_port(rt: Runtime*, port_or_none: WorkerMessageHandler*?):
+    let port = port_or_none else return
+    js_free_message_pipe(port.recv_pipe)
+    js.js_free_value_rt(rt, port.on_message_func)
+    if port.link.prev != none:
+        cutils.list_del(&port.link)
+    js.js_free_rt(rt, port)

@@ -6,7 +6,7 @@
 #       Port of quickjs-libc.c lines 2131-2277 (now, setTimeout, clearTimeout, sleepAsync,
 #       call_handler) and 2515-2658 (the POSIX js_os_poll): one call runs one pending
 #       signal handler, one expired timer, or waits in poll() for the nearest timer or a
-#       ready read/write handler and runs it. The worker message ports are not ported.
+#       ready read/write handler or message port and runs it.
 #
 #==============================================================================================
 
@@ -127,8 +127,8 @@ func js_os_poll(ctx: Context*) -> i32:
     let rt = js.js_get_runtime(ctx)
     let ts = thread_state(rt)
 
-    # only check signals in the main thread (without workers, every runtime is)
-    if os_pending_signals != 0:
+    # only check signals in the main thread
+    if ts.recv_pipe == none and os_pending_signals != 0:
         var el = ts.os_signal_handlers.next else return -1
         while el != &ts.os_signal_handlers:
             let sh = signal_handler_of(el)
@@ -139,7 +139,8 @@ func js_os_poll(ctx: Context*) -> i32:
                 return 0
             el = el.next else return -1
 
-    if cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers):
+    if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers)
+            and cutils.list_empty(&ts.port_list)):
         return -1 # no more events
 
     var min_delay: i32 = 0
@@ -179,6 +180,16 @@ func js_os_poll(ctx: Context*) -> i32:
                 return -1
         el = el.next else return -1
 
+    el = ts.port_list.next else return -1
+    while el != &ts.port_list:
+        let port = message_handler_of(el)
+        if not js.js_is_null(port.on_message_func):
+            let ps = port.recv_pipe else return -1
+            port.poll_fd_index = nfds
+            if js_poll_add_poll_fd(ts, &nfds, ps.waker.read_fd, poll_in) != 0:
+                return -1
+        el = el.next else return -1
+
     nfds = c_poll(ts.poll_fds, (usize)nfds, min_delay)
     if nfds > 0:
         let poll_fds = ts.poll_fds else return 0
@@ -194,5 +205,14 @@ func js_os_poll(ctx: Context*) -> i32:
                 call_handler(ctx, rh.rw_func[1])
                 # must stop because the list may have been modified
                 return 0
+            el = el.next else return 0
+
+        el = ts.port_list.next else return 0
+        while el != &ts.port_list:
+            let port = message_handler_of(el)
+            if not js.js_is_null(port.on_message_func):
+                if poll_fds[(usize)port.poll_fd_index].revents != 0:
+                    if handle_posted_message(rt, ctx, port) != 0:
+                        return 0
             el = el.next else return 0
     return 0

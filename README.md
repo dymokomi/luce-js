@@ -25,6 +25,8 @@ let v = try js.js_eval_text(ctx, "[1, 2, 3].map(x => x * 2).join()", "<input>", 
 
 The engine is QuickJS's C API with `JS_` spelled `js_` (`JS_NewObject` is `js_new_object`);
 a JavaScript exception is a Luce failure (`!`) and the thrown value is `js_get_exception(ctx)`.
+An embedder using `host` calls `host.js_std_set_worker_new_context_func` with its
+context constructor, as qjs does, so that `os.Worker` can make each worker thread's context.
 
 | Module | Port of | State |
 | --- | --- | --- |
@@ -33,7 +35,7 @@ a JavaScript exception is a Luce failure (`!`) and the thrown value is `js_get_e
 | `regex` (the luce-regex package) | `libregexp.c` | replaced by luce-regex's ECMAScript dialect |
 | `libunicode` (the luce-regex package) | `libunicode.c` | ported in luce-regex |
 | `luce_js.engine` | `quickjs.c` | ported |
-| `luce_js.host` | `quickjs-libc.c` (POSIX, without workers) | helpers, module loader, event loop (timers, signals, read/write handlers), `std`, `os` |
+| `luce_js.host` | `quickjs-libc.c` (POSIX) | helpers, module loader, event loop (timers, signals, read/write handlers, worker message ports), `std`, `os` with `os.Worker` |
 
 Run the tests of a module with `luce-base test src/luce_js/<module>`; `./test.sh` runs every
 module's tests and then QuickJS's own JavaScript tests (`tests/run.py`).

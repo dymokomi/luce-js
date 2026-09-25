@@ -85,15 +85,16 @@ func js_eval_script(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
     var len: usize = 0
     let text = try js.js_to_c_string_len(ctx, &len, argv[0])
     defer js.js_free_c_string(ctx, text)
-    # without workers, every runtime is the main thread
     let rt = js.js_get_runtime(ctx)
     let ts = thread_state(rt)
-    ts.eval_script_recurse += 1
-    if ts.eval_script_recurse == 1:
-        # install the interrupt handler
-        js.js_set_interrupt_handler(rt, interrupt_handler, none)
-    errdefer eval_script_failed(ctx, ts)
-    defer eval_script_leave(rt, ts)
+    let main_thread = ts.recv_pipe == none
+    if main_thread:
+        ts.eval_script_recurse += 1
+        if ts.eval_script_recurse == 1:
+            # install the interrupt handler
+            js.js_set_interrupt_handler(rt, interrupt_handler, none)
+    errdefer eval_script_failed(ctx, ts, main_thread)
+    defer eval_script_leave(rt, ts, main_thread)
     var flags = js.eval_type_global
     if backtrace_barrier:
         flags |= js.eval_flag_backtrace_barrier
@@ -102,7 +103,9 @@ func js_eval_script(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
     return try js.js_eval(ctx, text, len, "<evalScript>".bytes.data, flags)
 
 ## The end of std.evalScript: remove the interrupt handler when leaving the outermost one.
-func eval_script_leave(rt: Runtime*, ts: ThreadState*):
+func eval_script_leave(rt: Runtime*, ts: ThreadState*, main_thread: bool):
+    if not main_thread:
+        return
     ts.eval_script_recurse -= 1
     if ts.eval_script_recurse == 0:
         # remove the interrupt handler
@@ -110,8 +113,8 @@ func eval_script_leave(rt: Runtime*, ts: ThreadState*):
         os_pending_signals &= ~((u64)1 << (u64)sig_int)
 
 ## The end of a failed std.evalScript, after eval_script_leave.
-func eval_script_failed(ctx: Context*, ts: ThreadState*):
-    if ts.eval_script_recurse == 0:
+func eval_script_failed(ctx: Context*, ts: ThreadState*, main_thread: bool):
+    if main_thread and ts.eval_script_recurse == 0:
         # convert the uncatchable "interrupted" error into a normal error so that it can
         # be caught by the REPL
         js.js_set_uncatchable_exception(ctx, false)
