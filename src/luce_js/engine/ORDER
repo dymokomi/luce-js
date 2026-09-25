@@ -3,6 +3,7 @@ value.lucb
 refcount.lucb
 api_types.lucb
 types_runtime.lucb
+types_bytecode.lucb
 types_object.lucb
 atoms_table.lucb
 opcodes_table.lucb
@@ -61,6 +62,7 @@ closures.lucb
 calls.lucb
 interpreter_support.lucb
 interpreter.lucb
+interp_frames.lucb
 interp_ops_stack.lucb
 interp_ops_variables.lucb
 interp_ops_control.lucb
@@ -77,6 +79,7 @@ tokenizer_json.lucb
 emitter.lucb
 parser_vars_templates.lucb
 parser_property_names.lucb
+parser_class_fields.lucb
 parser_class.lucb
 parser_lvalue.lucb
 parser_destructuring.lucb
@@ -89,6 +92,7 @@ function_def.lucb
 module_parse.lucb
 parser_postfix.lucb
 parser_expr.lucb
+parser_assign.lucb
 parser_statements.lucb
 parser_statement_or_decl.lucb
 closure_vars.lucb

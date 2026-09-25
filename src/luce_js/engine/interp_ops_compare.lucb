@@ -5,8 +5,8 @@
 #   DESCRIPTION:
 #       Port of the opcode bodies of JS_CallInternal, quickjs.c lines 20268-20661: OP_lt to
 #       OP_invalid. Each body is a function taking the interpreter state (InterpState, see
-#       interpreter.lucb); the dispatch loop calls it from its arm. A body that can raise
-#       answers false with the exception pending, which the loop treats as C's `goto
+#       interpreter_support.lucb); the dispatch loop calls it from its arm. A body that can
+#       raise answers false with the exception pending, which the loop treats as C's `goto
 #       exception`; one that cannot raise answers nothing.
 #
 #==============================================================================================

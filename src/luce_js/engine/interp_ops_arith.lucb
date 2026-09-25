@@ -5,9 +5,9 @@
 #   DESCRIPTION:
 #       Port of the opcode bodies of JS_CallInternal, quickjs.c lines 19696-20267: OP_add to
 #       OP_xor, with their int and float fast paths. Each body is a function taking the
-#       interpreter state (InterpState, see interpreter.lucb); the dispatch loop calls it from
-#       its arm. A body that can raise answers false with the exception pending, which the
-#       loop treats as C's `goto exception`; one that cannot raise answers nothing.
+#       interpreter state (InterpState, see interpreter_support.lucb); the dispatch loop calls
+#       it from its arm. A body that can raise answers false with the exception pending, which
+#       the loop treats as C's `goto exception`; one that cannot raise answers nothing.
 #
 #==============================================================================================
 

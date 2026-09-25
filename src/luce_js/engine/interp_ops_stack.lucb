@@ -4,8 +4,8 @@
 #
 #   DESCRIPTION:
 #       Port of the opcode bodies of JS_CallInternal, quickjs.c lines 17879-18460: OP_push_i32
-#       to OP_import (the call opcodes themselves are in interpreter.lucb). Each body is a
-#       function taking the interpreter state (InterpState, see interpreter.lucb); the
+#       to OP_import (the call opcodes themselves are in interp_frames.lucb). Each body is a
+#       function taking the interpreter state (InterpState, see interpreter_support.lucb); the
 #       dispatch loop calls it from its arm. A body that can raise answers false with the
 #       exception pending, which the loop treats as C's `goto exception`; one that cannot
 #       raise answers nothing.
