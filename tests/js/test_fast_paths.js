@@ -51,6 +51,36 @@ function test_put_field() {
     assert(arr[1], undefined);
 }
 
+// get_array_el, get_array_el2, get_array_el3 and put_array_el: fast array elements in
+// place, anything else (holes, out of range, other objects and keys) by the full bodies
+function test_array_elements() {
+    var a = [1, 2, 3];
+    a[0] += 10;
+    a[1]++;
+    assert(a.join(), "11,3,3");
+    assert(a[5], undefined);
+    a[3] = 4;
+    assert(a.length, 4);
+    var objs = [{ f() { return this.v; }, v: 7 }];
+    assert(objs[0].f(), 7);
+    var t = new Int8Array(2);
+    t[0] += 5;
+    t[1]++;
+    assert(t.join(), "5,1");
+    var o = { 0: "x", k: 1 };
+    o[0] += "y";
+    o["k"] += 1;
+    assert(o[0] + o.k, "xy2");
+    var s = "ab";
+    assert(s[1], "b");
+    (function () { arguments[0] += 1; assert(arguments[0], 2); })(1);
+    var h = [1, , 3];
+    Array.prototype[1] = "p";
+    assert(h[1], "p");
+    delete Array.prototype[1];
+    assertThrows(TypeError, () => { var u; u[0] += 1; });
+}
+
 // add, sub, mul and the comparisons on numbers with a float, int overflow, -0 and NaN
 function test_number_ops() {
     var big = 0x7fffffff, one = 1, half = 0.5, nan = NaN, mz = -0;
@@ -166,6 +196,7 @@ function test_regexp_literals() {
 
 test_get_field();
 test_put_field();
+test_array_elements();
 test_number_ops();
 test_push_this();
 test_var_refs();

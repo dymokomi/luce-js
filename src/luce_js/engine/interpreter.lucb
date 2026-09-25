@@ -909,7 +909,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                     h = prs.hash_next
 
                     # Elements of fast arrays at an int index inside them
-                    # (GET_ARRAY_EL_INLINE, OP_put_array_el).
+                    # (GET_ARRAY_EL_INLINE, OP_get_array_el3, OP_put_array_el).
                     .get_array_el:
                         if sp[-2].tag == Tag.object and sp[-1].tag == Tag.int:
                             let p = sp[-2].u.obj
@@ -925,6 +925,20 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                 if *(i32*)((usize)obj_bits -% 4) <= 0:
                                     free_counted(ctx, Tag.object, obj_bits)
                                 sp -= 1
+                                continue dispatch
+                    # get_array_el2 keeps the array and replaces the index, get_array_el3
+                    # keeps both and pushes the element
+                    .get_array_el2, .get_array_el3:
+                        if sp[-2].tag == Tag.object and sp[-1].tag == Tag.int:
+                            let p = sp[-2].u.obj
+                            let idx = (u32)(i32)sp[-1].u.uint64
+                            if p.class_id == ClassId.array and idx < p.u.array.count:
+                                let pv = sp - 1 if op == Op.get_array_el2 else sp
+                                *pv = p.u.array.u.values[(usize)idx]
+                                if (i64)pv.tag < 0:
+                                    *(i32*)((usize)pv.u.uint64 -% 4) +%= 1
+                                if op == Op.get_array_el3:
+                                    sp += 1
                                 continue dispatch
                     .put_array_el:
                         if sp[-3].tag == Tag.object and sp[-2].tag == Tag.int:
