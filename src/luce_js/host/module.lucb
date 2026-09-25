@@ -7,11 +7,11 @@
 #       and QuickJS's own tests: the global helpers (print, console.log, scriptArgs), the
 #       default module loader reading files, the job and timer loop, and the `std` and `os`
 #       modules on POSIX targets (macOS and Linux), with their processes, pipes, signals,
-#       read/write handlers and ttys, os.Worker (worker threads with their own runtime and
-#       their message pipes) and the running of precompiled bytecode. Shared-library (.so)
-#       modules are native modules the embedder registers (native_modules). This fragment
-#       holds the imports and the state (JSThreadState); the C library bindings are in
-#       `libc` and `libc_process`.
+#       read/write handlers and ttys (on Windows, quickjs-libc.c's _WIN32 subset),
+#       os.Worker (worker threads with their own runtime and their message pipes) and the
+#       running of precompiled bytecode. Shared-library (.so) modules are native modules
+#       the embedder registers (native_modules). This fragment holds the imports and the
+#       state (JSThreadState); the C library bindings are in `libc` and `libc_process`.
 #
 #       QuickJS C library
 #
@@ -75,10 +75,12 @@ struct WorkerMessage:
     var sab_tab_len: usize
 
 ## The wake-up of a message pipe (JSWaker): a POSIX pipe whose read end is readable while
-## messages are queued.
+## messages are queued, or on Windows a manual-reset event signaled while they are.
 struct Waker:
     var read_fd: i32
     var write_fd: i32
+    ## the event (a HANDLE), on Windows only
+    var handle: void*?
 
 ## A queue of messages from one thread to another, shared by both and reference counted
 ## (JSWorkerMessagePipe).
@@ -123,7 +125,8 @@ struct ThreadState:
     # not used in the main thread
     var recv_pipe: WorkerMessagePipe*?
     var send_pipe: WorkerMessagePipe*?
-    ## the descriptors js_os_poll waits for, poll_fds_size of them allocated
+    ## the descriptors js_os_poll waits for, poll_fds_size of them allocated (not used on
+    ## Windows)
     var poll_fds: PollFd*?
     var poll_fds_size: i32
 

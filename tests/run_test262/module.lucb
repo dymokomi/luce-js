@@ -82,14 +82,25 @@ extern func c_exit as "exit"(status: i32) -> never
 extern func setenv(name: const u8*, value: const u8*, overwrite: i32) -> i32
 extern func isatty(fd: i32) -> i32
 extern func sysconf(name: i32) -> i64
-extern func clock() -> u64
+extern func c_clock as "clock"() -> u64
+# Windows' clock_t is a 32-bit `long`
+extern func win_clock as "clock"() -> i32
+extern func GetProcessAffinityMask(process: void*?, process_mask: usize*, system_mask: usize*) -> i32
+extern func GetCurrentProcess() -> void*?
 extern func usleep(usec: u32) -> i32
 
 ## _SC_NPROCESSORS_ONLN (macOS 58, Linux 84).
 let sc_nprocessors_onln: i32 = (i32)platform.macos * 58 + (i32)platform.linux * 84
 
-## CLOCKS_PER_SEC (POSIX requires one million).
-let clocks_per_sec: u64 = 1000000
+## CLOCKS_PER_SEC (POSIX requires one million; Windows counts milliseconds).
+let clocks_per_sec: u64 = 1000 if platform.windows else 1000000
+
+## clock()
+func clock() -> u64:
+    if platform.windows:
+        return (u64)(i64)win_clock()
+    else:
+        return c_clock()
 
 let stderr_fileno: i32 = 2
 

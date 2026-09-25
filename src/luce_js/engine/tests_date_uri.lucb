@@ -39,6 +39,21 @@ func format_utc(buf: u8[], t: i64, tz: i32, date_fmt: i32, part: i32) -> str:
 
 # mark: Calendar ================================================================================
 
+test "Windows' time zone mapping keeps 1971..2999 and moves other years to an equivalent one":
+    # 2000-07-01 stays; 1600-07-01, 5000-07-01, 1969-12-31 and 3001-01-01
+    # move whole years to one in 2008..2035 of the same leap-ness and weekday
+    assert(windows_supported_time(962409600) == 962409600)
+    for ti in [(i64)-11660371200, 95633222400, -86400, 32535216000]:
+        let t = windows_supported_time(ti)
+        assert(t != ti and (t - ti) % 86400 == 0)
+        var days = floor_div(ti, 86400)
+        let year = year_from_days(&days)
+        var days2 = floor_div(t, 86400)
+        let year2 = year_from_days(&days2)
+        assert(year2 >= 2008 and year2 <= 2035 and days2 == days)
+        assert(days_in_year(year2) == days_in_year(year))
+        assert(math_mod(days_from_year(year2) - days_from_year(year), 7) == 0)
+
 test "math_mod and floor_div round toward negative infinity":
     assert(math_mod(7, 3) == 1)
     assert(math_mod(-7, 3) == 2)

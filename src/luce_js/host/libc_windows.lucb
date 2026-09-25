@@ -1,0 +1,146 @@
+#==============================================================================================
+#
+#   libc_windows - The Windows calls of quickjs-libc.c's `#if defined(_WIN32)` branches
+#
+#   DESCRIPTION:
+#       What the host reaches on Windows (x86-64, the MinGW-w64 C runtime and kernel32)
+#       where quickjs-libc.c takes its _WIN32 branches: _stat64, _utime64, _mkdir, _rmdir,
+#       _unlink, _fullpath and _putenv for the file system and the environment; the
+#       console calls of ttyGetWinSize and ttySetRaw; the event objects of the worker
+#       waker; WaitForMultipleObjects and Sleep for js_os_poll. The last section holds the
+#       calls whose C prototype differs between the targets (the Windows read, write and
+#       seek take and answer 32-bit `int` and `long`), chosen with the platform constants.
+#
+#       A function written for one kind of target (Windows, or POSIX) keeps its body under
+#       `if platform.windows:` (or its `else`) rather than relying on its callers' pruned
+#       branches: `luce-base test` compiles every function of the module, and each C
+#       library lacks the other's calls.
+#
+#==============================================================================================
+
+# mark: C runtime ===============================================================================
+
+extern func win_stat64 as "_stat64"(path: const u8*, buf: void*) -> i32
+extern func win_utime64 as "_utime64"(path: const u8*, times: const Utimbuf64*) -> i32
+extern func win_mkdir as "_mkdir"(path: const u8*) -> i32
+extern func win_rmdir as "_rmdir"(path: const u8*) -> i32
+extern func win_unlink as "_unlink"(path: const u8*) -> i32
+extern func win_fullpath as "_fullpath"(buf: u8*, path: const u8*, size: usize) -> u8*?
+extern func win_putenv as "_putenv"(text: const u8*) -> i32
+extern func win_environ as "__p__environ"() -> CStringEntry**
+extern func win_get_osfhandle as "_get_osfhandle"(fd: i32) -> isize
+extern func win_setmode as "_setmode"(fd: i32, mode: i32) -> i32
+extern func win_read as "_read"(fd: i32, buf: void*, count: u32) -> i32
+extern func win_write as "_write"(fd: i32, buf: const void*, count: u32) -> i32
+extern func win_lseeki64 as "_lseeki64"(fd: i32, offset: i64, whence: i32) -> i64
+extern func win_fseeki64 as "_fseeki64"(f: void*, offset: i64, whence: i32) -> i32
+extern func win_ftelli64 as "_ftelli64"(f: void*) -> i64
+# QuickJS builds with __USE_MINGW_ANSI_STDIO "for standard snprintf behavior", which makes
+# snprintf MinGW's own
+extern func win_snprintf as "__mingw_snprintf"(buf: u8*?, size: usize, cformat: const u8*, ...) -> i32
+
+## struct __utimbuf64
+extern struct Utimbuf64:
+    actime: i64
+    modtime: i64
+
+let o_binary: i32 = 0x8000
+let o_text: i32 = 0x4000
+
+## The size of a `struct _stat64`.
+let win_stat_size: usize = 56
+
+# mark: kernel32 ================================================================================
+
+extern func CreateEventA(attributes: void*?, manual_reset: i32, initial_state: i32, name: const u8*?) -> void*?
+extern func SetEvent(handle: void*?) -> i32
+extern func ResetEvent(handle: void*?) -> i32
+extern func CloseHandle(handle: void*?) -> i32
+extern func WaitForMultipleObjects(count: u32, handles: void*?*, wait_all: i32, milliseconds: u32) -> u32
+extern func Sleep(milliseconds: u32)
+extern func GetConsoleScreenBufferInfo(console: void*?, info: void*) -> i32
+extern func SetConsoleMode(console: void*?, mode: u32) -> i32
+
+## MAXIMUM_WAIT_OBJECTS
+let maximum_wait_objects: usize = 64
+
+## INVALID_HANDLE_VALUE
+func invalid_handle_value() -> void*?:
+    return (void*?)(usize)0xffffffffffffffff
+
+## The size of a CONSOLE_SCREEN_BUFFER_INFO; dwSize (two 16-bit coordinates) comes first.
+let console_screen_buffer_info_size: usize = 22
+
+let enable_processed_output: u32 = 0x1
+let enable_wrap_at_eol_output: u32 = 0x2
+let enable_window_input: u32 = 0x8
+# Windows 10 built-in VT100 emulation
+let enable_virtual_terminal_processing: u32 = 0x4
+let enable_virtual_terminal_input: u32 = 0x200
+
+# mark: The environment =========================================================================
+
+## setenv() on Windows, through _putenv ("NAME=value").
+func win_setenv(name: const u8*, value: const u8*):
+    if platform.windows:
+        let name_len = cutils.strlen(name)
+        let value_len = cutils.strlen(value)
+        let block = cutils.malloc(name_len + 1 + value_len + 1) else return
+        let text = (u8*)block
+        discard(cutils.memcpy(text, name, name_len))
+        text[name_len] = '='
+        discard(cutils.memcpy(text + (name_len + 1), value, value_len))
+        text[name_len + 1 + value_len] = 0
+        discard(win_putenv(text))
+        cutils.c_free(block)
+
+## setenv(name, value, 1) on every target.
+func set_env(name: const u8*, value: const u8*):
+    if platform.windows:
+        win_setenv(name, value)
+    else:
+        discard(setenv(name, value, 1))
+
+## unsetenv() on every target; Windows sets the variable to "", which removes it.
+func unset_env(name: const u8*):
+    if platform.windows:
+        win_setenv(name, "".bytes.data)
+    else:
+        discard(unsetenv(name))
+
+# mark: Per-target calls ========================================================================
+
+## read() on a file descriptor.
+func fd_read(fd: i32, buf: void*, count: usize) -> i64:
+    if platform.windows:
+        return (i64)win_read(fd, buf, (u32)count)
+    else:
+        return (i64)read(fd, buf, count)
+
+## write() on a file descriptor.
+func fd_write(fd: i32, buf: const void*, count: usize) -> i64:
+    if platform.windows:
+        return (i64)win_write(fd, buf, (u32)count)
+    else:
+        return (i64)write(fd, buf, count)
+
+## lseek() with a 64-bit offset.
+func fd_seek(fd: i32, offset: i64, whence: i32) -> i64:
+    if platform.windows:
+        return win_lseeki64(fd, offset, whence)
+    else:
+        return lseek(fd, offset, whence)
+
+## fseeko() with a 64-bit offset.
+func file_seek(f: void*, offset: i64, whence: i32) -> i32:
+    if platform.windows:
+        return win_fseeki64(f, offset, whence)
+    else:
+        return fseeko(f, offset, whence)
+
+## ftello() with a 64-bit result.
+func file_tell(f: void*) -> i64:
+    if platform.windows:
+        return win_ftelli64(f)
+    else:
+        return ftello(f)

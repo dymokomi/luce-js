@@ -8,8 +8,9 @@
 #       binding stdio directly keeps their semantics (buffering, ungetc, popen) exactly.
 #       Time comes from the standard `time` module and sleeping from `thread`. Where a
 #       constant or a layout differs between the supported targets (macOS on arm64, Linux
-#       on x86-64 and arm64) it is chosen with the `platform` constants; Windows is not
-#       supported.
+#       on x86-64 and arm64, Windows on x86-64 with the MinGW-w64 C runtime) it is chosen
+#       with the `platform` constants, following quickjs-libc.c's `#if defined(_WIN32)`
+#       branches; the Windows-only calls are in `libc_windows`.
 #
 #==============================================================================================
 
@@ -92,14 +93,15 @@ let stat_buf_size: usize = 256
 # booleans so that it stays a constant expression.
 let is_mac: i32 = (i32)platform.macos
 let is_linux: i32 = (i32)platform.linux
+let is_win: i32 = (i32)platform.windows
 
 let o_rdonly: i32 = 0
 let o_wronly: i32 = 1
 let o_rdwr: i32 = 2
-let o_append: i32 = is_mac * 0x8 + is_linux * 0x400
-let o_creat: i32 = is_mac * 0x200 + is_linux * 0x40
-let o_excl: i32 = is_mac * 0x800 + is_linux * 0x80
-let o_trunc: i32 = is_mac * 0x400 + is_linux * 0x200
+let o_append: i32 = is_mac * 0x8 + is_linux * 0x400 + is_win * 0x8
+let o_creat: i32 = is_mac * 0x200 + is_linux * 0x40 + is_win * 0x100
+let o_excl: i32 = is_mac * 0x800 + is_linux * 0x80 + is_win * 0x400
+let o_trunc: i32 = is_mac * 0x400 + is_linux * 0x200 + is_win * 0x200
 
 let seek_set: i32 = 0
 let seek_cur: i32 = 1
@@ -107,7 +109,7 @@ let seek_end: i32 = 2
 
 let e_perm: i32 = 1
 let e_intr: i32 = 4
-let e_again: i32 = is_mac * 35 + is_linux * 11
+let e_again: i32 = is_mac * 35 + is_linux * 11 + is_win * 11
 let e_noent: i32 = 2
 let e_io: i32 = 5
 let e_badf: i32 = 9
@@ -117,14 +119,15 @@ let e_exist: i32 = 17
 let e_inval: i32 = 22
 let e_nospc: i32 = 28
 let e_pipe: i32 = 32
-let e_nosys: i32 = is_mac * 78 + is_linux * 38
+let e_nosys: i32 = is_mac * 78 + is_linux * 38 + is_win * 40
 let e_isdir: i32 = 21
 
 let s_ifmt: i32 = 0o170000
 let s_ififo: i32 = 0o010000
 let s_ifchr: i32 = 0o020000
 let s_ifdir: i32 = 0o040000
-let s_ifblk: i32 = 0o060000
+# MinGW-w64's _S_IFBLK
+let s_ifblk: i32 = 0x3000 if platform.windows else 0o060000
 let s_ifreg: i32 = 0o100000
 let s_ifsock: i32 = 0o140000
 let s_iflnk: i32 = 0o120000
@@ -161,9 +164,32 @@ func read_u16(buf: const u8*, offset: usize) -> i64:
 func read_timespec_ms(buf: const u8*, offset: usize) -> i64:
     return read_i64(buf, offset) * 1000 + read_i64(buf, offset + 8) // 1000000
 
-## Decode the `struct stat` that stat() or lstat() wrote into `buf`.
+## stat() `path` into `buf`, or lstat() it when `is_lstat`. Windows has no lstat; its stat
+## is _stat64, MinGW-w64's `struct stat` with a 64-bit size and times.
+func stat_path(path: const u8*, buf: u8*, is_lstat: i32) -> i32:
+    if platform.windows:
+        return win_stat64(path, buf)
+    elif is_lstat != 0:
+        return lstat(path, buf)
+    else:
+        return stat(path, buf)
+
+## A 16-bit signed field (`short`) at `offset`.
+func read_i16(buf: const u8*, offset: usize) -> i64:
+    return (i64)cutils.get_i16(buf + offset)
+
+## Decode the `struct stat` that stat_path() wrote into `buf`.
 func stat_info(buf: const u8*) -> StatInfo:
-    if platform.macos:
+    if platform.windows:
+        # struct _stat64: dev u32, ino u16, mode u16, nlink, uid, gid i16, pad, rdev u32, pad,
+        # size i64, then the times in seconds; there is no st_blocks
+        return StatInfo(dev = read_u32(buf, 0), ino = read_u16(buf, 4),
+                        mode = (i32)read_u16(buf, 6), nlink = read_i16(buf, 8),
+                        uid = read_i16(buf, 10), gid = read_i16(buf, 12),
+                        rdev = read_u32(buf, 16), size = read_i64(buf, 24), blocks = 0,
+                        atime = read_i64(buf, 32) * 1000, mtime = read_i64(buf, 40) * 1000,
+                        ctime = read_i64(buf, 48) * 1000)
+    elif platform.macos:
         # dev i32, mode u16, nlink u16, ino u64, uid, gid, rdev i32, timespecs, size, blocks
         return StatInfo(dev = (i64)cutils.get_i32(buf), ino = read_i64(buf, 8),
                         mode = (i32)read_u16(buf, 4), nlink = read_u16(buf, 6),
@@ -191,7 +217,9 @@ func stat_info(buf: const u8*) -> StatInfo:
 
 ## The NUL-terminated `d_name` of the `struct dirent` readdir() answered.
 func dirent_name(d: void*) -> const u8*:
-    if platform.macos:
+    if platform.windows:
+        return (const u8*)d + 8     # MinGW-w64: d_ino (long), d_reclen, d_namlen
+    elif platform.macos:
         return (const u8*)d + 21    # d_ino, d_seekoff, d_reclen, d_namlen, d_type
     else:
         return (const u8*)d + 19    # d_ino, d_off, d_reclen, d_type

@@ -20,7 +20,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LJS = os.path.join(ROOT, "build", "ljs")
+WINDOWS = sys.platform == "win32"
+LJS = os.path.join(ROOT, "build", "ljs.exe" if WINDOWS else "ljs")
 
 # (file, extra ljs options), in the order of upstream's Makefile.
 TESTS = [
@@ -31,6 +32,7 @@ TESTS = [
     ("test_bigint.js", []),
     ("test_cyclic_import.js", []),
     ("test_worker.js", []),
+    # not on Windows, as in upstream's Makefile: its `os` module has no exec, pipe or kill
     ("test_std.js", []),
     ("test_rw_handler.js", []),
     # the native modules qjs loads as shared libraries are linked into ljs
@@ -46,6 +48,9 @@ TESTS = [
     ("examples/test_fib.js", []),
     ("examples/pi_bigint.js", []),
 ]
+
+# The files upstream's Makefile does not run on Windows (CONFIG_WIN32).
+POSIX_ONLY = {"test_std.js", "test_rw_handler.js"}
 
 # file -> the script arguments after the file name.
 SCRIPT_ARGS = {
@@ -87,7 +92,8 @@ def first_error_line(output):
 
 def run_test(name, options, timeout):
     # a name with a directory is relative to the repository root (the examples)
-    path = name if "/" in name else os.path.join("tests", "js", name)
+    # with '/' separators, which module names are resolved with, on Windows too
+    path = name if "/" in name else "tests/js/" + name
     command = [LJS] + options + [path] + SCRIPT_ARGS.get(name, [])
     started = time.time()
     try:
@@ -119,6 +125,8 @@ def main():
 
     selected = [t for t in TESTS if not args.tests or t[0] in args.tests
                 or t[0].removesuffix(".js") in args.tests]
+    if WINDOWS:
+        selected = [t for t in selected if t[0] not in POSIX_ONLY]
     counts = {"PASS": 0, "FAIL": 0, "XFAIL": 0, "XPASS": 0}
     for name, options in selected:
         passed, reason, seconds = run_test(name, options, args.timeout)

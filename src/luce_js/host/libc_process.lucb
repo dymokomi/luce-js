@@ -7,7 +7,8 @@
 #       its signal and read/write handlers, js_os_poll and its tty functions reach in the C
 #       library, beside the files and stdio of `libc`. Constants and layouts that differ
 #       between macOS and Linux (glibc, x86-64 and arm64) are chosen with the platform
-#       constants, as in `libc`.
+#       constants, as in `libc`. Windows has none of these calls but signal(); quickjs-libc.c
+#       leaves the functions that need them out of its Windows `os` module.
 #
 #==============================================================================================
 
@@ -37,7 +38,9 @@ extern func _NSGetEnviron() -> CStringEntry**
 
 ## The process environment, `environ`.
 func environment() -> CStringEntry*:
-    if platform.macos:
+    if platform.windows:
+        return *win_environ()
+    elif platform.macos:
         return *_NSGetEnviron()
     else:
         return environ
@@ -74,7 +77,7 @@ func sig_ign() -> void*?:
 let sig_int: i32 = 2
 let sig_quit: i32 = 3
 let sig_ill: i32 = 4
-let sig_abrt: i32 = 6
+let sig_abrt: i32 = 22 if platform.windows else 6
 let sig_fpe: i32 = 8
 let sig_segv: i32 = 11
 let sig_pipe: i32 = 13

@@ -4,12 +4,17 @@
 #
 #   DESCRIPTION:
 #       Port of quickjs-libc.c lines 3915-4060; the Worker class is registered by
-#       js_worker_init (`worker`). The platform string, whose value depends on the target, is exported beside the table
-#       rather than in it, since a table entry is a constant.
+#       js_worker_init (`worker`). The platform string, whose value depends on the target,
+#       is exported beside the table rather than in it, since a table entry is a constant;
+#       the table's `#if` parts are pieces added on their targets.
 #
 #==============================================================================================
 
-let js_os_funcs: CFunctionListEntry[70] = [
+# The C table (js_os_funcs) with its #if defined(_WIN32) parts, in pieces: a piece is added
+# to the module on the targets it is for, in the C table's order (js_os_export_lists).
+
+## open and its flags.
+let js_os_funcs_open: CFunctionListEntry[8] = [
     CFunctionListEntry(name = "open", def_type = js.def_cfunc, length = 2, generic = js_os_open),
     CFunctionListEntry(name = "O_RDONLY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_rdonly),
     CFunctionListEntry(name = "O_WRONLY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_wronly),
@@ -18,6 +23,16 @@ let js_os_funcs: CFunctionListEntry[70] = [
     CFunctionListEntry(name = "O_CREAT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_creat),
     CFunctionListEntry(name = "O_EXCL", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_excl),
     CFunctionListEntry(name = "O_TRUNC", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_trunc),
+]
+
+## The Windows open flags.
+let js_os_funcs_windows_open: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "O_BINARY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_binary),
+    CFunctionListEntry(name = "O_TEXT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_text),
+]
+
+## Descriptors, ttys, handlers and the signals of every target.
+let js_os_funcs_io: CFunctionListEntry[18] = [
     CFunctionListEntry(name = "close", def_type = js.def_cfunc, length = 1, generic = js_os_close),
     CFunctionListEntry(name = "seek", def_type = js.def_cfunc, length = 3, generic = js_os_seek),
     CFunctionListEntry(name = "read", def_type = js.def_cfunc, length = 4, cproto = CFunctionEnum.generic_magic,
@@ -40,6 +55,10 @@ let js_os_funcs: CFunctionListEntry[70] = [
     CFunctionListEntry(name = "SIGILL", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_ill),
     CFunctionListEntry(name = "SIGSEGV", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_segv),
     CFunctionListEntry(name = "SIGTERM", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_term),
+]
+
+## The signals Windows does not have.
+let js_os_funcs_posix_signals: CFunctionListEntry[11] = [
     CFunctionListEntry(name = "SIGQUIT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_quit),
     CFunctionListEntry(name = "SIGPIPE", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_pipe),
     CFunctionListEntry(name = "SIGALRM", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_alrm),
@@ -51,6 +70,10 @@ let js_os_funcs: CFunctionListEntry[70] = [
     CFunctionListEntry(name = "SIGTSTP", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_tstp),
     CFunctionListEntry(name = "SIGTTIN", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_ttin),
     CFunctionListEntry(name = "SIGTTOU", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = sig_ttou),
+]
+
+## Time, timers and directories, and the st_mode constants of every target.
+let js_os_funcs_time_files: CFunctionListEntry[14] = [
     CFunctionListEntry(name = "now", def_type = js.def_cfunc, length = 0, generic = js_os_now),
     CFunctionListEntry(name = "setTimeout", def_type = js.def_cfunc, length = 2, generic = js_os_set_timeout),
     CFunctionListEntry(name = "clearTimeout", def_type = js.def_cfunc, length = 1, generic = js_os_clear_timeout),
@@ -66,15 +89,27 @@ let js_os_funcs: CFunctionListEntry[70] = [
     CFunctionListEntry(name = "S_IFDIR", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifdir),
     CFunctionListEntry(name = "S_IFBLK", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifblk),
     CFunctionListEntry(name = "S_IFREG", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifreg),
+]
+
+## The st_mode constants Windows does not have.
+let js_os_funcs_posix_modes: CFunctionListEntry[4] = [
     CFunctionListEntry(name = "S_IFSOCK", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifsock),
     CFunctionListEntry(name = "S_IFLNK", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_iflnk),
     CFunctionListEntry(name = "S_ISGID", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_isgid),
     CFunctionListEntry(name = "S_ISUID", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_isuid),
+]
+
+## stat, utimes, sleep and realpath.
+let js_os_funcs_stat: CFunctionListEntry[4] = [
     CFunctionListEntry(name = "stat", def_type = js.def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
                        generic_magic = js_os_stat, magic = 0),
     CFunctionListEntry(name = "utimes", def_type = js.def_cfunc, length = 3, generic = js_os_utimes),
     CFunctionListEntry(name = "sleep", def_type = js.def_cfunc, length = 1, generic = js_os_sleep),
     CFunctionListEntry(name = "realpath", def_type = js.def_cfunc, length = 1, generic = js_os_realpath),
+]
+
+## What Windows does not have: lstat, symlinks and processes.
+let js_os_funcs_posix: CFunctionListEntry[11] = [
     CFunctionListEntry(name = "lstat", def_type = js.def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
                        generic_magic = js_os_stat, magic = 1),
     CFunctionListEntry(name = "symlink", def_type = js.def_cfunc, length = 2, generic = js_os_symlink),
@@ -89,6 +124,25 @@ let js_os_funcs: CFunctionListEntry[70] = [
     CFunctionListEntry(name = "dup2", def_type = js.def_cfunc, length = 2, generic = js_os_dup2),
 ]
 
+## A function that adds a piece of the table to a module: js_add_module_export_list or
+## js_set_module_export_list.
+type ExportListFunc = func(Context*, ModuleDef*, const CFunctionListEntry[]) -> unit!
+
+## Hand `export_list` the pieces of js_os_funcs this target has, in order.
+func js_os_export_lists(ctx: Context*, m: ModuleDef*, export_list: ExportListFunc) -> !:
+    try export_list(ctx, m, js_os_funcs_open)
+    if platform.windows:
+        try export_list(ctx, m, js_os_funcs_windows_open)
+    try export_list(ctx, m, js_os_funcs_io)
+    if not platform.windows:
+        try export_list(ctx, m, js_os_funcs_posix_signals)
+    try export_list(ctx, m, js_os_funcs_time_files)
+    if not platform.windows:
+        try export_list(ctx, m, js_os_funcs_posix_modes)
+    try export_list(ctx, m, js_os_funcs_stat)
+    if not platform.windows:
+        try export_list(ctx, m, js_os_funcs_posix)
+
 ## OS_PLATFORM.
 func os_platform() -> str:
     if platform.windows:
@@ -99,11 +153,14 @@ func os_platform() -> str:
         return "linux"
 
 func js_os_init(ctx: Context*, m: ModuleDef*) -> !:
-    os_poll_func = js_os_poll
+    if platform.windows:
+        os_poll_func = js_os_poll_windows
+    else:
+        os_poll_func = js_os_poll
 
     discard(try js.js_set_module_export(ctx, m, "Worker".bytes.data, try js_worker_init(ctx)))
 
-    try js.js_set_module_export_list(ctx, m, js_os_funcs)
+    try js_os_export_lists(ctx, m, js.js_set_module_export_list)
     let name = os_platform()
     discard(try js.js_set_module_export(ctx, m, "platform".bytes.data,
                                         try js.js_new_string_len(ctx, name.bytes.data, name.length)))
@@ -111,7 +168,7 @@ func js_os_init(ctx: Context*, m: ModuleDef*) -> !:
 ## Register the `os` module under `module_name` (js_init_module_os).
 pub func js_init_module_os(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
     let m = try js.js_new_c_module(ctx, module_name, js_os_init)
-    try js.js_add_module_export_list(ctx, m, js_os_funcs)
+    try js_os_export_lists(ctx, m, js.js_add_module_export_list)
     try js.js_add_module_export(ctx, m, "platform".bytes.data)
     try js.js_add_module_export(ctx, m, "Worker".bytes.data)
     return m

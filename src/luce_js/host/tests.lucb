@@ -5,7 +5,8 @@
 #   DESCRIPTION:
 #       Checks the pieces a JavaScript test cannot isolate: C formats in std.sprintf, the
 #       target layouts of struct stat and struct dirent, file loading, the timer loop, the
-#       wait status decoding, os.exec's options, the signal and read handlers, and the
+#       wait status decoding, os.exec's options, the signal and read handlers, the `os`
+#       table and file system calls of each target (Windows included), and the
 #       registered native modules.
 #       The upstream JavaScript tests (tests/run.py) cover the rest.
 #
@@ -126,6 +127,8 @@ test "wait statuses decode as the POSIX macros do":
     assert(not w_if_exited(0x137f) and not w_if_signaled(0x137f))
 
 test "exec passes argv, env, cwd, file and stdout, and waitpid reports the status":
+    if platform.windows:
+        return    # Windows has no os.exec, os.pipe, os.waitpid or os.kill
     let ctx = test_context()
     var buf: u8[256]
     let text = eval_to_text(ctx, """
@@ -150,6 +153,8 @@ test "exec passes argv, env, cwd, file and stdout, and waitpid reports the statu
     free_test_context(ctx)
 
 test "signal and read handlers run from the loop":
+    if platform.windows:
+        return    # Windows has no os.pipe, os.kill or SIGUSR2
     let ctx = test_context()
     var buf: u8[256]
     discard(eval_to_text(ctx, """
@@ -175,6 +180,49 @@ test "signal and read handlers run from the loop":
     js_std_loop(ctx)
     let text = eval_to_text(ctx, "globalThis.result = globalThis.log.join();", buf)
     assert(text == "usr2,read 2")
+    free_test_context(ctx)
+
+test "the os table has this target's functions and constants":
+    let ctx = test_context()
+    var buf: u8[256]
+    let text = eval_to_text(ctx, """
+        import * as os from "os";
+        globalThis.result = [os.platform, typeof os.exec, typeof os.lstat, typeof os.SIGUSR1,
+                             os.O_BINARY, os.O_CREAT, os.SIGABRT, os.S_IFBLK,
+                             "blocks" in os.stat(".")[0]].join();
+        """, buf)
+    if platform.windows:
+        assert(text == "win32,undefined,undefined,undefined,32768,256,22,12288,false")
+    elif platform.macos:
+        assert(text == "darwin,function,function,number,,512,6,24576,true")
+    else:
+        assert(text == "linux,function,function,number,,64,6,24576,true")
+    free_test_context(ctx)
+
+test "mkdir, open, utimes, stat, realpath, readdir and remove work together":
+    let ctx = test_context()
+    var buf: u8[256]
+    let text = eval_to_text(ctx, """
+        import * as os from "os";
+        let r = [];
+        let dir = "build/host_test_dir";
+        os.mkdir("build");
+        os.remove(dir + "/f");
+        os.remove(dir);
+        r.push(os.mkdir(dir));
+        let fd = os.open(dir + "/f", os.O_WRONLY | os.O_CREAT | os.O_TRUNC);
+        let data = new Uint8Array([1, 10, 13, 10]);
+        r.push(os.write(fd, data.buffer, 0, 4), os.seek(fd, 0, 1), os.close(fd));
+        r.push(os.utimes(dir + "/f", 86400000, 172800000));
+        let [st, err] = os.stat(dir + "/f");
+        r.push(err, st.size, st.mtime, (st.mode & os.S_IFMT) == os.S_IFREG);
+        let [path, err2] = os.realpath(dir);
+        r.push(err2, path.endsWith("host_test_dir"), path.length > dir.length);
+        r.push(os.readdir(dir)[0].filter((n) => n[0] != ".").join());
+        r.push(os.remove(dir + "/f"), os.remove(dir), os.stat(dir)[1] != 0);
+        globalThis.result = r.join();
+        """, buf)
+    assert(text == "0,4,4,0,0,0,4,172800000,true,0,true,true,f,0,0,true")
     free_test_context(ctx)
 
 # mark: Native modules ==========================================================================
