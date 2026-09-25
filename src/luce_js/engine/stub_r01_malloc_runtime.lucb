@@ -51,7 +51,7 @@ func js_malloc_iter(s: MallocContext*, iter_func: MallocIterFunc, iter_opaque: v
 func js_trigger_gc(rt: Runtime*, size: usize):
     trap("unported: js_trigger_gc")
 ## Ported from quickjs.c:1800 js_malloc_rt.
-func js_malloc_rt(rt: Runtime*, size: usize) -> void*:
+func js_malloc_rt(rt: Runtime*, size: usize) -> void*?:
     trap("unported: js_malloc_rt")
 ## Ported from quickjs.c:1805 js_free_rt.
 func js_free_rt(rt: Runtime*, ptr: void*):

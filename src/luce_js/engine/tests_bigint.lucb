@@ -1,0 +1,170 @@
+#==============================================================================================
+#
+#   tests_bigint - Unit tests of the BigInt limb arithmetic and conversions
+#
+#   DESCRIPTION:
+#       Checks for the parts of the BigInt region that run without a runtime: the limb
+#       primitives, and the conversions and comparisons that only read a BigInt (the
+#       BigInts are laid out in local arrays, header then limbs). The expected values in
+#       tests_bigint_vectors were produced by a C driver that includes upstream quickjs.c
+#       built with JS_LIMB_BITS == 32 and calls the same functions.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# The functions tested here take a context and never use it: this is its address.
+var tests_bigint_unused_ctx: u64
+
+func tests_bigint_ctx() -> Context*:
+    return (Context*)(void*)&tests_bigint_unused_ctx
+
+# A BigInt laid out in `mem`: the header (the limb count), then the limbs.
+func tests_bigint(mem: u32[], limbs: const u32[]) -> const BigInt*:
+    mem[0] = (u32)limbs.length
+    for i in 0..<limbs.length:
+        mem[i + 1] = limbs[i]
+    return (const BigInt*)&mem[0]
+
+func check_limbs(got: const u32*, want: const u32[]):
+    for i in 0..<want.length:
+        assert(got[i] == want[i])
+
+func check_divnorm(a: const u32[], b: const u32[], q: const u32[], r: const u32[]):
+    var ta: u32[16]
+    var tq: u32[16]
+    for i in 0..<a.length:
+        ta[i] = a[i]
+    mp_divnorm(&tq[0], &ta[0], (u32)a.length, b.data, (u32)b.length)
+    check_limbs(&tq[0], q)
+    check_limbs(&ta[0], r)
+
+func check_mul_basecase(a: const u32[], b: const u32[], r: const u32[]):
+    var tr: u32[16]
+    mp_mul_basecase(&tr[0], a.data, (u32)a.length, b.data, (u32)b.length)
+    check_limbs(&tr[0], r)
+
+func check_add_sub(a: const u32[], b: const u32[], carry: u32, sum: const u32[], c1: u32,
+                   diff: const u32[], c2: u32, neg: const u32[], c3: u32):
+    var t: u32[16]
+    assert(mp_add(&t[0], a.data, b.data, (u32)a.length, carry) == c1)
+    check_limbs(&t[0], sum)
+    assert(mp_sub(&t[0], a.data, b.data, (i32)a.length, carry) == c2)
+    check_limbs(&t[0], diff)
+    assert(mp_neg(&t[0], a.data, (i32)a.length) == c3)
+    check_limbs(&t[0], neg)
+    # in place, as the BigInt code calls them
+    for i in 0..<a.length:
+        t[i] = a[i]
+    assert(mp_add(&t[0], &t[0], b.data, (u32)a.length, carry) == c1)
+    check_limbs(&t[0], sum)
+
+func check_shifts(a: const u32[], shift: i32, high: u32, shl: const u32[], l1: u32,
+                  shr: const u32[], l2: u32):
+    var t: u32[16]
+    assert(mp_shl(&t[0], a.data, (i32)a.length, shift) == l1)
+    check_limbs(&t[0], shl)
+    assert(mp_shr(&t[0], a.data, (i32)a.length, shift, high) == l2)
+    check_limbs(&t[0], shr)
+
+func check_div1norm(a: const u32[], b: u32, r0: u32, q: const u32[], rem: u32):
+    var t: u32[16]
+    assert(mp_div1norm(&t[0], a.data, (u32)a.length, b, r0) == rem)
+    check_limbs(&t[0], q)
+
+func check_mul1(a: const u32[], b: u32, l: u32, r: const u32[], h: u32):
+    var t: u32[16]
+    assert(mp_mul1(&t[0], a.data, (u32)a.length, b, l) == h)
+    check_limbs(&t[0], r)
+
+func check_div1(a: const u32[], d: u32, q: const u32[], rem: u32):
+    var t: u32[16]
+    assert(mp_div1(&t[0], a.data, (u32)a.length, d, 0) == rem)
+    check_limbs(&t[0], q)
+
+func check_to_float64(a: const u32[], bits: u64):
+    var mem: u32[40]
+    let x = tests_bigint(mem, a)
+    assert(js_bigint_to_float64(tests_bigint_ctx(), x).bits() == bits)
+
+func check_cmp(a: const u32[], b: const u32[], res: i32):
+    var mem_a: u32[16]
+    var mem_b: u32[16]
+    let x = tests_bigint(mem_a, a)
+    let y = tests_bigint(mem_b, b)
+    assert(js_bigint_cmp(tests_bigint_ctx(), x, y) == res)
+    assert(js_bigint_cmp(tests_bigint_ctx(), y, x) == -res)
+
+func check_float64_cmp(a: const u32[], bits: u64, res: i32):
+    var mem: u32[16]
+    let x = tests_bigint(mem, a)
+    assert(js_bigint_float64_cmp(tests_bigint_ctx(), x, f64.bits(bits)) == res)
+
+func check_u64toa(n: u64, base: u32, text: str):
+    var buf: u8[80]
+    let end = &buf[0] + 79
+    let q = js_u64toa(end, (i64)n, base)
+    assert((str)u8[](q, (usize)(end - q)) == text)
+
+func check_limb_to_a(v: u32, base: u32, len: i32, text: str):
+    var buf: u8[80]
+    let end = &buf[0] + 79
+    let q = limb_to_a(end, v, base, len)
+    assert((str)u8[](q, (usize)(end - q)) == text)
+
+# mark: Hand-written cases ======================================================================
+
+test "limb clz and carries":
+    assert(js_limb_clz(1) == 31)
+    assert(js_limb_clz(0x80000000) == 0)
+    assert(js_limb_safe_clz(0) == 32)
+    assert(addc(0xffffffff, 1, 0) == (0, 1))
+    assert(addc(0xffffffff, 0, 1) == (0, 1))
+    assert(addc(0xffffffff, 0xffffffff, 1) == (0xffffffff, 1))
+    assert(addc(1, 2, 1) == (4, 0))
+
+test "udiv1norm matches the double-limb division":
+    let d: u32 = 0x9abcdef1
+    let d_inv = udiv1norm_init(d)
+    var a1: u32 = 0
+    while a1 < d - 0x1000000:
+        let a0: u32 = 0xdeadbeef
+        var r: u32 = 0
+        let q = udiv1norm(&r, a1, a0, d, d_inv)
+        let a = ((u64)a1 << 32) | (u64)a0
+        assert((u64)q == a // (u64)d)
+        assert((u64)r == a % (u64)d)
+        a1 += 0x1234567
+
+test "small bigints on the stack":
+    var buf: BigIntBuf
+    var a = js_bigint_set_si(&buf, -5)
+    assert(a.len == 1 and js_bigint_tab(a)[0] == 0xfffffffb)
+    assert(js_bigint_sign(a) == 1 and js_bigint_get_si_sat(a) == -5)
+    a = js_bigint_set_si64(&buf, 0x123456789)
+    assert(a.len == 2 and js_bigint_tab(a)[0] == 0x23456789 and js_bigint_tab(a)[1] == 1)
+    assert(js_bigint_sign(a) == 0 and js_bigint_get_si_sat(a) == 2147483647)
+    a = js_bigint_set_si64(&buf, -0x100000000)
+    assert(a.len == 2 and js_bigint_tab(a)[0] == 0 and js_bigint_tab(a)[1] == 0xffffffff)
+    assert(js_bigint_get_si_sat(a) == -2147483648)
+    a = js_bigint_set_si64(&buf, -2147483648)
+    assert(a.len == 1 and js_bigint_tab(a)[0] == 0x80000000)
+    a = js_bigint_set_short(&buf, js_new_short_big_int_raw(7))
+    assert(a.len == 1 and js_bigint_tab(a)[0] == 7)
+
+test "shr_rndn rounds to nearest, ties to even":
+    assert(shr_rndn(0x600, 10) == 2)     # 1.5 -> 2
+    assert(shr_rndn(0xa00, 10) == 2)     # 2.5 -> 2
+    assert(shr_rndn(0xa01, 10) == 3)
+    assert(shr_rndn(0x5ff, 10) == 1)
+    assert(shr_rndn(0xe00, 10) == 4)     # 3.5 -> 4
+
+test "mantissa and exponent":
+    var mem: u32[8]
+    var e: i32 = 0
+    # 2^32: mantissa 1 << 63, exponent 32
+    var a = tests_bigint(mem, [0, 1])
+    assert(js_bigint_get_mant_exp(tests_bigint_ctx(), &e, a) == (u64)1 << 63 and e == 32)
+    # -(2^64 + 1): the low bit is kept as a sticky bit
+    a = tests_bigint(mem, [0xffffffff, 0xffffffff, 0xfffffffe])
+    assert(js_bigint_get_mant_exp(tests_bigint_ctx(), &e, a) == ((u64)1 << 63) | 1 and e == 64)

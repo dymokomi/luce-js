@@ -17,7 +17,14 @@ stub_r07_exceptions.lucb
 stub_r08_property_get.lucb
 stub_r09_property_set.lucb
 stub_r10_define_property.lucb
-stub_r11_bigint.lucb
+bigint_limbs.lucb
+bigint_alloc.lucb
+bigint_ops.lucb
+bigint_convert.lucb
+bigint_string.lucb
+atof.lucb
+tests_bigint.lucb
+tests_bigint_vectors.lucb
 stub_r12_conversions.lucb
 stub_r13_operators.lucb
 stub_r14_interpreter.lucb

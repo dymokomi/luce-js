@@ -1,0 +1,159 @@
+#==============================================================================================
+#
+#   bigint_alloc - Allocating, building and normalizing JSBigInt values
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "bigint support" lines 11591-11809: the limb accessor,
+#       js_bigint_new, the stack buffers (JSBigIntBuf) for small integers, the
+#       constructors from machine integers, normalization (removing redundant sign limbs),
+#       the sign, saturation to a limb, and js_bigint_extend. A JSBigInt is js_malloc'ed
+#       with its reference count in the block header; its `len` limbs follow the header.
+#       A function that returns NULL in C (a pending exception) fails here.
+#
+#==============================================================================================
+
+# mark: Limbs and allocation ====================================================================
+
+## The limbs that follow a big integer's header (JSBigInt.tab), least significant first,
+## in two's complement.
+func js_bigint_tab(a: const BigInt*) -> u32*:
+    return (u32*)((u8*)a + sizeof(BigInt))
+
+func js_bigint_new(ctx: Context*, len: i32) -> BigInt*!:
+    if len > bigint_max_size:
+        try js_throw_range_error(ctx, "BigInt is too large to allocate")
+    let r = (BigInt*)(try js_malloc(ctx, sizeof(BigInt) + (usize)len * sizeof(u32)))
+    js_rc(r).ref_count = 1
+    r.len = (u32)len
+    return r
+
+func js_bigint_set_si(buf: BigIntBuf*, a: i32) -> BigInt*:
+    let r = (BigInt*)&buf.big_int_buf[0]
+    r.len = 1
+    js_bigint_tab(r)[0] = (u32)a
+    return r
+
+func js_bigint_set_si64(buf: BigIntBuf*, a: i64) -> BigInt*:
+    let r = (BigInt*)&buf.big_int_buf[0]
+    let tab = js_bigint_tab(r)
+    if a >= -2147483648 and a <= 2147483647:
+        r.len = 1
+        tab[0] = (u32)a
+    else:
+        r.len = 2
+        tab[0] = (u32)a
+        tab[1] = (u32)(a >> 32)
+    return r
+
+# val must be a short big int
+func js_bigint_set_short(buf: BigIntBuf*, val: Value) -> BigInt*:
+    return js_bigint_set_si(buf, js_value_get_short_big_int(val))
+
+# Debug output: the limbs of `tab`, most significant first, in hexadecimal.
+func js_bigint_dump1(ctx: Context*, text: str, tab: const u32*, len: i32):
+    var s: cutils.DynBuf = ---
+    cutils.dbuf_init(&s)
+    discard(cutils.dbuf_printf(&s, f"{text}: "))
+    var i = len - 1
+    while i >= 0:
+        discard(cutils.dbuf_putc(&s, ' '))
+        var shift: i32 = 28
+        while shift >= 0:
+            discard(cutils.dbuf_putc(&s, radix_digits[(tab[i] >> (u32)shift) & 0xf]))
+            shift -= 4
+        i -= 1
+    if let b = s.buf:
+        print((str)u8[](b, s.size))
+    cutils.dbuf_free(&s)
+
+func js_bigint_dump(ctx: Context*, text: str, p: const BigInt*):
+    js_bigint_dump1(ctx, text, js_bigint_tab(p), (i32)p.len)
+
+func js_bigint_new_si(ctx: Context*, a: i32) -> BigInt*!:
+    let r = try js_bigint_new(ctx, 1)
+    js_bigint_tab(r)[0] = (u32)a
+    return r
+
+func js_bigint_new_si64(ctx: Context*, a: i64) -> BigInt*!:
+    if a >= -2147483648 and a <= 2147483647:
+        return try js_bigint_new_si(ctx, (i32)a)
+    else:
+        let r = try js_bigint_new(ctx, 2)
+        let tab = js_bigint_tab(r)
+        tab[0] = (u32)a
+        tab[1] = (u32)(a >> 32)
+        return r
+
+func js_bigint_new_ui64(ctx: Context*, a: u64) -> BigInt*!:
+    if a <= 0x7fffffffffffffff:
+        return try js_bigint_new_si64(ctx, (i64)a)
+    else:
+        let r = try js_bigint_new(ctx, (65 + js_limb_bits - 1) // js_limb_bits)
+        let tab = js_bigint_tab(r)
+        tab[0] = (u32)a
+        tab[1] = (u32)(a >> 32)
+        tab[2] = 0
+        return r
+
+func js_bigint_new_di(ctx: Context*, a: i64) -> BigInt*!:
+    var r: BigInt* = ---
+    if a == (i64)(i32)a:
+        r = try js_bigint_new(ctx, 1)
+        js_bigint_tab(r)[0] = (u32)a
+    else:
+        r = try js_bigint_new(ctx, 2)
+        let tab = js_bigint_tab(r)
+        tab[0] = (u32)a
+        tab[1] = (u32)(a >> 32)
+    return r
+
+# mark: Normalization ===========================================================================
+
+# Remove redundant high order limbs. Warning: 'a' may be reallocated. Can never fail.
+func js_bigint_normalize1(ctx: Context*, a: BigInt*, l0: i32) -> BigInt*:
+    assert(js_rc(a).ref_count == 1)
+    let tab = js_bigint_tab(a)
+    var l = l0
+    while l > 1:
+        let v = tab[l - 1]
+        if (v != 0 and v != 0xffffffff) or (v & 1) != (tab[l - 2] >> 31):
+            break
+        l -= 1
+    if l != (i32)a.len:
+        # realloc to reduce the size
+        a.len = (u32)l
+        # A failed shrink keeps the block, as in C (the exception js_realloc raised stays
+        # pending there too).
+        let a1 = js_realloc(ctx, a, sizeof(BigInt) + (usize)l * sizeof(u32)) catch failure:
+            recover (void*)a
+        return (BigInt*)a1
+    return a
+
+func js_bigint_normalize(ctx: Context*, a: BigInt*) -> BigInt*:
+    return js_bigint_normalize1(ctx, a, (i32)a.len)
+
+# return 0 or 1 depending on the sign
+func js_bigint_sign(a: const BigInt*) -> i32:
+    return (i32)(js_bigint_tab(a)[a.len - 1] >> 31)
+
+func js_bigint_get_si_sat(a: const BigInt*) -> i32:
+    if a.len == 1:
+        return (i32)js_bigint_tab(a)[0]
+    else:
+        if js_bigint_sign(a) != 0:
+            return -2147483648
+        else:
+            return 2147483647
+
+# add the op1 limb. On failure 'r' is freed.
+func js_bigint_extend(ctx: Context*, r: BigInt*, op1: u32) -> BigInt*!:
+    let n2 = (i32)r.len
+    if (op1 != 0 and op1 != 0xffffffff) or (op1 & 1) != js_bigint_tab(r)[n2 - 1] >> 31:
+        errdefer js_free(ctx, r)
+        let r1 = (BigInt*)(try js_realloc(ctx, r, sizeof(BigInt) + (usize)(n2 + 1) * sizeof(u32)))
+        r1.len = (u32)(n2 + 1)
+        js_bigint_tab(r1)[n2] = op1
+        return r1
+    else:
+        # otherwise still need to normalize the result
+        return js_bigint_normalize(ctx, r)
