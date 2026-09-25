@@ -350,6 +350,13 @@ test "comment after catch in parentheses":
 
 Expected: a trailing comment does not change where the suite starts.
 
+### 21. `luce-base check -W` exits 0 when it prints warnings (tooling)
+
+A warning-free gate has to parse the output: `check -W` prints the warnings but still exits 0,
+so `luce-base check -W mod && git commit` commits with warnings. luce-browser's test.sh works
+around it by failing on any output. Expected: a non-zero exit when `-W` printed a warning (or a
+`-Werror` flag).
+
 ## Done on a branch, waiting for merge and release (x86_64 runs on LINUX/WINDOWS pending)
 
 - **Dense `match` → jump table; u8 match subject kept in a register; `(i32)`/`(i64)` float
