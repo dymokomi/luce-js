@@ -1,0 +1,284 @@
+#==============================================================================================
+#
+#   exceptions - The pending exception, the pc2line table and error backtraces
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 7349-7636: JS_GetGlobalObject, JS_Throw, JS_GetException,
+#       JS_HasException, the LEB128 encoding of the pc2line table, find_line_num,
+#       get_prop_string, build_backtrace, is_backtrace_needed and JS_NewError.
+#
+#       A thrown value lives in `rt.current_exception` as in QuickJS; the function that
+#       throws it fails with `error(exception, "")` where C returns JS_EXCEPTION.
+#
+#==============================================================================================
+
+# mark: The pending exception ===================================================================
+
+## A new reference to the global object (JS_GetGlobalObject).
+pub func js_get_global_object(ctx: Context*) -> Value:
+    return js_dup_value(ctx, ctx.global_obj)
+
+## Throw `obj`: it becomes the pending exception and the call fails (JS_Throw).
+## WARNING: obj is freed
+pub func js_throw(ctx: Context*, obj: Value) -> never!:
+    let rt = ctx.rt
+    js_free_value(ctx, rt.current_exception)
+    rt.current_exception = obj
+    rt.current_exception_is_uncatchable = false
+    error(exception, "")
+
+## Return the pending exception (cannot be called twice) (JS_GetException).
+pub func js_get_exception(ctx: Context*) -> Value:
+    let rt = ctx.rt
+    let val = rt.current_exception
+    rt.current_exception = js_uninitialized()
+    return val
+
+## Whether an exception is pending (JS_HasException).
+pub func js_has_exception(ctx: Context*) -> bool:
+    return not js_is_uninitialized(ctx.rt.current_exception)
+
+# mark: LEB128 and pc2line ======================================================================
+
+func dbuf_put_leb128(s: cutils.DynBuf*, v0: u32):
+    var v = v0
+    while true:
+        let a = v & 0x7f
+        v = v >> 7
+        if v != 0:
+            discard(cutils.dbuf_putc(s, (u8)(a | 0x80)))
+        else:
+            discard(cutils.dbuf_putc(s, (u8)a))
+            break
+
+func dbuf_put_sleb128(s: cutils.DynBuf*, v1: i32):
+    let v = (u32)v1
+    dbuf_put_leb128(s, (v *% 2) ^ (0 -% (v >> 31)))
+
+# Read an unsigned LEB128 number of at most 5 bytes at `buf`: answer the number of bytes
+# read, or -1 (and 0 in *pval) if it is truncated or too long.
+func get_leb128(pval: u32*, buf: const u8*, buf_end: const u8*) -> i32:
+    var ptr = buf
+    var v: u32 = 0
+    for i: u32 in 0..<5:
+        if ptr >= buf_end:
+            break
+        let a = (u32)*ptr
+        ptr = ptr + 1
+        v |= (a & 0x7f) << (i * 7)
+        if (a & 0x80) == 0:
+            *pval = v
+            return (i32)(ptr - buf)
+    *pval = 0
+    return -1
+
+# Read a signed (zigzag) LEB128 number at `buf`, as get_leb128.
+func get_sleb128(pval: i32*, buf: const u8*, buf_end: const u8*) -> i32:
+    var val: u32 = 0
+    let ret = get_leb128(&val, buf, buf_end)
+    if ret < 0:
+        *pval = 0
+        return -1
+    *pval = (i32)((val >> 1) ^ (0 -% (val & 1)))
+    return ret
+
+## The source line of the instruction at `pc_value` of `b`, and its column in *pcol_num;
+## 0 and 0 if `b` has no pc2line table (the function was stripped) or it is truncated.
+## Use pc_value = -1 (0xffffffff) to get the position of the function definition.
+func find_line_num(ctx: Context*, b: FunctionBytecode*, pc_value: u32, pcol_num: i32*) -> i32:
+    if let line_col = find_line_col(b, pc_value):
+        *pcol_num = line_col.1
+        return line_col.0
+    *pcol_num = 0
+    return 0
+
+# find_line_num's walk of the pc2line table: none where C jumps to `fail`.
+func find_line_col(b: FunctionBytecode*, pc_value: u32) -> (i32, i32)?:
+    if not b.has_debug:
+        return none # function was stripped
+    var p: const u8* = b.debug.pc2line_buf else return none
+    let p_end = p + (usize)b.debug.pc2line_len
+
+    # get the function line and column numbers
+    var val: u32 = 0
+    var ret = get_leb128(&val, p, p_end)
+    if ret < 0:
+        return none
+    p = p + (usize)ret
+    var line_num = (i32)(val +% 1)
+
+    ret = get_leb128(&val, p, p_end)
+    if ret < 0:
+        return none
+    p = p + (usize)ret
+    var col_num = (i32)(val +% 1)
+
+    if pc_value != 0xffffffff:
+        var pc: u32 = 0
+        var v: i32 = 0
+        while p < p_end:
+            var op = (u32)*p
+            p = p + 1
+            var new_line_num: i32 = 0
+            if op == 0:
+                ret = get_leb128(&val, p, p_end)
+                if ret < 0:
+                    return none
+                pc = pc +% val
+                p = p + (usize)ret
+                ret = get_sleb128(&v, p, p_end)
+                if ret < 0:
+                    return none
+                p = p + (usize)ret
+                new_line_num = line_num + v
+            else:
+                op -= (u32)pc2line_op_first
+                pc = pc +% op // (u32)pc2line_range
+                new_line_num = line_num + (i32)(op % (u32)pc2line_range) + pc2line_base
+            ret = get_sleb128(&v, p, p_end)
+            if ret < 0:
+                return none
+            p = p + (usize)ret
+            let new_col_num = col_num + v
+
+            if pc_value < pc:
+                break
+            line_num = new_line_num
+            col_num = new_col_num
+    return (line_num, col_num)
+
+# mark: Backtraces ==============================================================================
+
+# The text of a NUL-terminated C string, as a view of its bytes (no copy). QuickJS's C
+# strings are UTF-8 except for lone surrogates, which only ever pass through as bytes.
+func c_str_view(p: const u8*) -> str:
+    let bytes: const u8[] = u8[]((u8*)p, cutils.strlen(p))
+    return (str)bytes
+
+# Return a string property without executing arbitrary JS code (used when dumping the stack
+# trace or in debug print). The result is released with js_free_c_string.
+func get_prop_string(ctx: Context*, obj: Value, prop: Atom) -> const u8*?:
+    if obj.tag != Tag.object:
+        return none
+    var p = js_value_get_obj(obj)
+    var pr: Property* = ---
+    var prs = find_own_property(&pr, p, prop)
+    if prs == none:
+        # we look at one level in the prototype to handle the 'name' field of the Error
+        # objects
+        p = p.shape.proto else return none
+        prs = find_own_property(&pr, p, prop)
+    let prs1 = prs else return none
+
+    if ((i32)prs1.flags & prop_tmask) != prop_normal:
+        return none
+    let val = pr.u.value
+    if val.tag != Tag.string:
+        return none
+    return js_to_c_string(ctx, val) catch failure: recover none
+
+let js_backtrace_flag_skip_first_level: i32 = 1 << 0
+
+# The pc of the instruction of `sf` that is running (C: sf->cur_pc - b->byte_code_buf - 1);
+# the function definition when the frame has no pc.
+func frame_pc(sf: StackFrame*, b: FunctionBytecode*) -> u32:
+    if let cur_pc = sf.cur_pc:
+        return (u32)(cur_pc - (const u8*)b.byte_code_buf - 1)
+    return 0xffffffff
+
+# The fileName, lineNumber and columnNumber properties of a parse error (part of
+# build_backtrace).
+func define_error_position(ctx: Context*, error_obj: Value, filename: const u8*,
+                           line_num: i32, col_num: i32) -> !:
+    let flags = prop_writable | prop_configurable
+    let file_str = try js_new_string(ctx, filename)
+    # Note: SpiderMonkey does that, could update once there is a standard
+    discard(try js_define_property_value(ctx, error_obj, atom_fileName, file_str, flags))
+    discard(try js_define_property_value(ctx, error_obj, atom_lineNumber,
+                                         js_new_int32(line_num), flags))
+    discard(try js_define_property_value(ctx, error_obj, atom_columnNumber,
+                                         js_new_int32(col_num), flags))
+
+# Set the `stack` property of `error_obj` to the call stack. If filename != none, an
+# additional level is added with the filename and line number information (used for parse
+# error).
+func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line_num: i32,
+                     col_num: i32, backtrace_flags: i32):
+    if not js_is_object(error_obj):
+        return # protection in the out of memory case
+
+    let flags = prop_writable | prop_configurable
+    var dbuf: cutils.DynBuf = ---
+    js_dbuf_init(ctx, &dbuf)
+    # C leaks the buffer when defining fileName and friends fails; here it is always freed.
+    defer cutils.dbuf_free(&dbuf)
+    if let fname = filename:
+        discard(cutils.dbuf_printf(&dbuf, f"    at {c_str_view(fname)}"))
+        if line_num != -1:
+            discard(cutils.dbuf_printf(&dbuf, f":{line_num}:{col_num}"))
+        discard(cutils.dbuf_putc(&dbuf, '\n'))
+        # workaround: compiler-issues/catch-return-in-parentheses
+        define_error_position(ctx, error_obj, fname, line_num, col_num) catch failure: return
+
+    var skip_flags = backtrace_flags
+    var next = ctx.rt.current_stack_frame
+    while let sf = next:
+        next = sf.prev_frame
+        if (sf.js_mode & js_mode_backtrace_barrier) != 0:
+            break
+        if (skip_flags & js_backtrace_flag_skip_first_level) != 0:
+            skip_flags &= ~js_backtrace_flag_skip_first_level
+            continue
+        let func_name_str = get_prop_string(ctx, sf.cur_func, atom_name)
+        var str1 = "<anonymous>"
+        if let name = func_name_str:
+            if name[0] != 0:
+                str1 = c_str_view(name)
+        discard(cutils.dbuf_printf(&dbuf, f"    at {str1}"))
+        if let name = func_name_str:
+            js_free_c_string(ctx, name)
+
+        let p = js_value_get_obj(sf.cur_func)
+        if js_class_has_bytecode((u32)(u16)p.class_id):
+            let b = p.u.func_.function_bytecode
+            if b.has_debug:
+                var col_num1: i32 = 0
+                let line_num1 = find_line_num(ctx, b, frame_pc(sf, b), &col_num1)
+                let atom_str: const u8*? = (js_atom_to_c_string(ctx, b.debug.filename)
+                                            catch failure: recover none)
+                if let a = atom_str:
+                    discard(cutils.dbuf_printf(&dbuf, f" ({c_str_view(a)}"))
+                    js_free_c_string(ctx, a)
+                else:
+                    discard(cutils.dbuf_printf(&dbuf, " (<null>"))
+                if line_num1 != 0:
+                    discard(cutils.dbuf_printf(&dbuf, f":{line_num1}:{col_num1}"))
+                discard(cutils.dbuf_putc(&dbuf, ')'))
+        else:
+            discard(cutils.dbuf_printf(&dbuf, " (native)"))
+        discard(cutils.dbuf_putc(&dbuf, '\n'))
+    discard(cutils.dbuf_putc(&dbuf, 0))
+    var stack = js_null()
+    if not cutils.dbuf_error(&dbuf):
+        let buf = dbuf.buf else trap("build_backtrace: empty buffer")
+        # C would store the JS_EXCEPTION marker when the string cannot be made; null is
+        # stored instead, as when the buffer failed.
+        stack = js_new_string(ctx, buf) catch failure: recover js_null()
+    discard(js_define_property_value(ctx, error_obj, atom_stack, stack, flags)
+            catch failure: recover false)
+
+# Whether `obj` is an Error object without a stack property yet.
+# Note: it is important that no exception is returned by this function
+func is_backtrace_needed(ctx: Context*, obj: Value) -> bool:
+    if obj.tag != Tag.object:
+        return false
+    let p = js_value_get_obj(obj)
+    if p.class_id != ClassId.error_:
+        return false
+    if find_own_property1(p, atom_stack) != none:
+        return false
+    return true
+
+## A new Error object (JS_NewError).
+pub func js_new_error(ctx: Context*) -> Value!:
+    return try js_new_object_class(ctx, (i32)(u16)ClassId.error_)

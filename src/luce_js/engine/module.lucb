@@ -9,7 +9,9 @@
 #
 #==============================================================================================
 
+import io
 import memory
+import os
 import luce_js.cutils as cutils
 import luce_js.dtoa as dtoa
 import luce_js.unicode as unicode

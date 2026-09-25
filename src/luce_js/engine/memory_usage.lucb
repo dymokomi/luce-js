@@ -1,0 +1,471 @@
+#==============================================================================================
+#
+#   memory_usage - Memory statistics: JS_ComputeMemoryUsage and JS_DumpMemoryUsage
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 6855-7347: the per-kind size estimates, the walk over the
+#       contexts, modules, GC objects, shapes and atoms that fills a MemoryUsage, and the
+#       report JS_DumpMemoryUsage prints. C prints through a FILE*; the port prints to
+#       standard output. printf's "%-20s", "%8d" and "%0.1f" are spelled with `pad` and
+#       `format_fixed1`.
+#
+#==============================================================================================
+
+# mark: Size estimates ==========================================================================
+
+## The version the memory report names (CONFIG_VERSION).
+let config_version: str = "2026-06-04"
+
+## What the system malloc adds to every block (MALLOC_OVERHEAD): 8 bytes, except on macOS.
+let malloc_overhead: i32 = 0 if os.macos else 8
+
+# Compute memory used by various object types
+# XXX: poor man's approach to handling multiply referenced objects
+
+## The shares of multiply referenced values counted while computing the memory usage
+## (JSMemoryUsage_helper).
+struct MemoryUsageHelper:
+    var memory_used_count: f64
+    var str_count: f64
+    var str_size: f64
+    var js_func_count: i64
+    var js_func_size: f64
+    var js_func_code_size: i64
+    var js_func_pc2line_count: i64
+    var js_func_pc2line_size: i64
+
+# Whether the pointer stored in the first word at `p` is null. The members of JSObject's
+# `u` union are declared never null, as the class of the object says which one is live,
+# but C tests some of them for NULL: the word is read as an integer instead.
+func pointer_word_is_null(p: const void*) -> bool:
+    return *(const usize*)p == 0
+
+func compute_jsstring_size(text: String*, hp: MemoryUsageHelper*):
+    if text.atom_type == 0: # atoms are handled separately
+        let s_ref_count = f64(js_rc(text).ref_count)
+        let wide = (u32)text.is_wide_char
+        hp.str_count += 1.0 / s_ref_count
+        hp.str_size += (f64(sizeof(String) + (usize)(text.len << wide) + 1 - (usize)wide) /
+                        s_ref_count)
+
+func compute_bytecode_size(b: FunctionBytecode*, hp: MemoryUsageHelper*):
+    var memory_used_count: i32 = 0
+    var js_func_size = (i32)offsetof(FunctionBytecode, debug)
+    if b.vardefs != none:
+        js_func_size += ((i32)b.arg_count + (i32)b.var_count) * (i32)sizeof(BytecodeVarDef)
+    if let cpool = b.cpool:
+        js_func_size += b.cpool_count * (i32)sizeof(Value)
+        for i in 0..<(usize)b.cpool_count:
+            let val = cpool[i]
+            compute_value_size(val, hp)
+    if b.closure_var != none:
+        js_func_size += b.closure_var_count * (i32)sizeof(ClosureVar)
+    # C also tests b->byte_code_buf, which the port declares never null.
+    if not b.read_only_bytecode:
+        hp.js_func_code_size += (i64)b.byte_code_len
+    if b.has_debug:
+        js_func_size += (i32)(sizeof(FunctionBytecode) - offsetof(FunctionBytecode, debug))
+        if b.debug.source != none:
+            memory_used_count += 1
+            js_func_size += b.debug.source_len + 1
+        if b.debug.pc2line_len != 0:
+            memory_used_count += 1
+            hp.js_func_pc2line_count += 1
+            hp.js_func_pc2line_size += (i64)b.debug.pc2line_len
+    hp.js_func_size += f64(js_func_size)
+    hp.js_func_count += 1
+    hp.memory_used_count += f64(memory_used_count)
+
+func compute_value_size(val: Value, hp: MemoryUsageHelper*):
+    match val.tag:
+        .string: compute_jsstring_size(val.u.string, hp)
+        .big_int: return # should track JSBigInt usage
+        _: return
+
+# C's round(): half away from zero, here for the non-negative shares only.
+func round_share(x: f64) -> i64:
+    let t = (i64)x
+    if x - f64(t) >= 0.5:
+        return t + 1
+    return t
+
+# `count / ref_count` added to an integer statistic, truncated as C's `int64 += double`.
+func add_share(total: i64, share: f64) -> i64:
+    return (i64)(f64(total) + share)
+
+# mark: Computing the usage =====================================================================
+
+## Fill `s` with the runtime's memory statistics (JS_ComputeMemoryUsage).
+pub func js_compute_memory_usage(rt: Runtime*, s: MemoryUsage*):
+    var mem: MemoryUsageHelper
+    let hp = &mem
+
+    discard(cutils.memset(s, 0, sizeof(MemoryUsage)))
+    s.malloc_count = (i64)rt.malloc_ctx.malloc_state.malloc_count
+    s.malloc_size = (i64)rt.malloc_ctx.malloc_state.malloc_size
+    s.malloc_limit = (i64)rt.malloc_ctx.malloc_state.malloc_limit
+
+    s.memory_used_count = 2 # rt + rt.class_array
+    s.memory_used_size = (i64)sizeof(Runtime) + (i64)sizeof(Value) * (i64)rt.class_count
+
+    var el = rt.context_list.next else trap("js_compute_memory_usage: unlinked list")
+    while el != &rt.context_list:
+        let ctx = (Context*)((u8*)el - offsetof(Context, link))
+        s.memory_used_count += 2 # ctx + ctx.class_proto
+        s.memory_used_size += (i64)sizeof(Context) + (i64)sizeof(Value) * (i64)rt.class_count
+        s.binary_object_count += (i64)ctx.binary_object_count
+        s.binary_object_size += (i64)ctx.binary_object_size
+
+        # the hashed shapes are counted separately
+        if let sh = ctx.array_shape:
+            if sh.is_hashed == 0:
+                let hash_size = (usize)sh.prop_hash_mask + 1
+                s.shape_count += 1
+                s.shape_size += (i64)get_shape_size(hash_size, (usize)sh.prop_size)
+        compute_modules_usage(ctx, s, hp)
+        el = el.next else trap("js_compute_memory_usage: unlinked list")
+
+    el = rt.gc_obj_list.next else trap("js_compute_memory_usage: unlinked list")
+    while el != &rt.gc_obj_list:
+        let gp = gc_header_of(el)
+        el = el.next else trap("js_compute_memory_usage: unlinked list")
+        # XXX: could count the other GC object types too
+        let type_ = js_rc(gp).gc_obj_type()
+        if type_ == GCObjectType.function_bytecode:
+            compute_bytecode_size((FunctionBytecode*)gp, hp)
+        elif type_ == GCObjectType.js_object:
+            compute_object_usage((Object*)gp, s, hp)
+    s.obj_size += s.obj_count * (i64)sizeof(Object)
+
+    # hashed shapes
+    s.memory_used_count += 1 # rt.shape_hash
+    s.memory_used_size += (i64)sizeof(Shape*?) * (i64)rt.shape_hash_size
+    if let hash_table = rt.shape_hash:
+        for i in 0..<(usize)rt.shape_hash_size:
+            var next = hash_table[i]
+            while let sh = next:
+                let hash_size = (usize)sh.prop_hash_mask + 1
+                s.shape_count += 1
+                s.shape_size += (i64)get_shape_size(hash_size, (usize)sh.prop_size)
+                next = sh.shape_hash_next
+
+    # atoms
+    s.memory_used_count += 2 # rt.atom_array, rt.atom_hash
+    s.atom_count = (i64)rt.atom_count
+    s.atom_size = ((i64)sizeof(AtomStruct*) * (i64)rt.atom_size +
+                   (i64)sizeof(u32) * (i64)rt.atom_hash_size)
+    if let atom_array = rt.atom_array:
+        for i in 0..<(usize)rt.atom_size:
+            let p = atom_array[i]
+            if not atom_is_free(p):
+                let wide = (u32)p.is_wide_char
+                s.atom_size += (i64)(sizeof(String) + (usize)(p.len << wide) + 1 - (usize)wide)
+    s.str_count = round_share(mem.str_count)
+    s.str_size = round_share(mem.str_size)
+    s.js_func_count = mem.js_func_count
+    s.js_func_size = round_share(mem.js_func_size)
+    s.js_func_code_size = mem.js_func_code_size
+    s.js_func_pc2line_count = mem.js_func_pc2line_count
+    s.js_func_pc2line_size = mem.js_func_pc2line_size
+    s.memory_used_count += (round_share(mem.memory_used_count) +
+                            s.atom_count + s.str_count +
+                            s.obj_count + s.shape_count +
+                            s.js_func_count + s.js_func_pc2line_count)
+    s.memory_used_size += (s.atom_size + s.str_size +
+                           s.obj_size + s.prop_size + s.shape_size +
+                           s.js_func_size + s.js_func_code_size + s.js_func_pc2line_size)
+
+# The loaded modules of `ctx` (the inner loop over ctx->loaded_modules).
+func compute_modules_usage(ctx: Context*, s: MemoryUsage*, hp: MemoryUsageHelper*):
+    var el = ctx.loaded_modules.next else trap("js_compute_memory_usage: unlinked list")
+    while el != &ctx.loaded_modules:
+        let m = (ModuleDef*)((u8*)el - offsetof(ModuleDef, link))
+        s.memory_used_count += 1
+        s.memory_used_size += (i64)sizeof(ModuleDef)
+        if m.req_module_entries != none:
+            s.memory_used_count += 1
+            s.memory_used_size += (i64)m.req_module_entries_count * (i64)sizeof(ReqModuleEntry)
+        if let export_entries = m.export_entries:
+            s.memory_used_count += 1
+            s.memory_used_size += (i64)m.export_entries_count * (i64)sizeof(ExportEntry)
+            for i in 0..<(usize)m.export_entries_count:
+                let me = export_entries + i
+                if me.export_type == ExportType.local_:
+                    if let var_ref = me.u.local_.var_ref:
+                        # potential multiple count
+                        s.memory_used_count += 1
+                        compute_value_size(var_ref.u.value, hp)
+        if m.star_export_entries != none:
+            s.memory_used_count += 1
+            s.memory_used_size += ((i64)m.star_export_entries_count *
+                                   (i64)sizeof(StarExportEntry))
+        if m.import_entries != none:
+            s.memory_used_count += 1
+            s.memory_used_size += (i64)m.import_entries_count * (i64)sizeof(ImportEntry)
+        compute_value_size(m.module_ns, hp)
+        compute_value_size(m.func_obj, hp)
+        el = el.next else trap("js_compute_memory_usage: unlinked list")
+
+# One JS object of the gc_obj_list walk: its properties, its shape and its class data.
+func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
+    let sh = p.shape
+    s.obj_count += 1
+    # C tests p->prop, which the port declares never null.
+    s.memory_used_count += 1
+    s.prop_size += (i64)sh.prop_size * (i64)sizeof(Property)
+    s.prop_count += (i64)sh.prop_count
+    var prs = get_shape_prop(sh)
+    for i in 0..<(usize)sh.prop_count:
+        let pr = p.prop + i
+        if prs.atom != no_atom and ((i32)prs.flags & prop_tmask) == 0:
+            compute_value_size(pr.u.value, hp)
+        prs = prs + 1
+    # the hashed shapes are counted separately
+    if sh.is_hashed == 0:
+        let hash_size = (usize)sh.prop_hash_mask + 1
+        s.shape_count += 1
+        s.shape_size += (i64)get_shape_size(hash_size, (usize)sh.prop_size)
+
+    match p.class_id:
+        .array, .arguments: # u.array | length
+            s.array_count += 1
+            if p.fast_array:
+                s.fast_array_count += 1
+                if not pointer_word_is_null(&p.u.array.u):
+                    let values = p.u.array.u.values
+                    s.memory_used_count += 1
+                    s.memory_used_size += (i64)p.u.array.count * (i64)sizeof(Value)
+                    s.fast_array_elements += (i64)p.u.array.count
+                    for i in 0..<(usize)p.u.array.count:
+                        compute_value_size(values[i], hp)
+        .mapped_arguments: # u.array | length
+            if p.fast_array:
+                s.fast_array_count += 1
+                if not pointer_word_is_null(&p.u.array.u):
+                    let var_refs = p.u.array.u.var_refs
+                    s.memory_used_count += 1
+                    s.memory_used_size += (i64)p.u.array.count * (i64)sizeof(VarRef*)
+                    s.fast_array_elements += (i64)p.u.array.count
+                    for i in 0..<(usize)p.u.array.count:
+                        compute_value_size(*var_refs[i].pvalue, hp)
+        .number, .string, .boolean, .symbol, .date, .big_int: # u.object_data
+            compute_value_size(p.u.object_data, hp)
+        .c_function: # u.cfunc
+            s.c_func_count += 1
+        .bytecode_function: # u.func
+            let b = p.u.func_.function_bytecode
+            # home_object: object will be accounted for in list scan
+            if let var_refs = p.u.func_.var_refs:
+                s.memory_used_count += 1
+                s.js_func_size += (i64)b.closure_var_count * (i64)sizeof(VarRef*)
+                for i in 0..<(usize)b.closure_var_count:
+                    if let var_ref = var_refs[i]:
+                        let ref_count = f64(js_rc(var_ref).ref_count)
+                        s.memory_used_count = add_share(s.memory_used_count, 1.0 / ref_count)
+                        s.js_func_size = add_share(s.js_func_size,
+                                                   f64(sizeof(VarRef)) / ref_count)
+                        # handle non object closed values
+                        if var_ref.pvalue == &var_ref.u.value:
+                            # potential multiple count
+                            compute_value_size(var_ref.u.value, hp)
+        .bound_function: # u.bound_function
+            let bf = p.u.bound_function
+            let argv = (Value*)((u8*)bf + sizeof(BoundFunction))
+            # func_obj and this_val are objects
+            for i in 0..<(usize)bf.argc:
+                compute_value_size(argv[i], hp)
+            s.memory_used_count += 1
+            s.memory_used_size += (i64)sizeof(BoundFunction) + (i64)bf.argc * (i64)sizeof(Value)
+        .c_function_data: # u.c_function_data_record
+            if not pointer_word_is_null(&p.u):
+                let fd = p.u.c_function_data_record
+                let data = (Value*)((u8*)fd + sizeof(CFunctionDataRecord))
+                for i in 0..<(usize)fd.data_len:
+                    compute_value_size(data[i], hp)
+                s.memory_used_count += 1
+                s.memory_used_size += ((i64)sizeof(CFunctionDataRecord) +
+                                       (i64)fd.data_len * (i64)sizeof(Value))
+        .regexp: # u.regexp
+            compute_jsstring_size(p.u.regexp.pattern, hp)
+            compute_jsstring_size(p.u.regexp.bytecode, hp)
+        .for_in_iterator: # u.for_in_iterator
+            if not pointer_word_is_null(&p.u):
+                let it = p.u.for_in_iterator
+                compute_value_size(it.obj, hp)
+                s.memory_used_count += 1
+                s.memory_used_size += (i64)sizeof(ForInIterator)
+        .array_buffer, .shared_array_buffer: # u.array_buffer
+            if not pointer_word_is_null(&p.u):
+                let abuf = p.u.array_buffer
+                s.memory_used_count += 1
+                s.memory_used_size += (i64)sizeof(ArrayBuffer)
+                if abuf.data != none:
+                    s.memory_used_count += 1
+                    s.memory_used_size += (i64)abuf.byte_length
+        # TODO in C: generator (u.generator_data), the typed arrays and dataview
+        # (u.typed_array / u.array), map, set, weakmap, weakset (u.map_state), the map, set,
+        # array and string iterators, proxy, promise and its resolve/reject functions, the
+        # async function resolve/reject functions, async-from-sync iterator and async
+        # generator all fall to the default.
+        _:
+            # XXX: class definition should have an opaque block size
+            if not pointer_word_is_null(&p.u):
+                s.memory_used_count += 1
+
+# mark: Dumping the usage =======================================================================
+
+# printf's "%0.1f": `d` with one fractional digit, written into `buf` (448 bytes hold any
+# double). js_dtoa's frac format rounds a tie away from zero, as toFixed does; printf rounds
+# it to even, so a tie is found in the exact expansion and truncated when the kept digit is
+# even.
+func format_fixed1(buf: u8[], d: f64) -> str:
+    var tmp_mem: dtoa.DTOATempMem = ---
+    let max_len = dtoa.js_dtoa_max_len(d, 10, dtoa.dtoa_max_digits, dtoa.dtoa_format_frac)
+    if (usize)max_len + 1 > buf.length:
+        return "?"
+    let exact_len = (usize)dtoa.js_dtoa(&buf[0], d, 10, dtoa.dtoa_max_digits,
+                                        dtoa.dtoa_format_frac, &tmp_mem)
+    var dot: usize = 0
+    while dot < exact_len and buf[dot] != '.':
+        dot += 1
+    if dot + 2 < exact_len and buf[dot + 2] == '5' and ((buf[dot + 1] - '0') & 1) == 0:
+        var tie = true
+        for i in dot + 3..<exact_len:
+            if buf[i] != '0':
+                tie = false
+        if tie:
+            return (str)buf[0..<dot + 2]
+    let len = dtoa.js_dtoa(&buf[0], d, 10, 1, dtoa.dtoa_format_frac, &tmp_mem)
+    return (str)buf[0..<(usize)len]
+
+# printf's "%-20s": the number of spaces after `name` to fill 20 columns.
+func name_pad(name: str) -> usize:
+    if name.length >= 20:
+        return 0
+    return 20 - name.length
+
+# printf's "%0.1f" of `a / b`, written into `buf`.
+func ratio1(buf: u8[], a: i64, b: i64) -> str:
+    return format_fixed1(buf, f64(a) / f64(b))
+
+# One "%-20s %8d %8d  (<note>)" row of the report.
+func dump_row(name: str, count: i64, size: i64, note: fmt):
+    print(f"{name}{pad("", name_pad(name))} {pad(count, 8)} {pad(size, 8)}  ({note})")
+
+# One "%-20s %8d %8d" row of the report.
+func dump_row2(name: str, count: i64, size: i64):
+    print(f"{name}{pad("", name_pad(name))} {pad(count, 8)} {pad(size, 8)}")
+
+# One "%-20s %8d" row of the report.
+func dump_row1(name: str, count: i64):
+    print(f"{name}{pad("", name_pad(name))} {pad(count, 8)}")
+
+# One "  %5d  %2.0d %s" line of the class table: "%2.0d" prints nothing for 0.
+func dump_class_line(count: i32, class_id: i32, name: str):
+    if class_id == 0:
+        print(f"  {pad(count, 5)}  {pad("", 2)} {name}")
+    else:
+        print(f"  {pad(count, 5)}  {pad(class_id, 2)} {name}")
+
+## Print the statistics `s` to standard output (JS_DumpMemoryUsage); with `rt`, also the
+## sizes of the main structures and the number of objects of each class.
+pub func js_dump_memory_usage(s: const MemoryUsage*, rt: Runtime*?):
+    let bits = (i32)sizeof(void*) * 8
+    let limit = s.malloc_limit
+    print(f"QuickJS memory usage -- {config_version} version, {bits}-bit, malloc limit: {limit}\n")
+    if let r = rt:
+        dump_runtime_sizes(r)
+    print(f"{"NAME"}{pad("", name_pad("NAME"))} {pad("COUNT", 8)} {pad("SIZE", 8)}")
+
+    var buf: u8[448] = ---
+    if s.malloc_count != 0:
+        dump_row("memory allocated", s.malloc_count, s.malloc_size,
+                 f"{ratio1(buf, s.malloc_size, s.malloc_count)} per block")
+        let slack = ratio1(buf, s.malloc_size - s.memory_used_size, s.memory_used_count)
+        dump_row("memory used", s.memory_used_count, s.memory_used_size,
+                 f"{malloc_overhead} overhead, {slack} average slack")
+    if s.atom_count != 0:
+        dump_row("atoms", s.atom_count, s.atom_size,
+                 f"{ratio1(buf, s.atom_size, s.atom_count)} per atom")
+    if s.str_count != 0:
+        dump_row("strings", s.str_count, s.str_size,
+                 f"{ratio1(buf, s.str_size, s.str_count)} per string")
+    if s.obj_count != 0:
+        dump_row("objects", s.obj_count, s.obj_size,
+                 f"{ratio1(buf, s.obj_size, s.obj_count)} per object")
+        dump_row("  properties", s.prop_count, s.prop_size,
+                 f"{ratio1(buf, s.prop_count, s.obj_count)} per object")
+        dump_row("  shapes", s.shape_count, s.shape_size,
+                 f"{ratio1(buf, s.shape_size, s.shape_count)} per shape")
+    if s.js_func_count != 0:
+        dump_row2("bytecode functions", s.js_func_count, s.js_func_size)
+        dump_row("  bytecode", s.js_func_count, s.js_func_code_size,
+                 f"{ratio1(buf, s.js_func_code_size, s.js_func_count)} per function")
+        if s.js_func_pc2line_count != 0:
+            dump_row("  pc2line", s.js_func_pc2line_count, s.js_func_pc2line_size,
+                     f"{ratio1(buf, s.js_func_pc2line_size, s.js_func_pc2line_count)} per function")
+    if s.c_func_count != 0:
+        dump_row1("C functions", s.c_func_count)
+    if s.array_count != 0:
+        dump_row1("arrays", s.array_count)
+        if s.fast_array_count != 0:
+            dump_row1("  fast arrays", s.fast_array_count)
+            dump_row("  elements", s.fast_array_elements,
+                     s.fast_array_elements * (i64)sizeof(Value),
+                     f"{ratio1(buf, s.fast_array_elements, s.fast_array_count)} per fast array")
+    if s.binary_object_count != 0:
+        dump_row2("binary objects", s.binary_object_count, s.binary_object_size)
+
+# The `if (rt)` part of JS_DumpMemoryUsage: the allocated sizes of the main structures and
+# the number of objects of each class.
+func dump_runtime_sizes(rt: Runtime*):
+    let object_types: (str, usize)[5] = [
+        ("JSRuntime", sizeof(Runtime)),
+        ("JSContext", sizeof(Context)),
+        ("JSObject", sizeof(Object)),
+        ("JSString", sizeof(String)),
+        ("JSFunctionBytecode", sizeof(FunctionBytecode)),
+    ]
+    var usage_size_ok = false
+    for (name, size_) in object_types:
+        let size = (u32)size_
+        if let p = js_malloc_rt(rt, (usize)size):
+            let size1 = (u32)js_malloc_usable_size_rt(rt, p)
+            if size1 >= size:
+                usage_size_ok = true
+                let slack = size1 - size
+                let slack_pad = (usize)(2 - cutils.min_int(2, decimal_width(slack)))
+                print(f"  {pad(size, 3)} + {slack}{pad("", slack_pad)}  {name}")
+            js_free_rt(rt, p)
+    if not usage_size_ok:
+        print("  malloc_usable_size unavailable")
+
+    var obj_classes: i32[64] # class_init_count + 1
+    var el = rt.gc_obj_list.next else trap("js_dump_memory_usage: unlinked list")
+    while el != &rt.gc_obj_list:
+        let gp = gc_header_of(el)
+        if js_rc(gp).gc_obj_type() == GCObjectType.js_object:
+            let p = (Object*)gp
+            obj_classes[cutils.min_uint32((u32)(u16)p.class_id, class_init_count)] += 1
+        el = el.next else trap("js_dump_memory_usage: unlinked list")
+    print("\nJSObject classes")
+    if obj_classes[0] != 0:
+        dump_class_line(obj_classes[0], 0, "none")
+    let class_array = rt.class_array else trap("js_dump_memory_usage: no class array")
+    for class_id in 1..<(i32)class_init_count:
+        if obj_classes[class_id] != 0 and class_id < rt.class_count:
+            var buf: u8[64] = ---
+            let name = js_atom_get_str_rt(rt, buf, class_array[(usize)class_id].class_name)
+            dump_class_line(obj_classes[class_id], class_id, c_str_view(name))
+    if obj_classes[class_init_count] != 0:
+        dump_class_line(obj_classes[class_init_count], 0, "other")
+    print("")
+
+# The number of decimal digits of `n` (for printf's "%-2u").
+func decimal_width(n: u32) -> i32:
+    var width: i32 = 1
+    var v = n
+    while v >= 10:
+        v = v // 10
+        width += 1
+    return width

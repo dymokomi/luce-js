@@ -1,0 +1,261 @@
+#==============================================================================================
+#
+#   gc - The cycle collector: GC object lists, marking, and freeing unreachable cycles
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "garbage collection" (lines 6508-6853): weak reference removal,
+#       adding and removing GC objects, JS_MarkValue, mark_children, the three passes
+#       (gc_decref, gc_scan, gc_free_cycles), JS_RunGC and JS_IsLiveObject.
+#
+#       Reference counting frees acyclic garbage; this collector finds the cycles. gc_decref
+#       subtracts every reference a GC object holds to another GC object, so what keeps a
+#       nonzero count is referenced from outside the GC graph. gc_scan restores the counts
+#       of everything reachable from those roots, and gc_free_cycles frees the rest.
+#
+#==============================================================================================
+
+# mark: Lists and marking =======================================================================
+
+# The address of the GC object that holds the list link `el` (list_entry(el,
+# JSGCObjectHeader, link)).
+func gc_header_of(el: cutils.ListHead*) -> GCObjectHeader*:
+    return (GCObjectHeader*)((u8*)el - offsetof(GCObjectHeader, link))
+
+func gc_remove_weak_objects(rt: Runtime*):
+    # add the freed objects to rt.gc_zero_ref_count_list so that rt.weakref_list is not
+    # modified while we traverse it
+    rt.gc_phase = GCPhase.decref
+
+    var el = rt.weakref_list.next else trap("gc_remove_weak_objects: unlinked list")
+    while el != &rt.weakref_list:
+        let wh = (WeakRefHeader*)((u8*)el - offsetof(WeakRefHeader, link))
+        match wh.weakref_type:
+            .map: map_delete_weakrefs(rt, wh)
+            .weakref: weakref_delete_weakref(rt, wh)
+            .finrec: finrec_delete_weakref(rt, wh)
+            _: trap("gc_remove_weak_objects: bad weakref type")
+        el = el.next else trap("gc_remove_weak_objects: unlinked list")
+
+    rt.gc_phase = GCPhase.none_
+    # free the freed objects here.
+    free_zero_refcount(rt)
+
+func add_gc_object(rt: Runtime*, h: GCObjectHeader*, type_: GCObjectType):
+    js_rc(h).set_mark(0)
+    js_rc(h).set_gc_obj_type(type_)
+    cutils.list_add_tail(&h.link, &rt.gc_obj_list)
+
+func remove_gc_object(h: GCObjectHeader*):
+    cutils.list_del(&h.link)
+
+## Mark the GC object `val` holds, if it holds one (JS_MarkValue). Class gc_mark functions
+## call it on every value they reference.
+pub func js_mark_value(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    if js_value_has_ref_count(val):
+        match val.tag:
+            .object, .function_bytecode, .module:
+                mark_func(rt, (GCObjectHeader*)val.u.ptr)
+            _: return
+
+# Call `mark_func` on every GC object `gp` references.
+func mark_children(rt: Runtime*, gp: GCObjectHeader*, mark_func: MarkFunc):
+    match js_rc(gp).gc_obj_type():
+        .js_object: mark_object_children(rt, (Object*)gp, mark_func)
+        .function_bytecode:
+            # the template objects can be part of a cycle
+            let b = (FunctionBytecode*)gp
+            if b.cpool_count > 0:
+                let cpool = b.cpool else trap("mark_children: no constant pool")
+                for i in 0..<(usize)b.cpool_count:
+                    js_mark_value(rt, cpool[i], mark_func)
+            # C tests b->realm for NULL; the port declares the realm never null.
+            mark_func(rt, &b.realm.header)
+        .var_ref:
+            let var_ref = (VarRef*)gp
+            if var_ref.is_detached != 0:
+                js_mark_value(rt, *var_ref.pvalue, mark_func)
+            else:
+                let sf = var_ref.u.frame.stack_frame
+                if (sf.js_mode & js_mode_async) != 0:
+                    let async_func = (AsyncFunctionState*)((u8*)sf -
+                        offsetof(AsyncFunctionState, frame))
+                    mark_func(rt, &async_func.header)
+        .async_function:
+            let s = (AsyncFunctionState*)gp
+            let sf = &s.frame
+            if not s.is_completed:
+                js_mark_value(rt, sf.cur_func, mark_func)
+                js_mark_value(rt, s.this_val, mark_func)
+                # sf.cur_sp = none if the function is running
+                if let cur_sp = sf.cur_sp:
+                    # if the function is running, cur_sp is not known so we cannot mark the
+                    # stack. Marking the variables is not needed because a running function
+                    # cannot be part of a removable cycle
+                    var sp = sf.arg_buf else trap("mark_children: no argument buffer")
+                    while sp < cur_sp:
+                        js_mark_value(rt, *sp, mark_func)
+                        sp = sp + 1
+            js_mark_value(rt, s.resolving_funcs[0], mark_func)
+            js_mark_value(rt, s.resolving_funcs[1], mark_func)
+        .shape:
+            let sh = (Shape*)gp
+            if let proto = sh.proto:
+                mark_func(rt, &proto.header)
+        .js_context:
+            let ctx = (Context*)gp
+            js_mark_context(rt, ctx, mark_func)
+        .module:
+            let m = (ModuleDef*)gp
+            js_mark_module_def(rt, m, mark_func)
+        _: trap("mark_children: bad GC object type")
+
+# The JS_GC_OBJ_TYPE_JS_OBJECT case of mark_children: the shape, every property, and what
+# the class's gc_mark reaches.
+func mark_object_children(rt: Runtime*, p: Object*, mark_func: MarkFunc):
+    let sh = p.shape
+    mark_func(rt, &sh.header)
+    # mark all the fields
+    var prs = get_shape_prop(sh)
+    for i in 0..<(usize)sh.prop_count:
+        let pr = p.prop + i
+        if prs.atom != no_atom:
+            let kind = (i32)prs.flags & prop_tmask
+            if kind != 0:
+                if kind == prop_getset:
+                    if let getter = pr.u.getset.getter:
+                        mark_func(rt, &getter.header)
+                    if let setter = pr.u.getset.setter:
+                        mark_func(rt, &setter.header)
+                elif kind == prop_varref:
+                    # Note: the tag does not matter provided it is a GC object
+                    mark_func(rt, &pr.u.var_ref.header)
+                elif kind == prop_autoinit:
+                    js_autoinit_mark(rt, pr, mark_func)
+            else:
+                js_mark_value(rt, pr.u.value, mark_func)
+        prs = prs + 1
+
+    if p.class_id != ClassId.object:
+        let class_array = rt.class_array else trap("mark_children: no class array")
+        if let gc_mark = class_array[(usize)(u16)p.class_id].gc_mark:
+            gc_mark(rt, js_mkptr(Tag.object, p), mark_func)
+
+# mark: The collector passes ====================================================================
+
+func gc_decref_child(rt: Runtime*, p: GCObjectHeader*):
+    let h = js_rc(p)
+    assert(h.ref_count > 0)
+    h.ref_count -= 1
+    if h.ref_count == 0 and h.mark() == 1:
+        cutils.list_del(&p.link)
+        cutils.list_add_tail(&p.link, &rt.tmp_obj_list)
+
+func gc_decref(rt: Runtime*):
+    cutils.init_list_head(&rt.tmp_obj_list)
+
+    # decrement the refcount of all the children of all the GC objects and move the GC
+    # objects with zero refcount to tmp_obj_list
+    var el = rt.gc_obj_list.next else trap("gc_decref: unlinked list")
+    while el != &rt.gc_obj_list:
+        let el1 = el.next else trap("gc_decref: unlinked list")
+        let p = gc_header_of(el)
+        assert(js_rc(p).mark() == 0)
+        mark_children(rt, p, gc_decref_child)
+        js_rc(p).set_mark(1)
+        if js_rc(p).ref_count == 0:
+            cutils.list_del(&p.link)
+            cutils.list_add_tail(&p.link, &rt.tmp_obj_list)
+        el = el1
+
+func gc_scan_incref_child(rt: Runtime*, p: GCObjectHeader*):
+    let h = js_rc(p)
+    h.ref_count += 1
+    if h.ref_count == 1:
+        # ref_count was 0: remove from tmp_obj_list and add at the end of gc_obj_list
+        cutils.list_del(&p.link)
+        cutils.list_add_tail(&p.link, &rt.gc_obj_list)
+        h.set_mark(0) # reset the mark for the next GC call
+
+func gc_scan_incref_child2(rt: Runtime*, p: GCObjectHeader*):
+    js_rc(p).ref_count += 1
+
+func gc_scan(rt: Runtime*):
+    # keep the objects with a refcount > 0 and their children.
+    var el = rt.gc_obj_list.next else trap("gc_scan: unlinked list")
+    while el != &rt.gc_obj_list:
+        let p = gc_header_of(el)
+        assert(js_rc(p).ref_count > 0)
+        js_rc(p).set_mark(0) # reset the mark for the next GC call
+        mark_children(rt, p, gc_scan_incref_child)
+        el = el.next else trap("gc_scan: unlinked list")
+
+    # restore the refcount of the objects to be deleted.
+    el = rt.tmp_obj_list.next else trap("gc_scan: unlinked list")
+    while el != &rt.tmp_obj_list:
+        let p = gc_header_of(el)
+        mark_children(rt, p, gc_scan_incref_child2)
+        el = el.next else trap("gc_scan: unlinked list")
+
+func gc_free_cycles(rt: Runtime*):
+    rt.gc_phase = GCPhase.remove_cycles
+
+    while true:
+        let el = rt.tmp_obj_list.next else trap("gc_free_cycles: unlinked list")
+        if el == &rt.tmp_obj_list:
+            break
+        let p = gc_header_of(el)
+        # Only need to free the GC object associated with JS values or async functions.
+        # The rest will be automatically removed because they must be referenced by them.
+        match js_rc(p).gc_obj_type():
+            .js_object, .function_bytecode, .async_function, .module:
+                free_gc_object(rt, p)
+            _:
+                cutils.list_del(&p.link)
+                cutils.list_add_tail(&p.link, &rt.gc_zero_ref_count_list)
+    rt.gc_phase = GCPhase.none_
+
+    var el = rt.gc_zero_ref_count_list.next else trap("gc_free_cycles: unlinked list")
+    while el != &rt.gc_zero_ref_count_list:
+        let el1 = el.next else trap("gc_free_cycles: unlinked list")
+        let p = gc_header_of(el)
+        let type_ = js_rc(p).gc_obj_type()
+        assert(type_ == GCObjectType.js_object or type_ == GCObjectType.function_bytecode or
+               type_ == GCObjectType.async_function or type_ == GCObjectType.module)
+        if type_ == GCObjectType.js_object and ((Object*)p).weakref_count != 0:
+            # keep the object because there are weak references to it
+            js_rc(p).set_mark(0)
+        else:
+            js_free_rt(rt, p)
+        el = el1
+
+    cutils.init_list_head(&rt.gc_zero_ref_count_list)
+
+# mark: Running the collector ===================================================================
+
+func js_run_gc_internal(rt: Runtime*, remove_weak_objects: bool):
+    if remove_weak_objects:
+        # free the weakly referenced object or symbol structures, delete the associated
+        # Map/Set entries and queue the finalization registry callbacks.
+        gc_remove_weak_objects(rt)
+
+    # decrement the reference of the children of each object. mark = 1 after this pass.
+    gc_decref(rt)
+
+    # keep the GC objects with a non zero refcount and their childs
+    gc_scan(rt)
+
+    # free the GC objects in a cycle
+    gc_free_cycles(rt)
+
+## Free the unreachable cycles of GC objects, and what only weak references hold
+## (JS_RunGC).
+pub func js_run_gc(rt: Runtime*):
+    js_run_gc_internal(rt, true)
+
+## Return false if not an object or if the object has already been freed (zombie objects
+## are visible in finalizers when freeing cycles) (JS_IsLiveObject).
+pub func js_is_live_object(rt: Runtime*, obj: Value) -> bool:
+    if not js_is_object(obj):
+        return false
+    let p = js_value_get_obj(obj)
+    return not p.free_mark

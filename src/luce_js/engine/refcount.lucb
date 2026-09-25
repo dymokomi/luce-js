@@ -50,3 +50,22 @@ pub func js_set_property(ctx: Context*, this_obj: Value, prop: Atom, val: Value)
 ## A C function object (JS_NewCFunction).
 pub func js_new_c_function(ctx: Context*, func_: CFunction, name: const u8*, length: i32) -> Value!:
     return try js_new_c_function2(ctx, func_, name, length, CFunctionEnum.generic, 0)
+
+## A string value from NUL-terminated UTF-8 text (JS_NewString).
+pub func js_new_string(ctx: Context*, text: const u8*) -> Value!:
+    return try js_new_string_len(ctx, text, cutils.strlen(text))
+
+## A NUL-terminated UTF-8 copy of `val1` converted to a string, released with
+## js_free_c_string; `plen` receives its length (JS_ToCStringLen).
+pub func js_to_c_string_len(ctx: Context*, plen: usize*?, val1: Value) -> const u8*!:
+    return try js_to_c_string_len2(ctx, plen, val1, false)
+
+## A NUL-terminated UTF-8 copy of `val1` converted to a string, released with
+## js_free_c_string (JS_ToCString).
+pub func js_to_c_string(ctx: Context*, val1: Value) -> const u8*!:
+    return try js_to_c_string_len2(ctx, none, val1, false)
+
+## A NUL-terminated UTF-8 copy of the atom's text, released with js_free_c_string
+## (JS_AtomToCString).
+pub func js_atom_to_c_string(ctx: Context*, atom: Atom) -> const u8*!:
+    return try js_atom_to_c_string_len(ctx, none, atom)

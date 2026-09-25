@@ -1,0 +1,114 @@
+#==============================================================================================
+#
+#   prototype - Reading and changing an object's prototype
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 7886-8047: JS_SetImmutablePrototype,
+#       JS_SetPrototypeInternal, JS_SetPrototype, JS_GetPrototypePrimitive and
+#       JS_GetPrototype.
+#
+#==============================================================================================
+
+# mark: Setting the prototype ===================================================================
+
+func js_set_immutable_prototype(ctx: Context*, obj: Value):
+    if obj.tag != Tag.object:
+        return
+    let p = js_value_get_obj(obj)
+    p.has_immutable_prototype = true
+
+# Return true or false, or fail with the exception. 'throw_flag' = false indicates that it
+# is called from Reflect.setPrototypeOf().
+func js_set_prototype_internal(ctx: Context*, obj: Value, proto_val: Value,
+                               throw_flag: bool) -> bool!:
+    if throw_flag:
+        if obj.tag == Tag.null or obj.tag == Tag.undefined:
+            try js_throw_type_error_not_an_object(ctx)
+    else:
+        if obj.tag != Tag.object:
+            try js_throw_type_error_not_an_object(ctx)
+    var proto: Object*? = none
+    if proto_val.tag != Tag.object:
+        if proto_val.tag != Tag.null:
+            try js_throw_type_error_not_an_object(ctx)
+    else:
+        proto = js_value_get_obj(proto_val)
+
+    if throw_flag and obj.tag != Tag.object:
+        return true
+    let p = js_value_get_obj(obj)
+
+    if p.is_exotic:
+        let class_array = ctx.rt.class_array else trap("set_prototype: no class array")
+        if let em = class_array[(usize)(u16)p.class_id].exotic:
+            if let set_prototype = em.set_prototype:
+                let ret = try set_prototype(ctx, obj, proto_val)
+                if not ret and throw_flag:
+                    try js_throw_type_error(ctx, "proxy: bad prototype")
+                return ret
+
+    var sh = p.shape
+    if sh.proto == proto:
+        return true
+    if p.has_immutable_prototype:
+        if throw_flag:
+            try js_throw_type_error(ctx, "prototype is immutable")
+        return false
+    if not p.extensible:
+        if throw_flag:
+            try js_throw_type_error(ctx, "object is not extensible")
+        return false
+    if let proto1 = proto:
+        # check if there is a cycle
+        var p1: Object*? = proto1
+        while let o = p1:
+            if o == p:
+                if throw_flag:
+                    try js_throw_type_error(ctx, "circular prototype chain")
+                return false
+            # Note: for Proxy objects, proto is none
+            p1 = o.shape.proto
+        discard(js_dup_value(ctx, proto_val))
+
+    discard(try js_shape_prepare_update(ctx, p, none))
+    sh = p.shape
+    if let old_proto = sh.proto:
+        js_free_value(ctx, js_mkptr(Tag.object, old_proto))
+    sh.proto = proto
+    p.is_std_array_prototype = false
+    return true
+
+## Set the prototype of `obj` to `proto_val` (an object or null): answer false if it cannot
+## be changed, or fail with the exception (JS_SetPrototype).
+pub func js_set_prototype(ctx: Context*, obj: Value, proto_val: Value) -> bool!:
+    return try js_set_prototype_internal(ctx, obj, proto_val, true)
+
+# mark: Getting the prototype ===================================================================
+
+# The prototype of a primitive value, not duplicated. Only works for primitive types,
+# otherwise return null.
+func js_get_prototype_primitive(ctx: Context*, val: Value) -> Value:
+    let class_proto = ctx.class_proto else trap("get_prototype: no class prototypes")
+    match val.tag:
+        .short_big_int, .big_int: return class_proto[(usize)(u16)ClassId.big_int]
+        .int, .float64: return class_proto[(usize)(u16)ClassId.number]
+        .boolean: return class_proto[(usize)(u16)ClassId.boolean]
+        .string, .string_rope: return class_proto[(usize)(u16)ClassId.string]
+        .symbol: return class_proto[(usize)(u16)ClassId.symbol]
+        # object, null, undefined and the internal tags
+        _: return js_null()
+
+## The prototype of `obj`: an object or null; fails with an exception only for an exotic
+## object (JS_GetPrototype).
+pub func js_get_prototype(ctx: Context*, obj: Value) -> Value!:
+    if obj.tag == Tag.object:
+        let p = js_value_get_obj(obj)
+        if p.is_exotic:
+            let class_array = ctx.rt.class_array else trap("get_prototype: no class array")
+            if let em = class_array[(usize)(u16)p.class_id].exotic:
+                if let get_prototype = em.get_prototype:
+                    return try get_prototype(ctx, obj)
+        if let proto = p.shape.proto:
+            return js_dup_value(ctx, js_mkptr(Tag.object, proto))
+        return js_null()
+    return js_dup_value(ctx, js_get_prototype_primitive(ctx, obj))

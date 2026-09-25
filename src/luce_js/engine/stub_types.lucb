@@ -26,8 +26,13 @@ struct BCWriterState:
 struct BlockEnv:
     var unported: i32
 
+## A C function's bound data (JSCFunctionDataRecord); `data_len` values follow it.
+## (Declared here, not a placeholder: the memory usage walk reads it.)
 struct CFunctionDataRecord:
-    var unported: i32
+    var func_: CFunctionData
+    var length: u8
+    var data_len: u8
+    var magic: u16
 
 struct ClassFieldsDef:
     var unported: i32
@@ -78,9 +83,6 @@ struct LabelSlot:
     var unported: i32
 
 struct MapIteratorData:
-    var unported: i32
-
-struct MemoryUsageHelper:
     var unported: i32
 
 struct ObjectList:

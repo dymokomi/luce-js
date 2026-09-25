@@ -12,8 +12,12 @@ stub_r02_context.lucb
 stub_r03_atoms.lucb
 stub_r04_classes_strings.lucb
 stub_r05_shapes_objects.lucb
-stub_r06_gc.lucb
-stub_r07_exceptions.lucb
+gc.lucb
+memory_usage.lucb
+exceptions.lucb
+throw_errors.lucb
+prototype.lucb
+tests_gc_exceptions.lucb
 stub_r08_property_get.lucb
 stub_r09_property_set.lucb
 stub_r10_define_property.lucb

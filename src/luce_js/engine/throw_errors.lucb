@@ -1,0 +1,205 @@
+#==============================================================================================
+#
+#   throw_errors - Throwing native errors: JS_ThrowError and the JS_Throw*Error helpers
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 7638-7884: JS_ThrowError2, JS_ThrowError, every
+#       JS_Throw*Error helper, the out of memory and stack overflow errors, and the
+#       interrupt poll.
+#
+#       C formats a printf message into a 256-byte stack buffer; here the message is a
+#       `fmt`, written into the same buffer and truncated as vsnprintf truncates. The
+#       JS_Throw*ErrorAtom macros keep C's format text: its one "%s" is replaced by the
+#       atom's text. Every helper fails with the new error pending (`-> never!`), except the
+#       "OrFalse" and "ReadOnly" ones, which answer false when they do not throw.
+#
+#==============================================================================================
+
+# mark: Making and throwing an error ============================================================
+
+# The size of the message buffer (C: char buf[256]).
+let throw_error_buf_size: usize = 256
+
+func js_throw_error2(ctx: Context*, error_num: ErrorKind, message: fmt,
+                    add_backtrace: bool) -> never!:
+    var buf: u8[throw_error_buf_size] = ---
+    # vsnprintf: the text is cut to the buffer, keeping room for the NUL
+    var writer = io.SliceWriter.over(buf[0..<throw_error_buf_size - 1])
+    discard(writer.write(message) catch failure: recover 0)
+    let text = writer.written()
+
+    let proto = ctx.native_error_proto[(usize)(i32)error_num]
+    let obj = js_new_object_proto_class(ctx, proto, (u32)(u16)ClassId.error_) catch failure:
+        # out of memory: throw JS_NULL to avoid recursing
+        recover js_null()
+    if obj.tag == Tag.object:
+        # C would store the JS_EXCEPTION marker as the message if the string cannot be
+        # made; the message is left out instead.
+        let msg: Value? = (js_new_string_len(ctx, text.data, text.length)
+                           catch failure: recover none)
+        if let m = msg:
+            discard(js_define_property_value(ctx, obj, atom_message, m,
+                                             prop_writable | prop_configurable)
+                    catch failure: recover false)
+        if add_backtrace:
+            build_backtrace(ctx, obj, none, 0, 0, 0)
+    try js_throw(ctx, obj)
+
+func js_throw_error(ctx: Context*, error_num: ErrorKind, message: fmt) -> never!:
+    let rt = ctx.rt
+    # the backtrace is added later if called from a bytecode function
+    var add_backtrace = not rt.in_out_of_memory
+    if let sf = rt.current_stack_frame:
+        add_backtrace = add_backtrace and js_get_function_bytecode(sf.cur_func) == none
+    try js_throw_error2(ctx, error_num, message, add_backtrace)
+
+## Throw a SyntaxError with `message` (JS_ThrowSyntaxError).
+pub func js_throw_syntax_error(ctx: Context*, message: fmt) -> never!:
+    try js_throw_error(ctx, ErrorKind.syntax_error, message)
+
+## Throw a TypeError with `message` (JS_ThrowTypeError).
+pub func js_throw_type_error(ctx: Context*, message: fmt) -> never!:
+    try js_throw_error(ctx, ErrorKind.type_error, message)
+
+# Throw a TypeError if `flags` ask for it (prop_throw, or prop_throw_strict in strict
+# mode), else answer false.
+func js_throw_type_error_or_false(ctx: Context*, flags: i32, message: fmt) -> bool!:
+    if (flags & prop_throw) != 0 or ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx)):
+        try js_throw_error(ctx, ErrorKind.type_error, message)
+    return false
+
+# mark: Errors naming an atom ===================================================================
+
+# `message` with its first "%s" replaced by `arg` is `before`, `arg`, `after`; a message
+# without "%s" is all `before`.
+func split_percent_s(message: str) -> (str, str):
+    let bytes = message.bytes
+    var i: usize = 0
+    while i + 1 < bytes.length:
+        if bytes[i] == '%' and bytes[i + 1] == 's':
+            return ((str)bytes[0..<i], (str)bytes[i + 2..])
+        i += 1
+    return (message, "")
+
+# never use it directly
+func js_throw_type_error_atom_raw(ctx: Context*, atom: Atom, message: str) -> never!:
+    var buf: u8[64] = ---
+    let (before, after) = split_percent_s(message)
+    let name = c_str_view(js_atom_get_str(ctx, buf, atom))
+    try js_throw_type_error(ctx, f"{before}{name}{after}")
+
+# never use it directly
+func js_throw_syntax_error_atom_raw(ctx: Context*, atom: Atom, message: str) -> never!:
+    var buf: u8[64] = ---
+    let (before, after) = split_percent_s(message)
+    let name = c_str_view(js_atom_get_str(ctx, buf, atom))
+    try js_throw_syntax_error(ctx, f"{before}{name}{after}")
+
+# Throw a TypeError whose `message` has one "%s", replaced by the text of 'atom'
+# (the JS_ThrowTypeErrorAtom macro).
+func js_throw_type_error_atom(ctx: Context*, message: str, atom: Atom) -> never!:
+    try js_throw_type_error_atom_raw(ctx, atom, message)
+
+# Throw a SyntaxError whose `message` has one "%s", replaced by the text of 'atom'
+# (the JS_ThrowSyntaxErrorAtom macro).
+func js_throw_syntax_error_atom(ctx: Context*, message: str, atom: Atom) -> never!:
+    try js_throw_syntax_error_atom_raw(ctx, atom, message)
+
+# Throw "'atom' is read-only" if `flags` ask for it, else answer false.
+func js_throw_type_error_read_only(ctx: Context*, flags: i32, atom: Atom) -> bool!:
+    if (flags & prop_throw) != 0 or ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx)):
+        try js_throw_type_error_atom(ctx, "'%s' is read-only", atom)
+    return false
+
+# mark: The other error kinds ===================================================================
+
+## Throw a ReferenceError with `message` (JS_ThrowReferenceError).
+pub func js_throw_reference_error(ctx: Context*, message: fmt) -> never!:
+    try js_throw_error(ctx, ErrorKind.reference_error, message)
+
+## Throw a RangeError with `message` (JS_ThrowRangeError).
+pub func js_throw_range_error(ctx: Context*, message: fmt) -> never!:
+    try js_throw_error(ctx, ErrorKind.range_error, message)
+
+## Throw an InternalError with `message` (JS_ThrowInternalError).
+pub func js_throw_internal_error(ctx: Context*, message: fmt) -> never!:
+    try js_throw_error(ctx, ErrorKind.internal_error, message)
+
+## Throw the "out of memory" InternalError, unless it is being thrown already
+## (JS_ThrowOutOfMemory).
+pub func js_throw_out_of_memory(ctx: Context*) -> never!:
+    let rt = ctx.rt
+    if not rt.in_out_of_memory:
+        rt.in_out_of_memory = true
+        js_throw_internal_error(ctx, "out of memory") catch failure:
+            rt.in_out_of_memory = false
+            error(failure.code, failure.message)
+    error(exception, "")
+
+func js_throw_stack_overflow(ctx: Context*) -> never!:
+    try js_throw_internal_error(ctx, "stack overflow")
+
+func js_throw_type_error_not_an_object(ctx: Context*) -> never!:
+    try js_throw_type_error(ctx, "not an object")
+
+func js_throw_type_error_not_a_constructor(ctx: Context*, func_obj: Value) -> never!:
+    if js_is_function(ctx, func_obj):
+        if let name = get_prop_string(ctx, func_obj, atom_name):
+            let text = c_str_view(name)
+            js_throw_type_error(ctx, f"{text} is not a constructor") catch failure:
+                js_free_c_string(ctx, name)
+                error(failure.code, failure.message)
+    try js_throw_type_error(ctx, "not a constructor")
+
+func js_throw_type_error_not_a_symbol(ctx: Context*) -> never!:
+    try js_throw_type_error(ctx, "not a symbol")
+
+func js_throw_reference_error_not_defined(ctx: Context*, name: Atom) -> never!:
+    var buf: u8[64] = ---
+    let text = c_str_view(js_atom_get_str(ctx, buf, name))
+    try js_throw_reference_error(ctx, f"'{text}' is not defined")
+
+func js_throw_reference_error_uninitialized(ctx: Context*, name: Atom) -> never!:
+    var buf: u8[64] = ---
+    var text = "lexical variable"
+    if name != no_atom:
+        text = c_str_view(js_atom_get_str(ctx, buf, name))
+    try js_throw_reference_error(ctx, f"{text} is not initialized")
+
+func js_throw_reference_error_uninitialized2(ctx: Context*, b: FunctionBytecode*, idx: i32,
+                                             is_ref: bool) -> never!:
+    var atom = no_atom
+    if is_ref:
+        let closure_var = b.closure_var else trap("uninitialized: no closure variables")
+        atom = closure_var[(usize)idx].var_name
+    else:
+        # not present if the function is stripped and contains no eval()
+        if let vardefs = b.vardefs:
+            atom = vardefs[(usize)b.arg_count + (usize)idx].var_name
+    try js_throw_reference_error_uninitialized(ctx, atom)
+
+func js_throw_type_error_invalid_class(ctx: Context*, class_id: i32) -> never!:
+    let rt = ctx.rt
+    let class_array = rt.class_array else trap("invalid class: no class array")
+    let name = class_array[(usize)class_id].class_name
+    try js_throw_type_error_atom(ctx, "%s object expected", name)
+
+# mark: Interrupts ==============================================================================
+
+func js_throw_interrupted(ctx: Context*) -> never!:
+    js_throw_internal_error(ctx, "interrupted") catch failure:
+        js_set_uncatchable_exception(ctx, true)
+        error(failure.code, failure.message)
+
+noinline func js_poll_interrupts_raw(ctx: Context*) -> !:
+    let rt = ctx.rt
+    ctx.interrupt_counter = js_interrupt_counter_init
+    if let handler = rt.interrupt_handler:
+        if handler(rt, rt.interrupt_opaque) != 0:
+            try js_throw_interrupted(ctx)
+
+# Count down to the next call of the interrupt handler; fails if it interrupts.
+inline func js_poll_interrupts(ctx: Context*) -> !:
+    ctx.interrupt_counter -= 1
+    if ctx.interrupt_counter <= 0:
+        try js_poll_interrupts_raw(ctx)

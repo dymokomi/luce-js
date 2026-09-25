@@ -1,0 +1,156 @@
+#==============================================================================================
+#
+#   tests_gc_exceptions - Unit tests of the collector and exception regions' plain helpers
+#
+#   DESCRIPTION:
+#       What runs without a runtime: the GC bits of the block header, the LEB128 coding of
+#       the pc2line table and find_line_num's walk of it, the "%s" substitution of the
+#       JS_Throw*ErrorAtom macros, C string views, and the number formatting of the memory
+#       report.
+#
+#==============================================================================================
+
+# mark: Helpers ================================================================================
+
+# The bytes a DynBuf holds, copied into `out`; answers the count.
+func dbuf_bytes(s: cutils.DynBuf*, out: u8[]) -> usize:
+    let buf = s.buf else return 0
+    for i in 0..<s.size:
+        out[i] = buf[i]
+    return s.size
+
+# The pc2line table the tests walk: a function at line 10 column 5, then pc 3 at line 11
+# column 7 (a one-byte entry), then pc 100 at line 50 column 1 (a long entry: pc delta 97 is
+# more than pc2line_diff_pc_max).
+func build_pc2line(s: cutils.DynBuf*):
+    dbuf_put_leb128(s, 9)
+    dbuf_put_leb128(s, 4)
+    discard(cutils.dbuf_putc(s, (u8)(pc2line_op_first + (1 - pc2line_base) + 3 * pc2line_range)))
+    dbuf_put_sleb128(s, 2)
+    discard(cutils.dbuf_putc(s, 0))
+    dbuf_put_leb128(s, 97)
+    dbuf_put_sleb128(s, 39)
+    dbuf_put_sleb128(s, -6)
+
+# (line, column) of `pc_value` in the table of `s`, cut to `len` bytes, or (0, 0).
+func line_col_at(s: cutils.DynBuf*, len: usize, pc_value: u32, has_debug: bool) -> (i32, i32):
+    var b: FunctionBytecode = ---
+    b.has_debug = has_debug
+    b.debug.pc2line_buf = s.buf
+    b.debug.pc2line_len = (i32)len
+    if let line_col = find_line_col(&b, pc_value):
+        return line_col
+    return (0, 0)
+
+# mark: Block header bits ======================================================================
+
+test "gc_obj_type and mark share one byte":
+    var h = MallocBlockHeader(block_idx = 0, block_size_idx = 0, gc_bits = 0, ref_count = 1)
+    h.set_gc_obj_type(GCObjectType.module)
+    assert(h.gc_obj_type() == GCObjectType.module and h.mark() == 0)
+    h.set_mark(1)
+    assert(h.gc_obj_type() == GCObjectType.module and h.mark() == 1)
+    assert(h.gc_bits == 0x86)
+    h.set_gc_obj_type(GCObjectType.js_object)
+    assert(h.gc_obj_type() == GCObjectType.js_object and h.mark() == 1)
+    h.set_mark(0)
+    assert(h.gc_bits == 0 and h.ref_count == 1)
+
+# mark: LEB128 =================================================================================
+
+test "leb128 round trip":
+    let values: u32[8] = [0, 1, 0x7f, 0x80, 0x3fff, 0x4000, 0x0fffffff, 0xffffffff]
+    let lengths: i32[8] = [1, 1, 1, 2, 2, 3, 4, 5]
+    for i in 0..<values.length:
+        var s: cutils.DynBuf = ---
+        cutils.dbuf_init(&s)
+        dbuf_put_leb128(&s, values[i])
+        var bytes: u8[8]
+        let n = dbuf_bytes(&s, bytes)
+        assert(n == (usize)lengths[i])
+        var v: u32 = 12345
+        let p: const u8* = &bytes[0]
+        assert(get_leb128(&v, p, p + n) == lengths[i])
+        assert(v == values[i])
+        # one byte short
+        assert(get_leb128(&v, p, p + (n - 1)) == -1 and v == 0)
+        cutils.dbuf_free(&s)
+
+test "leb128 rejects more than five bytes":
+    let bytes: u8[6] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x01]
+    var v: u32 = 7
+    assert(get_leb128(&v, &bytes[0], &bytes[0] + 6) == -1 and v == 0)
+
+test "sleb128 round trip":
+    let values: i32[9] = [0, 1, -1, 63, -64, 64, -65, 2147483647, -2147483648]
+    let lengths: i32[9] = [1, 1, 1, 1, 1, 2, 2, 5, 5]
+    for i in 0..<values.length:
+        var s: cutils.DynBuf = ---
+        cutils.dbuf_init(&s)
+        dbuf_put_sleb128(&s, values[i])
+        var bytes: u8[8]
+        let n = dbuf_bytes(&s, bytes)
+        assert(n == (usize)lengths[i])
+        var v: i32 = 12345
+        assert(get_sleb128(&v, &bytes[0], &bytes[0] + n) == lengths[i])
+        assert(v == values[i])
+        cutils.dbuf_free(&s)
+
+# mark: pc2line ================================================================================
+
+test "find_line_num walks the pc2line table":
+    var s: cutils.DynBuf = ---
+    cutils.dbuf_init(&s)
+    build_pc2line(&s)
+    let len = s.size
+    # the function definition
+    assert(line_col_at(&s, len, 0xffffffff, true) == (10, 5))
+    # before the first entry, at it, between entries, at and after the last one
+    assert(line_col_at(&s, len, 0, true) == (10, 5))
+    assert(line_col_at(&s, len, 2, true) == (10, 5))
+    assert(line_col_at(&s, len, 3, true) == (11, 7))
+    assert(line_col_at(&s, len, 99, true) == (11, 7))
+    assert(line_col_at(&s, len, 100, true) == (50, 1))
+    assert(line_col_at(&s, len, 1000, true) == (50, 1))
+    # stripped, and truncated in the long entry
+    assert(line_col_at(&s, len, 3, false) == (0, 0))
+    assert(line_col_at(&s, len - 1, 1000, true) == (0, 0))
+    assert(line_col_at(&s, 1, 0xffffffff, true) == (0, 0))
+    cutils.dbuf_free(&s)
+
+# mark: Error messages =========================================================================
+
+test "the atom macros replace one %s":
+    let (a, b) = split_percent_s("'%s' is read-only")
+    assert(a == "'" and b == "' is read-only")
+    let (c, d) = split_percent_s("%s object expected")
+    assert(c == "" and d == " object expected")
+    let (e, f) = split_percent_s("redeclaration of '%s'")
+    assert(e == "redeclaration of '" and f == "'")
+    let (g, h) = split_percent_s("no placeholder %")
+    assert(g == "no placeholder %" and h == "")
+
+test "C string views":
+    assert(c_str_view("hello".bytes.data) == "hello")
+    assert(c_str_view("".bytes.data) == "")
+
+# mark: Memory report ==========================================================================
+
+test "printf %0.1f":
+    var buf: u8[448]
+    assert(format_fixed1(buf, 0.0) == "0.0")
+    # exact ties round to even; 2.35 is a little above its double's tie, 0.45 below
+    assert(format_fixed1(buf, 2.25) == "2.2" and format_fixed1(buf, 2.75) == "2.8")
+    assert(format_fixed1(buf, -0.25) == "-0.2" and format_fixed1(buf, 0.5) == "0.5")
+    assert(format_fixed1(buf, 2.35) == "2.4" and format_fixed1(buf, 0.45) == "0.5")
+    assert(format_fixed1(buf, 1234.56) == "1234.6")
+    assert(ratio1(buf, 7, 2) == "3.5")
+    var small: u8[4]
+    assert(format_fixed1(small, 1.0) == "?")
+
+test "report columns and shares":
+    assert(name_pad("atoms") == 15 and name_pad("a name of twenty chr") == 0)
+    assert(decimal_width(0) == 1 and decimal_width(9) == 1 and decimal_width(10) == 2)
+    assert(decimal_width(4294967295) == 10)
+    assert(round_share(2.5) == 3 and round_share(2.49) == 2 and round_share(0.0) == 0)
+    assert(add_share(10, 0.5) == 10 and add_share(10, 1.75) == 11)

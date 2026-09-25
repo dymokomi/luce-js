@@ -107,6 +107,15 @@ func js_new_symbol(ctx: Context*, p: String*, atom_type: i32) -> Value!:
 ## Ported from quickjs.c:3528 JS_NewSymbolFromAtom.
 func js_new_symbol_from_atom(ctx: Context*, descr: Atom, atom_type: i32) -> Value!:
     trap("unported: JS_NewSymbolFromAtom")
+## The size of the buffer JS_AtomGetStr writes (ATOM_GET_STR_BUF_SIZE).
+let atom_get_str_buf_size: i32 = 64
+## Ported from quickjs.c:3544 JS_AtomGetStrRT. Answers `buf`, or the atom's own
+## NUL-terminated text when it is ASCII. Should only be used for debug.
+func js_atom_get_str_rt(rt: Runtime*, buf: u8[], atom: Atom) -> const u8*:
+    trap("unported: JS_AtomGetStrRT")
+## Ported from quickjs.c:3590 JS_AtomGetStr.
+func js_atom_get_str(ctx: Context*, buf: u8[], atom: Atom) -> const u8*:
+    trap("unported: JS_AtomGetStr")
 ## Ported from quickjs.c:3595 __JS_AtomToValue.
 func js_atom_to_value_raw(ctx: Context*, atom: Atom, force_string: bool) -> Value!:
     trap("unported: __JS_AtomToValue")
@@ -134,6 +143,10 @@ func js_free_atom_rt(rt: Runtime*, v: Atom):
 ## Ported from quickjs.c:3737 JS_AtomSymbolHasDescription.
 func js_atom_symbol_has_description(ctx: Context*, v: Atom) -> bool:
     trap("unported: JS_AtomSymbolHasDescription")
+## Ported from quickjs.c:3753 JS_AtomToCStringLen. A NUL-terminated UTF-8 copy of the
+## atom's text, released with js_free_c_string; `plen` receives its length.
+func js_atom_to_c_string_len(ctx: Context*, plen: usize*?, atom: Atom) -> const u8*!:
+    trap("unported: JS_AtomToCStringLen")
 ## Ported from quickjs.c:3770 js_atom_concat_str.
 func js_atom_concat_str(ctx: Context*, name: Atom, str1: const u8*) -> Atom!:
     trap("unported: js_atom_concat_str")

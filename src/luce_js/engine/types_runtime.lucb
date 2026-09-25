@@ -130,6 +130,23 @@ struct MallocBlockHeader:
     var gc_bits: u8
     var ref_count: i32
 
+    ## The gc_obj_type bit-field: the low 7 bits of gc_bits.
+    func gc_obj_type() -> GCObjectType:
+        let bits = self.gc_bits & 0x7f
+        return (GCObjectType)bits
+
+    ## Set the gc_obj_type bit-field.
+    mutating func set_gc_obj_type(type_: GCObjectType):
+        self.gc_bits = (self.gc_bits & 0x80) | ((u8)type_ & 0x7f)
+
+    ## The mark bit-field (0 or 1): bit 7 of gc_bits.
+    func mark() -> u8:
+        return self.gc_bits >> 7
+
+    ## Set the mark bit-field to `m` (0 or 1).
+    mutating func set_mark(m: u8):
+        self.gc_bits = (self.gc_bits & 0x7f) | ((m & 1) << 7)
+
 ## A block too large for the arenas, straight from the host (JSMallocLargeBlockHeader).
 struct MallocLargeBlockHeader:
     var header: MallocBlockHeader
