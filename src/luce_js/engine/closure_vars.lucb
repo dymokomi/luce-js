@@ -1,0 +1,238 @@
+#==============================================================================================
+#
+#   closure_vars - Closure variables and the helpers of variable resolution (phase 2)
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 32694-32914: adding and finding the closure variables of
+#       a function being compiled, the with-scope opcodes, the `x op= expr` reference
+#       optimization (optimize_scope_make_ref), the pseudo variables ('this',
+#       'new.target', 'home_object', 'this.active_func'), the variable object tests of
+#       with statements and sloppy-mode eval, and capture_var. The small `dbuf_*`
+#       writers at the top append opcodes and operands to the bytecode being rewritten.
+#
+#==============================================================================================
+
+# mark: Bytecode output =========================================================================
+
+# dbuf_putc(bc, OP_x): append the opcode `op` to the bytecode `bc`.
+func dbuf_op(bc: cutils.DynBuf*, op: Op):
+    discard(cutils.dbuf_putc(bc, (u8)op))
+
+# dbuf_putc(bc, OP_x) for a temporary opcode.
+func dbuf_temp_op(bc: cutils.DynBuf*, op: TempOp):
+    discard(cutils.dbuf_putc(bc, (u8)op))
+
+# dbuf_putc(bc, v): append the byte `v`.
+func dbuf_byte(bc: cutils.DynBuf*, v: u8):
+    discard(cutils.dbuf_putc(bc, v))
+
+# dbuf_put_u16(bc, v): append the low 16 bits of `v`, as C converts its int argument.
+func dbuf_u16(bc: cutils.DynBuf*, v: i32):
+    discard(cutils.dbuf_put_u16(bc, (u16)v))
+
+# dbuf_put_u32(bc, v).
+func dbuf_u32(bc: cutils.DynBuf*, v: u32):
+    discard(cutils.dbuf_put_u32(bc, v))
+
+# The bytes of the bytecode buffer `bc`; a buffer that never grew has none, and its size
+# is then zero.
+func dbuf_bytes_or_empty(bc: cutils.DynBuf*) -> u8*:
+    if let buf = bc.buf:
+        return buf
+    return &empty_bytecode[0]
+
+# The storage dbuf_bytes_or_empty answers for an empty buffer.
+var empty_bytecode: u8[1]
+
+# The closure variable `idx` of fd.closure_var (&fd->closure_var[idx]).
+func fd_closure_var(fd: FunctionDef*, idx: i32) -> ClosureVar*:
+    let vars = fd.closure_var else trap("FunctionDef: no closure variables")
+    return vars + (isize)idx
+
+# Emit OP_throw_error of 'var_name is read-only' (JS_THROW_VAR_RO).
+func emit_throw_var_ro(ctx: Context*, bc: cutils.DynBuf*, var_name: Atom):
+    dbuf_op(bc, Op.throw_error)
+    dbuf_u32(bc, js_dup_atom(ctx, var_name))
+    dbuf_byte(bc, (u8)throw_var_ro)
+
+# mark: Closure variables =======================================================================
+
+# Add the closure variable `var_name` to `s`; answers its index.
+func add_closure_var(ctx: Context*, s: FunctionDef*, closure_type: ClosureType, var_idx: i32,
+                     var_name: Atom, is_const: bool, is_lexical: bool,
+                     var_kind: VarKind) -> i32!:
+    # the closure variable indexes are currently stored on 16 bits
+    if s.closure_var_count >= js_max_local_vars:
+        try js_throw_internal_error(ctx, "too many closure variables")
+
+    try js_resize_array(ctx, (void*?*)&s.closure_var, (i32)sizeof(ClosureVar),
+                        &s.closure_var_size, s.closure_var_count + 1)
+    let cv = fd_closure_var(s, s.closure_var_count)
+    s.closure_var_count += 1
+    cv.closure_type = closure_type
+    cv.is_const = is_const
+    cv.is_lexical = is_lexical
+    cv.var_kind = var_kind
+    cv.var_idx = (u16)var_idx
+    cv.var_name = js_dup_atom(ctx, var_name)
+    return s.closure_var_count - 1
+
+# The index of the closure variable `var_name` of `s`, or -1.
+func find_closure_var(ctx: Context*, s: FunctionDef*, var_name: Atom) -> i32:
+    for i in 0..<s.closure_var_count:
+        let cv = fd_closure_var(s, i)
+        if cv.var_name == var_name:
+            return i
+    return -1
+
+# 'fd' must be a parent of 's'. Create in 's' a closure referencing another one in 'fd'
+func get_closure_var(ctx: Context*, s: FunctionDef*, fd: FunctionDef*,
+                     closure_type0: ClosureType, var_idx0: i32, var_name: Atom,
+                     is_const: bool, is_lexical: bool, var_kind: VarKind) -> i32!:
+    var closure_type = closure_type0
+    var var_idx = var_idx0
+    let parent = s.parent else trap("get_closure_var: 'fd' is not a parent of 's'")
+    if fd != parent:
+        var_idx = try get_closure_var(ctx, parent, fd, closure_type, var_idx, var_name,
+                                      is_const, is_lexical, var_kind)
+        if closure_type != ClosureType.global_ref:
+            closure_type = ClosureType.ref
+    for i in 0..<s.closure_var_count:
+        let cv = fd_closure_var(s, i)
+        if (i32)cv.var_idx == var_idx and cv.closure_type == closure_type:
+            return i
+    return try add_closure_var(ctx, s, closure_type, var_idx, var_name, is_const, is_lexical,
+                               var_kind)
+
+# mark: With scopes and references ==============================================================
+
+# The with_* opcode that looks `op` (a scope_* opcode) up in a with or variable object.
+func get_with_scope_opcode(op: TempOp) -> Op:
+    if op == TempOp.scope_get_var_undef:
+        return Op.with_get_var
+    return (Op)(u8)((i32)Op.with_get_var + ((i32)op - (i32)TempOp.scope_get_var))
+
+# Whether the label at `pos` of the phase 1 bytecode is followed by an instruction pair
+# ending with put_ref_value that optimize_scope_make_ref can rewrite.
+func can_opt_put_ref_value(bc_buf: const u8*, pos: i32) -> bool:
+    let opcode = bc_buf[pos]
+    return (bc_buf[pos + 1] == (u8)Op.put_ref_value and
+            (opcode == (u8)Op.insert3 or
+             opcode == (u8)Op.perm4 or
+             opcode == (u8)Op.nop or
+             opcode == (u8)Op.rot3l))
+
+# The same test for a global variable reference.
+func can_opt_put_global_ref_value(bc_buf: const u8*, pos: i32) -> bool:
+    let opcode = bc_buf[pos]
+    return (bc_buf[pos + 1] == (u8)Op.put_ref_value and
+            (opcode == (u8)Op.insert3 or
+             opcode == (u8)Op.perm4 or
+             opcode == (u8)Op.nop or
+             opcode == (u8)Op.rot3l))
+
+# Replace the reference made by scope_make_ref (whose label is `ls`) with direct accesses
+# of variable `var_idx`: `get_op` to read it, `get_op + 1` to write it. Answers the
+# position of the next opcode.
+func optimize_scope_make_ref(ctx: Context*, s: FunctionDef*, bc: cutils.DynBuf*, bc_buf: u8*,
+                             ls: LabelSlot*, pos_next0: i32, get_op: Op, var_idx: i32) -> i32:
+    var pos_next = pos_next0
+
+    # XXX: should optimize `loc(a) += expr` as `expr add_loc(a)`
+    # but only if expr does not modify `a`.
+    # should scan the code between pos_next and label_pos
+    # for operations that can potentially change `a`:
+    # OP_scope_make_ref(a), function calls, jumps and gosub.
+
+    # replace the reference get/put with normal variable accesses
+    if bc_buf[pos_next] == (u8)Op.get_ref_value:
+        dbuf_op(bc, get_op)
+        dbuf_u16(bc, var_idx)
+        pos_next += 1
+    # remove the OP_label to make room for replacement
+    # label should have a refcount of 0 anyway
+    # XXX: should avoid this patch by inserting nops in phase 1
+    let label_pos = ls.pos
+    var pos = label_pos - 5
+    assert(bc_buf[pos] == (u8)TempOp.label)
+    # label points to an instruction pair:
+    # - insert3 / put_ref_value
+    # - perm4 / put_ref_value
+    # - rot3l / put_ref_value
+    # - nop / put_ref_value
+    let end_pos = label_pos + 2
+    if bc_buf[label_pos] == (u8)Op.insert3:
+        bc_buf[pos] = (u8)Op.dup
+        pos += 1
+    bc_buf[pos] = (u8)get_op + 1
+    cutils.put_u16(bc_buf + pos + 1, (u16)var_idx)
+    pos += 3
+    # pad with OP_nop
+    while pos < end_pos:
+        bc_buf[pos] = (u8)Op.nop
+        pos += 1
+    return pos_next
+
+# mark: Pseudo variables ========================================================================
+
+# Add the 'this' variable of `fd`; answers its index.
+func add_var_this(ctx: Context*, fd: FunctionDef*) -> i32!:
+    let idx = try add_var(ctx, fd, atom_this)
+    if idx >= 0 and fd.is_derived_class_constructor:
+        let vd = fd_var(fd, idx)
+        # XXX: should have is_this flag or var type
+        # used to trigger 'uninitialized' checks in a derived class constructor
+        vd.is_lexical = true
+    return idx
+
+# The variable of the pseudo variable `var_name` of `s` ('this', 'new.target',
+# 'home_object', 'this.active_func'), added if needed; -1 if `var_name` is none of them
+# or `s` has no 'this' binding.
+func resolve_pseudo_var(ctx: Context*, s: FunctionDef*, var_name: Atom) -> i32!:
+    if not s.has_this_binding:
+        return -1
+    var var_idx: i32 = -1
+    if var_name == atom_home_object:
+        # 'home_object' pseudo variable
+        if s.home_object_var_idx < 0:
+            s.home_object_var_idx = try add_var(ctx, s, var_name)
+        var_idx = s.home_object_var_idx
+    elif var_name == atom_this_active_func:
+        # 'this.active_func' pseudo variable
+        if s.this_active_func_var_idx < 0:
+            s.this_active_func_var_idx = try add_var(ctx, s, var_name)
+        var_idx = s.this_active_func_var_idx
+    elif var_name == atom_new_target:
+        # 'new.target' pseudo variable
+        if s.new_target_var_idx < 0:
+            s.new_target_var_idx = try add_var(ctx, s, var_name)
+        var_idx = s.new_target_var_idx
+    elif var_name == atom_this:
+        # 'this' pseudo variable
+        if s.this_var_idx < 0:
+            s.this_var_idx = try add_var_this(ctx, s)
+        var_idx = s.this_var_idx
+    return var_idx
+
+# test if 'var_name' is in the variable object on the stack. If is it the case, handle
+# it and jump to 'label_done'
+func var_object_test(ctx: Context*, s: FunctionDef*, var_name: Atom, op: TempOp,
+                     bc: cutils.DynBuf*, plabel_done: i32*, is_with: bool):
+    dbuf_op(bc, get_with_scope_opcode(op))
+    dbuf_u32(bc, js_dup_atom(ctx, var_name))
+    if *plabel_done < 0:
+        *plabel_done = new_label_fd(s) catch failure: recover -1
+        if *plabel_done < 0:
+            cutils.dbuf_set_error(bc)
+            return
+    dbuf_u32(bc, (u32)*plabel_done)
+    dbuf_byte(bc, (u8)is_with)
+    discard(update_label(s, *plabel_done, 1))
+    s.jump_size += 1
+
+# Mark `vd` as captured by a closure, giving it the next variable reference slot.
+func capture_var(s: FunctionDef*, vd: VarDef*):
+    if not vd.is_captured:
+        vd.is_captured = true
+        vd.var_ref_idx = (u16)s.var_ref_count
+        s.var_ref_count += 1

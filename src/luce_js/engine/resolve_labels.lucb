@@ -1,0 +1,504 @@
+#==============================================================================================
+#
+#   resolve_labels - Phase 3 of the compiler: labels, jumps and the final bytecode
+#
+#   DESCRIPTION:
+#       Port of quickjs.c resolve_labels (lines 34796-35697): the function's prologue
+#       (the pseudo variables and 'arguments'), label placement and relocation, tail
+#       calls, jump threading and the short jump forms, then the pc2line table. The
+#       peephole optimizations of the other opcodes are in resolve_labels_peephole.lucb.
+#
+#       C's loop is one switch whose cases jump to four shared tails: `has_constant_test`
+#       (a constant followed by if_false/if_true), `has_goto` (jump threading),
+#       `has_label` (emit a jump) and `no_change` (copy the opcode). Here the state C
+#       keeps in locals lives in a ResolveLabelsState, each case answers the LabelStep
+#       it would jump to, and the loop runs the tails until one is done.
+#
+#==============================================================================================
+
+# mark: State ===================================================================================
+
+## The locals of resolve_labels that its cases and tails share.
+struct ResolveLabelsState:
+    var ctx: Context*
+    var s: FunctionDef*
+    ## The phase 2 bytecode.
+    var bc_buf: const u8*
+    var bc_len: i32
+    ## The phase 3 bytecode being written.
+    var bc_out: cutils.DynBuf
+    var cc: CodeContext
+    ## The opcode being resolved: its position and size; pos_next is where the next one
+    ## starts, after what a transformation consumed.
+    var pos: i32
+    var len: i32
+    var pos_next: i32
+    ## The opcode to emit: the one read, or the jump a transformation turned it into.
+    var op: i32
+    ## The label of the jump to emit.
+    var label: i32
+    ## The value of the constant tested by has_constant_test.
+    var val: i32
+    ## The source position of the current opcode.
+    var line_num: i32
+
+## Where a case of resolve_labels continues (the targets of its gotos).
+enum LabelStep:
+    ## The opcode was handled (C's `break`).
+    done
+    ## Copy the opcode unchanged.
+    no_change
+    ## Thread and emit the goto to `label`.
+    has_goto
+    ## Emit the jump `op` to `label`.
+    has_label
+    ## A constant `val` is followed by if_false/if_true (in `cc`).
+    has_constant_test
+
+# The jump slot `idx` of fd.jump_slots (&fd->jump_slots[idx]).
+func fd_jump_slot(fd: FunctionDef*, idx: i32) -> JumpSlot*:
+    let slots = fd.jump_slots else trap("FunctionDef: no jump slots")
+    return slots + (isize)idx
+
+# The next jump slot (&s->jump_slots[s->jump_count++]); resolve_variables counted them in
+# s.jump_size.
+func next_jump_slot(s: FunctionDef*) -> JumpSlot*:
+    assert(s.jump_count < s.jump_size, "resolve_labels: more jumps than counted")
+    let jp = fd_jump_slot(s, s.jump_count)
+    s.jump_count += 1
+    return jp
+
+# add_pc2line_info for the next opcode written.
+func state_pc2line(p: ResolveLabelsState*):
+    add_pc2line_info(p.s, (u32)p.bc_out.size, (u32)p.line_num)
+
+# Take the line number of the last code_match if it skipped one.
+func state_match_line(p: ResolveLabelsState*):
+    if p.cc.line_num >= 0:
+        p.line_num = p.cc.line_num
+
+# Emit `op` and its operand, an OPSpecialObjectEnum value.
+func emit_special_object(bc: cutils.DynBuf*, kind: OpSpecialObject):
+    dbuf_op(bc, Op.special_object)
+    dbuf_byte(bc, (u8)kind)
+
+# mark: Prologue ================================================================================
+
+# Emit the initialization of the variables the function creates on entry.
+func emit_function_prologue(s: FunctionDef*, bc_out: cutils.DynBuf*):
+    # initialize the 'home_object' variable if needed
+    if s.home_object_var_idx >= 0:
+        emit_special_object(bc_out, OpSpecialObject.home_object)
+        put_short_code(bc_out, (i32)Op.put_loc, s.home_object_var_idx)
+    # initialize the 'this.active_func' variable if needed
+    if s.this_active_func_var_idx >= 0:
+        emit_special_object(bc_out, OpSpecialObject.this_func)
+        put_short_code(bc_out, (i32)Op.put_loc, s.this_active_func_var_idx)
+    # initialize the 'new.target' variable if needed
+    if s.new_target_var_idx >= 0:
+        emit_special_object(bc_out, OpSpecialObject.new_target)
+        put_short_code(bc_out, (i32)Op.put_loc, s.new_target_var_idx)
+    # initialize the 'this' variable if needed. In a derived class constructor, this is
+    # initially uninitialized.
+    if s.this_var_idx >= 0:
+        if s.is_derived_class_constructor:
+            dbuf_op(bc_out, Op.set_loc_uninitialized)
+            dbuf_u16(bc_out, s.this_var_idx)
+        else:
+            dbuf_op(bc_out, Op.push_this)
+            put_short_code(bc_out, (i32)Op.put_loc, s.this_var_idx)
+    # initialize the 'arguments' variable if needed
+    if s.arguments_var_idx >= 0:
+        if ((i32)s.js_mode & js_mode_strict) != 0 or not s.has_simple_parameter_list:
+            emit_special_object(bc_out, OpSpecialObject.arguments)
+        else:
+            emit_special_object(bc_out, OpSpecialObject.mapped_arguments)
+            # the arguments are implicitly captured because references to them are
+            # created with the 'argument' object
+            for i in 0..<s.arg_count:
+                capture_var(s, fd_arg(s, i))
+        if s.arguments_arg_idx >= 0:
+            put_short_code(bc_out, (i32)Op.set_loc, s.arguments_arg_idx)
+        put_short_code(bc_out, (i32)Op.put_loc, s.arguments_var_idx)
+    # initialize a reference to the current function if needed
+    if s.func_var_idx >= 0:
+        emit_special_object(bc_out, OpSpecialObject.this_func)
+        put_short_code(bc_out, (i32)Op.put_loc, s.func_var_idx)
+    # initialize the variable environment object if needed
+    if s.var_object_idx >= 0:
+        emit_special_object(bc_out, OpSpecialObject.var_object)
+        put_short_code(bc_out, (i32)Op.put_loc, s.var_object_idx)
+    if s.arg_var_object_idx >= 0:
+        emit_special_object(bc_out, OpSpecialObject.var_object)
+        put_short_code(bc_out, (i32)Op.put_loc, s.arg_var_object_idx)
+
+# mark: Labels and jumps ========================================================================
+
+# OP_label: place the label here and patch the jumps that were waiting for it.
+func place_label(p: ResolveLabelsState*):
+    let s = p.s
+    let label = (i32)cutils.get_u32(p.bc_buf + p.pos + 1)
+    assert(label >= 0 and label < s.label_count)
+    let ls = fd_label(s, label)
+    assert(ls.addr == -1)
+    ls.addr = (i32)p.bc_out.size
+    # resolve the relocation entries
+    var next = ls.first_reloc
+    while let re = next:
+        let diff = ls.addr - (i32)re.addr
+        next = re.next
+        let buf = dbuf_bytes_or_empty(&p.bc_out)
+        match re.size:
+            4:
+                cutils.put_u32(buf + re.addr, (u32)diff)
+            2:
+                assert(diff == (i32)(i16)diff)
+                cutils.put_u16(buf + re.addr, (u16)diff)
+            1:
+                assert(diff == (i32)(i8)diff)
+                cutils.put_u8(buf + re.addr, (u8)diff)
+            _:
+                discard(0)
+        js_free(p.ctx, re)
+    ls.first_reloc = none
+
+# has_constant_test: `val` is followed by if_false/if_true (matched in cc).
+func label_constant_test(p: ResolveLabelsState*) -> LabelStep:
+    state_match_line(p)
+    if p.val == p.cc.op - (i32)Op.if_false:
+        # transform null if_false(l1) -> goto l1
+        # transform false if_false(l1) -> goto l1
+        # transform true if_true(l1) -> goto l1
+        p.pos_next = p.cc.pos
+        p.op = (i32)Op.goto_
+        p.label = p.cc.label
+        return LabelStep.has_goto
+    # transform null if_true(l1) -> nop
+    # transform false if_true(l1) -> nop
+    # transform true if_false(l1) -> nop
+    p.pos_next = p.cc.pos
+    discard(update_label(p.s, p.cc.label, -1))
+    return LabelStep.done
+
+# has_goto: thread the goto to `label`.
+func label_goto(p: ResolveLabelsState*) -> LabelStep:
+    let s = p.s
+    var op1: i32 = 0
+    var line1: i32 = -1
+    # Use custom matcher because multiple labels can follow
+    p.label = find_jump_target(s, p.label, &op1, &line1)
+    if code_has_label(&p.cc, p.pos_next, p.label):
+        # jump to next instruction: remove jump
+        discard(update_label(s, p.label, -1))
+        return LabelStep.done
+    if op1 == (i32)Op.return_ or op1 == (i32)Op.return_undef or op1 == (i32)Op.throw:
+        # jump to return/throw: remove jump, append return/throw
+        # updating the line number obfuscates assembly listing
+        # if (line1 != -1) line_num = line1;
+        discard(update_label(s, p.label, -1))
+        state_pc2line(p)
+        dbuf_byte(&p.bc_out, (u8)op1)
+        p.pos_next = skip_dead_code(s, p.bc_buf, p.bc_len, p.pos_next, &p.line_num)
+        return LabelStep.done
+    # XXX: should duplicate single instructions followed by goto or return
+    # For example, can match one of these followed by return:
+    # push_i32 / push_const / push_atom_value / get_var /
+    # undefined / null / push_false / push_true / get_ref_value /
+    # get_loc / get_arg / get_var_ref
+    return LabelStep.has_label
+
+# has_label: emit the jump `op` to `label`, in its short form when the distance allows.
+func label_emit_jump(p: ResolveLabelsState*) -> !:
+    let s = p.s
+    let op = p.op
+    state_pc2line(p)
+    if op == (i32)Op.goto_:
+        p.pos_next = skip_dead_code(s, p.bc_buf, p.bc_len, p.pos_next, &p.line_num)
+    assert(p.label >= 0 and p.label < s.label_count)
+    let ls = fd_label(s, p.label)
+    let jp = next_jump_slot(s)
+    jp.op = op
+    jp.size = 4
+    jp.pos = (i32)p.bc_out.size + 1
+    jp.label = p.label
+
+    let is_short_jump = (op == (i32)Op.if_false or op == (i32)Op.if_true or
+                         op == (i32)Op.goto_)
+    if ls.addr == -1:
+        let diff = ls.pos2 - p.pos - 1
+        if diff < 128 and is_short_jump:
+            jp.size = 1
+            jp.op = (i32)Op.if_false8 + (op - (i32)Op.if_false)
+            dbuf_byte(&p.bc_out, (u8)jp.op)
+            dbuf_byte(&p.bc_out, 0)
+            discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 1, 1))
+            return
+        if diff < 32768 and op == (i32)Op.goto_:
+            jp.size = 2
+            jp.op = (i32)Op.goto16
+            dbuf_op(&p.bc_out, Op.goto16)
+            dbuf_u16(&p.bc_out, 0)
+            discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 2, 2))
+            return
+    else:
+        let diff = ls.addr - (i32)p.bc_out.size - 1
+        if diff == (i32)(i8)diff and is_short_jump:
+            jp.size = 1
+            jp.op = (i32)Op.if_false8 + (op - (i32)Op.if_false)
+            dbuf_byte(&p.bc_out, (u8)jp.op)
+            dbuf_byte(&p.bc_out, (u8)diff)
+            return
+        if diff == (i32)(i16)diff and op == (i32)Op.goto_:
+            jp.size = 2
+            jp.op = (i32)Op.goto16
+            dbuf_op(&p.bc_out, Op.goto16)
+            dbuf_u16(&p.bc_out, diff)
+            return
+    dbuf_byte(&p.bc_out, (u8)op)
+    dbuf_u32(&p.bc_out, (u32)(ls.addr - (i32)p.bc_out.size))
+    if ls.addr == -1:
+        # unresolved yet: create a new relocation entry
+        discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 4, 4))
+
+# with_get_var ... with_get_ref: the atom, the jump to the label past the with test, and
+# the is_with flag.
+func label_with_op(p: ResolveLabelsState*) -> !:
+    let s = p.s
+    let atom = cutils.get_u32(p.bc_buf + p.pos + 1)
+    var label = (i32)cutils.get_u32(p.bc_buf + p.pos + 5)
+    let is_with = p.bc_buf[p.pos + 9]
+    var op1: i32 = 0
+    label = find_jump_target(s, label, &op1, none)
+    assert(label >= 0 and label < s.label_count)
+    let ls = fd_label(s, label)
+    state_pc2line(p)
+    let jp = next_jump_slot(s)
+    jp.op = p.op
+    jp.size = 4
+    jp.pos = (i32)p.bc_out.size + 5
+    jp.label = label
+    dbuf_byte(&p.bc_out, (u8)p.op)
+    dbuf_u32(&p.bc_out, atom)
+    dbuf_u32(&p.bc_out, (u32)(ls.addr - (i32)p.bc_out.size))
+    if ls.addr == -1:
+        # unresolved yet: create a new relocation entry
+        discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 4, 4))
+    dbuf_byte(&p.bc_out, is_with)
+
+# mark: The jump opcodes ========================================================================
+
+# The cases of resolve_labels' switch for labels, line numbers, calls, returns and
+# jumps; the others are resolve_labels_peephole's.
+func resolve_labels_op(p: ResolveLabelsState*) -> LabelStep!:
+    let s = p.s
+    let bc_buf = p.bc_buf
+    let pos = p.pos
+    let op = bc_buf[pos]
+    if is_temp_op(op):
+        match (TempOp)op:
+            .line_num:
+                # line number info (for debug). We put it in a separate compressed table
+                # to reduce memory usage and get better performance
+                p.line_num = (i32)cutils.get_u32(bc_buf + pos + 1)
+                return LabelStep.done
+            .label:
+                place_label(p)
+                return LabelStep.done
+            _:
+                return LabelStep.no_change
+    match (Op)op:
+        .call, .call_method:
+            # detect and transform tail calls
+            let argc = (i32)cutils.get_u16(bc_buf + pos + 1)
+            if code_match(&p.cc, p.pos_next, [(i32)Op.return_, -1]):
+                state_match_line(p)
+                state_pc2line(p)
+                put_short_code(&p.bc_out, (i32)op + 1, argc)
+                p.pos_next = skip_dead_code(s, bc_buf, p.bc_len, p.cc.pos, &p.line_num)
+                return LabelStep.done
+            state_pc2line(p)
+            put_short_code(&p.bc_out, (i32)op, argc)
+            return LabelStep.done
+        .return_, .return_undef, .return_async, .throw, .throw_error:
+            p.pos_next = skip_dead_code(s, bc_buf, p.bc_len, p.pos_next, &p.line_num)
+            return LabelStep.no_change
+        .goto_:
+            p.label = (i32)cutils.get_u32(bc_buf + pos + 1)
+            return LabelStep.has_goto
+        .gosub:
+            p.label = (i32)cutils.get_u32(bc_buf + pos + 1)
+            # QuickJS's removal of empty finally clauses (a gosub to a ret) is disabled
+            # here (`if (0 && OPTIMIZE)`).
+            return LabelStep.has_label
+        .catch_:
+            p.label = (i32)cutils.get_u32(bc_buf + pos + 1)
+            return LabelStep.has_label
+        .if_true, .if_false:
+            p.label = (i32)cutils.get_u32(bc_buf + pos + 1)
+            var op1: i32 = 0
+            p.label = find_jump_target(s, p.label, &op1, none)
+            # transform if_false/if_true(l1) label(l1) -> drop label(l1)
+            if code_has_label(&p.cc, p.pos_next, p.label):
+                discard(update_label(s, p.label, -1))
+                dbuf_op(&p.bc_out, Op.drop)
+                return LabelStep.done
+            # transform if_false(l1) goto(l2) label(l1) -> if_false(l2) label(l1)
+            if code_match(&p.cc, p.pos_next, [(i32)Op.goto_, -1]):
+                let pos1 = p.cc.pos
+                let line1 = p.cc.line_num
+                if code_has_label(&p.cc, pos1, p.label):
+                    if line1 != -1:
+                        p.line_num = line1
+                    p.pos_next = pos1
+                    discard(update_label(s, p.label, -1))
+                    p.label = p.cc.label
+                    p.op ^= (i32)Op.if_true ^ (i32)Op.if_false
+            return LabelStep.has_label
+        .with_get_var, .with_put_var, .with_delete_var, .with_make_ref, .with_get_ref:
+            try label_with_op(p)
+            return LabelStep.done
+        _:
+            return resolve_labels_peephole(p)
+
+# mark: resolve_labels ==========================================================================
+
+# The main loop of resolve_labels, which frees the new bytecode if it fails.
+func resolve_labels_code(p: ResolveLabelsState*) -> !:
+    # fail:
+    # XXX: not safe
+    errdefer cutils.dbuf_free(&p.bc_out)
+    while p.pos < p.bc_len:
+        let op = p.bc_buf[p.pos]
+        p.op = (i32)op
+        p.len = (i32)op_info(op, true).size
+        p.pos_next = p.pos + p.len
+        var step = try resolve_labels_op(p)
+        while true:
+            match step:
+                .has_constant_test:
+                    step = label_constant_test(p)
+                .has_goto:
+                    step = label_goto(p)
+                .has_label:
+                    try label_emit_jump(p)
+                    break
+                .no_change:
+                    state_pc2line(p)
+                    discard(cutils.dbuf_put(&p.bc_out, p.bc_buf + p.pos, (usize)p.len))
+                    break
+                .done:
+                    break
+        p.pos = p.pos_next
+
+# more jump optimizations: shrink the jumps whose target is near enough to the 1 or 2
+# byte forms, then patch every jump offset.
+func shorten_jumps(p: ResolveLabelsState*):
+    let s = p.s
+    var patch_offsets = 0
+    for i in 0..<s.jump_count:
+        let jp = fd_jump_slot(s, i)
+        var delta: i32 = 3
+        let op = jp.op
+        if (op == (i32)Op.goto16 or op == (i32)Op.if_false or op == (i32)Op.if_true or
+            op == (i32)Op.goto_):
+            if op == (i32)Op.goto16:
+                delta = 1
+            let pos = jp.pos
+            let diff = fd_label(s, jp.label).addr - pos
+            let buf = dbuf_bytes_or_empty(&p.bc_out)
+            var shrink = false
+            if diff >= -128 and diff <= 127 + delta:
+                # put_u8(bc_out.buf + pos, diff);
+                jp.size = 1
+                if op == (i32)Op.goto16:
+                    jp.op = (i32)Op.goto8
+                else:
+                    jp.op = (i32)Op.if_false8 + (op - (i32)Op.if_false)
+                buf[pos - 1] = (u8)jp.op
+                shrink = true
+            elif diff == (i32)(i16)diff and op == (i32)Op.goto_:
+                # put_u16(bc_out.buf + pos, diff);
+                jp.size = 2
+                delta = 2
+                jp.op = (i32)Op.goto16
+                buf[pos - 1] = (u8)jp.op
+                shrink = true
+            if shrink:
+                # XXX: should reduce complexity, using 2 finger copy scheme
+                let count = (i32)p.bc_out.size - pos - jp.size - delta
+                discard(cutils.memmove(buf + pos + jp.size, buf + pos + jp.size + delta,
+                                       (usize)count))
+                p.bc_out.size -= (usize)delta
+                patch_offsets += 1
+                for j in 0..<s.label_count:
+                    let ls = fd_label(s, j)
+                    if ls.addr > pos:
+                        ls.addr -= delta
+                for j in (i + 1)..<s.jump_count:
+                    let jp1 = fd_jump_slot(s, j)
+                    if jp1.pos > pos:
+                        jp1.pos -= delta
+                for j in 0..<s.line_number_count:
+                    let slots = s.line_number_slots else trap("shorten_jumps: no line numbers")
+                    if slots[j].pc > (u32)pos:
+                        slots[j].pc -= (u32)delta
+    if patch_offsets != 0:
+        let buf = dbuf_bytes_or_empty(&p.bc_out)
+        for j in 0..<s.jump_count:
+            let jp1 = fd_jump_slot(s, j)
+            let diff1 = fd_label(s, jp1.label).addr - jp1.pos
+            match jp1.size:
+                1:
+                    cutils.put_u8(buf + jp1.pos, (u8)diff1)
+                2:
+                    cutils.put_u16(buf + jp1.pos, (u16)diff1)
+                4:
+                    cutils.put_u32(buf + jp1.pos, (u32)diff1)
+                _:
+                    discard(0)
+
+# peephole optimizations and resolve goto/labels
+func resolve_labels(ctx: Context*, s: FunctionDef*) -> !:
+    let bc_buf = dbuf_bytes_or_empty(&s.byte_code)
+    let bc_len = (i32)s.byte_code.size
+    var state = ResolveLabelsState(ctx = ctx, s = s, bc_buf = bc_buf, bc_len = bc_len,
+                                   cc = CodeContext(bc_buf = bc_buf, bc_len = bc_len),
+                                   line_num = (i32)s.source_pos)
+    let p = &state
+    js_dbuf_bytecode_init(ctx, &p.bc_out)
+
+    if s.jump_size != 0:
+        let slots = try js_mallocz(s.ctx, sizeof(JumpSlot) * (usize)s.jump_size)
+        s.jump_slots = (JumpSlot*)slots
+    # XXX: Should skip this phase if not generating SHORT_OPCODES
+    if s.line_number_size != 0 and not s.strip_debug:
+        let slots = try js_mallocz(s.ctx, sizeof(LineNumberSlot) * (usize)s.line_number_size)
+        s.line_number_slots = (LineNumberSlot*)slots
+        s.line_number_last = (i32)s.source_pos
+        s.line_number_last_pc = 0
+
+    emit_function_prologue(s, &p.bc_out)
+
+    try resolve_labels_code(p)
+
+    # check that there were no missing labels
+    for i in 0..<s.label_count:
+        assert(fd_label(s, i).first_reloc == none)
+    shorten_jumps(p)
+    if let jump_slots = s.jump_slots:
+        js_free(ctx, jump_slots)
+    s.jump_slots = none
+    if let label_slots = s.label_slots:
+        js_free(ctx, label_slots)
+    s.label_slots = none
+    # XXX: should delay until copying to runtime bytecode function
+    compute_pc2line_info(s)
+    if let line_number_slots = s.line_number_slots:
+        js_free(ctx, line_number_slots)
+    s.line_number_slots = none
+    # set the new byte code
+    cutils.dbuf_free(&s.byte_code)
+    s.byte_code = p.bc_out
+    s.use_short_opcodes = true
+    if cutils.dbuf_error(&s.byte_code):
+        try js_throw_out_of_memory(ctx)

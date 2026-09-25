@@ -1,0 +1,447 @@
+#==============================================================================================
+#
+#   tests_r19 - Unit tests of the bytecode passes' helpers that need no runtime
+#
+#   DESCRIPTION:
+#       The pattern matcher (code_match, code_has_label), the short opcode writers, the
+#       with-scope and reference helpers, the scope walks and label walks on a
+#       FunctionDef laid out by hand (test_function_def of tests_tokenizer.lucb), the
+#       scope entry and exit code, the function prologue, the line number slots and the
+#       jump shortening of resolve_labels. Nothing here makes a runtime: the functions
+#       tested never read the FunctionDef's context, and no atom is freed.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# Whether the bytes written to `bc` are `want`.
+func bytes_are(bc: cutils.DynBuf*, want: const u8[]) -> bool:
+    if bc.size != want.length:
+        return false
+    let buf = dbuf_bytes_or_empty(bc)
+    for i in 0..<want.length:
+        if buf[i] != want[i]:
+            return false
+    return true
+
+# A FunctionDef from test_function_def whose pseudo variable indexes are all -1.
+func test_resolve_function_def(vars: VarDef*?, var_count: i32, scope_count: i32) -> FunctionDef*:
+    let fd = test_function_def(vars, var_count, scope_count)
+    fd.home_object_var_idx = -1
+    fd.this_active_func_var_idx = -1
+    fd.new_target_var_idx = -1
+    fd.this_var_idx = -1
+    fd.arguments_var_idx = -1
+    fd.arguments_arg_idx = -1
+    fd.var_object_idx = -1
+    fd.arg_var_object_idx = -1
+    fd.body_scope = -1
+    return fd
+
+# Give `fd` the `count` closure variables at `closure`.
+func set_test_closure(fd: FunctionDef*, closure: ClosureVar*, count: i32):
+    fd.closure_var = closure
+    fd.closure_var_count = count
+    fd.closure_var_size = count
+
+# Give `fd` the `count` labels at `slots`.
+func set_test_labels(fd: FunctionDef*, slots: LabelSlot*, count: i32):
+    fd.label_slots = slots
+    fd.label_count = count
+    fd.label_size = count
+
+# Give `fd` room for `size` line number slots at `slots`.
+func set_test_line_numbers(fd: FunctionDef*, slots: LineNumberSlot*, size: i32):
+    fd.line_number_slots = slots
+    fd.line_number_size = size
+
+# mark: code_match ==============================================================================
+
+test "code_match skips line numbers and reads operands":
+    var code: cutils.DynBuf
+    cutils.dbuf_init(&code)
+    defer cutils.dbuf_free(&code)
+    dbuf_temp_op(&code, TempOp.line_num)     # 0
+    dbuf_u32(&code, 7)
+    dbuf_op(&code, Op.get_loc)               # 5
+    dbuf_u16(&code, 3)
+    dbuf_op(&code, Op.put_loc)               # 8
+    dbuf_u16(&code, 3)
+    dbuf_op(&code, Op.drop)                  # 11
+    dbuf_op(&code, Op.if_false)              # 12
+    dbuf_u32(&code, 9)
+    dbuf_op(&code, Op.push_atom_value)       # 17
+    dbuf_u32(&code, 0x55)
+    assert(code.size == 22)
+    var cc = CodeContext(bc_buf = dbuf_bytes_or_empty(&code), bc_len = 22)
+
+    assert(code_match(&cc, 0, [(i32)Op.get_loc, 3, -1]))
+    assert(cc.pos == 8 and cc.line_num == 7)
+    assert(not code_match(&cc, 0, [(i32)Op.get_loc, 4, -1]))
+    assert(code_match(&cc, 5, [(i32)Op.get_loc, -1, (i32)Op.put_loc, -1, (i32)Op.drop, -1]))
+    assert(cc.idx == 3 and cc.pos == 12 and cc.line_num == -1)
+    assert(code_match(&cc, 11, [(i32)Op.drop, ops2(Op.if_true, Op.if_false), -1]))
+    assert(cc.op == (i32)Op.if_false and cc.label == 9 and cc.pos == 17)
+    assert(code_match(&cc, 17, [(i32)Op.push_atom_value, -1]))
+    assert(cc.atom == 0x55 and cc.pos == 22)
+    # the end of the code does not match
+    assert(not code_match(&cc, 17, [(i32)Op.push_atom_value, (i32)Op.drop, -1]))
+    assert(not code_match(&cc, 11, [ops3(Op.put_loc, Op.get_loc, Op.dup), -1]))
+    # an opcode that runs past the end does not match
+    cc.bc_len = 20
+    assert(not code_match(&cc, 17, [(i32)Op.push_atom_value, -1]))
+
+test "code_match packs opcodes above 127 in ops4":
+    var code: u8[2] = [(u8)Op.typeof_is_function, (u8)Op.drop]
+    var cc = CodeContext(bc_buf = &code[0], bc_len = 2)
+    assert(code_match(&cc, 0, [ops4(Op.drop, Op.dup, Op.nop, Op.typeof_is_function), -1]))
+    assert(cc.op == (i32)Op.typeof_is_function and cc.pos == 1)
+    assert(not code_match(&cc, 1, [ops4(Op.dup, Op.nop, Op.swap, Op.typeof_is_function), -1]))
+
+test "code_has_label looks through labels, line numbers and a goto":
+    var code: cutils.DynBuf
+    cutils.dbuf_init(&code)
+    defer cutils.dbuf_free(&code)
+    dbuf_temp_op(&code, TempOp.line_num)
+    dbuf_u32(&code, 1)
+    dbuf_temp_op(&code, TempOp.label)
+    dbuf_u32(&code, 4)
+    dbuf_temp_op(&code, TempOp.label)
+    dbuf_u32(&code, 5)
+    dbuf_op(&code, Op.goto_)
+    dbuf_u32(&code, 6)
+    dbuf_op(&code, Op.drop)
+    var cc = CodeContext(bc_buf = dbuf_bytes_or_empty(&code), bc_len = (i32)code.size)
+    assert(code_has_label(&cc, 0, 4) and code_has_label(&cc, 0, 5))
+    assert(code_has_label(&cc, 0, 6))
+    assert(not code_has_label(&cc, 0, 7))
+    assert(not code_has_label(&cc, 20, 4))
+
+# mark: Short opcodes ===========================================================================
+
+test "push_short_int picks the shortest push":
+    var out: cutils.DynBuf
+    cutils.dbuf_init(&out)
+    defer cutils.dbuf_free(&out)
+    push_short_int(&out, -1)
+    push_short_int(&out, 7)
+    push_short_int(&out, 8)
+    push_short_int(&out, -128)
+    push_short_int(&out, 200)
+    push_short_int(&out, 40000)
+    let want: u8[14] = [(u8)Op.push_minus1, (u8)Op.push_7,
+                        (u8)Op.push_i8, 8, (u8)Op.push_i8, 0x80,
+                        (u8)Op.push_i16, 200, 0,
+                        (u8)Op.push_i32, 0x40, 0x9c, 0, 0]
+    assert(bytes_are(&out, want))
+
+test "put_short_code uses the indexed and 8-bit forms":
+    var out: cutils.DynBuf
+    cutils.dbuf_init(&out)
+    defer cutils.dbuf_free(&out)
+    put_short_code(&out, (i32)Op.get_loc, 2)
+    put_short_code(&out, (i32)Op.call, 3)
+    put_short_code(&out, (i32)Op.set_var_ref, 0)
+    put_short_code(&out, (i32)Op.put_loc, 100)
+    put_short_code(&out, (i32)Op.get_arg, 100)
+    put_short_code(&out, (i32)Op.put_loc, 300)
+    put_short_code(&out, (i32)Op.put_loc_check, 1)
+    let want: u8[14] = [(u8)Op.get_loc2, (u8)Op.call3, (u8)Op.set_var_ref0,
+                        (u8)Op.put_loc8, 100,
+                        (u8)Op.get_arg, 100, 0,
+                        (u8)Op.put_loc, 0x2c, 1,
+                        (u8)Op.put_loc_check, 1, 0]
+    assert(bytes_are(&out, want))
+
+# mark: Variable resolution helpers =============================================================
+
+test "the with opcodes follow the scope opcodes":
+    assert(get_with_scope_opcode(TempOp.scope_get_var_undef) == Op.with_get_var)
+    assert(get_with_scope_opcode(TempOp.scope_get_var) == Op.with_get_var)
+    assert(get_with_scope_opcode(TempOp.scope_put_var) == Op.with_put_var)
+    assert(get_with_scope_opcode(TempOp.scope_delete_var) == Op.with_delete_var)
+    assert(get_with_scope_opcode(TempOp.scope_make_ref) == Op.with_make_ref)
+    assert(get_with_scope_opcode(TempOp.scope_get_ref) == Op.with_get_ref)
+
+test "put_ref_value pairs and argument scope variables":
+    var pair: u8[2] = [(u8)Op.insert3, (u8)Op.put_ref_value]
+    assert(can_opt_put_ref_value(&pair[0], 0) and can_opt_put_global_ref_value(&pair[0], 0))
+    pair[0] = (u8)Op.perm3
+    assert(not can_opt_put_ref_value(&pair[0], 0))
+    pair[0] = (u8)Op.rot3l
+    pair[1] = (u8)Op.put_var
+    assert(not can_opt_put_ref_value(&pair[0], 0))
+    assert(is_var_in_arg_scope(atom_this, VarKind.normal))
+    assert(is_var_in_arg_scope(atom__arg_var_, VarKind.normal))
+    assert(is_var_in_arg_scope(atom_length, VarKind.function_name))
+    assert(not is_var_in_arg_scope(atom_length, VarKind.normal))
+
+test "optimize_scope_make_ref rewrites the reference into variable accesses":
+    let fd = test_resolve_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    var code: u8[8] = [(u8)Op.get_ref_value, (u8)TempOp.label, 0, 0, 0, 0,
+                       (u8)Op.insert3, (u8)Op.put_ref_value]
+    var ls = LabelSlot(ref_count = 0, pos = 6, pos2 = -1, addr = -1)
+    var out: cutils.DynBuf
+    cutils.dbuf_init(&out)
+    defer cutils.dbuf_free(&out)
+    let next = optimize_scope_make_ref(fd.ctx, fd, &out, &code[0], &ls, 0, Op.get_loc, 2)
+    assert(next == 1)
+    let emitted: u8[3] = [(u8)Op.get_loc, 2, 0]
+    assert(bytes_are(&out, emitted))
+    let patched: u8[8] = [(u8)Op.get_ref_value, (u8)Op.dup, (u8)Op.put_loc, 2, 0,
+                          (u8)Op.nop, (u8)Op.nop, (u8)Op.nop]
+    assert(code == patched)
+
+test "local variable accesses pick the checked forms":
+    var vars: VarDef[2]
+    vars[0] = VarDef(var_name = atom_length, scope_level = 0, scope_next = -1, is_lexical = true)
+    vars[1] = VarDef(var_name = atom_name, scope_level = 0, scope_next = -1)
+    let fd = test_resolve_function_def(&vars[0], 2, 1)
+    defer cutils.c_free(fd)
+    var out: cutils.DynBuf
+    cutils.dbuf_init(&out)
+    defer cutils.dbuf_free(&out)
+    emit_local_scope_var(&out, fd, atom_this, TempOp.scope_put_var_init, 0)
+    emit_local_scope_var(&out, fd, atom_length, TempOp.scope_put_var_init, 0)
+    emit_local_scope_var(&out, fd, atom_length, TempOp.scope_put_var, 0)
+    emit_local_scope_var(&out, fd, atom_length, TempOp.scope_get_var, 0)
+    emit_local_scope_var(&out, fd, atom_this, TempOp.scope_get_var_checkthis, 0)
+    emit_local_scope_var(&out, fd, atom_name, TempOp.scope_get_var, 1)
+    emit_local_scope_var(&out, fd, atom_name, TempOp.scope_put_var, 1)
+    emit_local_scope_var(&out, fd, atom_name, TempOp.scope_get_var, 2 | argument_var_offset)
+    emit_local_scope_var(&out, fd, atom_name, TempOp.scope_put_var, 2 | argument_var_offset)
+    let want: u8[27] = [(u8)Op.put_loc_check_init, 0, 0, (u8)Op.put_loc, 0, 0,
+                        (u8)Op.put_loc_check, 0, 0, (u8)Op.get_loc_check, 0, 0,
+                        (u8)Op.get_loc_checkthis, 0, 0, (u8)Op.get_loc, 1, 0,
+                        (u8)Op.put_loc, 1, 0, (u8)Op.get_arg, 2, 0, (u8)Op.put_arg, 2, 0]
+    assert(bytes_are(&out, want))
+    out.size = 0
+    get_loc_or_ref(&out, true, 5)
+    get_loc_or_ref(&out, false, 6)
+    let refs: u8[6] = [(u8)Op.get_var_ref, 5, 0, (u8)Op.get_loc, 6, 0]
+    assert(bytes_are(&out, refs))
+
+test "closure variables, captures and private fields are found by scope":
+    # scope 1 holds 'length' then 'name'; scope 2 (in scope 1) holds 'value'
+    var vars: VarDef[3]
+    vars[0] = VarDef(var_name = atom_length, scope_level = 1, scope_next = 1)
+    vars[1] = VarDef(var_name = atom_name, scope_level = 1, scope_next = -1)
+    vars[2] = VarDef(var_name = atom_value, scope_level = 2, scope_next = 0)
+    let fd = test_resolve_function_def(&vars[0], 3, 3)
+    defer cutils.c_free(fd)
+    fd_scope(fd, 0).first = -1
+    fd_scope(fd, 1).first = 0
+    fd_scope(fd, 2).first = 2
+    var closure: ClosureVar[2]
+    closure[0] = ClosureVar(closure_type = ClosureType.local_, var_name = atom_this)
+    closure[1] = ClosureVar(closure_type = ClosureType.ref, var_name = atom_value)
+    set_test_closure(fd, &closure[0], 2)
+    assert(find_closure_var(fd.ctx, fd, atom_value) == 1)
+    assert(find_closure_var(fd.ctx, fd, atom_name) == -1)
+
+    assert(find_private_class_field_all(fd.ctx, fd, atom_name, 2) == 1)
+    assert(find_private_class_field_all(fd.ctx, fd, atom_value, 1) == -1)
+
+    mark_eval_captured_variables(fd.ctx, fd, 1)
+    assert(vars[0].is_captured and vars[1].is_captured and not vars[2].is_captured)
+    assert(vars[0].var_ref_idx == 0 and vars[1].var_ref_idx == 1)
+    mark_eval_captured_variables(fd.ctx, fd, 2)
+    assert(vars[2].is_captured and vars[2].var_ref_idx == 2 and vars[0].var_ref_idx == 0)
+    assert(fd.var_ref_count == 3)
+
+# mark: Labels and dead code ====================================================================
+
+test "labels are followed through gotos, line numbers and drops":
+    let fd = test_resolve_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    cutils.dbuf_init(&fd.byte_code)
+    defer cutils.dbuf_free(&fd.byte_code)
+    let code = &fd.byte_code
+    dbuf_temp_op(code, TempOp.label)     # 0: label 0
+    dbuf_u32(code, 0)
+    dbuf_temp_op(code, TempOp.line_num)  # 5
+    dbuf_u32(code, 3)
+    dbuf_op(code, Op.goto_)              # 10: goto label 1
+    dbuf_u32(code, 1)
+    dbuf_temp_op(code, TempOp.label)     # 15: label 1
+    dbuf_u32(code, 1)
+    dbuf_op(code, Op.drop)               # 20
+    dbuf_op(code, Op.drop)
+    dbuf_op(code, Op.return_undef)
+    var slots: LabelSlot[2]
+    slots[0] = LabelSlot(ref_count = 1, pos = 5, pos2 = 5, addr = -1)
+    slots[1] = LabelSlot(ref_count = 1, pos = 20, pos2 = 20, addr = -1)
+    set_test_labels(fd, &slots[0], 2)
+
+    assert(get_label_pos(fd, 0) == 20)
+    var op: i32 = 0
+    var line: i32 = -1
+    assert(find_jump_target(fd, 0, &op, &line) == 1)
+    assert(op == (i32)Op.return_undef and line == 3)
+    assert(slots[0].ref_count == 0 and slots[1].ref_count == 2)
+
+test "skip_dead_code stops at a referenced label":
+    let fd = test_resolve_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    var code: cutils.DynBuf
+    cutils.dbuf_init(&code)
+    defer cutils.dbuf_free(&code)
+    dbuf_op(&code, Op.push_i32)            # 0
+    dbuf_u32(&code, 5)
+    dbuf_op(&code, Op.goto_)               # 5: goto label 1
+    dbuf_u32(&code, 1)
+    dbuf_temp_op(&code, TempOp.label)      # 10: label 0, unreferenced
+    dbuf_u32(&code, 0)
+    dbuf_temp_op(&code, TempOp.line_num)   # 15
+    dbuf_u32(&code, 9)
+    dbuf_temp_op(&code, TempOp.label)      # 20: label 1
+    dbuf_u32(&code, 1)
+    dbuf_op(&code, Op.drop)                # 25
+    var slots: LabelSlot[2]
+    slots[0] = LabelSlot(ref_count = 0, pos = 15, pos2 = -1, addr = -1)
+    slots[1] = LabelSlot(ref_count = 2, pos = 25, pos2 = -1, addr = -1)
+    set_test_labels(fd, &slots[0], 2)
+    var line: i32 = -1
+    let pos = skip_dead_code(fd, dbuf_bytes_or_empty(&code), (i32)code.size, 0, &line)
+    assert(pos == 20 and line == 9)
+    assert(slots[1].ref_count == 1)
+
+# mark: Scopes and the prologue =================================================================
+
+test "entering and leaving a scope initializes and closes its variables":
+    var vars: VarDef[3]
+    vars[0] = VarDef(var_name = atom_length, scope_level = 1, scope_next = 1,
+                     var_kind = VarKind.function_decl, func_pool_idx = 4)
+    vars[1] = VarDef(var_name = atom_name, scope_level = 1, scope_next = 2, is_lexical = true,
+                     is_captured = true)
+    vars[2] = VarDef(var_name = atom_value, scope_level = 0, scope_next = -1,
+                     func_pool_idx = 3)
+    let fd = test_resolve_function_def(&vars[0], 3, 2)
+    defer cutils.c_free(fd)
+    fd_scope(fd, 1).first = 0
+    var args: VarDef[1]
+    args[0] = VarDef(var_name = atom_this, func_pool_idx = 2)
+    set_test_args(fd, &args[0], 1)
+    var out: cutils.DynBuf
+    cutils.dbuf_init(&out)
+    defer cutils.dbuf_free(&out)
+
+    resolve_enter_scope(fd.ctx, fd, &out, 1)
+    let entered: u8[11] = [(u8)Op.fclosure, 4, 0, 0, 0, (u8)Op.put_loc, 0, 0,
+                           (u8)Op.set_loc_uninitialized, 1, 0]
+    assert(bytes_are(&out, entered))
+    out.size = 0
+    resolve_leave_scope(fd, &out, 1)
+    let left: u8[3] = [(u8)Op.close_loc, 1, 0]
+    assert(bytes_are(&out, left))
+
+    # the body scope also instantiates the hoisted functions
+    out.size = 0
+    fd.body_scope = 1
+    resolve_enter_scope(fd.ctx, fd, &out, 1)
+    let hoisted: u8[27] = [(u8)Op.fclosure, 2, 0, 0, 0, (u8)Op.put_arg, 0, 0,
+                           (u8)Op.fclosure, 3, 0, 0, 0, (u8)Op.put_loc, 2, 0,
+                           (u8)Op.fclosure, 4, 0, 0, 0, (u8)Op.put_loc, 0, 0,
+                           (u8)Op.set_loc_uninitialized, 1, 0]
+    assert(bytes_are(&out, hoisted))
+
+test "the prologue initializes 'this' and 'arguments'":
+    let fd = test_resolve_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    fd.this_var_idx = 0
+    fd.arguments_var_idx = 1
+    fd.js_mode = (u8)js_mode_strict
+    var out: cutils.DynBuf
+    cutils.dbuf_init(&out)
+    defer cutils.dbuf_free(&out)
+    emit_function_prologue(fd, &out)
+    let want: u8[5] = [(u8)Op.push_this, (u8)Op.put_loc0, (u8)Op.special_object,
+                       (u8)OpSpecialObject.arguments, (u8)Op.put_loc1]
+    assert(bytes_are(&out, want))
+
+# mark: Line numbers and jumps ==================================================================
+
+test "add_pc2line_info keeps increasing positions that change the line":
+    let fd = test_resolve_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    var slots: LineNumberSlot[3]
+    set_test_line_numbers(fd, &slots[0], 3)
+    fd.line_number_last = -1
+    add_pc2line_info(fd, 0, 10)
+    add_pc2line_info(fd, 0, 10)
+    add_pc2line_info(fd, 5, 12)
+    add_pc2line_info(fd, 3, 20)
+    add_pc2line_info(fd, 7, 30)
+    add_pc2line_info(fd, 9, 40)
+    assert(fd.line_number_count == 3)
+    assert(slots[0].pc == 0 and slots[0].source_pos == 10)
+    assert(slots[1].pc == 5 and slots[1].source_pos == 12)
+    assert(slots[2].pc == 7 and slots[2].source_pos == 30)
+
+# A resolve_labels state over `fd` whose output holds a jump `op` (4-byte offset) at 0
+# followed by `filler` nops and a drop at label 0.
+func test_jump_state(fd: FunctionDef*, op: Op, filler: i32, slots: LabelSlot*,
+                     jumps: JumpSlot*) -> ResolveLabelsState:
+    let bc_buf = dbuf_bytes_or_empty(&fd.byte_code)
+    var p = ResolveLabelsState(ctx = fd.ctx, s = fd, bc_buf = bc_buf, bc_len = 0,
+                               cc = CodeContext(bc_buf = bc_buf, bc_len = 0))
+    cutils.dbuf_init(&p.bc_out)
+    dbuf_op(&p.bc_out, op)
+    dbuf_u32(&p.bc_out, 0)
+    for i in 0..<filler:
+        dbuf_op(&p.bc_out, Op.nop)
+    dbuf_op(&p.bc_out, Op.drop)
+    *slots = LabelSlot(ref_count = 1, pos = -1, pos2 = -1, addr = 5 + filler)
+    fd.label_slots = slots
+    fd.label_count = 1
+    *jumps = JumpSlot(op = (i32)op, size = 4, pos = 1, label = 0)
+    fd.jump_slots = jumps
+    fd.jump_count = 1
+    fd.jump_size = 1
+    return p
+
+test "shorten_jumps shrinks a near goto to goto8":
+    let fd = test_resolve_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    var slot: LabelSlot
+    var jump: JumpSlot
+    var p = test_jump_state(fd, Op.goto_, 1, &slot, &jump)
+    defer cutils.dbuf_free(&p.bc_out)
+    shorten_jumps(&p)
+    let want: u8[4] = [(u8)Op.goto8, 2, (u8)Op.nop, (u8)Op.drop]
+    assert(bytes_are(&p.bc_out, want))
+    assert(slot.addr == 3 and jump.size == 1 and jump.op == (i32)Op.goto8)
+
+test "shorten_jumps shrinks a farther goto to goto16 and keeps a far if_true":
+    let fd = test_resolve_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    var slot: LabelSlot
+    var jump: JumpSlot
+    var p = test_jump_state(fd, Op.goto_, 200, &slot, &jump)
+    defer cutils.dbuf_free(&p.bc_out)
+    shorten_jumps(&p)
+    assert(p.bc_out.size == 204 and slot.addr == 203)
+    let buf = dbuf_bytes_or_empty(&p.bc_out)
+    assert(buf[0] == (u8)Op.goto16 and cutils.get_i16(buf + 1) == 202)
+    assert(buf[203] == (u8)Op.drop)
+
+    var slot2: LabelSlot
+    var jump2: JumpSlot
+    var q = test_jump_state(fd, Op.if_true, 200, &slot2, &jump2)
+    defer cutils.dbuf_free(&q.bc_out)
+    shorten_jumps(&q)
+    assert(q.bc_out.size == 206 and slot2.addr == 205 and jump2.size == 4)
+
+# mark: Debug listings ==========================================================================
+
+test "skip_lines stops at the end of the text":
+    let text = "a\nbb\nccc"
+    let start = text.bytes.data
+    assert(skip_lines(start, 0) == start)
+    assert(skip_lines(start, 1) == start + 2)
+    assert(skip_lines(start, 2) == start + 5)
+    assert(skip_lines(start, 5) == start + 8)
+    assert(dump_opcode_name((u8)TempOp.label, true) == "label")
+    assert(dump_opcode_name((u8)TempOp.label, false) == "push_1")
+    assert(dump_opcode_name((u8)Op.goto_, true) == "goto")

@@ -1,0 +1,129 @@
+#==============================================================================================
+#
+#   code_match - Matching opcode patterns in phase 1 and 2 bytecode
+#
+#   DESCRIPTION:
+#       Port of quickjs.c CodeContext, M2/M3/M4 and code_match (lines 33868-34003), the
+#       pattern matcher of the peephole optimizations of resolve_variables and
+#       resolve_labels. C's code_match is variadic; the port takes the pattern as a span
+#       of i32 ending with -1, as the C arguments do:
+#
+#           code_match(&cc, pos, [ops2(Op.if_false, Op.if_true), (i32)Op.drop, -1])
+#
+#       The bytecode matched has not been through resolve_labels yet, so its bytes are
+#       read as temporary opcodes where they are in TempOp's range.
+#
+#==============================================================================================
+
+## The bytecode being matched, and what the last successful code_match read.
+struct CodeContext:
+    ## code buffer
+    var bc_buf: const u8*
+    ## length of the code buffer
+    var bc_len: i32
+    ## position past the matched code pattern
+    var pos: i32
+    ## last visited OP_line_num parameter or -1
+    var line_num: i32
+    var op: i32
+    var idx: i32
+    var label: i32
+    var val: i32
+    var atom: Atom
+
+# A pattern element matching either opcode (M2).
+func ops2(op1: Op, op2: Op) -> i32:
+    return (i32)op1 | ((i32)op2 << 8)
+
+# A pattern element matching any of three opcodes (M3).
+func ops3(op1: Op, op2: Op, op3: Op) -> i32:
+    return (i32)op1 | ((i32)op2 << 8) | ((i32)op3 << 16)
+
+# A pattern element matching any of four opcodes (M4).
+func ops4(op1: Op, op2: Op, op3: Op, op4: Op) -> i32:
+    return (i32)op1 | ((i32)op2 << 8) | ((i32)op3 << 16) | ((i32)op4 << 24)
+
+# Whether the code at `pos0` matches `pattern`, skipping line number opcodes. Each
+# element of `pattern` is an opcode, or several packed by ops2/ops3/ops4 (the one matched is
+# then stored in s.op); an opcode with a u8, u16, loc, arg or var_ref operand is followed
+# by the operand's value, or -1 to store it in s.idx; -1 ends the pattern. Label, i32,
+# u32, const and atom operands are stored in s.label, s.atom and s.val. On success,
+# s.pos is the position past the match and s.line_num the last line number skipped (-1
+# if none).
+func code_match(s: CodeContext*, pos0: i32, pattern: const i32[]) -> bool:
+    let tab = s.bc_buf
+    var pos = pos0
+    var line_num: i32 = -1
+    var k: usize = 0
+
+    while true:
+        let op1 = pattern[k]
+        k += 1
+        if op1 == -1:
+            s.pos = pos
+            s.line_num = line_num
+            return true
+        var op: i32 = 0
+        var pos_next: i32 = 0
+        while true:
+            if pos >= s.bc_len:
+                return false
+            op = (i32)tab[pos]
+            let len = (i32)op_info((u8)op, true).size
+            pos_next = pos + len
+            if pos_next > s.bc_len:
+                return false
+            if op == (i32)TempOp.line_num:
+                line_num = (i32)cutils.get_u32(tab + pos + 1)
+                pos = pos_next
+            else:
+                break
+        if op != op1:
+            if op1 == (i32)(u8)op1 or op == 0:
+                return false
+            if (op != (i32)(u8)op1 and
+                op != (i32)(u8)(op1 >> 8) and
+                op != (i32)(u8)(op1 >> 16) and
+                op != (i32)(u8)(op1 >> 24)):
+                return false
+            s.op = op
+
+        pos += 1
+        match op_info((u8)op, true).fmt:
+            .loc8, .u8_:
+                let idx = (i32)tab[pos]
+                let arg = pattern[k]
+                k += 1
+                if arg == -1:
+                    s.idx = idx
+                elif arg != idx:
+                    return false
+            .u16_, .npop, .loc, .arg, .var_ref:
+                let idx = (i32)cutils.get_u16(tab + pos)
+                let arg = pattern[k]
+                k += 1
+                if arg == -1:
+                    s.idx = idx
+                elif arg != idx:
+                    return false
+            .i32_, .u32_, .label, .const_:
+                s.label = (i32)cutils.get_u32(tab + pos)
+            .label_u16:
+                s.label = (i32)cutils.get_u32(tab + pos)
+                s.val = (i32)cutils.get_u16(tab + pos + 4)
+            .atom:
+                s.atom = cutils.get_u32(tab + pos)
+            .atom_u8:
+                s.atom = cutils.get_u32(tab + pos)
+                s.val = (i32)cutils.get_u8(tab + pos + 4)
+            .atom_u16:
+                s.atom = cutils.get_u32(tab + pos)
+                s.val = (i32)cutils.get_u16(tab + pos + 4)
+            .atom_label_u8:
+                s.atom = cutils.get_u32(tab + pos)
+                s.label = (i32)cutils.get_u32(tab + pos + 4)
+                s.val = (i32)cutils.get_u8(tab + pos + 8)
+            _:
+                discard(0)
+        pos = pos_next
+    trap("code_match: not reached")

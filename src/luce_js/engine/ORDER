@@ -84,7 +84,16 @@ parser_postfix.lucb
 parser_expr.lucb
 parser_statements.lucb
 parser_statement_or_decl.lucb
-stub_r19_resolve.lucb
+bytecode_dump.lucb
+closure_vars.lucb
+resolve_scope_var.lucb
+resolve_private_fields.lucb
+eval_variables.lucb
+code_match.lucb
+resolve_variables.lucb
+label_helpers.lucb
+resolve_labels.lucb
+resolve_labels_peephole.lucb
 bytecode_writer.lucb
 object_writer.lucb
 bytecode_reader.lucb
@@ -170,3 +179,4 @@ tests_r24.lucb
 tests_r23.lucb
 tests_r26.lucb
 tests_r27.lucb
+tests_r19.lucb
