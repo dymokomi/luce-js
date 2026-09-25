@@ -1,0 +1,230 @@
+#==============================================================================================
+#
+#   define_property - JS_DefineProperty: the core of property definition
+#
+#   DESCRIPTION:
+#       Port of quickjs.c JS_DefineProperty (lines 10350-10646): redefining an existing
+#       own property (data, accessor, variable reference, auto-initialized, and the
+#       Array length property), writing the elements of fast arrays and typed arrays in
+#       place, and otherwise creating the property with JS_CreateProperty. QuickJS's
+#       `goto redo_prop_update` is the `continue` of the loop around the body.
+#
+#==============================================================================================
+
+# mark: Redefining and creating properties =====================================================
+
+# The "property is not configurable" answer of JS_DefineProperty: a TypeError with
+# prop_throw (or prop_throw_strict in strict mode), else false.
+func js_define_property_not_configurable(ctx: Context*, flags: i32) -> bool!:
+    return try js_throw_type_error_or_false(ctx, flags, "property is not configurable")
+
+# allowed flags:
+#    JS_PROP_CONFIGURABLE, JS_PROP_WRITABLE, JS_PROP_ENUMERABLE
+#    JS_PROP_HAS_GET, JS_PROP_HAS_SET, JS_PROP_HAS_VALUE,
+#    JS_PROP_HAS_CONFIGURABLE, JS_PROP_HAS_WRITABLE, JS_PROP_HAS_ENUMERABLE,
+#    JS_PROP_THROW, JS_PROP_NO_EXOTIC.
+#    If JS_PROP_THROW is set, return an exception instead of FALSE.
+#    if JS_PROP_NO_EXOTIC is set, do not call the exotic
+#    define_own_property callback.
+#    return -1 (exception), FALSE or TRUE.
+## Define or redefine the own property `prop` of `this_obj` from the descriptor given
+## by `val`, `getter`, `setter` and the prop_has_* bits of `flags` (JS_DefineProperty).
+## Answers false when the definition is refused and `flags` do not ask for a TypeError.
+## Does not take ownership of `val`, `getter` or `setter`.
+pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg: Value, getter: Value, setter: Value, flags: i32) -> bool!:
+    if this_obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    let p = this_obj.u.obj
+    # replaced by the Uint32 array length when defining an Array's length
+    var val = val_arg
+
+    # redo_prop_update
+    while true:
+        var pr_found: Property*? = none
+        if let prs_found = find_own_property(&pr_found, p, prop):
+            var prs = prs_found
+            # the range of the Array length property is always tested before
+            if ((i32)prs.flags & prop_length) != 0 and (flags & prop_has_value) != 0:
+                var array_length: u32 = 0
+                discard(try js_to_array_length_free(ctx, &array_length, js_dup_value(ctx, val), false))
+                # this code relies on the fact that Uint32 are never allocated
+                val = js_new_uint32(array_length)
+                # prs may have been modified
+                prs = find_own_property(&pr_found, p, prop) else trap("assert: prs != NULL")
+            let pr = pr_found else trap("find_own_property: property without storage")
+            # property already exists
+            if not check_define_prop_flags((i32)prs.flags, flags):
+                return try js_define_property_not_configurable(ctx, flags)
+
+            if ((i32)prs.flags & prop_tmask) == prop_autoinit:
+                # Instantiate property and retry
+                discard(try js_auto_init_property(ctx, p, prop, pr, prs))
+                continue
+
+            if (flags & (prop_has_value | prop_has_writable | prop_has_get | prop_has_set)) != 0:
+                if (flags & (prop_has_get | prop_has_set)) != 0:
+                    var new_getter: Object*? = none
+                    var new_setter: Object*? = none
+                    if js_is_function(ctx, getter):
+                        new_getter = getter.u.obj
+                    if js_is_function(ctx, setter):
+                        new_setter = setter.u.obj
+
+                    if ((i32)prs.flags & prop_tmask) != prop_getset:
+                        discard(try js_shape_prepare_update(ctx, p, &prs))
+                        # convert to getset
+                        if ((i32)prs.flags & prop_tmask) == prop_varref:
+                            if p.class_id == ClassId.global_object:
+                                discard(try remove_global_object_property(ctx, p, prs, pr))
+                            free_var_ref(ctx.rt, pr.u.var_ref)
+                        else:
+                            js_free_value(ctx, pr.u.value)
+                        prs.flags = (u8)(((i32)prs.flags & (prop_configurable | prop_enumerable)) | prop_getset)
+                        pr.u.getset.getter = none
+                        pr.u.getset.setter = none
+                    elif ((i32)prs.flags & prop_configurable) == 0:
+                        if (flags & prop_has_get) != 0 and new_getter != pr.u.getset.getter:
+                            return try js_define_property_not_configurable(ctx, flags)
+                        if (flags & prop_has_set) != 0 and new_setter != pr.u.getset.setter:
+                            return try js_define_property_not_configurable(ctx, flags)
+                    if (flags & prop_has_get) != 0:
+                        if let old_getter = pr.u.getset.getter:
+                            js_free_value(ctx, js_mkptr(Tag.object, old_getter))
+                        if new_getter != none:
+                            discard(js_dup_value(ctx, getter))
+                        pr.u.getset.getter = new_getter
+                    if (flags & prop_has_set) != 0:
+                        if let old_setter = pr.u.getset.setter:
+                            js_free_value(ctx, js_mkptr(Tag.object, old_setter))
+                        if new_setter != none:
+                            discard(js_dup_value(ctx, setter))
+                        pr.u.getset.setter = new_setter
+                else:
+                    if ((i32)prs.flags & prop_tmask) == prop_getset:
+                        # convert to data descriptor
+                        var var_ref: VarRef*? = none
+                        if p.class_id == ClassId.global_object:
+                            var_ref = try js_global_object_find_uninitialized_var(ctx, p, prop, false)
+                        discard(js_shape_prepare_update(ctx, p, &prs) catch failure:
+                            free_var_ref(ctx.rt, var_ref)
+                            error(failure.code, failure.message)
+                        )
+                        if let old_getter = pr.u.getset.getter:
+                            js_free_value(ctx, js_mkptr(Tag.object, old_getter))
+                        if let old_setter = pr.u.getset.setter:
+                            js_free_value(ctx, js_mkptr(Tag.object, old_setter))
+                        if let vr = var_ref:
+                            prs.flags = (u8)(((i32)prs.flags & ~prop_tmask) | prop_varref | prop_writable)
+                            pr.u.var_ref = vr
+                        else:
+                            prs.flags = (u8)((i32)prs.flags & ~(prop_tmask | prop_writable))
+                            pr.u.value = js_undefined()
+                    elif ((i32)prs.flags & prop_tmask) != prop_varref:
+                        # (Note: JS_PROP_VARREF is always writable)
+                        if ((i32)prs.flags & (prop_configurable | prop_writable)) == 0 and (flags & prop_has_value) != 0:
+                            if not js_same_value(ctx, val, pr.u.value):
+                                return try js_define_property_not_configurable(ctx, flags)
+                            else:
+                                return true
+
+                    if ((i32)prs.flags & prop_tmask) == prop_varref:
+                        if (flags & prop_has_value) != 0:
+                            if p.class_id == ClassId.module_ns:
+                                # JS_PROP_WRITABLE is always true for variable
+                                # references, but they are write protected in module name
+                                # spaces.
+                                if not js_same_value(ctx, val, *pr.u.var_ref.pvalue):
+                                    return try js_define_property_not_configurable(ctx, flags)
+                            else:
+                                # update the reference
+                                set_value(ctx, pr.u.var_ref.pvalue, js_dup_value(ctx, val))
+                        if (flags & (prop_has_writable | prop_writable)) == prop_has_writable:
+                            if p.class_id == ClassId.module_ns:
+                                return try js_throw_type_error_or_false(ctx, flags, "module namespace properties have writable = false")
+                            discard(try js_shape_prepare_update(ctx, p, &prs))
+                            if p.class_id == ClassId.global_object:
+                                # mark as read-only
+                                pr.u.var_ref.is_const = 1
+                                prs.flags = (u8)((i32)prs.flags & ~prop_writable)
+                            else:
+                                # if writable is set to false, no longer a
+                                # reference (for mapped arguments)
+                                let val1 = js_dup_value(ctx, *pr.u.var_ref.pvalue)
+                                free_var_ref(ctx.rt, pr.u.var_ref)
+                                pr.u.value = val1
+                                prs.flags = (u8)((i32)prs.flags & ~(prop_tmask | prop_writable))
+                    elif ((i32)prs.flags & prop_length) != 0:
+                        var res = true
+                        if (flags & prop_has_value) != 0:
+                            # Note: no JS code is executable because
+                            # 'val' is guaranted to be a Uint32
+                            res = (try set_array_length(ctx, p, js_dup_value(ctx, val), flags)) != 0
+                        # still need to reset the writable flag if
+                        # needed. The JS_PROP_LENGTH is kept because the
+                        # Uint32 test is still done if the length
+                        # property is read-only.
+                        if (flags & (prop_has_writable | prop_writable)) == prop_has_writable:
+                            prs = get_shape_prop(p.shape)
+                            discard(try js_update_property_flags(ctx, p, &prs, (i32)prs.flags & ~prop_writable))
+                        return res
+                    else:
+                        if (flags & prop_has_value) != 0:
+                            js_free_value(ctx, pr.u.value)
+                            pr.u.value = js_dup_value(ctx, val)
+                        if (flags & prop_has_writable) != 0:
+                            discard(try js_update_property_flags(ctx, p, &prs, ((i32)prs.flags & ~prop_writable) | (flags & prop_writable)))
+            var mask: i32 = 0
+            if (flags & prop_has_configurable) != 0:
+                mask |= prop_configurable
+            if (flags & prop_has_enumerable) != 0:
+                mask |= prop_enumerable
+            discard(try js_update_property_flags(ctx, p, &prs, ((i32)prs.flags & ~mask) | (flags & mask)))
+            return true
+
+        # handle modification of fast array elements
+        if p.fast_array:
+            if p.class_id == ClassId.array:
+                if js_atom_is_tagged_int_raw(prop):
+                    let idx = js_atom_to_uint32_raw(prop)
+                    if idx < p.u.array.count:
+                        let prop_flags = get_prop_flags(flags, prop_c_w_e)
+                        if prop_flags != prop_c_w_e or (flags & (prop_has_get | prop_has_set)) != 0:
+                            # convert_to_slow_array
+                            discard(try convert_fast_array_to_array(ctx, p))
+                            continue
+                        if (flags & prop_has_value) != 0:
+                            set_value(ctx, p.u.array.u.values + (usize)idx, js_dup_value(ctx, val))
+                        return true
+            elif (u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array:
+                if not js_atom_is_tagged_int_raw(prop):
+                    # slow path with to handle all numeric indexes
+                    let num = try js_atom_is_numeric_index1(ctx, prop)
+                    # an undefined `num` is not a numeric index: typed_array_done, the
+                    # property is created below
+                    if not js_is_undefined(num):
+                        let ret = js_number_is_integer(ctx, num) catch failure:
+                            js_free_value(ctx, num)
+                            error(failure.code, failure.message)
+                        if ret == 0:
+                            js_free_value(ctx, num)
+                            return try js_throw_type_error_or_false(ctx, flags, "non integer index in typed array")
+                        let negative = js_number_is_negative_or_minus_zero(ctx, num)
+                        js_free_value(ctx, num)
+                        if negative:
+                            return try js_throw_type_error_or_false(ctx, flags, "negative index in typed array")
+                        # a numeric index that is not a tagged integer is out of bounds
+                        # (typed_array_oob)
+                        return try js_throw_type_error_or_false(ctx, flags, "out-of-bound index in typed array")
+                else:
+                    let idx = js_atom_to_uint32_raw(prop)
+                    # if the typed array is detached, p->u.array.count = 0
+                    if idx >= p.u.array.count:
+                        return try js_throw_type_error_or_false(ctx, flags, "out-of-bound index in typed array")
+                    let prop_flags = get_prop_flags(flags, prop_enumerable | prop_writable | prop_configurable)
+                    if (flags & (prop_has_get | prop_has_set)) != 0 or prop_flags != (prop_enumerable | prop_writable | prop_configurable):
+                        return try js_throw_type_error_or_false(ctx, flags, "invalid descriptor flags")
+                    if (flags & prop_has_value) != 0:
+                        return (try js_set_property_value(ctx, this_obj, js_new_int32((i32)idx), js_dup_value(ctx, val), flags)) != 0
+                    return true
+
+        return (try js_create_property(ctx, p, prop, val, getter, setter, flags)) != 0

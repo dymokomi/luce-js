@@ -1,0 +1,121 @@
+#==============================================================================================
+#
+#   define_property_wrappers - The shortcuts built on JS_DefineProperty, and object names
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 10648-10806: auto-initialized properties, the
+#       JS_DefinePropertyValue family (by atom, value, index and C string, each taking
+#       ownership of the value), JS_DefinePropertyGetSet, JS_CreateDataPropertyUint32,
+#       and the 'name' property of anonymous functions and classes
+#       (JS_DefineObjectName, JS_DefineObjectNameComputed).
+#
+#==============================================================================================
+
+# mark: Auto-initialized properties =============================================================
+
+# Define `prop` as a property created on first access by the initializer `id` with
+# `opaque`; the property must not exist. False if `this_obj` is not an object.
+func js_define_auto_init_property(ctx: Context*, this_obj: Value, prop: Atom, id: AutoInitId, opaque: void*?, flags: i32) -> bool!:
+    if this_obj.tag != Tag.object:
+        return false
+
+    let p = this_obj.u.obj
+
+    var pr_found: Property*? = none
+    if find_own_property(&pr_found, p, prop) != none:
+        # property already exists
+        trap("JS_DefineAutoInitProperty: property already exists")
+
+    # Specialized CreateProperty
+    let pr = try add_property(ctx, p, prop, (flags & prop_c_w_e) | prop_autoinit)
+    pr.u.init.realm_and_id = (usize)js_dup_context(ctx)
+    assert((pr.u.init.realm_and_id & 3) == 0)
+    assert((i32)id <= 3)
+    pr.u.init.realm_and_id |= (usize)(i32)id
+    pr.u.init.opaque = opaque
+    return true
+
+# mark: Defining values =========================================================================
+
+# shortcut to add or redefine a new property value
+## Define `prop` of `this_obj` as a data property with value `val` and the attributes of
+## `flags` (JS_DefinePropertyValue). Takes ownership of `val`, also on failure.
+pub func js_define_property_value(ctx: Context*, this_obj: Value, prop: Atom, val: Value, flags: i32) -> bool!:
+    defer js_free_value(ctx, val)
+    return try js_define_property(ctx, this_obj, prop, val, js_undefined(), js_undefined(),
+                                  flags | prop_has_value | prop_has_configurable | prop_has_writable | prop_has_enumerable)
+
+# JS_DefinePropertyValue with a key given as a value; takes ownership of `prop` and
+# `val`, also on failure.
+func js_define_property_value_value(ctx: Context*, this_obj: Value, prop: Value, val: Value, flags: i32) -> bool!:
+    let atom = js_value_to_atom(ctx, prop) catch failure:
+        js_free_value(ctx, prop)
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, prop)
+    defer js_free_atom(ctx, atom)
+    return try js_define_property_value(ctx, this_obj, atom, val, flags)
+
+## JS_DefinePropertyValue with an array index key (JS_DefinePropertyValueUint32). Takes
+## ownership of `val`, also on failure.
+pub func js_define_property_value_uint32(ctx: Context*, this_obj: Value, idx: u32, val: Value, flags: i32) -> bool!:
+    return try js_define_property_value_value(ctx, this_obj, js_new_uint32(idx), val, flags)
+
+# JS_DefinePropertyValue with an integer key; takes ownership of `val`, also on failure.
+func js_define_property_value_int64(ctx: Context*, this_obj: Value, idx: i64, val: Value, flags: i32) -> bool!:
+    return try js_define_property_value_value(ctx, this_obj, js_new_int64(idx), val, flags)
+
+## JS_DefinePropertyValue with a key given as text (JS_DefinePropertyValueStr). Takes
+## ownership of `val`, also on failure.
+pub func js_define_property_value_str(ctx: Context*, this_obj: Value, prop: str, val: Value, flags: i32) -> bool!:
+    let atom = js_new_atom(ctx, prop) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    defer js_free_atom(ctx, atom)
+    return try js_define_property_value(ctx, this_obj, atom, val, flags)
+
+# shortcut to add getter & setter
+## Define `prop` of `this_obj` as an accessor property (JS_DefinePropertyGetSet). Takes
+## ownership of `getter` and `setter`, also on failure.
+pub func js_define_property_get_set(ctx: Context*, this_obj: Value, prop: Atom, getter: Value, setter: Value, flags: i32) -> bool!:
+    defer js_free_value(ctx, setter)
+    defer js_free_value(ctx, getter)
+    return try js_define_property(ctx, this_obj, prop, js_undefined(), getter, setter,
+                                  flags | prop_has_get | prop_has_set | prop_has_configurable | prop_has_enumerable)
+
+# Define the element `idx` of `this_obj` as a configurable, enumerable and writable data
+# property; takes ownership of `val`, also on failure.
+func js_create_data_property_uint32(ctx: Context*, this_obj: Value, idx: i64, val: Value, flags: i32) -> bool!:
+    return try js_define_property_value_value(ctx, this_obj, js_new_int64(idx), val,
+                                              flags | prop_configurable | prop_enumerable | prop_writable)
+
+# mark: Object names ============================================================================
+
+# return TRUE if 'obj' has a non empty 'name' string
+func js_object_has_name(ctx: Context*, obj: Value) -> bool:
+    var pr_found: Property*? = none
+    let prs = find_own_property(&pr_found, obj.u.obj, atom_name) else return false
+    if ((i32)prs.flags & prop_tmask) != prop_normal:
+        return true
+    let pr = pr_found else trap("find_own_property: property without storage")
+    let val = pr.u.value
+    if val.tag != Tag.string:
+        return true
+    let p = val.u.string
+    return p.len != 0
+
+# Give the object `obj` the 'name' `name` unless it has a non empty one already.
+func js_define_object_name(ctx: Context*, obj: Value, name: Atom, flags: i32) -> !:
+    if name != no_atom and js_is_object(obj) and not js_object_has_name(ctx, obj):
+        discard(try js_define_property_value(ctx, obj, atom_name, try js_atom_to_string(ctx, name), flags))
+
+# Give the object `obj` the 'name' of the computed key `text` unless it has a non empty
+# one already.
+func js_define_object_name_computed(ctx: Context*, obj: Value, text: Value, flags: i32) -> !:
+    if js_is_object(obj) and not js_object_has_name(ctx, obj):
+        let prop = try js_value_to_atom(ctx, text)
+        let name_str = js_get_function_name(ctx, prop) catch failure:
+            js_free_atom(ctx, prop)
+            error(failure.code, failure.message)
+        js_free_atom(ctx, prop)
+        discard(try js_define_property_value(ctx, obj, atom_name, name_str, flags))

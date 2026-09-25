@@ -1,0 +1,123 @@
+#==============================================================================================
+#
+#   global_vars - Global variable bindings and property deletion
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 10809-10957: the checks made before a global var, let,
+#       const or function declaration (JS_CheckDefineGlobalVar), references to global
+#       variables (JS_GetGlobalVarRef), deleting a global binding (JS_DeleteGlobalVar),
+#       and JS_DeleteProperty with its integer-key form. Lexical globals live in
+#       `ctx.global_var_obj`, the others are properties of `ctx.global_obj`.
+#
+#==============================================================================================
+
+# mark: Global variables ========================================================================
+
+## The declaration is lexical (let, const, class): a flag of JS_CheckDefineGlobalVar.
+let define_global_lex_var: i32 = 1 << 7
+## The declaration is a function: a flag of JS_CheckDefineGlobalVar.
+let define_global_func_var: i32 = 1 << 6
+
+# Throw the SyntaxError "redeclaration of 'prop'".
+func js_throw_syntax_error_var_redeclaration(ctx: Context*, prop: Atom) -> never!:
+    try js_throw_syntax_error_atom_raw(ctx, prop, "redeclaration of '%s'")
+
+# flags is 0, DEFINE_GLOBAL_LEX_VAR or DEFINE_GLOBAL_FUNC_VAR
+# XXX: could support exotic global object.
+func js_check_define_global_var(ctx: Context*, prop: Atom, flags: i32) -> !:
+    var p = ctx.global_obj.u.obj
+    let prs = find_own_property1(p, prop)
+    # XXX: should handle JS_PROP_AUTOINIT
+    if (flags & define_global_lex_var) != 0:
+        if let s = prs:
+            if ((i32)s.flags & prop_configurable) == 0:
+                # fail_redeclaration
+                try js_throw_syntax_error_var_redeclaration(ctx, prop)
+    else:
+        if prs == none and not p.extensible:
+            # define_error
+            try js_throw_type_error_atom_raw(ctx, prop, "cannot define variable '%s'")
+        if (flags & define_global_func_var) != 0:
+            if let s = prs:
+                if ((i32)s.flags & prop_configurable) == 0 and (((i32)s.flags & prop_tmask) == prop_getset or ((i32)s.flags & (prop_writable | prop_enumerable)) != (prop_writable | prop_enumerable)):
+                    # define_error
+                    try js_throw_type_error_atom_raw(ctx, prop, "cannot define variable '%s'")
+    # check if there already is a lexical declaration
+    p = ctx.global_var_obj.u.obj
+    if find_own_property1(p, prop) != none:
+        # fail_redeclaration
+        try js_throw_syntax_error_var_redeclaration(ctx, prop)
+
+# construct a reference to a global variable
+# `sp[0]` receives the object holding the variable (undefined if there is none) and
+# `sp[1]` the variable's name.
+func js_get_global_var_ref(ctx: Context*, prop: Atom, sp: Value*) -> !:
+    # no exotic behavior is possible in global_var_obj
+    let p = ctx.global_var_obj.u.obj
+    var pr_found: Property*? = none
+    if let prs = find_own_property(&pr_found, p, prop):
+        let pr = pr_found else trap("find_own_property: property without storage")
+        # XXX: conformance: do these tests in
+        # OP_put_var_ref/OP_get_var_ref ?
+        if js_is_uninitialized(*pr.u.var_ref.pvalue):
+            try js_throw_reference_error_uninitialized(ctx, prs.atom)
+        if ((i32)prs.flags & prop_writable) == 0:
+            # always throws: the flags are prop_throw
+            discard(try js_throw_type_error_read_only(ctx, prop_throw, prop))
+            return
+        sp[0] = js_dup_value(ctx, ctx.global_var_obj)
+    else:
+        let ret = try js_has_property(ctx, ctx.global_obj, prop)
+        if ret != 0:
+            sp[0] = js_dup_value(ctx, ctx.global_obj)
+        else:
+            sp[0] = js_undefined()
+    # QuickJS does not check this conversion; the port releases sp[0] if it fails
+    sp[1] = js_atom_to_value(ctx, prop) catch failure:
+        js_free_value(ctx, sp[0])
+        sp[0] = js_undefined()
+        error(failure.code, failure.message)
+
+# return -1, FALSE or TRUE
+func js_delete_global_var(ctx: Context*, prop: Atom) -> bool!:
+    # 9.1.1.4.7 DeleteBinding ( N )
+    let p = ctx.global_var_obj.u.obj
+    var pr_found: Property*? = none
+    if find_own_property(&pr_found, p, prop) != none:
+        # lexical variables cannot be deleted
+        return false
+    let ret = try js_has_property(ctx, ctx.global_obj, prop)
+    if ret != 0:
+        return try js_delete_property(ctx, ctx.global_obj, prop, 0)
+    else:
+        return true
+
+# mark: Deleting properties =====================================================================
+
+# return -1, FALSE or TRUE. return FALSE if not configurable or
+# invalid object. return -1 in case of exception.
+# flags can be 0, JS_PROP_THROW or JS_PROP_THROW_STRICT
+## Delete the property `prop` of `obj` (JS_DeleteProperty). Answers false when it is not
+## configurable and `flags` (prop_throw, or prop_throw_strict in strict mode) do not ask
+## for a TypeError.
+pub func js_delete_property(ctx: Context*, obj: Value, prop: Atom, flags: i32) -> bool!:
+    let obj1 = try js_to_object(ctx, obj)
+    let p = obj1.u.obj
+    let res = delete_property(ctx, p, prop) catch failure:
+        js_free_value(ctx, obj1)
+        error(failure.code, failure.message)
+    js_free_value(ctx, obj1)
+    if res != 0:
+        return true
+    if (flags & prop_throw) != 0 or ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx)):
+        try js_throw_type_error(ctx, "could not delete property")
+    return false
+
+# JS_DeleteProperty with an integer key.
+func js_delete_property_int64(ctx: Context*, obj: Value, idx: i64, flags: i32) -> bool!:
+    if (u64)idx <= (u64)js_atom_max_int:
+        # fast path for fast arrays
+        return try js_delete_property(ctx, obj, js_atom_from_uint32_raw((u32)idx), flags)
+    let prop = try js_new_atom_int64(ctx, idx)
+    defer js_free_atom(ctx, prop)
+    return try js_delete_property(ctx, obj, prop, flags)

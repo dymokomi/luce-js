@@ -51,7 +51,7 @@ func js_throw_syntax_error(ctx: Context*, message: fmt) -> never!:
 func js_throw_type_error(ctx: Context*, message: fmt) -> never!:
     trap("unported: JS_ThrowTypeError")
 ## Ported from quickjs.c:7698 JS_ThrowTypeErrorOrFalse.
-func js_throw_type_error_or_false(ctx: Context*, flags: i32, message: fmt) -> i32!:
+func js_throw_type_error_or_false(ctx: Context*, flags: i32, message: fmt) -> bool!:
     trap("unported: JS_ThrowTypeErrorOrFalse")
 ## Ported from quickjs.c:7714 __JS_ThrowTypeErrorAtom.
 func js_throw_type_error_atom_raw(ctx: Context*, atom: Atom, message: fmt) -> never!:
@@ -60,7 +60,7 @@ func js_throw_type_error_atom_raw(ctx: Context*, atom: Atom, message: fmt) -> ne
 func js_throw_syntax_error_atom_raw(ctx: Context*, atom: Atom, message: fmt) -> never!:
     trap("unported: __JS_ThrowSyntaxErrorAtom")
 ## Ported from quickjs.c:7734 JS_ThrowTypeErrorReadOnly.
-func js_throw_type_error_read_only(ctx: Context*, flags: i32, atom: Atom) -> i32!:
+func js_throw_type_error_read_only(ctx: Context*, flags: i32, atom: Atom) -> bool!:
     trap("unported: JS_ThrowTypeErrorReadOnly")
 ## Ported from quickjs.c:7745 JS_ThrowReferenceError.
 func js_throw_reference_error(ctx: Context*, message: fmt) -> never!:
