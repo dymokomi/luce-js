@@ -1,0 +1,216 @@
+#==============================================================================================
+#
+#   interpreter_support - The interpreter's constants and its inline opcode helpers
+#
+#   DESCRIPTION:
+#       The constants defined inside JS_CallInternal (quickjs.c lines 17746-20704): the
+#       OP_throw_error kinds and the OP_define_method flags, and how the dispatch loop
+#       leaves a frame. (The call flags, OPSpecialObjectEnum and FUNC_RET_*, which sit
+#       just before the interpreter, are in calls.lucb.)
+#
+#       Then the bodies of QuickJS's interpreter macros that are too large to repeat in
+#       every opcode arm (GET_FIELD_INLINE, GET_ARRAY_EL_INLINE, OP_CMP_EQ and
+#       OP_CMP_STRICT_EQ) as `inline` functions: the macro's parameters that are values
+#       (`keep`, `inv`) stay with the caller or become parameters, and its `goto
+#       exception` is the function's failure.
+#
+#==============================================================================================
+
+# mark: Constants ===============================================================================
+
+## The kinds of OP_throw_error (JS_THROW_*).
+let throw_var_ro: i32 = 0
+let throw_var_redecl: i32 = 1
+let throw_var_uninitialized: i32 = 2
+let throw_error_delete_super: i32 = 3
+let throw_error_iterator_throw: i32 = 4
+
+## The operand flags of OP_define_method (OP_DEFINE_METHOD_*): the low 2 bits are the
+## kind, bit 2 makes the property enumerable.
+let op_define_method_method: i32 = 0
+let op_define_method_getter: i32 = 1
+let op_define_method_setter: i32 = 2
+let op_define_method_enumerable: i32 = 4
+
+## How the dispatch loop of JS_CallInternal left the frame: the three labels its C
+## version jumps to.
+enum FrameExit:
+    ## `done`: the function returned `ret_val`; its locals are released.
+    done
+    ## `done_generator`: a generator or async function suspended; its frame is kept.
+    done_generator
+    ## `exception`: no handler caught the pending exception.
+    exception
+
+# mark: Frame access ============================================================================
+
+## `b->cpool[idx]`: the constant pool is present whenever the bytecode refers to it.
+inline func cpool_at(b: FunctionBytecode*, idx: u32) -> Value:
+    let cpool = b.cpool else trap("bytecode refers to a missing constant pool")
+    return cpool[(usize)idx]
+
+## `var_refs[idx]` of a closure: every closure variable of a created closure is set.
+inline func var_ref_at(var_refs: VarRef*?*?, idx: usize) -> VarRef*:
+    let refs = var_refs else trap("bytecode refers to missing closure variables")
+    return refs[idx] else trap("closure variable not set")
+
+## `&b->closure_var[idx]`.
+func closure_var_at(b: FunctionBytecode*, idx: i32) -> ClosureVar*:
+    let cvs = b.closure_var else trap("bytecode refers to missing closure variables")
+    return cvs + (usize)idx
+
+# mark: Interpreter macros ======================================================================
+
+## GET_FIELD_INLINE: the property `atom` of `this_obj`. Plain objects are searched along
+## their prototype chain without leaving the interpreter; accessors, exotic objects and
+## primitives take the slow path, JS_GetPropertyInternal. `pc` is recorded in `sf` for
+## the slow path's backtrace.
+inline func get_field_inline(ctx: Context*, sf: StackFrame*, pc: const u8*, this_obj: Value, atom: Atom) -> Value!:
+    var obj = this_obj
+    if obj.tag == Tag.object:
+        var p = obj.u.obj
+        var fast = true
+        while fast:
+            var pr: Property*? = none
+            if let prs = find_own_property(&pr, p, atom):
+                # found
+                if ((i32)prs.flags & prop_tmask) != 0:
+                    fast = false
+                else:
+                    let found = pr else trap("find_own_property found no property")
+                    return js_dup_value(ctx, found.u.value)
+            elif p.is_exotic:
+                # XXX: should avoid the slow path for arrays and typed arrays by ensuring
+                # that 'prop' is not numeric
+                obj = js_mkptr(Tag.object, p)
+                fast = false
+            elif let proto = p.shape.proto:
+                p = proto
+            else:
+                return js_undefined()
+    # slow path
+    sf.cur_pc = pc
+    return try js_get_property_internal(ctx, obj, atom, this_obj, false)
+
+## GET_ARRAY_EL_INLINE: the element `prop` of `obj`. An integer index inside a fast
+## array is read in place; anything else takes JS_GetPropertyValue, which frees `prop`
+## (also when it fails).
+inline func get_array_el_inline(ctx: Context*, sf: StackFrame*, pc: const u8*, obj: Value, prop: Value) -> Value!:
+    if obj.tag == Tag.object and prop.tag == Tag.int:
+        let p = obj.u.obj
+        let idx = (u32)js_value_get_int(prop)
+        if p.class_id == ClassId.array and idx < p.u.array.count:
+            return js_dup_value(ctx, p.u.array.u.values[(usize)idx])
+    # slow path
+    sf.cur_pc = pc
+    return try js_get_property_value(ctx, obj, prop)
+
+## OP_CMP_EQ: `sp[-2] == sp[-1]` (`inv`: `!=`) into sp[-2], releasing both operands; the
+## caller pops one slot. Numbers, objects against objects or null/undefined, and strings
+## are compared here; the rest takes js_eq_slow.
+inline func eq_inline(ctx: Context*, sf: StackFrame*, pc: const u8*, sp: Value*, inv: bool) -> !:
+    let op1 = sp[(isize)-2]
+    let op2 = sp[(isize)-1]
+    let tag1 = op1.tag
+    let tag2 = op2.tag
+    var res = false
+    var slow = false
+    if tag1 == Tag.int:
+        if tag2 == Tag.int:
+            res = js_value_get_int(op1) == js_value_get_int(op2)
+        elif js_tag_is_float64(tag2):
+            res = f64(js_value_get_int(op1)) == js_value_get_float64(op2)
+        else:
+            slow = true
+    elif js_tag_is_float64(tag1):
+        if tag2 == Tag.int:
+            res = js_value_get_float64(op1) == f64(js_value_get_int(op2))
+        elif js_tag_is_float64(tag2):
+            res = js_value_get_float64(op1) == js_value_get_float64(op2)
+        else:
+            slow = true
+    elif tag1 == Tag.object:
+        if tag2 == Tag.null or tag2 == Tag.undefined:
+            res = op1.u.obj.is_htmldda
+            js_free_value(ctx, op1)
+        elif tag2 == Tag.object:
+            res = op1.u.obj == op2.u.obj
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+        else:
+            slow = true
+    elif tag1 == Tag.null or tag1 == Tag.undefined:
+        if tag2 == Tag.null or tag2 == Tag.undefined:
+            res = true
+        elif tag2 == Tag.object:
+            res = op2.u.obj.is_htmldda
+            js_free_value(ctx, op2)
+        else:
+            slow = true
+    elif tag1 == Tag.string and tag2 == Tag.string:
+        res = js_string_eq(ctx, js_value_get_string(op1), js_value_get_string(op2))
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+    else:
+        slow = true
+    if slow:
+        sf.cur_pc = pc
+        discard(try js_eq_slow(ctx, sp, inv))
+        return
+    sp[(isize)-2] = js_new_bool(res != inv)
+
+## OP_CMP_STRICT_EQ: `sp[-2] === sp[-1]` (`inv`: `!==`) into sp[-2], releasing both
+## operands; the caller pops one slot. It cannot fail.
+inline func strict_eq_inline(ctx: Context*, sp: Value*, inv: bool):
+    let op1 = sp[(isize)-2]
+    let op2 = sp[(isize)-1]
+    let tag1 = op1.tag
+    let tag2 = op2.tag
+    var res = false
+    if tag1 == Tag.int:
+        if tag2 == Tag.int:
+            res = js_value_get_int(op1) == js_value_get_int(op2)
+        elif js_tag_is_float64(tag2):
+            res = f64(js_value_get_int(op1)) == js_value_get_float64(op2)
+        else:
+            js_free_value(ctx, op2)
+            res = false
+    elif js_tag_is_float64(tag1):
+        if tag2 == Tag.int:
+            res = js_value_get_float64(op1) == f64(js_value_get_int(op2))
+        elif js_tag_is_float64(tag2):
+            res = js_value_get_float64(op1) == js_value_get_float64(op2)
+        else:
+            js_free_value(ctx, op2)
+            res = false
+    elif tag1 == Tag.object:
+        if tag2 == Tag.object:
+            res = op1.u.obj == op2.u.obj
+        else:
+            res = false
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+    elif tag1 == Tag.null or tag1 == Tag.undefined:
+        res = tag1 == tag2
+        js_free_value(ctx, op2)
+    elif tag1 == Tag.string and tag2 == Tag.string:
+        res = js_string_eq(ctx, js_value_get_string(op1), js_value_get_string(op2))
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+    else:
+        res = js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+    sp[(isize)-2] = js_new_bool(res != inv)
+
+## The two hex digits of a byte, for the "invalid opcode" message (C's `%02x`).
+func hex_byte_prefix(byte: u8) -> str:
+    return "0" if byte < 16 else ""
+
+## C's result of a function returning "-1 exception / FALSE / TRUE" from the port's
+## `bool!` form with its failure recovered as none: `bool_status(f() catch: recover
+## none)` is -1, 0 or 1, for the opcodes whose C code tests the result after cleanup.
+inline func bool_status(r: bool?) -> i32:
+    if let v = r:
+        return (i32)v
+    return -1

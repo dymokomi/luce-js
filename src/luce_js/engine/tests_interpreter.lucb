@@ -1,0 +1,217 @@
+#==============================================================================================
+#
+#   tests_interpreter - Tests of JS_CallInternal on hand-assembled bytecode
+#
+#   DESCRIPTION:
+#       Small bytecode functions run on a real runtime and a raw context (JS_NewContextRaw
+#       up to the basic objects, whose port is not there yet), using no intrinsic:
+#       integer arithmetic and comparisons, locals and branches, argument padding and the
+#       slow arithmetic path, a frame too large for the inline frame space, calls between
+#       bytecode functions, catching and propagating exceptions, and a suspended async
+#       frame resumed by call_flag_generator. The runtime cannot be freed until the
+#       collector is complete, so each test leaves its runtime allocated.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# A context as JS_NewContextRaw makes it before it adds the basic objects.
+func test_interp_context() -> Context*:
+    let rt = js_new_runtime() else trap("out of memory")
+    let p = js_mallocz_rt(rt, sizeof(Context)) else trap("out of memory")
+    let ctx = (Context*)p
+    js_rc(ctx).ref_count = 1
+    add_gc_object(rt, &ctx.header, GCObjectType.js_context)
+    let class_proto = js_malloc_rt(rt, sizeof(Value) * (usize)rt.class_count) else trap("out of memory")
+    let protos = (Value*)class_proto
+    ctx.class_proto = protos
+    ctx.rt = rt
+    cutils.list_add_tail(&ctx.link, &rt.context_list)
+    for i in 0..<(usize)rt.class_count:
+        protos[i] = js_null()
+    ctx.array_ctor = js_null()
+    ctx.iterator_ctor = js_null()
+    ctx.regexp_ctor = js_null()
+    ctx.promise_ctor = js_null()
+    ctx.global_obj = js_null()
+    ctx.eval_obj = js_null()
+    cutils.init_list_head(&ctx.loaded_modules)
+    return ctx
+
+# A bytecode function of `code` in `ctx`, as the compiler would leave it.
+func test_interp_function(ctx: Context*, code: const u8[], arg_count: u16, var_count: u16, stack_size: u16, func_kind: u8) -> Value:
+    let rt = ctx.rt
+    let p = js_mallocz_rt(rt, sizeof(FunctionBytecode)) else trap("out of memory")
+    let b = (FunctionBytecode*)p
+    let buf = js_malloc_rt(rt, code.length) else trap("out of memory")
+    let bytes = (u8*)buf
+    for i in 0..<code.length:
+        bytes[i] = code[i]
+    b.byte_code_buf = bytes
+    b.byte_code_len = (i32)code.length
+    b.js_mode = (u8)js_mode_strict
+    b.func_kind = func_kind
+    b.arg_count = arg_count
+    b.defined_arg_count = arg_count
+    b.var_count = var_count
+    b.stack_size = stack_size
+    b.var_ref_count = 0
+    b.realm = ctx
+    let obj = js_new_object_proto_class(ctx, js_null(), (u32)ClassId.bytecode_function) else trap("out of memory")
+    let fp = obj.u.obj
+    fp.u.func_.function_bytecode = b
+    fp.u.func_.var_refs = none
+    fp.u.func_.home_object = none
+    return obj
+
+# The integer a call answered.
+func test_interp_int(v: Value) -> i32:
+    assert(v.tag == Tag.int)
+    return js_value_get_int(v)
+
+# mark: Arithmetic and branches =================================================================
+
+test "integer addition returns through OP_return":
+    let ctx = test_interp_context()
+    let code: u8[12] = [(u8)Op.push_i32, 2, 0, 0, 0, (u8)Op.push_i32, 40, 0, 0, 0, (u8)Op.add, (u8)Op.return_]
+    let f = test_interp_function(ctx, code, 0, 0, 2, js_func_normal)
+    var no_args = js_undefined()
+    let r = js_call(ctx, f, js_undefined(), 0, &no_args) catch: trap("the call failed")
+    assert(test_interp_int(r) == 42)
+    assert(ctx.rt.current_stack_frame == none)
+
+# for (i = 0, s = 0; i < 10; i++) s += i; return s
+let test_interp_sum_loop: u8[20] = [
+    (u8)Op.push_0, (u8)Op.put_loc0,             # 0: i = 0
+    (u8)Op.push_0, (u8)Op.put_loc1,             # 2: s = 0
+    (u8)Op.get_loc0, (u8)Op.push_i8, 10,        # 4: L: i < 10
+    (u8)Op.lt, (u8)Op.if_false8, 9,             # 7: else goto END (9 + 9)
+    (u8)Op.get_loc1, (u8)Op.get_loc0, (u8)Op.add, (u8)Op.put_loc1, # 10: s = s + i
+    (u8)Op.inc_loc, 0,                          # 14: i++
+    (u8)Op.goto8, 0xf3,                         # 16: goto L (17 - 13)
+    (u8)Op.get_loc1, (u8)Op.return_,            # 18: END: return s
+]
+
+test "locals, a loop and short branches":
+    let ctx = test_interp_context()
+    let f = test_interp_function(ctx, test_interp_sum_loop, 0, 2, 2, js_func_normal)
+    var no_args = js_undefined()
+    let r = js_call(ctx, f, js_undefined(), 0, &no_args) catch: trap("the call failed")
+    assert(test_interp_int(r) == 45)
+
+test "a frame larger than the inline frame space is allocated":
+    let ctx = test_interp_context()
+    # 40 variables: the frame does not fit the 32 inline values
+    let f = test_interp_function(ctx, test_interp_sum_loop, 0, 40, 2, js_func_normal)
+    var no_args = js_undefined()
+    let r = js_call(ctx, f, js_undefined(), 0, &no_args) catch: trap("the call failed")
+    assert(test_interp_int(r) == 45)
+
+test "comparisons and integer overflow to float":
+    let ctx = test_interp_context()
+    var no_args = js_undefined()
+    # 3 === 3
+    let eq_code: u8[5] = [(u8)Op.push_3, (u8)Op.push_i8, 3, (u8)Op.strict_eq, (u8)Op.return_]
+    let r1 = js_call(ctx, test_interp_function(ctx, eq_code, 0, 0, 2, js_func_normal), js_undefined(), 0, &no_args) catch: trap("the call failed")
+    assert(r1.tag == Tag.boolean and js_value_get_bool(r1))
+    # 2147483647 + 1 is a float
+    let big_code: u8[8] = [(u8)Op.push_i32, 0xff, 0xff, 0xff, 0x7f, (u8)Op.push_1, (u8)Op.add, (u8)Op.return_]
+    let r2 = js_call(ctx, test_interp_function(ctx, big_code, 0, 0, 2, js_func_normal), js_undefined(), 0, &no_args) catch: trap("the call failed")
+    assert(r2.tag == Tag.float64 and js_value_get_float64(r2) == 2147483648.0)
+    # 0 * -5 is -0
+    let neg_zero_code: u8[5] = [(u8)Op.push_0, (u8)Op.push_i8, 0xfb, (u8)Op.mul, (u8)Op.return_]
+    let r3 = js_call(ctx, test_interp_function(ctx, neg_zero_code, 0, 0, 2, js_func_normal), js_undefined(), 0, &no_args) catch: trap("the call failed")
+    assert(r3.tag == Tag.float64 and js_value_get_float64(r3).bits() == 0x8000000000000000)
+
+# mark: Arguments and calls =====================================================================
+
+test "missing arguments are undefined and take the slow path":
+    let ctx = test_interp_context()
+    let code: u8[4] = [(u8)Op.get_arg0, (u8)Op.get_arg1, (u8)Op.mul, (u8)Op.return_]
+    let f = test_interp_function(ctx, code, 2, 0, 2, js_func_normal)
+    var args: Value[2] = [js_new_int32(6), js_new_int32(7)]
+    let r1 = js_call(ctx, f, js_undefined(), 2, &args[0]) catch: trap("the call failed")
+    assert(test_interp_int(r1) == 42)
+    # one argument: arg1 is undefined and 6 * undefined is NaN
+    let r2 = js_call(ctx, f, js_undefined(), 1, &args[0]) catch: trap("the call failed")
+    assert(js_value_is_nan(r2))
+
+test "a bytecode function calls another":
+    let ctx = test_interp_context()
+    let callee_code: u8[5] = [(u8)Op.get_arg0, (u8)Op.push_i8, 2, (u8)Op.mul, (u8)Op.return_]
+    let callee = test_interp_function(ctx, callee_code, 1, 0, 2, js_func_normal)
+    let caller_code: u8[5] = [(u8)Op.get_arg0, (u8)Op.push_i8, 21, (u8)Op.call1, (u8)Op.return_]
+    let caller = test_interp_function(ctx, caller_code, 1, 0, 2, js_func_normal)
+    var args: Value[1] = [callee]
+    let r = js_call(ctx, caller, js_undefined(), 1, &args[0]) catch: trap("the call failed")
+    assert(test_interp_int(r) == 42)
+    # the callee's reference taken by get_arg0 was released by the call
+    assert(js_rc(callee.u.obj).ref_count == 1)
+
+# mark: Exceptions ==============================================================================
+
+test "a thrown value is caught by the innermost catch offset":
+    let ctx = test_interp_context()
+    let code: u8[12] = [
+        (u8)Op.catch_, 10, 0, 0, 0,             # 0: catch HANDLER (1 + 10)
+        (u8)Op.push_i32, 7, 0, 0, 0,            # 5
+        (u8)Op.throw,                           # 10
+        (u8)Op.return_,                         # 11: HANDLER: return the exception
+    ]
+    let f = test_interp_function(ctx, code, 0, 0, 2, js_func_normal)
+    var no_args = js_undefined()
+    let r = js_call(ctx, f, js_undefined(), 0, &no_args) catch: trap("the call failed")
+    assert(test_interp_int(r) == 7)
+    assert(js_is_uninitialized(ctx.rt.current_exception))
+
+test "an uncaught exception fails the call and unlinks the frame":
+    let ctx = test_interp_context()
+    let code: u8[3] = [(u8)Op.push_i8, 5, (u8)Op.throw]
+    let f = test_interp_function(ctx, code, 0, 0, 1, js_func_normal)
+    var no_args = js_undefined()
+    var failed = false
+    discard(js_call(ctx, f, js_undefined(), 0, &no_args) catch:
+        failed = true
+        recover js_undefined())
+    assert(failed)
+    assert(test_interp_int(js_get_exception(ctx)) == 5)
+    assert(ctx.rt.current_stack_frame == none)
+
+test "an invalid opcode throws an internal error":
+    let ctx = test_interp_context()
+    let code: u8[1] = [(u8)Op.invalid]
+    let f = test_interp_function(ctx, code, 0, 0, 1, js_func_normal)
+    var no_args = js_undefined()
+    var failed = false
+    discard(js_call(ctx, f, js_undefined(), 0, &no_args) catch:
+        failed = true
+        recover js_undefined())
+    assert(failed)
+
+# mark: Suspended frames ========================================================================
+
+test "an async frame suspends at await and resumes":
+    let ctx = test_interp_context()
+    let code: u8[7] = [
+        (u8)Op.push_i8, 5,                      # 0
+        (u8)Op.await,                           # 2: suspend with FUNC_RET_AWAIT
+        (u8)Op.push_1, (u8)Op.add,              # 3: the awaited 5 + 1
+        (u8)Op.return_async,                    # 5: the result stays at cur_sp[-1]
+        (u8)Op.nop,
+    ]
+    let f = test_interp_function(ctx, code, 0, 0, 2, js_func_async)
+    var no_args = js_undefined()
+    let s = async_func_init(ctx, f, js_undefined(), 0, &no_args) catch: trap("async_func_init failed")
+    let sf = &s.frame
+    let frame_ptr = js_mkptr(Tag.int, s)
+    let arg_buf = sf.arg_buf else trap("no arguments")
+    let r1 = js_call_internal(ctx, frame_ptr, s.this_val, js_undefined(), s.argc, arg_buf, call_flag_generator) catch: trap("the first run failed")
+    assert(test_interp_int(r1) == func_ret_await)
+    let sp1 = sf.cur_sp else trap("the frame is running")
+    assert(test_interp_int(sp1[(isize)-1]) == 5)
+    let r2 = js_call_internal(ctx, frame_ptr, s.this_val, js_undefined(), s.argc, arg_buf, call_flag_generator) catch: trap("the resumption failed")
+    assert(js_is_undefined(r2))
+    let sp2 = sf.cur_sp else trap("the frame is running")
+    assert(test_interp_int(sp2[(isize)-1]) == 6)
+    assert(ctx.rt.current_stack_frame == none)
+    async_func_free_frame(ctx.rt, s)
