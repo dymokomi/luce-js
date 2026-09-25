@@ -6,7 +6,8 @@ Evidence and profiles for the performance items are in `docs/PERFORMANCE.md` ("W
 compiler can close"). The gate for any backend change: luce-js `./test.sh` passes and
 `python3 tests/test262.py` prints `Result: 58/83558 errors` with 0 crashes.
 
-Status as of 2026-09-25. Fixed items move to the bottom list with the fixing commit.
+Status as of 2026-09-25. Items 1–12 are ordered by priority; 13 onwards were found by the
+luce-browser ports (correctness first) and are not yet ranked against them. Fixed items move to the bottom list with the fixing commit.
 
 ## Open
 
@@ -112,7 +113,9 @@ Expected: one buffer per disjoint path, or share them like other slots.
 ### 7. Small values and optional results are copied through stack temporaries (backend)
 
 `Value` (16 bytes) and `T?` results/arguments go through a stack slot and a copy instead of
-registers. Lower priority than 2–4; measure after those.
+registers. Lower priority than 2–4; measure after those. The tiny-skia port measured passing
+32-byte values between functions 3–6× slower than 16-byte ones; its pipelines are 5–30× slower
+than tiny-skia (tests/raster/bench.lucb in luce-browser-render).
 
 ### 8. `luce-base fmt` refuses `u8[128]*` (formatter)
 
@@ -176,6 +179,176 @@ test "a destroyed callee-saved register is preserved for the caller":
 
 Actual: `test` stops with a signal; as a program, total == 57014 (0xdead + 9) — the prologue
 saves only x29/x30. Expected: callee-saved registers named in `out(...)` are saved and restored.
+
+### 13. Float methods through a pointer emit an invalid `mov s16, w14` (backend, arm64)
+
+`key.bits()` (or any float method, including the compiler-supplied `Comparable.compare` in a generic body at f32/f64) on a float reached through a pointer emits a GPR→FP `mov`, which the assembler rejects: `gen.s: error: invalid operand for instruction mov s16, w14` (`mov d16, x14` for f64). Found by luce-browser r01 (AK). Workaround: load into a local first.
+
+```luce
+func h(key: const f32*) -> u32:
+    return key.bits()
+
+test "bits through a pointer":
+    var x: f32 = 1.5
+    assert(h(&x) == 0x3fc00000)
+
+# The same happens for any method of a float called through a pointer, e.g. the compiler-supplied
+# Comparable.compare in a generic body instantiated at f64 (`lhs.compare(*rhs)` with
+# `lhs: const T*`): gen.s: `mov d16, x14`.
+```
+
+Expected: `fmov`, and the test passes.
+
+### 14. `sizeof(T)` in a generic `if` condition is folded as 0 (front end)
+
+In a generic function a constant condition over `sizeof(T)` is folded at declaration-check time, so every instantiation takes the same branch: pick(u32) = 1, pick(u64) = 1. Binding `let size = sizeof(T)` first works.
+
+```luce
+func pick[T](value: const T*) -> usize:
+    if sizeof(T) % 8 == 0:
+        return 1
+    else:
+        return 2
+
+func pick_workaround[T](value: const T*) -> usize:
+    let size = sizeof(T)
+    if size % 8 == 0:
+        return 1
+    return 2
+
+test "sizeof(T) in a generic if condition":
+    let a = 1u32
+    let b = 1u64
+    print(f"pick u32 = {pick(&a)} (expected 2), pick u64 = {pick(&b)} (expected 1)")
+    print(f"workaround u32 = {pick_workaround(&a)} (expected 2), u64 = {pick_workaround(&b)} (expected 1)")
+```
+
+Expected: pick(u32) = 2, pick(u64) = 1.
+
+### 15. C backend: `&local_array` decays to the first element (C backend)
+
+`luce-base build --backend=c` of `fill(&value)` with `var value: i32[2]` fails: `incompatible pointer types passing 'int32_t[2]' to parameter of type 'lb_a_i32_0a2 *'`. `&struct.array_field` is fine. Found by the tiny-skia port.
+
+```luce
+func fill(r: i32[2]*):
+    (*r)[1] = 5
+
+pub func main(arguments: str[]) -> i32:
+    var value: i32[2] = [0, 0]
+    fill(&value)
+    print(f"{value[1]}")
+    return 0
+```
+
+Expected: prints 5 in both backends.
+
+### 16. C backend contracts `a * b + c` into an FMA (C backend)
+
+The generated C is compiled with clang's default `-ffp-contract=on`, breaking the spec's "IEEE 754 with no contraction" (§7.2); the native backend prints 0, the C backend 864026624. The tiny-skia port must be bit-exact and so needs the native backend.
+
+```luce
+func muladd(a: f32, b: f32, c: f32) -> f32:
+    return a * b + c
+
+pub func main(arguments: str[]) -> i32:
+    # (1 + 2^-12)^2 = 1 + 2^-11 + 2^-24: the last term is lost when a*b rounds to f32 first;
+    # fused, it survives.
+    let a: f32 = 1.000244140625
+    let r = muladd(a, a, -1.00048828125)
+    print(f"{r.bits()}")
+    return 0
+```
+
+Expected: compile the generated C with `-ffp-contract=off`; prints 0 in both.
+
+### 17. `for (i, x) in span.indexed()` leaks 48 bytes per loop (backend/runtime)
+
+Each `.indexed()` loop allocates a 48-byte block through memory.heap that is never freed, whether the loop ends or is left by `return` (`leaks --atExit`: 5 leaks for 240 bytes). An index loop leaks nothing. Found by the tiny-skia port.
+
+```luce
+func count_large(values: const f32[]) -> usize:
+    var n: usize = 0
+    for (i, v) in values.indexed():
+        if v > 5.0:
+            n += i
+    return n
+
+pub func main(arguments: str[]) -> i32:
+    var total: usize = 0
+    for i in 0..<5:
+        total += count_large([0.0, 2.0])
+    print(f"{total}")
+    return 0
+```
+
+Expected: no allocation, or it is freed.
+
+### 18. A generic function cannot be used as a function value (front end)
+
+Neither the expected type nor `negate[i64]` selects an instance: "expected `func(void*?, const i64*) -> bool`, got `func(void*?, const T*) -> bool`"; `negate[i64]` parses as indexing. Workaround: a static method of a generic struct (`Matcher[T].matches`).
+
+```luce
+func negate[T](context: void*?, value: const T*) -> bool:
+    return context == none
+
+func outer[T](value: T) -> bool:
+    let callback: func(void*?, const T*) -> bool = negate
+    return callback(none, &value)
+
+test "generic function value at a concrete type":
+    let callback: func(void*?, const i64*) -> bool = negate
+    var v: i64 = 3
+    assert(callback(none, &v))
+
+test "generic function value inside a generic function":
+    assert(outer[i64](3))
+```
+
+Expected: both tests pass, as for non-generic functions (§5.6).
+
+### 19. One rejected `else` under `try` poisons every later `f() else ...` in the module (front end)
+
+After the (correct) error for an `else` fallback under a surrounding `try`, every later `fallible() else ...` in the module gets the same error, so in directory modules the one real error is buried among spurious ones in later fragments.
+
+```luce
+let code: ErrorCode = ErrorCode.package(1)
+
+func make(v: i32) -> i32!:
+    if v < 0: error(code, "neg")
+    return v
+
+func throw_with(v: i32) -> never!:
+    error(code, "thrown")
+
+pub func first(v: i32) -> !:
+    if v > 10:
+        try throw_with(make(v) else trap("MUST"))
+
+pub func second(v: i32) -> i32:
+    return make(v) else trap("MUST")
+```
+
+Expected: one error, at the `else` under `try`.
+
+### 20. A comment after `catch failure:` inside parentheses does not parse (parser)
+
+`discard(fail() catch failure: # comment` → "expected the end of the line"; the same comment on its own line parses.
+
+```luce
+pub let failing: ErrorCode = ErrorCode.package(1)
+
+func fail() -> i64!:
+    error(failing, "no")
+
+test "comment after catch in parentheses":
+    var failed = false
+    discard(fail() catch failure: # comment on the catch line
+        failed = true
+        recover 0)
+    assert(failed)
+```
+
+Expected: a trailing comment does not change where the suite starts.
 
 ## Done on a branch, waiting for merge and release (x86_64 runs on LINUX/WINDOWS pending)
 
