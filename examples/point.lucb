@@ -1,0 +1,113 @@
+#==============================================================================================
+#
+#   point - Example of a native module with a class: Point, with getters, setters, a method
+#
+#   DESCRIPTION:
+#       Port of QuickJS's examples/point.c, the native module examples/test_point.js imports
+#       (as "./point.so"): a class Point(x, y) whose instances hold a native PointData, with
+#       the accessors x and y (one getter and one setter told apart by their magic) and
+#       the method norm(). Subclassing works because the constructor takes the prototype
+#       from new_target. An embedder links it in and registers it with
+#       host.js_register_native_module("point", point.js_init_module), as ljs does.
+#
+#       QuickJS: Example of C module with a class
+#
+#       Copyright (c) 2019 Fabrice Bellard
+#
+#       Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#       software and associated documentation files (the "Software"), to deal in the Software
+#       without restriction, including without limitation the rights to use, copy, modify,
+#       merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#       permit persons to whom the Software is furnished to do so, subject to the following
+#       conditions: the above copyright notice and this permission notice shall be included
+#       in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS
+#       IS", WITHOUT WARRANTY OF ANY KIND.
+#
+#==============================================================================================
+
+import math
+import js
+from js import Context, Runtime, Value, ModuleDef, CFunctionListEntry, CFunctionEnum, ClassDef
+
+# mark: Point class =============================================================================
+
+## The native data of a Point (JSPointData).
+struct PointData:
+    var x: i32
+    var y: i32
+
+var js_point_class_id: u32
+
+func js_point_finalizer(rt: Runtime*, val: Value):
+    let s = js.js_get_opaque(val, js_point_class_id)
+    # Note: 's' can be NULL in case JS_SetOpaque() was not called
+    js.js_free_rt(rt, s)
+
+func js_point_ctor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    let s = (PointData*)(try js.js_mallocz(ctx, sizeof(PointData)))
+    errdefer js.js_free(ctx, s)
+    try js.js_to_int32(ctx, &s.x, argv[0])
+    try js.js_to_int32(ctx, &s.y, argv[1])
+    # using new_target to get the prototype is necessary when the class is extended.
+    let proto = try js.js_get_property_str(ctx, new_target, "prototype")
+    let obj = js.js_new_object_proto_class(ctx, proto, js_point_class_id) catch failure:
+        js.js_free_value(ctx, proto)
+        error(failure.code, failure.message)
+    js.js_free_value(ctx, proto)
+    js.js_set_opaque(obj, s)
+    return obj
+
+func js_point_get_xy(ctx: Context*, this_val: Value, magic: i32) -> Value!:
+    let s = (PointData*)(try js.js_get_opaque2(ctx, this_val, js_point_class_id))
+    if magic == 0:
+        return js.js_new_int32(s.x)
+    else:
+        return js.js_new_int32(s.y)
+
+func js_point_set_xy(ctx: Context*, this_val: Value, val: Value, magic: i32) -> Value!:
+    let s = (PointData*)(try js.js_get_opaque2(ctx, this_val, js_point_class_id))
+    var v: i32 = 0
+    try js.js_to_int32(ctx, &v, val)
+    if magic == 0:
+        s.x = v
+    else:
+        s.y = v
+    return js.js_undefined()
+
+func js_point_norm(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let s = (PointData*)(try js.js_get_opaque2(ctx, this_val, js_point_class_id))
+    return js.js_new_float64(math.sqrt(f64(s.x) * f64(s.x) + f64(s.y) * f64(s.y)))
+
+let js_point_class = ClassDef(class_name = "Point", finalizer = js_point_finalizer)
+
+let js_point_proto_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "x", prop_flags = 1, def_type = js.def_cgetset_magic,
+                       getter_magic = js_point_get_xy, setter_magic = js_point_set_xy, magic = 0),
+    CFunctionListEntry(name = "y", prop_flags = 1, def_type = js.def_cgetset_magic,
+                       getter_magic = js_point_get_xy, setter_magic = js_point_set_xy, magic = 1),
+    CFunctionListEntry(name = "norm", def_type = js.def_cfunc, length = 0, generic = js_point_norm),
+]
+
+# mark: The module ==============================================================================
+
+func js_point_init(ctx: Context*, m: ModuleDef*) -> !:
+    # create the Point class
+    discard(js.js_new_class_id(&js_point_class_id))
+    discard(js.js_new_class(js.js_get_runtime(ctx), js_point_class_id, &js_point_class))
+
+    let point_proto = try js.js_new_object(ctx)
+    try js.js_set_property_function_list(ctx, point_proto, js_point_proto_funcs)
+
+    let point_class = try js.js_new_c_function2(ctx, js_point_ctor, "Point".bytes.data, 2,
+                                                CFunctionEnum.constructor, 0)
+    # set proto.constructor and ctor.prototype
+    try js.js_set_constructor(ctx, point_class, point_proto)
+    js.js_set_class_proto(ctx, js_point_class_id, point_proto)
+
+    discard(try js.js_set_module_export(ctx, m, "Point".bytes.data, point_class))
+
+## Create the point module named `module_name` in `ctx` (js_init_module).
+pub func js_init_module(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    let m = try js.js_new_c_module(ctx, module_name, js_point_init)
+    try js.js_add_module_export(ctx, m, "Point".bytes.data)
+    return m

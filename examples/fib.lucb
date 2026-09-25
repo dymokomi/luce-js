@@ -1,0 +1,53 @@
+#==============================================================================================
+#
+#   fib - Example of a native module: fib(n) computed natively
+#
+#   DESCRIPTION:
+#       Port of QuickJS's examples/fib.c, the native module examples/test_fib.js imports
+#       (as "./fib.so"). An embedder links it in and registers it with
+#       host.js_register_native_module("fib", fib.js_init_module_fib), as ljs does.
+#
+#       QuickJS: Example of C module
+#
+#       Copyright (c) 2017-2018 Fabrice Bellard
+#
+#       Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#       software and associated documentation files (the "Software"), to deal in the Software
+#       without restriction, including without limitation the rights to use, copy, modify,
+#       merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#       permit persons to whom the Software is furnished to do so, subject to the following
+#       conditions: the above copyright notice and this permission notice shall be included
+#       in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS
+#       IS", WITHOUT WARRANTY OF ANY KIND.
+#
+#==============================================================================================
+
+import js
+from js import Context, Value, ModuleDef, CFunctionListEntry
+
+func fib(n: i32) -> i32:
+    if n <= 0:
+        return 0
+    elif n == 1:
+        return 1
+    else:
+        return fib(n - 1) + fib(n - 2)
+
+func js_fib(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var n: i32 = 0
+    try js.js_to_int32(ctx, &n, argv[0])
+    let res = fib(n)
+    return js.js_new_int32(res)
+
+let js_fib_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "fib", def_type = js.def_cfunc, length = 1, generic = js_fib),
+]
+
+func js_fib_init(ctx: Context*, m: ModuleDef*) -> !:
+    try js.js_set_module_export_list(ctx, m, js_fib_funcs)
+
+## Create the fib module named `module_name` in `ctx` (js_init_module_fib).
+pub func js_init_module_fib(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    let m = try js.js_new_c_module(ctx, module_name, js_fib_init)
+    try js.js_add_module_export_list(ctx, m, js_fib_funcs)
+    return m

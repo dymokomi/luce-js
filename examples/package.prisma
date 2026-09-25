@@ -1,12 +1,19 @@
 #prisma 4.0
-def package "luce_js_tests" {
+def package "luce-js-examples" {
     str source = "."
+
+    def export "fib" {
+        str module = "fib"
+    }
+
+    def export "point" {
+        str module = "point"
+    }
+
     def dependency "luce-js" {
         str path = ".."
     }
-    def dependency "luce-js-examples" {
-        str path = "../examples"
-    }
+
     def dependency "luce-std" {
         str path = "../../luce-std"
     }
