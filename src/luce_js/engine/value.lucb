@@ -147,6 +147,14 @@ pub func js_new_float64(d: f64) -> Value:
 
 # mark: Reading values ==========================================================================
 
+## The tag of a value (JS_VALUE_GET_TAG).
+pub func js_value_get_tag(v: Value) -> Tag:
+    return v.tag
+
+## The pointer payload of a value whose tag has a reference count (JS_VALUE_GET_PTR).
+pub func js_value_get_ptr(v: Value) -> void*:
+    return v.u.ptr
+
 ## The 32-bit integer payload (JS_VALUE_GET_INT).
 pub func js_value_get_int(v: Value) -> i32:
     return (i32)v.u.uint64

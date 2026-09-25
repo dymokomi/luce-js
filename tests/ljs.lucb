@@ -1,0 +1,264 @@
+#==============================================================================================
+#
+#   ljs - Run JavaScript files with luce-js, like QuickJS's qjs
+#
+#   DESCRIPTION:
+#       A port of the non-interactive parts of qjs.c: `ljs [options] [file [args]]` runs
+#       a script or a module, `-e EXPR` evaluates an expression. Options: -m/--module,
+#       --script, --strict, --std (make 'std' and 'os' global), -I/--include FILE,
+#       --stack-size N, --no-unhandled-rejection, -q/--quit, -h/--help. The REPL, memory
+#       tracing and dumping, --memory-limit and stripping are not ported.
+#
+#       Build: luce-base build tests/ljs.lucb -o build/ljs
+#
+#==============================================================================================
+
+import c
+import js
+import host
+
+## Print `text` to standard error.
+func report(text: str):
+    discard(host_fwrite(text.bytes.data, 1, text.length, c.stderr()))
+
+extern func host_fwrite as "fwrite"(ptr: const void*, size: usize, n: usize, f: void*) -> usize
+extern func c_exit as "exit"(status: i32) -> never
+extern func perror(text: const u8*)
+
+func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const u8*, eval_flags: i32) -> i32:
+    var failed = false
+    var val = js.js_undefined()
+    if (eval_flags & js.eval_type_mask) == js.eval_type_module:
+        # for the modules, we compile then run to be able to set import.meta
+        let compiled = js.js_eval(ctx, buf, buf_len, filename, eval_flags | js.eval_flag_compile_only) catch:
+            failed = true
+            recover js.js_undefined()
+        if not failed:
+            # as in qjs, a failure here (realpath() of "<input>") is ignored
+            host.js_module_set_import_meta(ctx, compiled, true, true) catch: recover ()
+        if not failed:
+            let promise = js.js_eval_function(ctx, compiled) catch:
+                failed = true
+                recover js.js_undefined()
+            if not failed:
+                val = host.js_std_await(ctx, promise) catch:
+                    failed = true
+                    recover js.js_undefined()
+    else:
+        val = js.js_eval(ctx, buf, buf_len, filename, eval_flags) catch:
+            failed = true
+            recover js.js_undefined()
+    if failed:
+        host.js_std_dump_error(ctx)
+        return -1
+    js.js_free_value(ctx, val)
+    return 0
+
+## Whether the NUL-terminated `name` ends with `suffix`.
+func ends_with(name: str, suffix: str) -> bool:
+    if name.length < suffix.length:
+        return false
+    return (str)name.bytes[name.length - suffix.length..] == suffix
+
+## module: 1 module, 0 script, -1 detect from the name and the source.
+func eval_file(ctx: js.Context*, filename: str, module: i32, strict: bool) -> i32:
+    var buf_len: usize = 0
+    let loaded = host.js_load_file(ctx, &buf_len, (const u8*)filename.bytes.data)
+    if loaded == none:
+        perror((const u8*)filename.bytes.data)
+        c_exit(1)
+    let buf = loaded else c_exit(1)
+    defer js.js_free(ctx, buf)
+    var is_module = module > 0
+    if module < 0:
+        is_module = ends_with(filename, ".mjs") or js.js_detect_module(buf, buf_len)
+    var eval_flags = js.eval_type_global
+    if is_module:
+        eval_flags = js.eval_type_module
+    elif strict:
+        eval_flags |= js.eval_flag_strict
+    return eval_buf(ctx, buf, buf_len, (const u8*)filename.bytes.data, eval_flags)
+
+## A context with the standard intrinsics and the system modules (JS_NewCustomContext).
+# workaround: until region r25 (RegExp, JSON, Reflect) is ported, JS_NewContext traps in
+# JS_AddIntrinsicRegExp; this context has every other intrinsic.
+func new_custom_context(rt: js.Runtime*) -> js.Context*?:
+    let ctx = js.js_new_context_raw(rt) else return none
+    let added = add_intrinsics(ctx) catch: recover false
+    if not added:
+        js.js_free_context(ctx)
+        return none
+    # system modules
+    host.js_init_module_std(ctx, "std".bytes.data) catch: return ctx
+    host.js_init_module_os(ctx, "os".bytes.data) catch: return ctx
+    return ctx
+
+func add_intrinsics(ctx: js.Context*) -> bool!:
+    try js.js_add_intrinsic_base_objects(ctx)
+    try js.js_add_intrinsic_date(ctx)
+    if js.js_add_intrinsic_eval(ctx) != 0: return false
+    try js.js_add_intrinsic_string_normalize(ctx)
+    try js.js_add_intrinsic_proxy(ctx)
+    try js.js_add_intrinsic_map_set(ctx)
+    try js.js_add_intrinsic_typed_arrays(ctx)
+    try js.js_add_intrinsic_promise(ctx)
+    try js.js_add_intrinsic_weak_ref(ctx)
+    return true
+
+func fatal(text: str) -> never:
+    report(text)
+    c_exit(2)
+
+func help() -> never:
+    report("""ljs: run JavaScript files with luce-js
+usage: ljs [options] [file [args]]
+-h  --help         list options
+-e  --eval EXPR    evaluate EXPR
+-m  --module       load as ES6 module (default=autodetect)
+    --script       load as ES6 script (default=autodetect)
+    --strict       force strict mode
+-I  --include file include an additional file
+    --std          make 'std' and 'os' available to the loaded script
+    --stack-size n limit the stack size to n bytes
+    --no-unhandled-rejection  ignore unhandled promise rejections
+-q  --quit         just instantiate the interpreter and quit
+""")
+    c_exit(1)
+
+## A size with an optional k, m or g suffix (get_suffixed_size).
+func parse_size(text: str) -> usize:
+    var n: usize = 0
+    for ch in text:
+        if ch >= '0' and ch <= '9':
+            n = n * 10 + (usize)((u32)ch - (u32)'0')
+        elif ch == 'k' or ch == 'K':
+            n = n * 1024
+        elif ch == 'm' or ch == 'M':
+            n = n * 1024 * 1024
+        elif ch == 'g' or ch == 'G':
+            n = n * 1024 * 1024 * 1024
+        else:
+            report("ljs: invalid size\n")
+            c_exit(1)
+    return n
+
+pub func main(arguments: str[]) -> i32:
+    var expr: str? = none
+    var module: i32 = -1
+    var strict = false
+    var load_std = false
+    var dump_unhandled_promise_rejection = true
+    var empty_run = false
+    var stack_size: usize = 0
+    var include_list: str[32] = ---
+    var include_count: usize = 0
+
+    # cannot use getopt because we want to pass the command line to the script
+    var optind: usize = 1
+    while optind < arguments.length:
+        let arg = arguments[optind]
+        if arg.length == 0 or arg.bytes[0] != '-':
+            break
+        # a single - is not an option, it also stops argument scanning
+        if arg == "-":
+            break
+        optind += 1
+        # -- stops argument scanning
+        if arg == "--":
+            break
+        if arg == "-h" or arg == "-?" or arg == "--help":
+            help()
+        elif arg == "-e" or arg == "--eval":
+            if optind >= arguments.length:
+                report("ljs: missing expression for -e\n")
+                c_exit(2)
+            expr = arguments[optind]
+            optind += 1
+        elif arg == "-I" or arg == "--include":
+            if optind >= arguments.length:
+                report("expecting filename")
+                c_exit(1)
+            if include_count >= 32:
+                report("too many included files")
+                c_exit(1)
+            include_list[include_count] = arguments[optind]
+            include_count += 1
+            optind += 1
+        elif arg == "-m" or arg == "--module":
+            module = 1
+        elif arg == "--script":
+            module = 0
+        elif arg == "--strict":
+            strict = true
+        elif arg == "--std":
+            load_std = true
+        elif arg == "--no-unhandled-rejection":
+            dump_unhandled_promise_rejection = false
+        elif arg == "-q" or arg == "--quit":
+            empty_run = true
+        elif arg == "--stack-size":
+            if optind >= arguments.length:
+                report("expecting stack size")
+                c_exit(1)
+            stack_size = parse_size(arguments[optind])
+            optind += 1
+        else:
+            report("ljs: unknown option '")
+            report(arg)
+            report("'\n")
+            help()
+
+    let rt = js.js_new_runtime() else fatal("ljs: cannot allocate JS runtime\n")
+    if stack_size != 0:
+        js.js_set_max_stack_size(rt, stack_size)
+    host.js_std_init_handlers(rt)
+    let ctx = new_custom_context(rt) else fatal("ljs: cannot allocate JS context\n")
+
+    # loader for ES6 modules
+    js.js_set_module_loader_func2(rt, none, host.js_module_loader, host.js_module_check_attributes, none)
+
+    if dump_unhandled_promise_rejection:
+        js.js_set_host_promise_rejection_tracker(rt, host.js_std_promise_rejection_tracker, none)
+
+    var status: i32 = 0
+    if not empty_run:
+        status = run(ctx, arguments[optind..], expr, module, strict, load_std,
+                     include_list[0..<include_count])
+
+    host.js_std_free_handlers(rt)
+    js.js_free_context(ctx)
+    js.js_free_runtime(rt)
+    return status
+
+## Everything qjs does between creating the context and freeing it; 1 on a failure.
+func run(ctx: js.Context*, script_args: str[], expr: str?, module: i32, strict: bool, load_std: bool,
+         includes: str[]) -> i32:
+    host.js_std_add_helpers(ctx, script_args) catch:
+        host.js_std_dump_error(ctx)
+        return 1
+
+    # make 'std' and 'os' visible to non module code
+    if load_std:
+        let text = "import * as std from 'std';\nimport * as os from 'os';\nglobalThis.std = std;\nglobalThis.os = os;\n"
+        discard(eval_buf(ctx, text.bytes.data, text.length, "<input>".bytes.data, js.eval_type_module))
+
+    for name in includes:
+        if eval_file(ctx, name, 0, strict) != 0:
+            return 1
+
+    if let source = expr:
+        var eval_flags = js.eval_type_global
+        if module > 0:
+            eval_flags = js.eval_type_module
+        elif strict:
+            eval_flags |= js.eval_flag_strict
+        if eval_buf(ctx, source.bytes.data, source.length, "<cmdline>".bytes.data, eval_flags) != 0:
+            return 1
+    elif script_args.length == 0:
+        report("ljs: the interactive mode is not supported; give a file or -e EXPR\n")
+        return 1
+    else:
+        if eval_file(ctx, script_args[0], module, strict) != 0:
+            return 1
+    host.js_std_loop(ctx)
+    return 0

@@ -1,0 +1,280 @@
+#==============================================================================================
+#
+#   std_file - The FILE objects of the `std` module: C streams as JavaScript objects
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 924-1425: the FILE class (JSSTDFile), std.open,
+#       std.popen, std.fdopen, std.tmpfile, std.puts, std.printf, std.sprintf and the
+#       methods of FILE.prototype.
+#
+#==============================================================================================
+
+# mark: The FILE class ==========================================================================
+
+var js_std_file_class_id: u32
+
+## A FILE object's state (JSSTDFile): the stream, none once closed.
+struct STDFile:
+    var f: void*?
+    var close_in_finalizer: bool
+    var is_popen: bool
+
+func js_std_file_finalizer(rt: Runtime*, val: Value):
+    let opaque = js.js_get_opaque(val, js_std_file_class_id) else return
+    let s = (STDFile*)opaque
+    if let f = s.f:
+        if s.close_in_finalizer:
+            if s.is_popen:
+                discard(pclose(f))
+            else:
+                discard(fclose(f))
+    js.js_free_rt(rt, s)
+
+let js_std_file_class = ClassDef(class_name = "FILE", finalizer = js_std_file_finalizer)
+
+func js_new_std_file(ctx: Context*, f: void*, close_in_finalizer: bool, is_popen: bool) -> Value!:
+    let obj = try js.js_new_object_class(ctx, (i32)js_std_file_class_id)
+    let s = (STDFile*)(js.js_mallocz(ctx, sizeof(STDFile)) catch failure:
+        js.js_free_value(ctx, obj)
+        error(failure.code, failure.message))
+    s.close_in_finalizer = close_in_finalizer
+    s.is_popen = is_popen
+    s.f = f
+    js.js_set_opaque(obj, s)
+    return obj
+
+## Set `obj.errno` when the caller passed an error object.
+func js_set_error_object(ctx: Context*, obj: Value, err: i32):
+    if not js.js_is_undefined(obj):
+        discard(js.js_set_property_str(ctx, obj, "errno", js.js_new_int32(err)) catch: recover false)
+
+## Whether every byte of the NUL-terminated `mode` is one of `allowed`.
+func valid_file_mode(mode: const u8*, allowed: str) -> bool:
+    return mode[strspn(mode, allowed.bytes.data)] == 0
+
+# mark: Opening streams =========================================================================
+
+func js_std_open(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let filename = try js.js_to_c_string(ctx, argv[0])
+    defer js.js_free_c_string(ctx, filename)
+    let mode = try js.js_to_c_string(ctx, argv[1])
+    defer js.js_free_c_string(ctx, mode)
+    if not valid_file_mode(mode, "rwa+b"):
+        try js.js_throw_type_error(ctx, "invalid file mode")
+
+    let f = fopen(filename, mode)
+    let err = 0 if f != none else c.errno()
+    if argc >= 3:
+        js_set_error_object(ctx, argv[2], err)
+    let stream = f else return js.js_null()
+    return try js_new_std_file(ctx, stream, true, false)
+
+func js_std_popen(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let filename = try js.js_to_c_string(ctx, argv[0])
+    defer js.js_free_c_string(ctx, filename)
+    let mode = try js.js_to_c_string(ctx, argv[1])
+    defer js.js_free_c_string(ctx, mode)
+    if not valid_file_mode(mode, "rw"):
+        try js.js_throw_type_error(ctx, "invalid file mode")
+
+    let f = popen(filename, mode)
+    let err = 0 if f != none else c.errno()
+    if argc >= 3:
+        js_set_error_object(ctx, argv[2], err)
+    let stream = f else return js.js_null()
+    return try js_new_std_file(ctx, stream, true, true)
+
+func js_std_fdopen(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var fd: i32 = 0
+    try js.js_to_int32(ctx, &fd, argv[0])
+    let mode = try js.js_to_c_string(ctx, argv[1])
+    defer js.js_free_c_string(ctx, mode)
+    if not valid_file_mode(mode, "rwa+"):
+        try js.js_throw_type_error(ctx, "invalid file mode")
+
+    let f = fdopen(fd, mode)
+    let err = 0 if f != none else c.errno()
+    if argc >= 3:
+        js_set_error_object(ctx, argv[2], err)
+    let stream = f else return js.js_null()
+    return try js_new_std_file(ctx, stream, true, false)
+
+func js_std_tmpfile(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = tmpfile()
+    if argc >= 1:
+        js_set_error_object(ctx, argv[0], 0 if f != none else c.errno())
+    let stream = f else return js.js_null()
+    return try js_new_std_file(ctx, stream, true, false)
+
+func js_std_sprintf(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_printf_internal(ctx, argc, argv, none)
+
+func js_std_printf(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_printf_internal(ctx, argc, argv, c.stdout())
+
+# mark: FILE methods ============================================================================
+
+## The stream of the FILE object `obj`; fails if it is not one or is closed.
+func js_std_file_get(ctx: Context*, obj: Value) -> void*!:
+    let s = (STDFile*)try js.js_get_opaque2(ctx, obj, js_std_file_class_id)
+    if let f = s.f:
+        return f
+    try js.js_throw_type_error(ctx, "invalid file handle")
+
+## std.puts (magic 0: to stdout) and FILE.prototype.puts (magic 1).
+func js_std_file_puts(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    var f = c.stdout()
+    if magic != 0:
+        f = try js_std_file_get(ctx, this_val)
+    for i in 0..<(usize)argc:
+        var len: usize = 0
+        let text = try js.js_to_c_string_len(ctx, &len, argv[i])
+        discard(fwrite(text, 1, len, f))
+        js.js_free_c_string(ctx, text)
+    return js.js_undefined()
+
+func js_std_file_close(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let s = (STDFile*)try js.js_get_opaque2(ctx, this_val, js_std_file_class_id)
+    let f = s.f else try js.js_throw_type_error(ctx, "invalid file handle")
+    var err: i64 = 0
+    if s.is_popen:
+        err = js_get_errno((i64)pclose(f))
+    else:
+        err = js_get_errno((i64)fclose(f))
+    s.f = none
+    return js.js_new_int32((i32)err)
+
+func js_std_file_printf(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    return try js_printf_internal(ctx, argc, argv, f)
+
+## Writes the value printer's output to the stream `opaque` (js_print_value_write).
+func js_print_value_write(opaque: void*?, buf: const u8*, len: usize):
+    let fo = opaque else return
+    discard(fwrite(buf, 1, len, fo))
+
+func js_std_file_print_object(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    js.js_print_value(ctx, js_print_value_write, c.stdout(), argv[0], none)
+    return js.js_undefined()
+
+func js_std_file_flush(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    discard(fflush(f))
+    return js.js_undefined()
+
+## FILE.prototype.tell (magic 0) and tello (magic 1, a BigInt).
+func js_std_file_tell(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_bigint: i32) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    let pos = ftello(f)
+    if is_bigint != 0:
+        return try js.js_new_bigint64(ctx, pos)
+    return js.js_new_int64(pos)
+
+func js_std_file_seek(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    var pos: i64 = 0
+    try js.js_to_int64_ext(ctx, &pos, argv[0])
+    var whence: i32 = 0
+    try js.js_to_int32(ctx, &whence, argv[1])
+    var ret = fseeko(f, pos, whence)
+    if ret < 0:
+        ret = -c.errno()
+    return js.js_new_int32(ret)
+
+func js_std_file_eof(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    return js.js_new_bool(feof(f) != 0)
+
+func js_std_file_error(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    return js.js_new_bool(ferror(f) != 0)
+
+func js_std_file_clearerr(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    clearerr(f)
+    return js.js_undefined()
+
+func js_std_file_fileno(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    return js.js_new_int32(fileno(f))
+
+## FILE.prototype.read (magic 0) and write (magic 1): `(buffer, position, length)`.
+func js_std_file_read_write(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    var pos: u64 = 0
+    try js.js_to_index(ctx, &pos, argv[1])
+    var len: u64 = 0
+    try js.js_to_index(ctx, &len, argv[2])
+    var size: usize = 0
+    let buf = try js.js_get_array_buffer(ctx, &size, argv[0])
+    if pos + len > (u64)size:
+        try js.js_throw_range_error(ctx, "read/write array buffer overflow")
+    if len == 0:
+        return js.js_new_int64(0)
+    let data = buf else return js.js_new_int64(0)
+    var ret: usize = 0
+    if magic != 0:
+        ret = fwrite(data + (usize)pos, 1, (usize)len, f)
+    else:
+        ret = fread(data + (usize)pos, 1, (usize)len, f)
+    return js.js_new_int64((i64)ret)
+
+# XXX: could use less memory and go faster
+func js_std_file_getline(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    var dbuf: DynBuf
+    js_std_dbuf_init(ctx, &dbuf)
+    defer cutils.dbuf_free(&dbuf)
+    while true:
+        let ch = fgetc(f)
+        if ch == eof:
+            if dbuf.size == 0:
+                # EOF
+                return js.js_null()
+            break
+        if ch == (i32)'\n':
+            break
+        if cutils.dbuf_putc(&dbuf, (u8)ch) != 0:
+            try js.js_throw_out_of_memory(ctx)
+    return try new_string_of_dbuf(ctx, &dbuf)
+
+## The bytes of `dbuf` as a new string.
+func new_string_of_dbuf(ctx: Context*, dbuf: const DynBuf*) -> Value!:
+    if let buf = dbuf.buf:
+        return try js.js_new_string_len(ctx, buf, dbuf.size)
+    return try js.js_new_string_len(ctx, "".bytes.data, 0)
+
+# XXX: could use less memory and go faster
+func js_std_file_read_as_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    var max_size_val = js.js_undefined()
+    if argc >= 1:
+        max_size_val = argv[0]
+    var max_size: usize = 0xffffffffffffffff
+    if not js.js_is_undefined(max_size_val):
+        var max_size64: u64 = 0
+        try js.js_to_index(ctx, &max_size64, max_size_val)
+        if max_size64 < (u64)max_size:
+            max_size = (usize)max_size64
+
+    var dbuf: DynBuf
+    js_std_dbuf_init(ctx, &dbuf)
+    defer cutils.dbuf_free(&dbuf)
+    while max_size != 0:
+        let ch = fgetc(f)
+        if ch == eof:
+            break
+        if cutils.dbuf_putc(&dbuf, (u8)ch) != 0:
+            error(js.exception, "")
+        max_size -= 1
+    return try new_string_of_dbuf(ctx, &dbuf)
+
+func js_std_file_get_byte(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    return js.js_new_int32(fgetc(f))
+
+func js_std_file_put_byte(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let f = try js_std_file_get(ctx, this_val)
+    var ch: i32 = 0
+    try js.js_to_int32(ctx, &ch, argv[0])
+    return js.js_new_int32(fputc(ch, f))

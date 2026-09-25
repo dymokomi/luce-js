@@ -1,0 +1,116 @@
+#==============================================================================================
+#
+#   tests - Unit tests of the host module
+#
+#   DESCRIPTION:
+#       Checks the pieces a JavaScript test cannot isolate: C formats in std.sprintf, the
+#       target layouts of struct stat and struct dirent, file loading, and the timer loop.
+#       The upstream JavaScript tests (tests/run.py) cover the rest.
+#
+#==============================================================================================
+
+## A runtime and a context with the base objects, the host state and the system modules.
+## (JS_NewContext needs RegExp, which is not ported yet.)
+func test_context() -> Context*:
+    let rt = js.js_new_runtime() else trap("no runtime")
+    js_std_init_handlers(rt)
+    let ctx = js.js_new_context_raw(rt) else trap("no context")
+    js.js_add_intrinsic_base_objects(ctx) catch: trap("no base objects")
+    js.js_add_intrinsic_promise(ctx) catch: trap("no promises")
+    assert(js.js_add_intrinsic_eval(ctx) == 0)
+    discard(js_init_module_std(ctx, "std".bytes.data) catch: trap("no std"))
+    discard(js_init_module_os(ctx, "os".bytes.data) catch: trap("no os"))
+    return ctx
+
+func free_test_context(ctx: Context*):
+    let rt = js.js_get_runtime(ctx)
+    js_std_free_handlers(rt)
+    js.js_free_context(ctx)
+    js.js_free_runtime(rt)
+
+## Evaluate `source` as a module that imports std and os and answers the value of the
+## global `result` as text, in `out`.
+func eval_to_text(ctx: Context*, source: str, out: u8[]) -> str:
+    let func_val = js.js_eval_text(ctx, source, "<test>", js.eval_type_module) catch:
+        js_std_dump_error(ctx)
+        trap("evaluation failed")
+    discard(js_std_await(ctx, func_val) catch: trap("module failed"))
+    let global_obj = js.js_get_global_object(ctx)
+    let result = js.js_get_property_str(ctx, global_obj, "result") catch: trap("no result")
+    js.js_free_value(ctx, global_obj)
+    let text = js.js_to_c_string(ctx, result) catch: trap("result is not text")
+    js.js_free_value(ctx, result)
+    let len = cutils.strlen(text)
+    assert(len <= out.length)
+    discard(cutils.memcpy(out.data, text, len))
+    js.js_free_c_string(ctx, text)
+    return (str)out[0..<len]
+
+test "sprintf passes each conversion to C as test_std.js expects":
+    let ctx = test_context()
+    var buf: u8[256]
+    let text = eval_to_text(ctx, """
+        import * as std from "std";
+        globalThis.result = [
+            std.sprintf("a=%d s=%s", 123, "abc"), std.sprintf("%010d", 123),
+            std.sprintf("%x", -2), std.sprintf("%lx", -2), std.sprintf("%10.1f", 2.1),
+            std.sprintf("%*.*f", 10, 2, -2.13), std.sprintf("%#lx", 0x7fffffffffffffffn),
+            std.sprintf("%c%c|%%|%5s", 65, "é", "ab"),
+        ].join(";");
+        """, buf)
+    assert(text == "a=123 s=abc;0000000123;fffffffe;fffffffffffffffe;       2.1;     -2.13;0x7fffffffffffffff;Aé|%|   ab")
+    free_test_context(ctx)
+
+test "sprintf reports invalid and missing conversions":
+    let ctx = test_context()
+    var buf: u8[256]
+    let text = eval_to_text(ctx, """
+        import * as std from "std";
+        let r = [];
+        try { std.sprintf("%q", 1) } catch (e) { r.push(e.name) }
+        try { std.sprintf("%d") } catch (e) { r.push(e.name) }
+        globalThis.result = r.join();
+        """, buf)
+    assert(text == "TypeError,ReferenceError")
+    free_test_context(ctx)
+
+test "stat and readdir decode this target's layouts":
+    let ctx = test_context()
+    var buf: u8[256]
+    let text = eval_to_text(ctx, """
+        import * as os from "os";
+        let [st, err] = os.stat(".");
+        let [files, err2] = os.readdir(".");
+        globalThis.result = [err, (st.mode & os.S_IFMT) == os.S_IFDIR, st.mtime > 1e12,
+                             err2, files.indexOf(".") >= 0, files.indexOf("..") >= 0].join();
+        """, buf)
+    assert(text == "0,true,true,0,true,true")
+    free_test_context(ctx)
+
+test "timers run in order from the loop and can be cleared":
+    let ctx = test_context()
+    var buf: u8[256]
+    discard(eval_to_text(ctx, """
+        import * as os from "os";
+        let r = [];
+        os.setTimeout(() => r.push("b"), 20);
+        os.setTimeout(() => r.push("a"), 5);
+        let t = os.setTimeout(() => r.push("never"), 1);
+        os.clearTimeout(t);
+        Promise.resolve().then(() => r.push("job"));
+        globalThis.log = r;
+        globalThis.result = "";
+        """, buf))
+    js_std_loop(ctx)
+    let text = eval_to_text(ctx, "globalThis.result = globalThis.log.join();", buf)
+    assert(text == "job,a,b")
+    free_test_context(ctx)
+
+test "js_load_file answers the bytes and a NUL, or none":
+    var len: usize = 0
+    let buf = js_load_file(none, &len, "src/luce_js/host/ORDER".bytes.data) else trap("cannot load ORDER")
+    assert(len > 10 and buf[len] == 0)
+    assert(cutils.memcmp(buf, "module.lucb".bytes.data, 11) == 0)
+    cutils.c_free(buf)
+    assert(js_load_file(none, &len, "no/such/file".bytes.data) == none)
+    assert(has_suffix("a/b.json".bytes.data, ".json") and not has_suffix("json".bytes.data, ".json"))

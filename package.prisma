@@ -11,6 +11,10 @@ def package "luce-js" {
         str module = "luce_js.engine"
     }
 
+    def export "host" {
+        str module = "luce_js.host"
+    }
+
     def dependency "luce-std" {
         str owner = "dymokomi"
         str version = "^0.1.0"

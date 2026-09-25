@@ -1,0 +1,183 @@
+#==============================================================================================
+#
+#   std_module - The `std` module: process, environment, scripts and its tables
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 737-923 (std.exit, getenv, setenv, unsetenv, gc,
+#       evalScript, strerror, parseExtJSON) and 1630-1732 (the `std` tables, js_std_init
+#       and js_init_module_std). std.getenviron and std.urlGet are not ported; evalScript
+#       installs no interrupt handler, since the host handles no signals.
+#
+#==============================================================================================
+
+# mark: Process and environment =================================================================
+
+func js_std_exit(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var status: i32 = 0
+    js.js_to_int32(ctx, &status, argv[0]) catch:
+        status = -1
+    c_exit(status)
+
+func js_std_getenv(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let name = try js.js_to_c_string(ctx, argv[0])
+    let value = getenv(name)
+    js.js_free_c_string(ctx, name)
+    let text = value else return js.js_undefined()
+    return try js.js_new_string(ctx, text)
+
+func js_std_setenv(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let name = try js.js_to_c_string(ctx, argv[0])
+    defer js.js_free_c_string(ctx, name)
+    let value = try js.js_to_c_string(ctx, argv[1])
+    defer js.js_free_c_string(ctx, value)
+    discard(setenv(name, value, 1))
+    return js.js_undefined()
+
+func js_std_unsetenv(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let name = try js.js_to_c_string(ctx, argv[0])
+    discard(unsetenv(name))
+    js.js_free_c_string(ctx, name)
+    return js.js_undefined()
+
+func js_std_gc(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    js.js_run_gc(js.js_get_runtime(ctx))
+    return js.js_undefined()
+
+# mark: Scripts =================================================================================
+
+## Set `*pbool` from the property `option` of `obj` when it is defined (get_bool_option).
+func get_bool_option(ctx: Context*, pbool: bool*, obj: Value, option: str) -> !:
+    let val = try js.js_get_property_str(ctx, obj, option)
+    defer js.js_free_value(ctx, val)
+    if not js.js_is_undefined(val):
+        *pbool = js.js_to_bool(ctx, val) catch: recover false
+
+## std.evalScript(str, options): evaluate `str` as a global script; options are
+## `backtrace_barrier` and `async`.
+func js_eval_script(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var backtrace_barrier = false
+    var is_async = false
+    if argc >= 2:
+        let options_obj = argv[1]
+        try get_bool_option(ctx, &backtrace_barrier, options_obj, "backtrace_barrier")
+        try get_bool_option(ctx, &is_async, options_obj, "async")
+
+    var len: usize = 0
+    let text = try js.js_to_c_string_len(ctx, &len, argv[0])
+    defer js.js_free_c_string(ctx, text)
+    var flags = js.eval_type_global
+    if backtrace_barrier:
+        flags |= js.eval_flag_backtrace_barrier
+    if is_async:
+        flags |= js.eval_flag_async
+    return try js.js_eval(ctx, text, len, "<evalScript>".bytes.data, flags)
+
+func js_std_strerror(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var err: i32 = 0
+    try js.js_to_int32(ctx, &err, argv[0])
+    return try js.js_new_string(ctx, strerror(err))
+
+func js_std_parse_ext_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var len: usize = 0
+    let text = try js.js_to_c_string_len(ctx, &len, argv[0])
+    defer js.js_free_c_string(ctx, text)
+    return try parse_json2(ctx, text, len, "<input>".bytes.data, js.parse_json_ext)
+
+# mark: Tables ==================================================================================
+
+## various errno values
+let js_std_error_props: CFunctionListEntry[11] = [
+    CFunctionListEntry(name = "EINVAL", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_inval),
+    CFunctionListEntry(name = "EIO", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_io),
+    CFunctionListEntry(name = "EACCES", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_acces),
+    CFunctionListEntry(name = "EEXIST", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_exist),
+    CFunctionListEntry(name = "ENOSPC", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_nospc),
+    CFunctionListEntry(name = "ENOSYS", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_nosys),
+    CFunctionListEntry(name = "EBUSY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_busy),
+    CFunctionListEntry(name = "ENOENT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_noent),
+    CFunctionListEntry(name = "EPERM", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_perm),
+    CFunctionListEntry(name = "EPIPE", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_pipe),
+    CFunctionListEntry(name = "EBADF", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_badf),
+]
+
+let js_std_funcs: CFunctionListEntry[25] = [
+    CFunctionListEntry(name = "exit", def_type = js.def_cfunc, length = 1, generic = js_std_exit),
+    CFunctionListEntry(name = "gc", def_type = js.def_cfunc, length = 0, generic = js_std_gc),
+    CFunctionListEntry(name = "evalScript", def_type = js.def_cfunc, length = 1, generic = js_eval_script),
+    CFunctionListEntry(name = "loadScript", def_type = js.def_cfunc, length = 1, generic = js_load_script),
+    CFunctionListEntry(name = "getenv", def_type = js.def_cfunc, length = 1, generic = js_std_getenv),
+    CFunctionListEntry(name = "setenv", def_type = js.def_cfunc, length = 1, generic = js_std_setenv),
+    CFunctionListEntry(name = "unsetenv", def_type = js.def_cfunc, length = 1, generic = js_std_unsetenv),
+    CFunctionListEntry(name = "loadFile", def_type = js.def_cfunc, length = 1, generic = js_std_load_file),
+    CFunctionListEntry(name = "strerror", def_type = js.def_cfunc, length = 1, generic = js_std_strerror),
+    CFunctionListEntry(name = "parseExtJSON", def_type = js.def_cfunc, length = 1, generic = js_std_parse_ext_json),
+
+    # FILE I/O
+    CFunctionListEntry(name = "open", def_type = js.def_cfunc, length = 2, generic = js_std_open),
+    CFunctionListEntry(name = "popen", def_type = js.def_cfunc, length = 2, generic = js_std_popen),
+    CFunctionListEntry(name = "fdopen", def_type = js.def_cfunc, length = 2, generic = js_std_fdopen),
+    CFunctionListEntry(name = "tmpfile", def_type = js.def_cfunc, length = 0, generic = js_std_tmpfile),
+    CFunctionListEntry(name = "puts", def_type = js.def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_std_file_puts, magic = 0),
+    CFunctionListEntry(name = "printf", def_type = js.def_cfunc, length = 1, generic = js_std_printf),
+    CFunctionListEntry(name = "sprintf", def_type = js.def_cfunc, length = 1, generic = js_std_sprintf),
+    CFunctionListEntry(name = "SEEK_SET", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = seek_set),
+    CFunctionListEntry(name = "SEEK_CUR", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = seek_cur),
+    CFunctionListEntry(name = "SEEK_END", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = seek_end),
+    CFunctionListEntry(name = "Error", prop_flags = (u8)js.prop_configurable, def_type = js.def_object, prop_list = js_std_error_props),
+    CFunctionListEntry(name = "__printObject", def_type = js.def_cfunc, length = 1, generic = js_std_file_print_object),
+    # the standard streams, set by js_std_init
+    CFunctionListEntry(name = "in", def_type = js.def_prop_undefined),
+    CFunctionListEntry(name = "out", def_type = js.def_prop_undefined),
+    CFunctionListEntry(name = "err", def_type = js.def_prop_undefined),
+]
+
+let js_std_file_proto_funcs: CFunctionListEntry[17] = [
+    CFunctionListEntry(name = "close", def_type = js.def_cfunc, length = 0, generic = js_std_file_close),
+    CFunctionListEntry(name = "puts", def_type = js.def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_std_file_puts, magic = 1),
+    CFunctionListEntry(name = "printf", def_type = js.def_cfunc, length = 1, generic = js_std_file_printf),
+    CFunctionListEntry(name = "flush", def_type = js.def_cfunc, length = 0, generic = js_std_file_flush),
+    CFunctionListEntry(name = "tell", def_type = js.def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_std_file_tell, magic = 0),
+    CFunctionListEntry(name = "tello", def_type = js.def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_std_file_tell, magic = 1),
+    CFunctionListEntry(name = "seek", def_type = js.def_cfunc, length = 2, generic = js_std_file_seek),
+    CFunctionListEntry(name = "eof", def_type = js.def_cfunc, length = 0, generic = js_std_file_eof),
+    CFunctionListEntry(name = "fileno", def_type = js.def_cfunc, length = 0, generic = js_std_file_fileno),
+    CFunctionListEntry(name = "error", def_type = js.def_cfunc, length = 0, generic = js_std_file_error),
+    CFunctionListEntry(name = "clearerr", def_type = js.def_cfunc, length = 0, generic = js_std_file_clearerr),
+    CFunctionListEntry(name = "read", def_type = js.def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_std_file_read_write, magic = 0),
+    CFunctionListEntry(name = "write", def_type = js.def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_std_file_read_write, magic = 1),
+    CFunctionListEntry(name = "getline", def_type = js.def_cfunc, length = 0, generic = js_std_file_getline),
+    CFunctionListEntry(name = "readAsString", def_type = js.def_cfunc, length = 0, generic = js_std_file_read_as_string),
+    CFunctionListEntry(name = "getByte", def_type = js.def_cfunc, length = 0, generic = js_std_file_get_byte),
+    CFunctionListEntry(name = "putByte", def_type = js.def_cfunc, length = 1, generic = js_std_file_put_byte),
+    # setvbuf, ...
+]
+
+# mark: Module ==================================================================================
+
+func js_std_init(ctx: Context*, m: ModuleDef*) -> !:
+    # FILE class
+    # the class ID is created once
+    discard(js.js_new_class_id(&js_std_file_class_id))
+    # the class is created once per runtime
+    discard(js.js_new_class(js.js_get_runtime(ctx), js_std_file_class_id, &js_std_file_class))
+    let proto = try js.js_new_object(ctx)
+    try js.js_set_property_function_list(ctx, proto, js_std_file_proto_funcs)
+    js.js_set_class_proto(ctx, js_std_file_class_id, proto)
+
+    try js.js_set_module_export_list(ctx, m, js_std_funcs[0..<22])
+    discard(try js.js_set_module_export(ctx, m, "in".bytes.data, try js_new_std_file(ctx, c.stdin(), false, false)))
+    discard(try js.js_set_module_export(ctx, m, "out".bytes.data, try js_new_std_file(ctx, c.stdout(), false, false)))
+    discard(try js.js_set_module_export(ctx, m, "err".bytes.data, try js_new_std_file(ctx, c.stderr(), false, false)))
+
+## Register the `std` module under `module_name` (js_init_module_std).
+pub func js_init_module_std(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    let m = try js.js_new_c_module(ctx, module_name, js_std_init)
+    # the list's last three entries are the streams: "in", "out" and "err"
+    try js.js_add_module_export_list(ctx, m, js_std_funcs)
+    return m

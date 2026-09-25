@@ -1,0 +1,198 @@
+#==============================================================================================
+#
+#   loader - Loading files, scripts and ES modules from the file system
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 425-735: js_load_file, the __loadScript and
+#       std.loadScript/std.loadFile builtins, import.meta (js_module_set_import_meta), the
+#       JSON modules, the import attribute checks and the default module loader. Module
+#       names are normalized by the engine's default normalizer (the host passes no
+#       normalize function, as qjs does). Shared-library (.so) modules are not supported.
+#
+#==============================================================================================
+
+# mark: Files ===================================================================================
+
+## The contents of the file `filename` in a new block of `ctx`'s allocator (or C malloc
+## without a context), NUL-terminated, with its length in `*pbuf_len`; none if the file
+## cannot be read, with `errno` set.
+pub func js_load_file(ctx: Context*?, pbuf_len: usize*, filename: const u8*) -> u8*?:
+    let f = fopen(filename, "rb".bytes.data) else return none
+    defer discard(fclose(f))
+    if fseeko(f, 0, seek_end) < 0:
+        return none
+    let lret = ftello(f)
+    if lret < 0:
+        return none
+    # XXX: on Linux, ftell() return LONG_MAX for directories
+    if lret == 0x7fffffffffffffff:
+        c.set_errno(e_isdir)
+        return none
+    let buf_len = (usize)lret
+    if fseeko(f, 0, seek_set) < 0:
+        return none
+    var block: void*? = none
+    if let context = ctx:
+        block = js.js_malloc(context, buf_len + 1) catch: recover none
+    else:
+        block = cutils.malloc(buf_len + 1)
+    let buf = (u8*)(block else return none)
+    if fread(buf, 1, buf_len, f) != buf_len:
+        c.set_errno(e_io)
+        if let context = ctx:
+            js.js_free(context, buf)
+        else:
+            cutils.c_free(buf)
+        return none
+    buf[buf_len] = 0
+    *pbuf_len = buf_len
+    return buf
+
+## load and evaluate a file
+func js_load_script(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let filename = try js.js_to_c_string(ctx, argv[0])
+    defer js.js_free_c_string(ctx, filename)
+    var buf_len: usize = 0
+    let buf = js_load_file(ctx, &buf_len, filename) else try js.js_throw_reference_error(ctx, f"could not load '{text_of(filename)}'")
+    defer js.js_free(ctx, buf)
+    return try js.js_eval(ctx, buf, buf_len, filename, js.eval_type_global)
+
+## load a file as a UTF-8 encoded string
+func js_std_load_file(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let filename = try js.js_to_c_string(ctx, argv[0])
+    var buf_len: usize = 0
+    let loaded = js_load_file(ctx, &buf_len, filename)
+    js.js_free_c_string(ctx, filename)
+    let buf = loaded else return js.js_null()
+    defer js.js_free(ctx, buf)
+    return try js.js_new_string_len(ctx, buf, buf_len)
+
+# mark: import.meta =============================================================================
+
+## Set `import.meta.url` (a file:// URL, through realpath() when `use_realpath`) and
+## `import.meta.main` of the compiled module `func_val` (js_module_set_import_meta).
+pub func js_module_set_import_meta(ctx: Context*, func_val: Value, use_realpath: bool, is_main: bool) -> !:
+    assert(js.js_value_get_tag(func_val) == js.Tag.module)
+    let m = (ModuleDef*)js.js_value_get_ptr(func_val)
+
+    var buf: u8[4112] = ---    # PATH_MAX + 16
+    let module_name_atom = js.js_get_module_name(ctx, m)
+    let module_name = js.js_atom_to_c_string(ctx, module_name_atom) catch failure:
+        js.js_free_atom(ctx, module_name_atom)
+        error(failure.code, failure.message)
+    js.js_free_atom(ctx, module_name_atom)
+    if strchr(module_name, (i32)':') == none:
+        cutils.pstrcpy(&buf[0], 4112, "file://".bytes.data)
+        # realpath() cannot be used with modules compiled with qjsc because the
+        # corresponding module source code is not necessarily present
+        if use_realpath:
+            if realpath(module_name, &buf[7]) == none:
+                js.js_free_c_string(ctx, module_name)
+                try js.js_throw_type_error(ctx, "realpath failure")
+        else:
+            discard(cutils.pstrcat(&buf[0], 4112, module_name))
+    else:
+        cutils.pstrcpy(&buf[0], 4112, module_name)
+    js.js_free_c_string(ctx, module_name)
+
+    let meta_obj = try js.js_get_import_meta(ctx, m)
+    defer js.js_free_value(ctx, meta_obj)
+    discard(try js.js_define_property_value_str(ctx, meta_obj, "url", try js.js_new_string(ctx, &buf[0]),
+                                                js.prop_c_w_e))
+    discard(try js.js_define_property_value_str(ctx, meta_obj, "main", js.js_new_bool(is_main),
+                                                js.prop_c_w_e))
+
+# mark: JSON modules ============================================================================
+
+func json_module_init(ctx: Context*, m: ModuleDef*) -> !:
+    let val = js.js_get_module_private_value(ctx, m)
+    discard(try js.js_set_module_export(ctx, m, "default".bytes.data, val))
+
+## A module whose only export, "default", is the parsed JSON value `val` (owned).
+func create_json_module(ctx: Context*, module_name: const u8*, val: Value) -> ModuleDef*!:
+    let m = js.js_new_c_module(ctx, module_name, json_module_init) catch failure:
+        js.js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    # only export the "default" symbol which will contain the JSON object
+    try js.js_add_module_export(ctx, m, "default".bytes.data)
+    discard(js.js_set_module_private_value(ctx, m, val))
+    return m
+
+## JS_ParseJSON2 with extended syntax when `flags` has parse_json_ext.
+# workaround: the engine's JS_ParseJSON2 (region r25) is not ported yet, so JSON modules
+# and std.parseExtJSON throw until it is.
+func parse_json2(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*, flags: i32) -> Value!:
+    try js.js_throw_internal_error(ctx, "JSON parsing is not ported yet (JS_ParseJSON2, region r25)")
+
+# mark: Import attributes =======================================================================
+
+# in order to conform with the specification, only the keys should be tested and not the
+# associated values.
+## Refuse an import attribute other than "type" (js_module_check_attributes).
+pub func js_module_check_attributes(ctx: Context*, opaque: void*?, attributes: Value) -> !:
+    var tab: PropertyEnum*? = none
+    var len: u32 = 0
+    try js.js_get_own_property_names(ctx, &tab, &len, attributes, js.gpn_enum_only | js.gpn_string_mask)
+    defer js.js_free_property_enum(ctx, tab, len)
+    let entries = tab else return
+    for i in 0..<(usize)len:
+        var cstr_len: usize = 0
+        let cstr = try js.js_atom_to_c_string_len(ctx, &cstr_len, entries[i].atom)
+        defer js.js_free_c_string(ctx, cstr)
+        if not (cstr_len == 4 and cutils.memcmp(cstr, "type".bytes.data, cstr_len) == 0):
+            try js.js_throw_type_error(ctx, f"import attribute '{text_of(cstr)}' is not supported")
+
+## 1 if the attributes ask for a JSON module, 2 for JSON5, else 0 (js_module_test_json).
+pub func js_module_test_json(ctx: Context*, attributes: Value) -> i32:
+    if js.js_is_undefined(attributes):
+        return 0
+    let type_str = js.js_get_property_str(ctx, attributes, "type") catch: return 0
+    if not js.js_is_string(type_str):
+        js.js_free_value(ctx, type_str)
+        return 0
+    defer js.js_free_value(ctx, type_str)
+    var len: usize = 0
+    let cstr = js.js_to_c_string_len(ctx, &len, type_str) catch: return 0
+    # XXX: raise an error if unknown type ?
+    var res: i32 = 0
+    if len == 4 and cutils.memcmp(cstr, "json".bytes.data, len) == 0:
+        res = 1
+    elif len == 5 and cutils.memcmp(cstr, "json5".bytes.data, len) == 0:
+        res = 2
+    js.js_free_c_string(ctx, cstr)
+    return res
+
+# mark: The module loader =======================================================================
+
+## Load the module `module_name` (already normalized) from a file: JSON when its name
+## ends with .json or its attributes say so, else JavaScript (js_module_loader).
+pub func js_module_loader(ctx: Context*, module_name: const u8*, opaque: void*?, attributes: Value) -> ModuleDef*!:
+    if has_suffix(module_name, ".so"):
+        try js.js_throw_reference_error(ctx, f"could not load module filename '{text_of(module_name)}' as shared library")
+    var buf_len: usize = 0
+    let buf = js_load_file(ctx, &buf_len, module_name) else try js.js_throw_reference_error(ctx, f"could not load module filename '{text_of(module_name)}'")
+    let res = js_module_test_json(ctx, attributes)
+    if has_suffix(module_name, ".json") or res > 0:
+        # compile as JSON or JSON5 depending on "type"
+        let flags = js.parse_json_ext if res == 2 else 0
+        let val = parse_json2(ctx, buf, buf_len, module_name, flags) catch failure:
+            js.js_free(ctx, buf)
+            error(failure.code, failure.message)
+        js.js_free(ctx, buf)
+        return try create_json_module(ctx, module_name, val)
+    # compile the module
+    let func_val = js.js_eval(ctx, buf, buf_len, module_name,
+                              js.eval_type_module | js.eval_flag_compile_only) catch failure:
+        js.js_free(ctx, buf)
+        error(failure.code, failure.message)
+    js.js_free(ctx, buf)
+    # XXX: could propagate the exception
+    js_module_set_import_meta(ctx, func_val, true, false) catch: pass_failure(ctx)
+    # the module is already referenced, so we must free it
+    let m = (ModuleDef*)js.js_value_get_ptr(func_val)
+    js.js_free_value(ctx, func_val)
+    return m
+
+## Drop the pending exception a failed step left, where QuickJS ignores the failure.
+func pass_failure(ctx: Context*):
+    js.js_free_value(ctx, js.js_get_exception(ctx))
