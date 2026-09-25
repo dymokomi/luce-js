@@ -1,0 +1,383 @@
+#==============================================================================================
+#
+#   set_methods - The ES2025 Set methods: union, intersection, difference and the tests
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 52641-53199: GetSetRecord (get_set_record), a side-effect
+#       free copy of a Set, and Set.prototype.isDisjointFrom, isSubsetOf, isSupersetOf,
+#       intersection, difference, symmetricDifference and union. Each walks the smaller of
+#       the two sets: this one through a Set iterator, or the other through its `keys()`
+#       iterator. The `goto exception` / `fini` cleanup of the C functions frees values
+#       that are assigned along the way; here those are `var`s released by
+#       `defer js_free_value_at(ctx, &v)`, which reads the value when it runs.
+#
+#==============================================================================================
+
+# mark: Set records =============================================================================
+
+## GetSetRecord(obj): the size of the set-like `obj` and its `has` and `keys` methods. A
+## Set's own record count is used as its size without reading `size`.
+func get_set_record(ctx: Context*, obj: Value, psize: i64*, phas: Value*, pkeys: Value*) -> !:
+    var size: i64 = 0
+    if let raw = js_get_opaque(obj, (u32)ClassId.set):
+        let s = (MapState*)raw
+        size = (i64)s.record_count
+    else:
+        let v = try js_get_property(ctx, obj, atom_size)
+        var d: f64 = 0.0
+        try js_to_float64_free(ctx, &d, v)
+        if d != d:      # isnan(d)
+            try js_throw_type_error(ctx, ".size is not a number")
+        if d < -9223372036854775808.0:
+            size = -9223372036854775808
+        elif d >= 9223372036854775808.0:
+            # must use INT64_MAX + 1 because INT64_MAX cannot be exactly represented as a
+            # double
+            size = 9223372036854775807
+        else:
+            size = (i64)d
+        if size < 0:
+            try js_throw_range_error(ctx, ".size must be positive")
+
+    let has = try js_get_property(ctx, obj, atom_has)
+    errdefer js_free_value(ctx, has)
+    if js_is_undefined(has):
+        try js_throw_type_error(ctx, ".has is undefined")
+    if not js_is_function(ctx, has):
+        try js_throw_type_error(ctx, ".has is not a function")
+
+    let keys = try js_get_property(ctx, obj, atom_keys)
+    errdefer js_free_value(ctx, keys)
+    if js_is_undefined(keys):
+        try js_throw_type_error(ctx, ".keys is undefined")
+    if not js_is_function(ctx, keys):
+        try js_throw_type_error(ctx, ".keys is not a function")
+    *psize = size
+    *phas = has
+    *pkeys = keys
+
+## Call the set record's `has` on `obj` with `item` and convert the result with ToBoolean
+## (the `rv = JS_Call(...); ok = JS_ToBoolFree(ctx, rv)` step).
+func js_set_call_has(ctx: Context*, has: Value, obj: Value, item: Value) -> bool!:
+    var arg = item
+    let rv = try js_call(ctx, has, obj, 1, &arg)
+    return try js_to_bool_free(ctx, rv)
+
+## The Set of `this_val`; throws if it is not a Set.
+func js_set_state_of(ctx: Context*, this_val: Value) -> MapState*!:
+    let raw = try js_get_opaque2(ctx, this_val, (u32)ClassId.set)
+    return (MapState*)raw
+
+## The MapState of `set`, a Set this port created.
+func js_new_set_state(set: Value) -> MapState*:
+    let raw = js_get_opaque(set, (u32)ClassId.set) else trap("not a new Set")
+    return (MapState*)raw
+
+## A new empty Set (js_map_constructor with no argument).
+func js_new_empty_set(ctx: Context*) -> Value!:
+    var no_args = js_undefined()
+    return try js_map_constructor(ctx, js_undefined(), 0, &no_args, magic_set)
+
+## A copy of the Set `this_val` made without side effects (js_copy_set).
+func js_copy_set(ctx: Context*, this_val: Value) -> Value!:
+    let s = try js_set_state_of(ctx, this_val)
+    let newset = try js_new_empty_set(ctx)
+    errdefer js_free_value(ctx, newset)
+    let t = js_new_set_state(newset)
+
+    # can't clone this_val using js_map_constructor(), test262 mandates we don't call the
+    # .add method
+    var el = map_next_link(&s.records)
+    while el != &s.records:
+        let mr = map_record_of(el)
+        if not mr.empty:
+            discard(try set_add_record(ctx, t, mr.key))
+        el = map_next_link(el)
+    return newset
+
+# mark: Tests ===================================================================================
+
+## Set.prototype.isDisjointFrom(other) (js_set_isDisjointFrom).
+func js_set_is_disjoint_from(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var iter = js_undefined()
+    var next = js_undefined()
+    var has = js_undefined()
+    var keys = js_undefined()
+    let s = try js_set_state_of(ctx, this_val)
+    defer js_free_value_at(ctx, &next)
+    defer js_free_value_at(ctx, &iter)
+    defer js_free_value_at(ctx, &keys)
+    defer js_free_value_at(ctx, &has)
+    var size: i64 = 0
+    try get_set_record(ctx, argv[0], &size, &has, &keys)
+    var no_args = js_undefined()
+    var found = false
+    if (i64)s.record_count <= size:
+        iter = try js_create_map_iterator(ctx, this_val, 0, &no_args, magic_set)
+        while not found:
+            var done: i32 = 0
+            let item = try js_map_iterator_next(ctx, iter, 0, &no_args, &done, magic_set)
+            if done != 0:
+                break   # item is JS_UNDEFINED
+            let ok = js_set_call_has(ctx, has, argv[0], item) catch failure:
+                js_free_value(ctx, item)
+                error(failure.code, failure.message)
+            js_free_value(ctx, item)
+            found = ok
+    else:
+        iter = try js_call(ctx, keys, argv[0], 0, &no_args)
+        next = try js_get_property(ctx, iter, atom_next)
+        while true:
+            var done = false
+            var item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+            if done:
+                break   # item is JS_UNDEFINED
+            item = map_normalize_key(ctx, item)
+            found = map_find_record(ctx, s, item) != none
+            js_free_value(ctx, item)
+            if found:
+                # as upstream, a failure to close the iterator is not reported
+                js_iterator_close(ctx, iter, false) catch: recover ()
+                break
+    return js_new_bool(not found)
+
+## Set.prototype.isSubsetOf(other) (js_set_isSubsetOf).
+func js_set_is_subset_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var iter = js_undefined()
+    var next = js_undefined()
+    var has = js_undefined()
+    var keys = js_undefined()
+    let s = try js_set_state_of(ctx, this_val)
+    defer js_free_value_at(ctx, &next)
+    defer js_free_value_at(ctx, &iter)
+    defer js_free_value_at(ctx, &keys)
+    defer js_free_value_at(ctx, &has)
+    var size: i64 = 0
+    try get_set_record(ctx, argv[0], &size, &has, &keys)
+    var found = false
+    if (i64)s.record_count <= size:
+        var no_args = js_undefined()
+        iter = try js_create_map_iterator(ctx, this_val, 0, &no_args, magic_set)
+        found = true
+        while found:
+            var done: i32 = 0
+            let item = try js_map_iterator_next(ctx, iter, 0, &no_args, &done, magic_set)
+            if done != 0:
+                break   # item is JS_UNDEFINED
+            let ok = js_set_call_has(ctx, has, argv[0], item) catch failure:
+                js_free_value(ctx, item)
+                error(failure.code, failure.message)
+            js_free_value(ctx, item)
+            found = ok
+    return js_new_bool(found)
+
+## Set.prototype.isSupersetOf(other) (js_set_isSupersetOf).
+func js_set_is_superset_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var iter = js_undefined()
+    var next = js_undefined()
+    var has = js_undefined()
+    var keys = js_undefined()
+    let s = try js_set_state_of(ctx, this_val)
+    defer js_free_value_at(ctx, &next)
+    defer js_free_value_at(ctx, &iter)
+    defer js_free_value_at(ctx, &keys)
+    defer js_free_value_at(ctx, &has)
+    var size: i64 = 0
+    try get_set_record(ctx, argv[0], &size, &has, &keys)
+    var found = false
+    if (i64)s.record_count >= size:
+        var no_args = js_undefined()
+        iter = try js_call(ctx, keys, argv[0], 0, &no_args)
+        next = try js_get_property(ctx, iter, atom_next)
+        found = true
+        while true:
+            var done = false
+            var item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+            if done:
+                break   # item is JS_UNDEFINED
+            item = map_normalize_key(ctx, item)
+            found = map_find_record(ctx, s, item) != none
+            js_free_value(ctx, item)
+            if not found:
+                # as upstream, a failure to close the iterator is not reported
+                js_iterator_close(ctx, iter, false) catch: recover ()
+                break
+    return js_new_bool(found)
+
+# mark: New sets ================================================================================
+
+## Add `item` (owned, normalized) to the new set `t` unless it is there already.
+func js_set_add_new(ctx: Context*, t: MapState*, item: Value) -> !:
+    defer js_free_value(ctx, item)
+    if map_find_record(ctx, t, item) == none:   # no duplicates
+        discard(try set_add_record(ctx, t, item))
+
+## Set.prototype.intersection(other) (js_set_intersection).
+func js_set_intersection(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var iter = js_undefined()
+    var next = js_undefined()
+    var has = js_undefined()
+    var keys = js_undefined()
+    var newset = js_undefined()
+    let s = try js_set_state_of(ctx, this_val)
+    defer js_free_value_at(ctx, &next)
+    defer js_free_value_at(ctx, &iter)
+    defer js_free_value_at(ctx, &keys)
+    defer js_free_value_at(ctx, &has)
+    errdefer js_free_value_at(ctx, &newset)
+    var size: i64 = 0
+    try get_set_record(ctx, argv[0], &size, &has, &keys)
+    var no_args = js_undefined()
+    if (i64)s.record_count > size:
+        iter = try js_call(ctx, keys, argv[0], 0, &no_args)
+        next = try js_get_property(ctx, iter, atom_next)
+        newset = try js_new_empty_set(ctx)
+        let t = js_new_set_state(newset)
+        while true:
+            var done = false
+            var item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+            if done:
+                break   # item is JS_UNDEFINED
+            item = map_normalize_key(ctx, item)
+            if map_find_record(ctx, s, item) == none:
+                js_free_value(ctx, item)
+            else:
+                try js_set_add_new(ctx, t, item)
+    else:
+        iter = try js_create_map_iterator(ctx, this_val, 0, &no_args, magic_set)
+        newset = try js_new_empty_set(ctx)
+        let t = js_new_set_state(newset)
+        while true:
+            var done: i32 = 0
+            let item = try js_map_iterator_next(ctx, iter, 0, &no_args, &done, magic_set)
+            if done != 0:
+                break   # item is JS_UNDEFINED
+            let ok = js_set_call_has(ctx, has, argv[0], item) catch failure:
+                js_free_value(ctx, item)
+                error(failure.code, failure.message)
+            if ok:
+                try js_set_add_new(ctx, t, map_normalize_key(ctx, item))
+            else:
+                js_free_value(ctx, item)
+    return newset
+
+## Set.prototype.difference(other) (js_set_difference).
+func js_set_difference(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var iter = js_undefined()
+    var next = js_undefined()
+    var has = js_undefined()
+    var keys = js_undefined()
+    let s = try js_set_state_of(ctx, this_val)
+    defer js_free_value_at(ctx, &next)
+    defer js_free_value_at(ctx, &iter)
+    defer js_free_value_at(ctx, &keys)
+    defer js_free_value_at(ctx, &has)
+    var size: i64 = 0
+    try get_set_record(ctx, argv[0], &size, &has, &keys)
+
+    let newset = try js_copy_set(ctx, this_val)
+    errdefer js_free_value(ctx, newset)
+    let t = js_new_set_state(newset)
+
+    var no_args = js_undefined()
+    if (i64)s.record_count <= size:
+        iter = try js_create_map_iterator(ctx, newset, 0, &no_args, magic_set)
+        while true:
+            var done: i32 = 0
+            let item = try js_map_iterator_next(ctx, iter, 0, &no_args, &done, magic_set)
+            if done != 0:
+                break   # item is JS_UNDEFINED
+            let ok = js_set_call_has(ctx, has, argv[0], item) catch failure:
+                js_free_value(ctx, item)
+                error(failure.code, failure.message)
+            if ok:
+                discard(map_delete_record(ctx, t, item))
+            js_free_value(ctx, item)
+    else:
+        iter = try js_call(ctx, keys, argv[0], 0, &no_args)
+        next = try js_get_property(ctx, iter, atom_next)
+        while true:
+            var done = false
+            let item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+            if done:
+                break   # item is JS_UNDEFINED
+            discard(map_delete_record(ctx, t, item))
+            js_free_value(ctx, item)
+    return newset
+
+## Set.prototype.symmetricDifference(other) (js_set_symmetricDifference).
+func js_set_symmetric_difference(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let s = try js_set_state_of(ctx, this_val)
+    var has = js_undefined()
+    var keys = js_undefined()
+    var size: i64 = 0
+    try get_set_record(ctx, argv[0], &size, &has, &keys)
+    js_free_value(ctx, has)
+    defer js_free_value(ctx, keys)
+
+    var no_args = js_undefined()
+    let iter = try js_call(ctx, keys, argv[0], 0, &no_args)
+    defer js_free_value(ctx, iter)
+    let next = try js_get_property(ctx, iter, atom_next)
+    defer js_free_value(ctx, next)
+    let newset = try js_copy_set(ctx, this_val)
+    errdefer js_free_value(ctx, newset)
+    let t = js_new_set_state(newset)
+    while true:
+        var done = false
+        var item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+        if done:
+            break   # item is JS_UNDEFINED
+        # note the subtlety here: due to mutating iterators, it's possible for keys to
+        # disappear during iteration; test262 still expects us to maintain insertion order
+        # though, so we first check |this|, then |new|; |new| is a copy of |this|
+        # - if item exists in |this|, delete (if it exists) from |new|
+        # - if item misses in |this| and |new|, add to |new|
+        # - if item exists in |new| but misses in |this|, *don't* add it, mutating iterator
+        #   erased it
+        item = map_normalize_key(ctx, item)
+        let present = map_find_record(ctx, s, item) != none
+        let mr = map_find_record(ctx, t, item)
+        if present:
+            discard(map_delete_record(ctx, t, item))
+            js_free_value(ctx, item)
+        elif mr != none:
+            js_free_value(ctx, item)
+        else:
+            let added = set_add_record(ctx, t, item) catch failure:
+                js_free_value(ctx, item)
+                error(failure.code, failure.message)
+            discard(added)
+            js_free_value(ctx, item)
+    return newset
+
+## Set.prototype.union(other) (js_set_union).
+func js_set_union(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    discard(try js_set_state_of(ctx, this_val))
+    var has = js_undefined()
+    var keys = js_undefined()
+    var size: i64 = 0
+    try get_set_record(ctx, argv[0], &size, &has, &keys)
+    js_free_value(ctx, has)
+    defer js_free_value(ctx, keys)
+
+    var no_args = js_undefined()
+    let iter = try js_call(ctx, keys, argv[0], 0, &no_args)
+    defer js_free_value(ctx, iter)
+    let next = try js_get_property(ctx, iter, atom_next)
+    defer js_free_value(ctx, next)
+
+    let newset = try js_copy_set(ctx, this_val)
+    errdefer js_free_value(ctx, newset)
+
+    while true:
+        var done = false
+        var item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+        if done:
+            break   # item is JS_UNDEFINED
+        let rv = js_map_set(ctx, newset, 1, &item, magic_set) catch failure:
+            js_free_value(ctx, item)
+            error(failure.code, failure.message)
+        js_free_value(ctx, item)
+        js_free_value(ctx, rv)
+    return newset

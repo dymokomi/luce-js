@@ -1,0 +1,89 @@
+#==============================================================================================
+#
+#   tests_r26 - Tests of the Map/Set key hash and the proxy key search
+#
+#   DESCRIPTION:
+#       The parts of region r26 that run without a context: the multiplicative hashes
+#       and map_hash_key on numbers, booleans, short BigInts and strings (the expected
+#       values come from the C functions compiled as upstream has them), weak reference
+#       liveness of undefined, and find_prop_key. Strings are made on a real runtime,
+#       which is left allocated as in tests_r12.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# A runtime for the string tests.
+func r26_runtime() -> Runtime*:
+    return js_new_runtime() else trap("out of memory")
+
+# A string value of the 8-bit `text`, with a reference count of one.
+func r26_string(rt: Runtime*, text: str) -> Value:
+    let p = js_alloc_string_rt(rt, (i32)text.length, false) else trap("out of memory")
+    for i in 0..<text.length:
+        str8(p)[i] = text.bytes[i]
+    str8(p)[text.length] = 0
+    return js_mkptr(Tag.string, p)
+
+# A 16-bit string value of the ASCII `text`, with a reference count of one.
+func r26_string16(rt: Runtime*, text: str) -> Value:
+    let p = js_alloc_string_rt(rt, (i32)text.length, true) else trap("out of memory")
+    for i in 0..<text.length:
+        str16(p)[i] = (u16)text.bytes[i]
+    return js_mkptr(Tag.string, p)
+
+# mark: Hashing =================================================================================
+
+test "the multiplicative hashes keep the top bits of the product":
+    assert(map_hash32(0, 1) == 0)
+    assert(map_hash32(12345, 10) == 379)
+    assert(map_hash32(0xffffffff, 31) == 1327217884)
+    assert(map_hash64(0, 1) == 0)
+    assert(map_hash64(12345, 10) == 379)
+    assert(map_hash64(0xffffffffffffffff, 31) == 1327217884)
+
+test "numbers hash by their float64 bits, NaNs alike":
+    assert(map_hash_key(js_new_int32(1), 4) == 8)
+    assert(map_hash_key(js_new_float64_raw(1.0), 4) == 8)
+    assert(map_hash_key(js_new_int32(7), 10) == 239)
+    assert(map_hash_key(js_new_int32(-3), 31) == 919476506)
+    assert(map_hash_key(js_new_float64_raw(1.5), 4) == 10)
+    assert(map_hash_key(js_nan(), 8) == 110)
+    let other_nan = js_new_float64_raw(f64.bits(0xfff8000000000001))
+    assert(map_hash_key(other_nan, 8) == 110)
+
+test "booleans, short BigInts and the other tags":
+    assert(map_hash_key(js_true(), 4) == 0)
+    assert(map_hash_key(js_false(), 4) == 6)
+    assert(map_hash_key(js_new_short_big_int_raw(5), 6) == 19)
+    assert(map_hash_key(js_new_short_big_int_raw(-1), 6) == 31)
+    assert(map_hash_key(js_undefined(), 8) == 0)
+    assert(map_hash_key(js_null(), 8) == 0)
+
+test "strings hash by their characters whatever their width":
+    let rt = r26_runtime()
+    let narrow = r26_string(rt, "abc")
+    let wide = r26_string16(rt, "abc")
+    assert(map_hash_key(narrow, 8) == 42)
+    assert(map_hash_key(wide, 8) == 42)
+    js_free_value_rt(rt, narrow)
+    js_free_value_rt(rt, wide)
+
+# mark: Weak references and keys ================================================================
+
+test "undefined is a live weak reference and not a weak target":
+    assert(js_weakref_is_live(js_undefined()))
+    assert(not js_weakref_is_target(js_undefined()))
+    assert(not js_weakref_is_target(js_new_int32(3)))
+
+test "find_prop_key finds the first entry of an atom":
+    var tab: PropertyEnum[4] = ---
+    tab[0] = PropertyEnum(is_enumerable = false, atom = atom_length)
+    tab[1] = PropertyEnum(is_enumerable = false, atom = atom_name)
+    tab[2] = PropertyEnum(is_enumerable = false, atom = atom_length)
+    tab[3] = PropertyEnum(is_enumerable = false, atom = atom_prototype)
+    assert(find_prop_key(&tab[0], 4, atom_length) == 0)
+    assert(find_prop_key(&tab[0], 4, atom_prototype) == 3)
+    assert(find_prop_key(&tab[0], 3, atom_prototype) == -1)
+    assert(find_prop_key(&tab[0], 0, atom_length) == -1)
+    assert(find_prop_key(none, 0, atom_length) == -1)

@@ -1,0 +1,102 @@
+#==============================================================================================
+#
+#   map_iterator - Map and Set iterators
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Map Iterator" (lines 52516-52639). An iterator holds its map
+#       and the record it answered last; that record is locked (its ref_count raised) so
+#       that deleting it from the map leaves an empty record the iterator can step past.
+#
+#==============================================================================================
+
+## The state of a Map or Set iterator (JSMapIteratorData).
+struct MapIteratorData:
+    ## The map, or undefined once the iteration is done.
+    var obj: Value
+    var kind: IteratorKind
+    ## The locked record answered last, or none before the first step.
+    var cur_record: MapRecord*?
+
+## Finalizer of ClassId.map_iterator and ClassId.set_iterator.
+func js_map_iterator_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (MapIteratorData*)raw
+        # During the GC sweep phase the Map finalizer may be called before the Map iterator
+        # finalizer
+        if js_is_live_object(rt, it.obj):
+            if let mr = it.cur_record:
+                map_decref_record(rt, mr)
+        js_free_value_rt(rt, it.obj)
+        js_free_rt(rt, it)
+
+## Marker of ClassId.map_iterator and ClassId.set_iterator.
+func js_map_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (MapIteratorData*)raw
+        # the record is already marked by the object
+        js_mark_value(rt, it.obj, mark_func)
+
+## Map/Set.prototype.keys, values and entries: bits 0-1 of `magic` select the class
+## (ClassId.map plus magic_set), the bits above the IteratorKind (js_create_map_iterator).
+func js_create_map_iterator(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let kind = (IteratorKind)(magic >> 2)
+    let class_magic = magic & 3
+    discard(try js_map_state_of(ctx, this_val, class_magic))
+    let enum_obj = try js_new_object_class(ctx, (i32)ClassId.map_iterator + class_magic)
+    let raw = js_malloc(ctx, sizeof(MapIteratorData)) catch failure:
+        js_free_value(ctx, enum_obj)
+        error(failure.code, failure.message)
+    let it = (MapIteratorData*)raw
+    it.obj = js_dup_value(ctx, this_val)
+    it.kind = kind
+    it.cur_record = none
+    js_set_opaque(enum_obj, it)
+    return enum_obj
+
+## %MapIteratorPrototype%.next and %SetIteratorPrototype%.next: the next value, with
+## `*pdone` 1 at the end and 0 otherwise (js_map_iterator_next).
+func js_map_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*, magic: i32) -> Value!:
+    let raw = js_get_opaque2(ctx, this_val, (u32)ClassId.map_iterator + (u32)magic) catch failure:
+        *pdone = 0
+        error(failure.code, failure.message)
+    let it = (MapIteratorData*)raw
+    if js_is_undefined(it.obj):
+        # end of enumeration
+        *pdone = 1
+        return js_undefined()
+    let map_raw = js_get_opaque(it.obj, (u32)ClassId.map + (u32)magic) else trap("js_map_iterator_next: not a map")
+    let s = (MapState*)map_raw
+    var el: cutils.ListHead* = ---
+    if let mr = it.cur_record:
+        el = map_next_link(&mr.link)
+        map_decref_record(ctx.rt, mr)   # the record can be freed here
+    else:
+        el = map_next_link(&s.records)
+    while el != &s.records:
+        let mr = map_record_of(el)
+        if not mr.empty:
+            # lock the record so that it won't be freed
+            mr.ref_count += 1
+            it.cur_record = mr
+            *pdone = 0
+
+            if it.kind == IteratorKind.key:
+                return js_dup_value(ctx, mr.key)
+            var args: Value[2] = [mr.key, mr.value]
+            if magic != 0:
+                args[1] = mr.key
+            if it.kind == IteratorKind.value:
+                return js_dup_value(ctx, args[1])
+            return try js_create_array(ctx, 2, &args[0])
+        # get the next record
+        el = map_next_link(el)
+
+    # no more record
+    it.cur_record = none
+    js_free_value(ctx, it.obj)
+    it.obj = js_undefined()
+    # end of enumeration
+    *pdone = 1
+    return js_undefined()

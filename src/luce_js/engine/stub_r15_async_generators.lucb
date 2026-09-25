@@ -30,7 +30,7 @@ func free_generator_stack(ctx: Context*, s: GeneratorData*):
 func js_generator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
     trap("unported: js_generator_mark")
 ## Ported from quickjs.c:21077 js_generator_next.
-func js_generator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: bool*, magic: i32) -> Value!:
+func js_generator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*, magic: i32) -> Value!:
     trap("unported: js_generator_next")
 ## Ported from quickjs.c:21159 js_generator_function_call.
 func js_generator_function_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:

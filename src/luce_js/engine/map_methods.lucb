@@ -1,0 +1,283 @@
+#==============================================================================================
+#
+#   map_methods - The methods of Map, Set, WeakMap and WeakSet, and Object/Map.groupBy
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 52131-52514: set/add, get, getOrInsert(Computed), has,
+#       delete, clear, size and forEach, shared by the four classes through their magic
+#       (ClassId.map plus magic_set and magic_weak), Object.groupBy and Map.groupBy, and
+#       the finalizer and marker of the map classes.
+#
+#==============================================================================================
+
+# mark: Reading and writing =====================================================================
+
+## The MapState of `this_val` if it is of class ClassId.map + `magic`; throws otherwise.
+func js_map_state_of(ctx: Context*, this_val: Value, magic: i32) -> MapState*!:
+    let raw = try js_get_opaque2(ctx, this_val, (u32)ClassId.map + (u32)magic)
+    return (MapState*)raw
+
+## Map.prototype.set and Set.prototype.add, also weak (js_map_set).
+func js_map_set(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let s = try js_map_state_of(ctx, this_val, magic)
+    let key = map_normalize_key_const(ctx, argv[0])
+    if s.is_weak and not js_weakref_is_target(key):
+        let kind = "WeakSet" if (magic & magic_set) != 0 else "WeakMap"
+        try js_throw_type_error(ctx, f"invalid value used as {kind} key")
+    var value = js_undefined()
+    if (magic & magic_set) == 0:
+        value = argv[1]
+    let found = map_find_record(ctx, s, key)
+    if let old = found:
+        js_free_value(ctx, old.value)
+    let mr = found else try map_add_record(ctx, s, key)
+    mr.value = js_dup_value(ctx, value)
+    return js_dup_value(ctx, this_val)
+
+## Map.prototype.get and WeakMap.prototype.get (js_map_get).
+func js_map_get(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let s = try js_map_state_of(ctx, this_val, magic)
+    let key = map_normalize_key_const(ctx, argv[0])
+    let mr = map_find_record(ctx, s, key) else return js_undefined()
+    return js_dup_value(ctx, mr.value)
+
+## Delete the record of `key` from `s`: js_true() if there was one, else js_false()
+## (map_delete_record).
+func map_delete_record(ctx: Context*, s: MapState*, key: Value) -> Value:
+    let k = map_normalize_key_const(ctx, key)
+
+    let h = map_hash_key(k, s.hash_bits)
+    var pmr: MapRecord*?* = &map_hash_table(s)[(usize)h]
+    while let mr = *pmr:
+        # a dead record is not valid
+        if not map_record_is_dead(s, mr) and js_same_value_zero(ctx, mr.key, k):
+            # remove from the hash table
+            *pmr = mr.hash_next
+
+            map_delete_record_internal(ctx.rt, s, mr)
+            return js_true()
+        pmr = &mr.hash_next
+    return js_false()
+
+## The record getOrInsert adds for a missing `key`: `arg` itself, or when `computed` the
+## result of calling `arg` on the key.
+func js_map_insert_computed(ctx: Context*, s: MapState*, key: Value, computed: bool, arg: Value) -> MapRecord*!:
+    var value = js_undefined()
+    if computed:
+        var k = key
+        value = try js_call(ctx, arg, js_undefined(), 1, &k)
+        discard(map_delete_record(ctx, s, key))
+    else:
+        value = js_dup_value(ctx, arg)
+    let mr = map_add_record(ctx, s, key) catch failure:
+        js_free_value(ctx, value)
+        error(failure.code, failure.message)
+    mr.value = value
+    return mr
+
+## Map/WeakMap.prototype.getOrInsert and getOrInsertComputed: bit 0 of `magic` selects
+## the computed form, the rest is the class id (js_map_getOrInsert).
+func js_map_get_or_insert(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let computed = (magic & 1) != 0
+    let class_id = (u32)(magic >> 1)
+    let raw = try js_get_opaque2(ctx, this_val, class_id)
+    let s = (MapState*)raw
+    if computed and not js_is_function(ctx, argv[1]):
+        try js_throw_type_error(ctx, "not a function")
+    let key = map_normalize_key_const(ctx, argv[0])
+    if s.is_weak and not js_weakref_is_target(key):
+        try js_throw_type_error(ctx, "invalid value used as WeakMap key")
+    let mr = map_find_record(ctx, s, key) else try js_map_insert_computed(ctx, s, key, computed, argv[1])
+    return js_dup_value(ctx, mr.value)
+
+## Map/Set/WeakMap/WeakSet.prototype.has (js_map_has).
+func js_map_has(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let s = try js_map_state_of(ctx, this_val, magic)
+    let key = map_normalize_key_const(ctx, argv[0])
+    let mr = map_find_record(ctx, s, key)
+    return js_new_bool(mr != none)
+
+## Map/Set/WeakMap/WeakSet.prototype.delete (js_map_delete).
+func js_map_delete(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let s = try js_map_state_of(ctx, this_val, magic)
+    return map_delete_record(ctx, s, argv[0])
+
+## Map/Set.prototype.clear (js_map_clear).
+func js_map_clear(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let s = try js_map_state_of(ctx, this_val, magic)
+
+    # remove from the hash table
+    discard(cutils.memset(map_hash_table(s), 0, sizeof(MapRecord*?) * (usize)s.hash_size))
+
+    var el = map_next_link(&s.records)
+    while el != &s.records:
+        let el1 = map_next_link(el)
+        map_delete_record_internal(ctx.rt, s, map_record_of(el))
+        el = el1
+    return js_undefined()
+
+## The getter of Map/Set.prototype.size (js_map_get_size).
+func js_map_get_size(ctx: Context*, this_val: Value, magic: i32) -> Value!:
+    let s = try js_map_state_of(ctx, this_val, magic)
+    return js_new_uint32(s.record_count)
+
+## Map/Set.prototype.forEach(callback, thisArg) (js_map_forEach).
+func js_map_for_each(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let s = try js_map_state_of(ctx, this_val, magic)
+    let func_ = argv[0]
+    var this_arg = js_undefined()
+    if argc > 1:
+        this_arg = argv[1]
+    try check_function(ctx, func_)
+    # Note: the list can be modified while traversing it, but the current element is locked
+    var el = map_next_link(&s.records)
+    while el != &s.records:
+        let mr = map_record_of(el)
+        if not mr.empty:
+            mr.ref_count += 1
+            # must duplicate in case the record is deleted
+            var args: Value[3] = ---
+            args[1] = js_dup_value(ctx, mr.key)
+            if magic != 0:
+                args[0] = args[1]
+            else:
+                args[0] = js_dup_value(ctx, mr.value)
+            args[2] = this_val
+            let ret = js_call(ctx, func_, this_arg, 3, &args[0]) catch failure:
+                js_free_value(ctx, args[0])
+                if magic == 0:
+                    js_free_value(ctx, args[1])
+                map_decref_record(ctx.rt, mr)
+                error(failure.code, failure.message)
+            js_free_value(ctx, args[0])
+            if magic == 0:
+                js_free_value(ctx, args[1])
+            el = map_next_link(el)
+            map_decref_record(ctx.rt, mr)
+            js_free_value(ctx, ret)
+        else:
+            el = map_next_link(el)
+    return js_undefined()
+
+# mark: groupBy =================================================================================
+
+## Close the iterator `iter` after a failure, keeping the pending exception (the
+## `iterator_close_exception` label of js_object_groupBy and the `fail_close` one of
+## js_map_constructor).
+func js_close_iterator_on_failure(ctx: Context*, iter: Value):
+    js_iterator_close(ctx, iter, true) catch: recover ()
+
+## One step of groupBy once the callback answered `key` (owned): push `v` on the group of
+## `key` in `groups`, creating the group on first use.
+func js_group_by_push(ctx: Context*, groups: Value, is_map: i32, key: Value, v: Value, iter: Value) -> !:
+    var arg = v
+    if is_map != 0:
+        defer js_free_value(ctx, key)
+        var args: Value[2] = [key, js_undefined()]
+        var prop = try js_map_get(ctx, groups, 1, &args[0], 0)
+        if js_is_undefined(prop):
+            prop = try js_new_array(ctx)
+            args[1] = prop
+            let res = js_map_set(ctx, groups, 2, &args[0], 0) catch failure:
+                js_free_value(ctx, prop)
+                error(failure.code, failure.message)
+            js_free_value(ctx, res)
+        defer js_free_value(ctx, prop)
+        # the result is an int64
+        discard(try js_array_push(ctx, prop, 1, &arg, 0))
+    else:
+        let key_atom = js_value_to_atom(ctx, key) catch failure:
+            js_free_value(ctx, key)
+            js_close_iterator_on_failure(ctx, iter)
+            error(failure.code, failure.message)
+        js_free_value(ctx, key)
+        defer js_free_atom(ctx, key_atom)
+        var prop = try js_get_property(ctx, groups, key_atom)
+        if js_is_undefined(prop):
+            prop = try js_new_array(ctx)
+            discard(js_define_property_value(ctx, groups, key_atom, js_dup_value(ctx, prop),
+                                             prop_c_w_e) catch failure:
+                js_free_value(ctx, prop)
+                error(failure.code, failure.message))
+        defer js_free_value(ctx, prop)
+        # the result is an int64
+        discard(try js_array_push(ctx, prop, 1, &arg, 0))
+
+## Object.groupBy(items, callback), and Map.groupBy when `is_map` (js_object_groupBy).
+func js_object_group_by(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_map: i32) -> Value!:
+    # "is function?" check must be observed before argv[0] is accessed
+    let cb = argv[1]
+    try check_function(ctx, cb)
+
+    let iter = try js_get_iterator(ctx, argv[0], false)
+    defer js_free_value(ctx, iter)
+    let next = try js_get_property(ctx, iter, atom_next)
+    defer js_free_value(ctx, next)
+
+    var groups = js_undefined()
+    if is_map != 0:
+        var no_args = js_undefined()
+        groups = try js_map_constructor(ctx, js_undefined(), 0, &no_args, 0)
+    else:
+        groups = try js_new_object_proto(ctx, js_null())
+    errdefer js_free_value(ctx, groups)
+
+    var idx: i64 = 0
+    while true:
+        if idx >= max_safe_integer:
+            js_throw_type_error(ctx, "too many elements") catch failure:
+                js_close_iterator_on_failure(ctx, iter)
+                error(failure.code, failure.message)
+        var done = false
+        var no_args = js_undefined()
+        let v = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+        if done:
+            break   # v is JS_UNDEFINED
+        defer js_free_value(ctx, v)
+
+        var args: Value[2] = [v, js_new_int64(idx)]
+        let key = js_call(ctx, cb, ctx.global_obj, 2, &args[0]) catch failure:
+            js_close_iterator_on_failure(ctx, iter)
+            error(failure.code, failure.message)
+        try js_group_by_push(ctx, groups, is_map, key, v, iter)
+        idx += 1
+    return groups
+
+# mark: Finalizer and marker ====================================================================
+
+## Finalizer of the map classes.
+func js_map_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let s = (MapState*)raw
+        # if the object is deleted we are sure that no iterator is using it
+        var el = map_next_link(&s.records)
+        while el != &s.records:
+            let el1 = map_next_link(el)
+            let mr = map_record_of(el)
+            if not mr.empty:
+                if s.is_weak:
+                    js_weakref_free(rt, mr.key)
+                else:
+                    js_free_value_rt(rt, mr.key)
+                js_free_value_rt(rt, mr.value)
+            js_free_rt(rt, mr)
+            el = el1
+        if let table = s.hash_table:
+            js_free_rt(rt, table)
+        if s.is_weak:
+            cutils.list_del(&s.weakref_header.link)
+        js_free_rt(rt, s)
+
+## Marker of the map classes: a weak map marks its values only.
+func js_map_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let s = (MapState*)raw
+        var el = map_next_link(&s.records)
+        while el != &s.records:
+            let mr = map_record_of(el)
+            if not s.is_weak:
+                js_mark_value(rt, mr.key, mark_func)
+            js_mark_value(rt, mr.value, mark_func)
+            el = map_next_link(el)

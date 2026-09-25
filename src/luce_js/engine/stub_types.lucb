@@ -56,25 +56,10 @@ struct JSONParseRecordObject:
 struct JSONStringifyContext:
     var unported: i32
 
-struct MapIteratorData:
-    var unported: i32
-
 struct ObjectList:
     var unported: i32
 
 struct ParsePos:
-    var unported: i32
-
-struct PromiseData:
-    var unported: i32
-
-struct PromiseFunctionData:
-    var unported: i32
-
-struct PromiseFunctionDataResolved:
-    var unported: i32
-
-struct PromiseReactionData:
     var unported: i32
 
 struct RegExpStringIteratorData:

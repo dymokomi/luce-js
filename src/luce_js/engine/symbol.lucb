@@ -1,0 +1,102 @@
+#==============================================================================================
+#
+#   symbol - The Symbol constructor, Symbol.prototype and the global symbol registry
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Symbol" (lines 51566-51686): Symbol(), thisSymbolValue,
+#       Symbol.prototype.toString/valueOf/[Symbol.toPrimitive]/description, Symbol.for,
+#       Symbol.keyFor and the function lists JS_AddIntrinsicBaseObjects installs. A symbol
+#       value points at its atom's storage (an AtomStruct, which is a String).
+#
+#==============================================================================================
+
+# mark: Symbol ==================================================================================
+
+## Symbol(description): a new unique symbol; not a constructor (js_symbol_constructor).
+func js_symbol_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_undefined(new_target):
+        try js_throw_type_error_not_a_constructor(ctx, new_target)
+    var p: String*? = none
+    if argc != 0 and not js_is_undefined(argv[0]):
+        let text = try js_to_string(ctx, argv[0])
+        p = text.u.string
+    return try js_new_symbol(ctx, p, js_atom_type_symbol)
+
+## thisSymbolValue: a new reference to the symbol `this_val` is or wraps
+## (js_thisSymbolValue).
+func js_this_symbol_value(ctx: Context*, this_val: Value) -> Value!:
+    if this_val.tag == Tag.symbol:
+        return js_dup_value(ctx, this_val)
+
+    if this_val.tag == Tag.object:
+        let p = this_val.u.obj
+        if p.class_id == ClassId.symbol:
+            if p.u.object_data.tag == Tag.symbol:
+                return js_dup_value(ctx, p.u.object_data)
+    try js_throw_type_error(ctx, "not a symbol")
+
+## Symbol.prototype.toString (js_symbol_toString).
+func js_symbol_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var val = try js_this_symbol_value(ctx, this_val)
+    defer js_free_value(ctx, val)
+    # XXX: use JS_ToStringInternal() with a flags
+    return try js_string_constructor(ctx, js_undefined(), 1, &val)
+
+## Symbol.prototype.valueOf and [Symbol.toPrimitive] (js_symbol_valueOf).
+func js_symbol_value_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_this_symbol_value(ctx, this_val)
+
+## The getter of Symbol.prototype.description: undefined for a symbol made without one
+## (js_symbol_get_description).
+func js_symbol_get_description(ctx: Context*, this_val: Value) -> Value!:
+    let val = try js_this_symbol_value(ctx, this_val)
+    defer js_free_value(ctx, val)
+    let p: AtomStruct* = val.u.string
+    if p.len == 0 and p.is_wide_char:
+        return js_undefined()
+    return try js_atom_to_string(ctx, js_get_atom_index(ctx.rt, p))
+
+## The methods of Symbol.prototype.
+let js_symbol_proto_funcs: CFunctionListEntry[5] = [
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_symbol_to_string),
+    CFunctionListEntry(name = "valueOf", def_type = def_cfunc, length = 0, generic = js_symbol_value_of),
+    # XXX: should have writable: false
+    CFunctionListEntry(name = "[Symbol.toPrimitive]", def_type = def_cfunc, length = 1, generic = js_symbol_value_of),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "Symbol"),
+    CFunctionListEntry(name = "description", prop_flags = (u8)prop_configurable, def_type = def_cgetset,
+                       getter = js_symbol_get_description),
+]
+
+## Symbol.for(key): the registered symbol of `key`, created on first use (js_symbol_for).
+func js_symbol_for(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_string(ctx, argv[0])
+    return try js_new_symbol(ctx, text.u.string, js_atom_type_global_symbol)
+
+## Symbol.keyFor(sym): the key of a registered symbol, else undefined (js_symbol_keyFor).
+func js_symbol_key_for(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_symbol(argv[0]):
+        try js_throw_type_error(ctx, "not a symbol")
+    let p: AtomStruct* = argv[0].u.string
+    if p.atom_type != js_atom_type_global_symbol:
+        return js_undefined()
+    return js_dup_value(ctx, js_mkptr(Tag.string, p))
+
+## The static methods and well-known symbols of Symbol.
+let js_symbol_funcs: CFunctionListEntry[15] = [
+    CFunctionListEntry(name = "for", def_type = def_cfunc, length = 1, generic = js_symbol_for),
+    CFunctionListEntry(name = "keyFor", def_type = def_cfunc, length = 1, generic = js_symbol_key_for),
+    CFunctionListEntry(name = "toPrimitive", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_toPrimitive),
+    CFunctionListEntry(name = "iterator", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_iterator),
+    CFunctionListEntry(name = "match", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_match),
+    CFunctionListEntry(name = "matchAll", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_matchAll),
+    CFunctionListEntry(name = "replace", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_replace),
+    CFunctionListEntry(name = "search", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_search),
+    CFunctionListEntry(name = "split", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_split),
+    CFunctionListEntry(name = "toStringTag", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_toStringTag),
+    CFunctionListEntry(name = "isConcatSpreadable", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_isConcatSpreadable),
+    CFunctionListEntry(name = "hasInstance", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_hasInstance),
+    CFunctionListEntry(name = "species", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_species),
+    CFunctionListEntry(name = "unscopables", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_unscopables),
+    CFunctionListEntry(name = "asyncIterator", prop_flags = 0, def_type = def_prop_atom, i32_value = (i32)atom_Symbol_asyncIterator),
+]

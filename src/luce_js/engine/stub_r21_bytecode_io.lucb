@@ -174,7 +174,7 @@ func bc_reader_free(s: BCReaderState*):
 func js_read_object(ctx: Context*, buf: const u8*, buf_len: usize, flags: i32) -> Value!:
     trap("unported: JS_ReadObject")
 ## Ported from quickjs.c:39518 check_function.
-func check_function(ctx: Context*, obj: Value) -> i32!:
+func check_function(ctx: Context*, obj: Value) -> !:
     trap("unported: check_function")
 ## Ported from quickjs.c:39526 check_exception_free.
 func check_exception_free(ctx: Context*, obj: Value) -> i32:

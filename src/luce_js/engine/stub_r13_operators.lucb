@@ -123,7 +123,7 @@ func js_iterator_next2(ctx: Context*, enum_obj: Value, method: Value, argc: i32,
 func js_iterator_next(ctx: Context*, enum_obj: Value, method: Value, argc: i32, argv: Value*, pdone: bool*) -> Value!:
     trap("unported: JS_IteratorNext")
 ## Ported from quickjs.c:16625 JS_IteratorClose.
-func js_iterator_close(ctx: Context*, enum_obj: Value, is_exception_pending: bool) -> i32!:
+func js_iterator_close(ctx: Context*, enum_obj: Value, is_exception_pending: bool) -> !:
     trap("unported: JS_IteratorClose")
 ## Ported from quickjs.c:16665 js_for_of_start.
 func js_for_of_start(ctx: Context*, sp: Value*, is_async: bool) -> i32!:
