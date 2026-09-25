@@ -49,18 +49,23 @@ module's first fragment (imports in `module.lucb` apply to every fragment) and m
 
 ## Names
 
-- Functions: snake_case of the C name. A `JS_` prefix is dropped; a `js_` prefix is kept;
-  leading underscores are dropped and `_raw` is appended. camelCase boundaries become
+- Functions: snake_case of the C name. A `JS_` prefix becomes `js_`; a `js_` prefix is kept;
+  leading underscores are dropped and `_raw` is appended. Where a public `JS_X` and an
+  internal `js_x` would get the same name, the internal one gets `_internal`. camelCase boundaries become
   underscores; `UInt`, `BigInt`, `JSON`, `RegExp`, `UTF8` read as one word each.
-  - `JS_NewObject` → `new_object`, `JS_GetPropertyUint32` → `get_property_uint32`,
-    `__JS_AtomToValue` → `atom_to_value_raw`, `js_array_lastIndexOf` →
+  - `JS_NewObject` → `js_new_object`, `JS_GetPropertyUint32` → `js_get_property_uint32`,
+    `__JS_AtomToValue` → `js_atom_to_value_raw`, `js_array_lastIndexOf` →
     `js_array_last_index_of`, `js_bigint_asUintN` → `js_bigint_as_uint_n`,
-    `JS_AddIntrinsicRegExp` → `add_intrinsic_reg_exp`, `dbuf_put_u32` → `dbuf_put_u32`.
-  - The complete table of every function whose name changes is `docs/namemap.txt`
-    (`CName luce_name`). Use it; do not invent names.
-  - Two collisions are resolved by hand: the static `delete_property` becomes
-    `delete_property_internal`; `js_bigint_toString` (the builtin method) becomes
-    `js_bigint_to_string_method`.
+    `JS_AddIntrinsicRegExp` → `js_add_intrinsic_reg_exp`, `JS_ThrowTypeError` →
+    `js_throw_type_error` (and the builtin `js_throw_type_error` →
+    `js_throw_type_error_internal`).
+  - The complete table of every quickjs.c function whose name changes is
+    `docs/namemap.txt` (`CName luce_name`). Use it; do not invent names.
+  - quickjs.h's macros and inline functions follow the same rule: `JS_VALUE_GET_INT` →
+    `js_value_get_int`, `JS_MKVAL` → `js_mkval`, `JS_NewInt32` → `js_new_int32`,
+    `JS_FreeValue` → `js_free_value`, `JS_IsException` → `js_is_exception`. The value
+    constants are functions: `JS_UNDEFINED` → `js_undefined()`, `JS_NULL` → `js_null()`,
+    `JS_TRUE`/`JS_FALSE` → `js_true()`/`js_false()`, `JS_EXCEPTION` → `js_exception()`.
 - Types: drop the `JS` prefix and keep PascalCase: `JSObject` → `Object`, `JSRuntime` →
   `Runtime`, `JSContext` → `Context`, `JSString` → `String`, `JSValue` → `Value`,
   `JSShape` → `Shape`, `JSFunctionDef` → `FunctionDef`. Non-prefixed types keep their
@@ -76,6 +81,9 @@ module's first fragment (imports in `module.lucb` apply to every fragment) and m
   `enum REOp as u8`, `enum TokenType as i32`, ... Cases are lower snake_case
   (`Tag.object`, `ClassId.array`, `Op.push_i32`). Compare with `==`; for `<`/`>=` cast
   both sides to the backing integer: `(u16)p.class_id >= (u16)ClassId.uint8c_array`.
+- A name that is a reserved word or a core name gets a trailing underscore: the union
+  member `func` → `func_`, the class `JS_CLASS_ERROR` → `ClassId.error_`, the opcode
+  `OP_return` → `Op.return_`, the format `u8` → `OpFormat.u8_`.
 - Core names cannot be declared (`hash`, `format`, `print`, `error`, `str`, `char`, `pad`,
   `hex`, `bin`, `bool`, `i32`, ...): a local named `hash` becomes `h`, a parameter `str`
   becomes `text`, a case `int` becomes `integer`. Locals may not shadow anything visible,
@@ -153,6 +161,56 @@ C and luce-base disagree in three places; get these right, they are where ports 
   becomes `errdefer`. Where C inspects or clears the exception, use `catch`.
 - `printf`-style formats (`JS_ThrowTypeError(ctx, "%s is not a function", name)`) become
   `fmt` parameters and interpolation: `throw_type_error(ctx, f"{name} is not a function")`.
+
+## The engine
+
+The engine module `src/luce_js/engine/` starts as the shared types (written by hand:
+`value`, `refcount`, `api_types`, `types_runtime`, `types_object`), the generated tables
+(`atoms_table`, `opcodes_table`, by `tools/engine_tables.py`), and one **stub fragment per
+region** of quickjs.c (`stub_rNN_name.lucb`): every C function of the region with a
+generated signature and a body of `trap("unported: NAME")`, plus placeholders for the types
+a region declares (`stub_types.lucb`). The module always type-checks
+(`luce-base check src/luce_js/engine`).
+
+Porting a region:
+
+1. Write the region's code in new fragments named after what they hold (`atoms.lucb`,
+   `strings.lucb`, `shapes.lucb`, ...), each under ~600 lines, in C order; list them in
+   `ORDER` where the region's stub file was, and delete the stub file. Move the region's
+   type placeholders out of `stub_types.lucb` into real declarations.
+2. The region owns its functions' signatures. The generated ones are guesses (from the C
+   text): fix nullability (`T*` vs `T*?`), fallibility, `bool` vs `i32`, spans, parameter
+   names. When you change a signature, fix every call of it in ported (non-stub) code; stub
+   bodies call nothing, so other regions' stubs are not affected, but update a stub whose
+   signature mentions a type you renamed.
+3. Calls to functions of unported regions call their stubs; that is expected.
+4. Keep the shared type fragments stable. Change them only when the region needs it (a
+   field's nullability, a missing field), and say so in your report.
+5. `luce-base check src/luce_js/engine` must pass before you are done, with nothing left
+   of the region's stubs.
+
+Engine idioms:
+
+- JavaScript exceptions: `js_throw(ctx, v) -> never!` and the `js_throw_*_error(ctx,
+  f"...") -> never!` helpers store the exception and fail with `error(exception, "")`.
+  A function that returned `JS_EXCEPTION` or `-1` fails the same way; its caller writes
+  `try`. `goto fail` cleanup becomes `errdefer` (or `defer` when it runs on both paths).
+  Where C tests `JS_IsException(v)` and continues differently, use `catch`.
+- A C function returning "-1 exception / FALSE / TRUE" is `-> bool!`; "-1 / 0" is `-> !`;
+  "NULL with an exception pending" is `-> T*!`.
+- `JSValue` locals are `Value`; `ValueUnion` is not zeroable, so an uninitialized C
+  `JSValue v;` becomes `var v = js_undefined()` (or `= ---` when every path writes it
+  before reading). Arrays of values: `var args: Value[2] = ---`.
+- Pointers from values: `v.u.obj` (JS_VALUE_GET_OBJ), `v.u.string`, `v.u.ptr`,
+  `js_value_get_int(v)`, `js_value_get_float64(v)`.
+- The reference count of a GC object or string is `js_rc(ptr).ref_count`.
+- `JSValueConst *argv` stays `argv: Value*` with `argc: i32`, as in C; a call with no
+  arguments passes any valid pointer (a local `Value`) with `argc = 0`.
+- Builtin tables (`JSCFunctionListEntry` arrays) are `let` arrays of
+  `CFunctionListEntry(...)`; the spelling of each C macro is in `api_types.lucb`.
+- Class tables and exotic method tables are `let` values of `ClassExoticMethods(...)` etc.
+- Do not port the `DUMP_*` debug blocks (`#ifdef DUMP_LEAKS`, `DUMP_BYTECODE`, ...); port
+  code under `#ifdef CONFIG_*` options that are on by default (check the top of quickjs.c).
 
 ## Tests
 
