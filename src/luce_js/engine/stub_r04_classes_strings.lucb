@@ -107,6 +107,9 @@ func js_concat_string3(ctx: Context*, str1: const u8*, str2: Value, str3: const 
 ## Ported from quickjs.c:4445 JS_NewAtomString.
 func js_new_atom_string(ctx: Context*, str_: const u8*) -> Value!:
     trap("unported: JS_NewAtomString")
+## Ported from quickjs.c:4458 JS_ToCStringLen2.
+func js_to_c_string_len2(ctx: Context*, plen: usize*?, val1: Value, cesu8: bool) -> const u8*!:
+    trap("unported: JS_ToCStringLen2")
 ## Ported from quickjs.c:4554 JS_FreeCString.
 func js_free_c_string(ctx: Context*, ptr: const u8*):
     trap("unported: JS_FreeCString")

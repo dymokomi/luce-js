@@ -1,0 +1,292 @@
+#==============================================================================================
+#
+#   atoms_convert - Making atoms from text and numbers, and atoms back into values
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "JSAtom support" (lines 3434-3816): JS_NewAtom* from strings,
+#       UTF-8 text and integers, symbols, JS_AtomGetStr, atom to value and string
+#       conversions, the array-index and numeric-index tests, JS_FreeAtom and the
+#       atom concatenation helpers.
+#
+#       The ctx-level creators fail with a pending exception where QuickJS answers
+#       JS_ATOM_NULL. Where QuickJS returns JS_ATOM_NULL without an exception (the atom
+#       table could not grow), they throw an out of memory error, as JS_NewSymbol does.
+#
+#==============================================================================================
+
+# mark: Atoms from strings and numbers ==========================================================
+
+# An atom interned by `js_new_atom_raw`, or the out of memory exception it could not
+# raise itself.
+func js_check_new_atom(ctx: Context*, atom: Atom) -> Atom!:
+    if atom == no_atom:
+        try js_throw_out_of_memory(ctx)
+    return atom
+
+# Warning: 'p' is freed
+func js_new_atom_str(ctx: Context*, p: String*) -> Atom!:
+    let rt = ctx.rt
+    var n: u32 = 0
+    if is_num_string(&n, p):
+        if n <= js_atom_max_int:
+            js_free_string(rt, p)
+            return js_atom_from_uint32_raw(n)
+    # XXX: should generate an exception
+    return try js_check_new_atom(ctx, js_new_atom_raw(rt, p, js_atom_type_string))
+
+# XXX: optimize
+func count_ascii(buf: const u8*, len: usize) -> usize:
+    var p = buf
+    let p_end = buf + len
+    while p < p_end and *p < 128:
+        p = p + 1
+    return (usize)(p - buf)
+
+## The atom of the UTF-8 text `str_[0..<len]` (JS_NewAtomLen).
+pub func js_new_atom_len(ctx: Context*, str_: const u8*, len: usize) -> Atom!:
+    if len == 0 or (not is_digit((i32)*str_) and count_ascii(str_, len) == len):
+        let atom = js_find_atom_raw(ctx.rt, str_, len, js_atom_type_string)
+        if atom != no_atom:
+            return atom
+    let val = try js_new_string_len(ctx, str_, len)
+    return try js_new_atom_str(ctx, val.u.string)
+
+## The atom of `text` (JS_NewAtom).
+pub func js_new_atom(ctx: Context*, text: str) -> Atom!:
+    return try js_new_atom_len(ctx, text.bytes.data, text.length)
+
+## The atom of the integer `n` (JS_NewAtomUInt32): a tagged integer when it fits.
+pub func js_new_atom_uint32(ctx: Context*, n: u32) -> Atom!:
+    if n <= js_atom_max_int:
+        return js_atom_from_uint32_raw(n)
+    var buf: u8[11] = ---
+    let len = dtoa.u32toa(&buf[0], n)
+    let val = try js_new_string8_len(ctx, &buf[0], (i32)len)
+    return try js_check_new_atom(ctx, js_new_atom_raw(ctx.rt, val.u.string, js_atom_type_string))
+
+func js_new_atom_int64(ctx: Context*, n: i64) -> Atom!:
+    if (u64)n <= (u64)js_atom_max_int:
+        return js_atom_from_uint32_raw((u32)n)
+    var buf: u8[24] = ---
+    let len = dtoa.i64toa(&buf[0], n)
+    let val = try js_new_string8_len(ctx, &buf[0], (i32)len)
+    return try js_check_new_atom(ctx, js_new_atom_raw(ctx.rt, val.u.string, js_atom_type_string))
+
+# mark: Symbols =================================================================================
+
+# 'p' is freed; none makes a symbol without description.
+func js_new_symbol(ctx: Context*, p: String*?, atom_type: u8) -> Value!:
+    let rt = ctx.rt
+    let atom = js_new_atom_raw(rt, p, atom_type)
+    if atom == no_atom:
+        try js_throw_out_of_memory(ctx)
+    return js_mkptr(Tag.symbol, atom_array_get(rt, atom))
+
+# descr must be a non-numeric string atom
+func js_new_symbol_from_atom(ctx: Context*, descr: Atom, atom_type: u8) -> Value!:
+    let rt = ctx.rt
+    assert(not js_atom_is_tagged_int_raw(descr))
+    assert(descr < (u32)rt.atom_size)
+    let p = atom_array_get(rt, descr)
+    discard(js_dup_value(ctx, js_mkptr(Tag.string, p)))
+    return try js_new_symbol(ctx, p, atom_type)
+
+# mark: Atoms as text ===========================================================================
+
+## The buffer size callers give `js_atom_get_str` (ATOM_GET_STR_BUF_SIZE).
+let atom_get_str_buf_size: usize = 64
+
+# Should only be used for debug. The text of `atom`, written into `buf` unless it is an
+# ASCII atom, whose own characters are answered. A Luce `str` is UTF-8, so surrogate pairs
+# are combined and a lone surrogate becomes U+FFFD where QuickJS writes CESU-8 bytes.
+func js_atom_get_str_rt(rt: Runtime*, buf: u8[], atom: Atom) -> str:
+    if js_atom_is_tagged_int_raw(atom):
+        return format(buf, f"{js_atom_to_uint32_raw(atom)}") else ""
+    assert(atom < (u32)rt.atom_size)
+    if atom == no_atom:
+        return "<null>"
+    var q: usize = 0
+    let p = atom_array_get(rt, atom)
+    assert(not atom_is_free(p))
+    let text = p
+    let len = (i32)text.len
+    if not text.is_wide_char:
+        # special case ASCII strings
+        var c: u8 = 0
+        for i in 0..<(usize)len:
+            c |= atom_str8(text)[i]
+        if c < 0x80:
+            return (str)u8[](atom_str8(text), (usize)len)
+    var i: i32 = 0
+    while i < len:
+        var c = (u32)string_get(text, i)
+        i += 1
+        if (isize)q >= (isize)buf.length - (isize)cutils.utf8_char_len_max:
+            break
+        if c < 128:
+            buf[q] = (u8)c
+            q += 1
+        else:
+            if cutils.is_hi_surrogate(c) and i < len:
+                let c1 = (u32)string_get(text, i)
+                if cutils.is_lo_surrogate(c1):
+                    c = cutils.from_surrogate(c, c1)
+                    i += 1
+            if cutils.is_surrogate(c):
+                c = 0xfffd
+            q += (usize)cutils.unicode_to_utf8(&buf[q], c)
+    buf[q] = 0
+    return (str)buf[0..<q]
+
+func js_atom_get_str(ctx: Context*, buf: u8[], atom: Atom) -> str:
+    return js_atom_get_str_rt(ctx.rt, buf, atom)
+
+# mark: Atoms as values =========================================================================
+
+func js_atom_to_value_raw(ctx: Context*, atom: Atom, force_string: bool) -> Value!:
+    if js_atom_is_tagged_int_raw(atom):
+        var buf: u8[atom_get_str_buf_size] = ---
+        let len = dtoa.u32toa(&buf[0], js_atom_to_uint32_raw(atom))
+        return try js_new_string8_len(ctx, &buf[0], (i32)len)
+    let rt = ctx.rt
+    assert(atom < (u32)rt.atom_size)
+    var p = atom_array_get(rt, atom)
+    if p.atom_type == js_atom_type_string:
+        return js_dup_value(ctx, js_mkptr(Tag.string, p))
+    elif force_string:
+        if p.len == 0 and p.is_wide_char:
+            # no description string
+            p = atom_array_get(rt, atom_empty_string)
+        return js_dup_value(ctx, js_mkptr(Tag.string, p))
+    else:
+        return js_dup_value(ctx, js_mkptr(Tag.symbol, p))
+
+## The string or symbol value of `atom` (JS_AtomToValue).
+pub func js_atom_to_value(ctx: Context*, atom: Atom) -> Value!:
+    return try js_atom_to_value_raw(ctx, atom, false)
+
+## The string of `atom`; a symbol answers its description (JS_AtomToString).
+pub func js_atom_to_string(ctx: Context*, atom: Atom) -> Value!:
+    return try js_atom_to_value_raw(ctx, atom, true)
+
+# return true if the atom is an array index (i.e. 0 <= index <= 2^32-2) and return its
+# value
+func js_atom_is_array_index(ctx: Context*, pval: u32*, atom: Atom) -> bool:
+    if js_atom_is_tagged_int_raw(atom):
+        *pval = js_atom_to_uint32_raw(atom)
+        return true
+    let rt = ctx.rt
+    var val: u32 = 0
+    assert(atom < (u32)rt.atom_size)
+    let p = atom_array_get(rt, atom)
+    if p.atom_type == js_atom_type_string and is_num_string(&val, p) and val != 0xffffffff:
+        *pval = val
+        return true
+    *pval = 0
+    return false
+
+# This test must be fast if atom is not a numeric index (e.g. a method name). Return
+# undefined if not a numeric index; fails if an exception is raised.
+func js_atom_is_numeric_index1(ctx: Context*, atom: Atom) -> Value!:
+    let rt = ctx.rt
+    if js_atom_is_tagged_int_raw(atom):
+        return js_new_int32((i32)js_atom_to_uint32_raw(atom))
+    assert(atom < (u32)rt.atom_size)
+    let p1 = atom_array_get(rt, atom)
+    if p1.atom_type != js_atom_type_string:
+        return js_undefined()
+    if atom == atom_minus_zero:
+        return js_new_float64_raw(-0.0)
+    elif atom == atom_Infinity:
+        return js_new_float64_raw(f64.bits(0x7ff0000000000000))
+    elif atom == atom_minus_Infinity:
+        return js_new_float64_raw(f64.bits(0xfff0000000000000))
+    elif atom == atom_NaN:
+        return js_nan()
+    let p = p1
+    if p.len == 0:
+        return js_undefined()
+    let c = string_get(p, 0)
+    if not is_num(c) and c != (i32)'-':
+        return js_undefined()
+    # this is ECMA CanonicalNumericIndexString primitive
+    let num = try js_to_number(ctx, js_mkptr(Tag.string, p))
+    errdefer js_free_value(ctx, num)
+    let text = try js_to_string(ctx, num)
+    let ret = js_string_eq(ctx, p, text.u.string)
+    js_free_value(ctx, text)
+    if ret:
+        return num
+    js_free_value(ctx, num)
+    return js_undefined()
+
+# return false or true; fails if an exception is raised
+func js_atom_is_numeric_index(ctx: Context*, atom: Atom) -> bool!:
+    let num = try js_atom_is_numeric_index1(ctx, atom)
+    if js_is_undefined(num):
+        return false
+    js_free_value(ctx, num)
+    return true
+
+# mark: Freeing and descriptions ================================================================
+
+## Release a reference to the atom `v` (JS_FreeAtom).
+pub func js_free_atom(ctx: Context*, v: Atom):
+    if not js_atom_is_const_raw(v):
+        js_free_atom_raw(ctx.rt, v)
+
+## Release a reference to the atom `v` without a context (JS_FreeAtomRT).
+pub func js_free_atom_rt(rt: Runtime*, v: Atom):
+    if not js_atom_is_const_raw(v):
+        js_free_atom_raw(rt, v)
+
+# return true if 'v' is a symbol with a string description
+func js_atom_symbol_has_description(ctx: Context*, v: Atom) -> bool:
+    let rt = ctx.rt
+    if js_atom_is_tagged_int_raw(v):
+        return false
+    let p = atom_array_get(rt, v)
+    return (((p.atom_type == js_atom_type_symbol and p.hash != js_atom_hash_private) or
+             p.atom_type == js_atom_type_global_symbol) and
+            not (p.len == 0 and p.is_wide_char))
+
+## The text of `atom` as a NUL-terminated UTF-8 string, its length in `plen` when given
+## (JS_AtomToCStringLen). Free it with `js_free_c_string`.
+pub func js_atom_to_c_string_len(ctx: Context*, plen: usize*?, atom: Atom) -> const u8*!:
+    let text = js_atom_to_string(ctx, atom) catch failure:
+        if let pl = plen:
+            *pl = 0
+        error(failure.code, failure.message)
+    defer js_free_value(ctx, text)
+    return try js_to_c_string_len2(ctx, plen, text, false)
+
+## The text of `atom` as a NUL-terminated UTF-8 string (JS_AtomToCString). Free it with
+## `js_free_c_string`.
+pub func js_atom_to_c_string(ctx: Context*, atom: Atom) -> const u8*!:
+    return try js_atom_to_c_string_len(ctx, none, atom)
+
+# mark: Concatenation ===========================================================================
+
+# return a string atom containing name concatenated with str1
+func js_atom_concat_str(ctx: Context*, name: Atom, str1: str) -> Atom!:
+    let text = try js_atom_to_string(ctx, name)
+    defer js_free_value(ctx, text)
+    var len: usize = 0
+    let cstr = try js_to_c_string_len2(ctx, &len, text, false)
+    defer js_free_c_string(ctx, cstr)
+    let len1 = str1.length
+    let cstr2 = (u8*)(try js_malloc(ctx, len + len1 + 1))
+    defer js_free(ctx, cstr2)
+    discard(cutils.memcpy(cstr2, cstr, len))
+    discard(cutils.memcpy(cstr2 + len, str1.bytes.data, len1))
+    cstr2[len + len1] = 0
+    return try js_new_atom_len(ctx, cstr2, len + len1)
+
+func js_atom_concat_num(ctx: Context*, name: Atom, n: u32) -> Atom!:
+    var buf: u8[16] = ---
+    let len = dtoa.u32toa(&buf[0], n)
+    buf[len] = 0
+    return try js_atom_concat_str(ctx, name, (str)buf[0..<len])
+
+func js_is_empty_string(v: Value) -> bool:
+    return v.tag == Tag.string and v.u.string.len == 0

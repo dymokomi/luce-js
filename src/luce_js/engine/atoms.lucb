@@ -1,0 +1,410 @@
+#==============================================================================================
+#
+#   atoms - The atom table: interning strings and symbols as 32-bit ids
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "JSAtom support" (lines 2868-3433): tagged-integer atoms, the
+#       string hashes, the atom hash table and its initialisation from `js_atom_init`,
+#       atom reference counting, interning (__JS_NewAtom), lookup and freeing. The
+#       conversions between atoms, numbers, strings and symbols are in atoms_convert.
+#       JS_DumpChar, JS_DumpString and JS_DumpAtoms are not ported: QuickJS calls them
+#       only from DUMP_* debug blocks.
+#
+#==============================================================================================
+
+# mark: Tagged integers =========================================================================
+
+let js_atom_tag_int: u32 = 1 << 31
+let js_atom_max_int: u32 = js_atom_tag_int - 1
+let js_atom_max: u32 = (1 << 30) - 1
+
+## The max count from the hash size (JS_ATOM_COUNT_RESIZE).
+func js_atom_count_resize(n: i32) -> i32:
+    return n * 2
+
+## Whether `v` is a predefined atom (or a tagged integer, or no_atom): not reference
+## counted.
+func js_atom_is_const_raw(v: Atom) -> bool:
+    return (i32)v < (i32)atom_end
+
+## Whether `v` is an integer carried in the atom itself.
+func js_atom_is_tagged_int_raw(v: Atom) -> bool:
+    return (v & js_atom_tag_int) != 0
+
+## The tagged-integer atom of `v` (v <= js_atom_max_int).
+func js_atom_from_uint32_raw(v: u32) -> Atom:
+    return v | js_atom_tag_int
+
+## The integer of a tagged-integer atom.
+func js_atom_to_uint32_raw(atom: Atom) -> u32:
+    return atom & ~js_atom_tag_int
+
+func is_num(c: i32) -> bool:
+    return c >= (i32)'0' and c <= (i32)'9'
+
+# Return true if the string is a number n with 0 <= n <= 2^32-1.
+func is_num_string(pval: u32*, p: const String*) -> bool:
+    let len = (i32)p.len
+    if len == 0 or len > 10:
+        return false
+    var c = string_get(p, 0)
+    if is_num(c):
+        var n: u32
+        if c == (i32)'0':
+            if len != 1:
+                return false
+            n = 0
+        else:
+            n = (u32)(c - (i32)'0')
+            for i in 1..<len:
+                c = string_get(p, i)
+                if not is_num(c):
+                    return false
+                let n64 = (u64)n * 10 + (u64)(c - (i32)'0')
+                if (n64 >> 32) != 0:
+                    return false
+                n = (u32)n64
+        *pval = n
+        return true
+    else:
+        return false
+
+# mark: Hashing =================================================================================
+
+## The 8-bit characters of a flat string (p->u.str8): they follow the header.
+func atom_str8(p: const String*) -> u8*:
+    return (u8*)p + sizeof(String)
+
+## The 16-bit characters of a flat string (p->u.str16).
+func atom_str16(p: const String*) -> u16*:
+    return (u16*)((u8*)p + sizeof(String))
+
+# XXX: could use faster version ?
+func hash_string8(str_: const u8*, len: usize, h: u32) -> u32:
+    var hv = h
+    for i in 0..<len:
+        hv = hv *% 263 +% str_[i]
+    return hv
+
+func hash_string16(str_: const u16*, len: usize, h: u32) -> u32:
+    var hv = h
+    for i in 0..<len:
+        hv = hv *% 263 +% str_[i]
+    return hv
+
+func hash_string(str_: const String*, h: u32) -> u32:
+    if str_.is_wide_char:
+        return hash_string16(atom_str16(str_), (usize)str_.len, h)
+    return hash_string8(atom_str8(str_), (usize)str_.len, h)
+
+func hash_string_rope(val: Value, h: u32) -> u32:
+    if val.tag == Tag.string:
+        return hash_string(val.u.string, h)
+    let r = val.u.rope
+    let hv = hash_string_rope(r.left, h)
+    return hash_string_rope(r.right, hv)
+
+# mark: The atom table ==========================================================================
+
+## rt->atom_array[i]: an atom's string, or a free entry (see `atom_is_free`).
+func atom_array_get(rt: Runtime*, i: u32) -> AtomStruct*:
+    let atom_array = rt.atom_array else trap("atom table not initialized")
+    return atom_array[i]
+
+## rt->atom_hash, which exists once `js_init_atoms` has run.
+func atom_hash_table(rt: Runtime*) -> u32*:
+    return rt.atom_hash else trap("atom hash table not initialized")
+
+func js_resize_atom_hash(rt: Runtime*, new_hash_size: i32) -> i32:
+    assert((new_hash_size & (new_hash_size - 1)) == 0) # power of two
+    let new_hash_mask = (u32)(new_hash_size - 1)
+    let mem = js_mallocz_rt(rt, sizeof(u32) * (usize)new_hash_size) else return -1
+    let new_hash = (u32*)mem
+    if let old_hash = rt.atom_hash:
+        for i in 0..<(u32)rt.atom_hash_size:
+            var h = old_hash[i]
+            while h != 0:
+                let p = atom_array_get(rt, h)
+                let hash_next1 = p.hash_next
+                # add in new hash table
+                let j = p.hash & new_hash_mask
+                p.hash_next = new_hash[j]
+                new_hash[j] = h
+                h = hash_next1
+        js_free_rt(rt, old_hash)
+    rt.atom_hash = new_hash
+    rt.atom_hash_size = new_hash_size
+    rt.atom_count_resize = js_atom_count_resize(new_hash_size)
+    return 0
+
+func js_init_atoms(rt: Runtime*) -> i32:
+    rt.atom_hash_size = 0
+    rt.atom_hash = none
+    rt.atom_count = 0
+    rt.atom_size = 0
+    rt.atom_free_index = 0
+    if js_resize_atom_hash(rt, 512) != 0: # there are at least 504 predefined atoms
+        return -1
+
+    var p: usize = 0
+    for i: u32 in 1..<atom_end:
+        var atom_type: u8
+        if i == atom_Private_brand:
+            atom_type = js_atom_type_private
+        elif i >= atom_Symbol_toPrimitive:
+            atom_type = js_atom_type_symbol
+        else:
+            atom_type = js_atom_type_string
+        let len = cutils.strlen(&js_atom_init[p])
+        if js_new_atom_init_raw(rt, &js_atom_init[p], (i32)len, atom_type) == no_atom:
+            return -1
+        p = p + len + 1
+    return 0
+
+# mark: Reference counts and kinds ==============================================================
+
+func js_dup_atom_rt(rt: Runtime*, v: Atom) -> Atom:
+    if not js_atom_is_const_raw(v):
+        let p = atom_array_get(rt, v)
+        js_rc(p).ref_count += 1
+    return v
+
+## A new reference to the atom `v` (JS_DupAtom).
+pub func js_dup_atom(ctx: Context*, v: Atom) -> Atom:
+    if not js_atom_is_const_raw(v):
+        let rt = ctx.rt
+        let p = atom_array_get(rt, v)
+        js_rc(p).ref_count += 1
+    return v
+
+func js_atom_get_kind(ctx: Context*, v: Atom) -> AtomKind:
+    let rt = ctx.rt
+    if js_atom_is_tagged_int_raw(v):
+        return AtomKind.string
+    let p = atom_array_get(rt, v)
+    let atom_type = p.atom_type
+    if atom_type == js_atom_type_string:
+        return AtomKind.string
+    elif atom_type == js_atom_type_global_symbol:
+        return AtomKind.symbol
+    elif atom_type == js_atom_type_symbol:
+        if p.hash == js_atom_hash_private:
+            return AtomKind.private
+        else:
+            return AtomKind.symbol
+    trap("JS_AtomGetKind: invalid atom type")
+
+func js_atom_is_string(ctx: Context*, v: Atom) -> bool:
+    return js_atom_get_kind(ctx, v) == AtomKind.string
+
+func js_get_atom_index(rt: Runtime*, p: AtomStruct*) -> Atom:
+    var i = p.hash_next # atom_index
+    if p.atom_type != js_atom_type_symbol:
+        let atom_hash = atom_hash_table(rt)
+        i = atom_hash[p.hash & (u32)(rt.atom_hash_size - 1)]
+        var p1 = atom_array_get(rt, i)
+        while p1 != p:
+            assert(i != 0)
+            i = p1.hash_next
+            p1 = atom_array_get(rt, i)
+    return i
+
+# mark: Interning ===============================================================================
+
+# The `done` exit of __JS_NewAtom: release 'str' and answer `i`.
+func js_new_atom_release(rt: Runtime*, str_: String*?, i: Atom) -> Atom:
+    if let s = str_:
+        js_free_string(rt, s)
+    return i
+
+# The `fail` exit of __JS_NewAtom: release 'str' and answer no_atom.
+func js_new_atom_fail(rt: Runtime*, str_: String*?) -> Atom:
+    return js_new_atom_release(rt, str_, no_atom)
+
+# string case (internal). Return no_atom if error. 'str' is freed. A none 'str' makes a
+# symbol without description.
+func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
+    var atom_type = atom_type0
+    var h: u32
+    var h1: u32
+    var i: u32
+
+    if atom_type < js_atom_type_symbol:
+        # str is not none
+        let s = str_ else trap("__JS_NewAtom: a string atom needs a string")
+        if s.atom_type == atom_type:
+            # str is the atom, return its index
+            i = js_get_atom_index(rt, s)
+            # reduce string refcount and increase atom's unless constant
+            if js_atom_is_const_raw(i):
+                js_rc(s).ref_count -= 1
+            return i
+        # try and locate an already registered atom
+        let len = s.len
+        h = hash_string(s, atom_type)
+        h &= js_atom_hash_mask
+        h1 = h & (u32)(rt.atom_hash_size - 1)
+        i = atom_hash_table(rt)[h1]
+        while i != 0:
+            let p = atom_array_get(rt, i)
+            if (p.hash == h and p.atom_type == atom_type and p.len == len and
+                    js_string_memcmp(p, 0, s, 0, (i32)len) == 0):
+                if not js_atom_is_const_raw(i):
+                    js_rc(p).ref_count += 1
+                return js_new_atom_release(rt, str_, i)
+            i = p.hash_next
+    else:
+        h1 = 0 # avoid warning
+        if atom_type == js_atom_type_symbol:
+            h = 0
+        else:
+            h = js_atom_hash_private
+            atom_type = js_atom_type_symbol
+
+    if rt.atom_free_index == 0:
+        # allow new atom entries
+
+        # alloc new with size progression 3/2:
+        # 4 6 9 13 19 28 42 63 94 141 211 316 474 711 1066 1599 2398 3597 5395 8092
+        # preallocating space for predefined atoms (at least 504).
+        let new_size = (u32)cutils.max_int(711, rt.atom_size * 3 // 2)
+        if new_size > js_atom_max:
+            return js_new_atom_fail(rt, str_)
+        # XXX: should use realloc2 to use slack space
+        var old_array: void*? = none
+        if let a = rt.atom_array:
+            old_array = a
+        let array_size = sizeof(AtomStruct*) * (usize)new_size
+        let mem = js_realloc_rt(rt, old_array, array_size) else return js_new_atom_fail(rt, str_)
+        let new_array = (AtomStruct**)mem
+        # Note: the atom 0 is not used
+        var start = (u32)rt.atom_size
+        if start == 0:
+            # no_atom entry
+            if let pm = js_mallocz_rt(rt, sizeof(AtomStruct)):
+                let p = (AtomStruct*)pm
+                js_rc(p).ref_count = 1 # not refcounted
+                p.atom_type = js_atom_type_symbol
+                new_array[0] = p
+                rt.atom_count += 1
+                start = 1
+            else:
+                js_free_rt(rt, new_array)
+                return js_new_atom_fail(rt, str_)
+        rt.atom_size = (i32)new_size
+        rt.atom_array = new_array
+        rt.atom_free_index = (i32)start
+        for k in start..<new_size:
+            var next: u32
+            if k == new_size - 1:
+                next = 0
+            else:
+                next = k + 1
+            new_array[k] = atom_set_free(next)
+
+    var p: AtomStruct* = ---
+    if let s = str_:
+        if s.atom_type == 0:
+            p = s
+            p.atom_type = atom_type
+        else:
+            let data_size = ((usize)s.len << (usize)s.is_wide_char) + 1 - (usize)s.is_wide_char
+            let size = sizeof(String) + data_size
+            let pm = js_malloc_rt(rt, size) else return js_new_atom_fail(rt, str_)
+            p = (AtomStruct*)pm
+            js_rc(p).ref_count = 1
+            p.is_wide_char = s.is_wide_char
+            p.len = s.len
+            discard(cutils.memcpy(atom_str8(p), atom_str8(s), data_size))
+            js_free_string(rt, s)
+    else:
+        let pm = js_malloc_rt(rt, sizeof(AtomStruct)) else return no_atom # empty wide string
+        p = (AtomStruct*)pm
+        js_rc(p).ref_count = 1
+        p.is_wide_char = true # Hack to represent NULL as a JSString
+        p.len = 0
+
+    # use an already free entry
+    let atom_array = rt.atom_array else trap("atom table not initialized")
+    i = (u32)rt.atom_free_index
+    rt.atom_free_index = (i32)atom_get_free(atom_array[i])
+    atom_array[i] = p
+
+    p.hash = h
+    p.hash_next = i # atom_index
+    p.atom_type = atom_type
+
+    rt.atom_count += 1
+
+    if atom_type != js_atom_type_symbol:
+        let atom_hash = atom_hash_table(rt)
+        p.hash_next = atom_hash[h1]
+        atom_hash[h1] = i
+        if rt.atom_count >= rt.atom_count_resize:
+            discard(js_resize_atom_hash(rt, rt.atom_hash_size * 2))
+
+    return i
+
+# only works with zero terminated 8 bit strings
+func js_new_atom_init_raw(rt: Runtime*, str_: const u8*, len: i32, atom_type: u8) -> Atom:
+    let p = js_alloc_string_rt(rt, len, 0) else return no_atom
+    discard(cutils.memcpy(atom_str8(p), str_, (usize)len))
+    atom_str8(p)[len] = 0
+    return js_new_atom_raw(rt, p, atom_type)
+
+# Warning: str must be ASCII only. Like QuickJS, the lookup is always for a string atom
+# whatever `atom_type` says.
+func js_find_atom_raw(rt: Runtime*, str_: const u8*, len: usize, atom_type: u8) -> Atom:
+    var h = hash_string8(str_, len, js_atom_type_string)
+    h &= js_atom_hash_mask
+    let h1 = h & (u32)(rt.atom_hash_size - 1)
+    var i = atom_hash_table(rt)[h1]
+    while i != 0:
+        let p = atom_array_get(rt, i)
+        if (p.hash == h and p.atom_type == js_atom_type_string and (usize)p.len == len and
+                not p.is_wide_char and cutils.memcmp(atom_str8(p), str_, len) == 0):
+            if not js_atom_is_const_raw(i):
+                js_rc(p).ref_count += 1
+            return i
+        i = p.hash_next
+    return no_atom
+
+# mark: Freeing =================================================================================
+
+func js_free_atom_struct(rt: Runtime*, p: AtomStruct*):
+    # no_atom is not refcounted: js_atom_is_const_raw() includes 0
+    var i = p.hash_next # atom_index
+    if p.atom_type != js_atom_type_symbol:
+        let atom_hash = atom_hash_table(rt)
+        let h0 = p.hash & (u32)(rt.atom_hash_size - 1)
+        i = atom_hash[h0]
+        var p1 = atom_array_get(rt, i)
+        if p1 == p:
+            atom_hash[h0] = p1.hash_next
+        else:
+            while true:
+                assert(i != 0)
+                let p0 = p1
+                i = p1.hash_next
+                p1 = atom_array_get(rt, i)
+                if p1 == p:
+                    p0.hash_next = p1.hash_next
+                    break
+    # insert in free atom list
+    let atom_array = rt.atom_array else trap("atom table not initialized")
+    atom_array[i] = atom_set_free((u32)rt.atom_free_index)
+    rt.atom_free_index = (i32)i
+    # free the string structure, unless live weak references are still present on this
+    # object (a symbol whose hash, its weakref_count, is not zero): keep it then
+    if not (p.atom_type == js_atom_type_symbol and p.hash != js_atom_hash_private and
+            p.hash != 0):
+        js_free_rt(rt, p)
+    rt.atom_count -= 1
+    assert(rt.atom_count >= 0)
+
+func js_free_atom_raw(rt: Runtime*, i: u32):
+    let p = atom_array_get(rt, i)
+    js_rc(p).ref_count -= 1
+    if js_rc(p).ref_count > 0:
+        return
+    js_free_atom_struct(rt, p)

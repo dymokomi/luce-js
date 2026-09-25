@@ -1,0 +1,67 @@
+#==============================================================================================
+#
+#   tests_atoms - Unit tests of the atom helpers that need no runtime
+#
+#   DESCRIPTION:
+#       Tagged-integer atoms, the constant-atom test, digit tests, count_ascii and the
+#       string hashes (expected values computed with QuickJS's `h = h * 263 + c`). The
+#       strings are headers laid out in a local buffer, as the engine lays them out.
+#
+#==============================================================================================
+
+test "tagged integer atoms round trip":
+    assert(js_atom_from_uint32_raw(0) == js_atom_tag_int)
+    assert(js_atom_is_tagged_int_raw(js_atom_from_uint32_raw(12345)))
+    assert(js_atom_to_uint32_raw(js_atom_from_uint32_raw(12345)) == 12345)
+    assert(js_atom_to_uint32_raw(js_atom_from_uint32_raw(js_atom_max_int)) == js_atom_max_int)
+    assert(not js_atom_is_tagged_int_raw(atom_length))
+    assert(not js_atom_is_tagged_int_raw(js_atom_max))
+
+test "constant atoms are the predefined ones and the tagged integers":
+    assert(js_atom_is_const_raw(no_atom))
+    assert(js_atom_is_const_raw(atom_null))
+    assert(js_atom_is_const_raw(atom_end - 1))
+    assert(not js_atom_is_const_raw(atom_end))
+    assert(not js_atom_is_const_raw(js_atom_max))
+    assert(js_atom_is_const_raw(js_atom_from_uint32_raw(7)))
+
+test "atom hash table sizing":
+    assert(js_atom_count_resize(512) == 1024)
+
+test "is_num accepts ASCII digits only":
+    assert(is_num((i32)'0') and is_num((i32)'9'))
+    assert(not is_num((i32)'/') and not is_num((i32)':') and not is_num(0x660))
+
+test "count_ascii stops at the first byte >= 128":
+    let text = b"ab\xc3\xa9cd"
+    assert(count_ascii(&text[0], text.length) == 2)
+    assert(count_ascii(&text[0], 2) == 2)
+    assert(count_ascii(&text[0], 0) == 0)
+    let ascii = b"hello"
+    assert(count_ascii(&ascii[0], ascii.length) == 5)
+
+test "hash_string8 and hash_string16 follow QuickJS":
+    let text = b"length"
+    assert(hash_string8(&text[0], text.length, 1) == 3338202615)
+    assert((hash_string8(&text[0], text.length, 1) & js_atom_hash_mask) == 116977143)
+    assert(hash_string8(&text[0], 0, 7) == 7)
+    let long = b"abcdefghijklmnop"
+    assert(hash_string8(&long[0], long.length, 1) == 2195201737)
+    let wide: u16[3] = [0x3b1, 0x3b2, 0xffff]
+    assert(hash_string16(&wide[0], 3, 1) == 83870485)
+
+test "hash_string reads the characters after the header":
+    var storage: u64[8]
+    let p = (String*)&storage[0]
+    p.len = 6
+    p.is_wide_char = false
+    let text = b"length"
+    discard(cutils.memcpy(atom_str8(p), &text[0], 6))
+    assert(hash_string(p, 1) == 3338202615)
+    p.len = 3
+    p.is_wide_char = true
+    let wide = atom_str16(p)
+    wide[0] = 0x3b1
+    wide[1] = 0x3b2
+    wide[2] = 0xffff
+    assert(hash_string(p, 1) == 83870485)

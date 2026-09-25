@@ -51,13 +51,13 @@ func js_malloc_iter(s: MallocContext*, iter_func: MallocIterFunc, iter_opaque: v
 func js_trigger_gc(rt: Runtime*, size: usize):
     trap("unported: js_trigger_gc")
 ## Ported from quickjs.c:1800 js_malloc_rt.
-func js_malloc_rt(rt: Runtime*, size: usize) -> void*:
+func js_malloc_rt(rt: Runtime*, size: usize) -> void*?:
     trap("unported: js_malloc_rt")
 ## Ported from quickjs.c:1805 js_free_rt.
 func js_free_rt(rt: Runtime*, ptr: void*):
     trap("unported: js_free_rt")
 ## Ported from quickjs.c:1810 js_realloc_rt.
-func js_realloc_rt(rt: Runtime*, ptr: void*, size: usize) -> void*:
+func js_realloc_rt(rt: Runtime*, ptr: void*?, size: usize) -> void*?:
     trap("unported: js_realloc_rt")
 ## Ported from quickjs.c:1815 js_malloc_usable_size_rt.
 func js_malloc_usable_size_rt(rt: Runtime*, ptr: const void*) -> usize:
@@ -104,6 +104,12 @@ func js_realloc_bytecode_rt(opaque: void*, ptr: void*, size: usize) -> void*?:
 ## Ported from quickjs.c:1952 js_dbuf_bytecode_init.
 func js_dbuf_bytecode_init(ctx: Context*, s: cutils.DynBuf*):
     trap("unported: js_dbuf_bytecode_init")
+## Ported from quickjs.c:1957 is_digit.
+func is_digit(c: i32) -> bool:
+    trap("unported: is_digit")
+## Ported from quickjs.c:1961 string_get.
+func string_get(p: const String*, idx: i32) -> i32:
+    trap("unported: string_get")
 ## Ported from quickjs.c:2024 init_class_range.
 func init_class_range(rt: Runtime*, tab: ClassShortDef*, start: i32, count: i32) -> i32:
     trap("unported: init_class_range")
