@@ -1,0 +1,433 @@
+#==============================================================================================
+#
+#   emitter - Emitting bytecode, labels and constants; scopes and variable definitions
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 23809-24290: the last opcode and live code tests,
+#       emit_u8/u16/u32, source positions, opcodes and atoms, labels and gotos, the
+#       constant pool, the variable lookups (find_arg, find_var, the scope walks, the
+#       global variables and lexical declarations), push_scope/pop_scope, and the
+#       definitions of variables, arguments and global variables.
+#
+#       Opcodes are bytes: `emit_op(s, (u8)Op.push_const)` for an opcode of the final
+#       bytecode, `(u8)TempOp.label` for a temporary one of phases 1 and 2.
+#
+#==============================================================================================
+
+# mark: Array accessors =========================================================================
+
+# The variable `idx` of fd.vars (&fd->vars[idx]).
+func fd_var(fd: FunctionDef*, idx: i32) -> VarDef*:
+    let vars = fd.vars else trap("FunctionDef: no variables")
+    return vars + (isize)idx
+
+# The argument `idx` of fd.args (&fd->args[idx]).
+func fd_arg(fd: FunctionDef*, idx: i32) -> VarDef*:
+    let args = fd.args else trap("FunctionDef: no arguments")
+    return args + (isize)idx
+
+# The label `label` of fd.label_slots (&fd->label_slots[label]).
+func fd_label(fd: FunctionDef*, label: i32) -> LabelSlot*:
+    let slots = fd.label_slots else trap("FunctionDef: no labels")
+    return slots + (isize)label
+
+# The global variable `idx` of fd.global_vars (&fd->global_vars[idx]).
+func fd_global_var(fd: FunctionDef*, idx: i32) -> GlobalVar*:
+    let vars = fd.global_vars else trap("FunctionDef: no global variables")
+    return vars + (isize)idx
+
+# The scope `scope` of fd.scopes (&fd->scopes[scope]).
+func fd_scope(fd: FunctionDef*, scope: i32) -> VarScope*:
+    return fd.scopes + (isize)scope
+
+# mark: Emitting bytecode =======================================================================
+
+# The last opcode emitted, or Op.invalid if none or the buffer failed. The byte is a
+# temporary opcode (TempOp) where one was emitted.
+func get_prev_opcode(fd: FunctionDef*) -> u8:
+    if fd.last_opcode_pos < 0 or cutils.dbuf_error(&fd.byte_code):
+        return (u8)Op.invalid
+    let buf = fd.byte_code.buf else trap("get_prev_opcode: empty bytecode")
+    return buf[(isize)fd.last_opcode_pos]
+
+# Whether code emitted now can run: false after a return, throw or goto.
+func js_is_live_code(s: ParseState*) -> bool:
+    match (Op)get_prev_opcode(s.fd()):
+        .tail_call, .tail_call_method, .return_, .return_undef, .return_async:
+            return false
+        .throw, .throw_error, .goto_, .goto8, .goto16, .ret:
+            return false
+        _:
+            return true
+
+func emit_u8(s: ParseState*, val: u8):
+    discard(cutils.dbuf_putc(&s.fd().byte_code, val))
+
+func emit_u16(s: ParseState*, val: u16):
+    discard(cutils.dbuf_put_u16(&s.fd().byte_code, val))
+
+func emit_u32(s: ParseState*, val: u32):
+    discard(cutils.dbuf_put_u32(&s.fd().byte_code, val))
+
+# Emit a line number opcode for `source_ptr` if it moved since the last opcode.
+func emit_source_pos(s: ParseState*, source_ptr: const u8*):
+    let fd = s.fd()
+    let bc = &fd.byte_code
+    var moved = true
+    if let last = fd.last_opcode_source_ptr:
+        moved = last != source_ptr
+    if moved:
+        discard(cutils.dbuf_putc(bc, (u8)TempOp.line_num))
+        discard(cutils.dbuf_put_u32(bc, (u32)(source_ptr - s.buf_start)))
+        fd.last_opcode_source_ptr = source_ptr
+
+# Emit the opcode byte `val` and remember its position as the last opcode.
+func emit_op(s: ParseState*, val: u8):
+    let fd = s.fd()
+    let bc = &fd.byte_code
+    fd.last_opcode_pos = (i32)bc.size
+    discard(cutils.dbuf_putc(bc, val))
+
+# Emit a reference to the atom `name`, which is duplicated.
+func emit_atom(s: ParseState*, name: Atom):
+    let bc = &s.fd().byte_code
+    if cutils.dbuf_claim(bc, 4) != 0:
+        # not enough memory : don't duplicate the atom
+        return
+    let buf = bc.buf else trap("emit_atom: no bytecode buffer")
+    cutils.put_u32(buf + bc.size, js_dup_atom(s.ctx, name))
+    bc.size += 4
+
+# mark: Labels ==================================================================================
+
+# Add `delta` to the reference count of `label`; answers the new count.
+func update_label(s: FunctionDef*, label: i32, delta: i32) -> i32:
+    assert(label >= 0 and label < s.label_count)
+    let ls = fd_label(s, label)
+    ls.ref_count += delta
+    assert(ls.ref_count >= 0)
+    return ls.ref_count
+
+# A new unresolved label of `fd`.
+func new_label_fd(fd: FunctionDef*) -> i32!:
+    try js_resize_array(fd.ctx, (void*?*)&fd.label_slots, (i32)sizeof(LabelSlot),
+                        &fd.label_size, fd.label_count + 1)
+    let label = fd.label_count
+    fd.label_count += 1
+    let ls = fd_label(fd, label)
+    ls.ref_count = 0
+    ls.pos = -1
+    ls.pos2 = -1
+    ls.addr = -1
+    ls.first_reloc = none
+    return label
+
+# A new label of the current function, or -1 when out of memory: the bytecode buffer
+# is then in error (with the exception pending), which the compiler checks later.
+func new_label(s: ParseState*) -> i32:
+    let fd = s.fd()
+    let label = new_label_fd(fd) catch failure:
+        recover -1
+    if label < 0:
+        cutils.dbuf_set_error(&fd.byte_code)
+    return label
+
+# don't update the last opcode and don't emit line number info
+func emit_label_raw(s: ParseState*, label: i32):
+    emit_u8(s, (u8)TempOp.label)
+    emit_u32(s, (u32)label)
+    let fd = s.fd()
+    fd_label(fd, label).pos = (i32)fd.byte_code.size
+
+# Place `label` here; answers the offset of its id in the bytecode, or -1 if `label` is
+# negative.
+func emit_label(s: ParseState*, label: i32) -> i32:
+    if label >= 0:
+        emit_op(s, (u8)TempOp.label)
+        emit_u32(s, (u32)label)
+        let fd = s.fd()
+        fd_label(fd, label).pos = (i32)fd.byte_code.size
+        return (i32)fd.byte_code.size - 4
+    else:
+        return -1
+
+# Emit the jump `opcode` to `label` (a new label if negative); answers the label or -1
+# if dead code
+func emit_goto(s: ParseState*, opcode: i32, label: i32) -> i32:
+    if js_is_live_code(s):
+        var l = label
+        if l < 0:
+            l = new_label(s)
+            if l < 0:
+                return -1
+        emit_op(s, (u8)opcode)
+        emit_u32(s, (u32)l)
+        fd_label(s.fd(), l).ref_count += 1
+        return l
+    return -1
+
+# mark: Constants ===============================================================================
+
+# return the constant pool index. 'val' is not duplicated (it is freed on failure).
+func cpool_add(s: ParseState*, val: Value) -> i32!:
+    let fd = s.fd()
+    js_resize_array(s.ctx, (void*?*)&fd.cpool, (i32)sizeof(Value), &fd.cpool_size,
+                    fd.cpool_count + 1) catch failure:
+        js_free_value(s.ctx, val)
+        error(failure.code, failure.message)
+    let cpool = fd.cpool else trap("cpool_add: no constant pool")
+    cpool[(isize)fd.cpool_count] = val
+    fd.cpool_count += 1
+    return fd.cpool_count - 1
+
+# Emit a push of `val` (duplicated): an atom value if `as_atom` and it is a string, else
+# a constant pool entry.
+func emit_push_const(s: ParseState*, val: Value, as_atom: bool) -> !:
+    if val.tag == Tag.string and as_atom:
+        # warning: JS_NewAtomStr frees the string value
+        discard(js_dup_value(s.ctx, val))
+        let atom = try js_new_atom_str(s.ctx, val.u.string)
+        if atom != atom_null and not js_atom_is_tagged_int_raw(atom):
+            emit_op(s, (u8)Op.push_atom_value)
+            emit_u32(s, atom)
+            return
+
+    let idx = try cpool_add(s, js_dup_value(s.ctx, val))
+    emit_op(s, (u8)Op.push_const)
+    emit_u32(s, (u32)idx)
+
+# mark: Finding variables =======================================================================
+
+# return the variable index or -1 if not found, add argument_var_offset for argument
+# variables
+func find_arg(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32:
+    var i = fd.arg_count
+    while i > 0:
+        i -= 1
+        if fd_arg(fd, i).var_name == name:
+            return i | argument_var_offset
+    return -1
+
+# The function-level variable `name` (scope level 0), else the argument; -1 if none.
+func find_var(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32:
+    var i = fd.var_count
+    while i > 0:
+        i -= 1
+        let vd = fd_var(fd, i)
+        if vd.var_name == name and vd.scope_level == 0:
+            return i
+    return find_arg(ctx, fd, name)
+
+# find a variable declaration in a given scope
+func find_var_in_scope(ctx: Context*, fd: FunctionDef*, name: Atom, scope_level: i32) -> i32:
+    var scope_idx = fd_scope(fd, scope_level).first
+    while scope_idx >= 0:
+        let vd = fd_var(fd, scope_idx)
+        if vd.scope_level != scope_level:
+            break
+        if vd.var_name == name:
+            return scope_idx
+        scope_idx = vd.scope_next
+    return -1
+
+# return true if scope == parent_scope or if scope is a child of parent_scope
+func is_child_scope(ctx: Context*, fd: FunctionDef*, scope0: i32, parent_scope: i32) -> bool:
+    var scope = scope0
+    while scope >= 0:
+        if scope == parent_scope:
+            return true
+        scope = fd_scope(fd, scope).parent
+    return false
+
+# find a 'var' declaration in the same scope or a child scope
+func find_var_in_child_scope(ctx: Context*, fd: FunctionDef*, name: Atom, scope_level: i32) -> i32:
+    for i in 0..<fd.var_count:
+        let vd = fd_var(fd, i)
+        if vd.var_name == name and vd.scope_level == 0:
+            if is_child_scope(ctx, fd, vd.scope_next, scope_level):
+                return i
+    return -1
+
+# The global variable `name` of eval or global code, if defined.
+func find_global_var(fd: FunctionDef*, name: Atom) -> GlobalVar*?:
+    for i in 0..<fd.global_var_count:
+        let hf = fd_global_var(fd, i)
+        if hf.var_name == name:
+            return hf
+    return none
+
+# The global let/const/class `name`, if defined.
+func find_lexical_global_var(fd: FunctionDef*, name: Atom) -> GlobalVar*?:
+    if let hf = find_global_var(fd, name):
+        if hf.is_lexical:
+            return hf
+    return none
+
+# The lexical declaration `name` visible from `scope_idx` (a catch variable too when
+# `check_catch_var`), global_var_offset for a global lexical of global eval code, or
+# -1.
+func find_lexical_decl(ctx: Context*, fd: FunctionDef*, name: Atom, scope_idx0: i32,
+                       check_catch_var: bool) -> i32:
+    var scope_idx = scope_idx0
+    while scope_idx >= 0:
+        let vd = fd_var(fd, scope_idx)
+        if (vd.var_name == name and
+            (vd.is_lexical or (vd.var_kind == VarKind.catch_ and check_catch_var))):
+            return scope_idx
+        scope_idx = vd.scope_next
+
+    if fd.is_eval and fd.eval_type == eval_type_global:
+        if find_lexical_global_var(fd, name) != none:
+            return global_var_offset
+    return -1
+
+# mark: Scopes ==================================================================================
+
+# Enter a new lexical scope of the current function (if any); answers its index.
+func push_scope(s: ParseState*) -> i32!:
+    if let fd = s.cur_func:
+        let scope = fd.scope_count
+        # XXX: should check for scope overflow
+        if (fd.scope_count + 1) > fd.scope_size:
+            var slack: usize = 0
+            # XXX: potential arithmetic overflow
+            var new_size = cutils.max_int(fd.scope_count + 1, fd.scope_size * 3 // 2)
+            let bytes = (usize)new_size * sizeof(VarScope)
+            var new_buf = fd.scopes
+            if fd.scopes == &fd.def_scope_array[0]:
+                let p = try js_realloc2(s.ctx, none, bytes, &slack) else trap("push_scope: empty block")
+                new_buf = (VarScope*)p
+                discard(cutils.memcpy(new_buf, fd.scopes, (usize)fd.scope_count * sizeof(VarScope)))
+            else:
+                let p = try js_realloc2(s.ctx, fd.scopes, bytes, &slack) else trap("push_scope: empty block")
+                new_buf = (VarScope*)p
+            new_size += (i32)(slack // sizeof(VarScope))
+            fd.scopes = new_buf
+            fd.scope_size = new_size
+        fd.scope_count += 1
+        fd_scope(fd, scope).parent = fd.scope_level
+        fd_scope(fd, scope).first = fd.scope_first
+        emit_op(s, (u8)TempOp.enter_scope)
+        emit_u16(s, (u16)scope)
+        fd.scope_level = scope
+        return scope
+    return 0
+
+# The innermost lexical variable visible in `scope` or its parents, or -1.
+func get_first_lexical_var(fd: FunctionDef*, scope0: i32) -> i32:
+    var scope = scope0
+    while scope >= 0:
+        let scope_idx = fd_scope(fd, scope).first
+        if scope_idx >= 0:
+            return scope_idx
+        scope = fd_scope(fd, scope).parent
+    return -1
+
+# Leave the current lexical scope of the current function (if any).
+func pop_scope(s: ParseState*):
+    if let fd = s.cur_func:
+        # disable scoped variables
+        let scope = fd.scope_level
+        emit_op(s, (u8)TempOp.leave_scope)
+        emit_u16(s, (u16)scope)
+        fd.scope_level = fd_scope(fd, scope).parent
+        fd.scope_first = get_first_lexical_var(fd, fd.scope_level)
+
+# Emit the leaving of the scopes from `scope` up to (not including) `scope_stop`.
+func close_scopes(s: ParseState*, scope0: i32, scope_stop: i32):
+    var scope = scope0
+    while scope > scope_stop:
+        emit_op(s, (u8)TempOp.leave_scope)
+        emit_u16(s, (u16)scope)
+        scope = fd_scope(s.fd(), scope).parent
+
+# mark: Defining variables ======================================================================
+
+# Add the variable `name` to `fd`; answers its index.
+func add_var(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32!:
+    # the local variable indexes are currently stored on 16 bits
+    if fd.var_count >= js_max_local_vars:
+        try js_throw_internal_error(ctx, "too many local variables")
+    try js_resize_array(ctx, (void*?*)&fd.vars, (i32)sizeof(VarDef), &fd.var_size,
+                        fd.var_count + 1)
+    let vd = fd_var(fd, fd.var_count)
+    fd.var_count += 1
+    discard(cutils.memset(vd, 0, sizeof(VarDef)))
+    vd.var_name = js_dup_atom(ctx, name)
+    vd.func_pool_idx = -1
+    return fd.var_count - 1
+
+# Add the variable `name` of kind `var_kind` to the current scope of `fd`.
+func add_scope_var(ctx: Context*, fd: FunctionDef*, name: Atom, var_kind: VarKind) -> i32!:
+    let idx = try add_var(ctx, fd, name)
+    let vd = fd_var(fd, idx)
+    vd.var_kind = var_kind
+    vd.scope_level = fd.scope_level
+    vd.scope_next = fd.scope_first
+    fd_scope(fd, fd.scope_level).first = idx
+    fd.scope_first = idx
+    return idx
+
+# The variable holding the function expression's own name, added if needed.
+func add_func_var(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32!:
+    var idx = fd.func_var_idx
+    if idx < 0:
+        idx = try add_var(ctx, fd, name)
+        fd.func_var_idx = idx
+        fd_var(fd, idx).var_kind = VarKind.function_name
+        if ((i32)fd.js_mode & js_mode_strict) != 0:
+            fd_var(fd, idx).is_const = true
+    return idx
+
+# The 'arguments' variable, added if needed.
+func add_arguments_var(ctx: Context*, fd: FunctionDef*) -> i32!:
+    var idx = fd.arguments_var_idx
+    if idx < 0:
+        idx = try add_var(ctx, fd, atom_arguments)
+        fd.arguments_var_idx = idx
+    return idx
+
+# add an argument definition in the argument scope. Only needed when "eval()" may be
+# called in the argument scope.
+func add_arguments_arg(ctx: Context*, fd: FunctionDef*) -> !:
+    if fd.arguments_arg_idx < 0:
+        var idx = find_var_in_scope(ctx, fd, atom_arguments, arg_scope_index)
+        if idx < 0:
+            # XXX: the scope links are not fully updated. May be an issue if there are
+            # child scopes of the argument scope
+            idx = try add_var(ctx, fd, atom_arguments)
+            let vd = fd_var(fd, idx)
+            vd.scope_next = fd_scope(fd, arg_scope_index).first
+            fd_scope(fd, arg_scope_index).first = idx
+            vd.scope_level = arg_scope_index
+            vd.is_lexical = true
+
+            fd.arguments_arg_idx = idx
+
+# Add the argument `name` to `fd`; answers its index.
+func add_arg(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32!:
+    # the local variable indexes are currently stored on 16 bits
+    if fd.arg_count >= js_max_local_vars:
+        try js_throw_internal_error(ctx, "too many arguments")
+    try js_resize_array(ctx, (void*?*)&fd.args, (i32)sizeof(VarDef), &fd.arg_size,
+                        fd.arg_count + 1)
+    let vd = fd_arg(fd, fd.arg_count)
+    fd.arg_count += 1
+    discard(cutils.memset(vd, 0, sizeof(VarDef)))
+    vd.var_name = js_dup_atom(ctx, name)
+    vd.func_pool_idx = -1
+    return fd.arg_count - 1
+
+# add a global variable definition
+func add_global_var(ctx: Context*, s: FunctionDef*, name: Atom) -> GlobalVar*!:
+    try js_resize_array(ctx, (void*?*)&s.global_vars, (i32)sizeof(GlobalVar),
+                        &s.global_var_size, s.global_var_count + 1)
+    let hf = fd_global_var(s, s.global_var_count)
+    s.global_var_count += 1
+    hf.cpool_idx = -1
+    hf.force_init = false
+    hf.is_lexical = false
+    hf.is_const = false
+    hf.scope_level = s.scope_level
+    hf.var_name = js_dup_atom(ctx, name)
+    return hf

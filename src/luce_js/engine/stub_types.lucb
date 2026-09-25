@@ -23,9 +23,6 @@ struct BCReaderState:
 struct BCWriterState:
     var unported: i32
 
-struct BlockEnv:
-    var unported: i32
-
 struct ClassFieldsDef:
     var unported: i32
 
@@ -35,19 +32,10 @@ struct CodeContext:
 struct ExecModuleList:
     var unported: i32
 
-struct FunctionDef:
-    var unported: i32
-
 struct GeneratorData:
     var unported: i32
 
 struct GetExportNamesState:
-    var unported: i32
-
-struct GetLineColCache:
-    var unported: i32
-
-struct GlobalVar:
     var unported: i32
 
 struct IteratorConcatData:
@@ -68,9 +56,6 @@ struct JSONParseRecordObject:
 struct JSONStringifyContext:
     var unported: i32
 
-struct LabelSlot:
-    var unported: i32
-
 struct MapIteratorData:
     var unported: i32
 
@@ -78,9 +63,6 @@ struct ObjectList:
     var unported: i32
 
 struct ParsePos:
-    var unported: i32
-
-struct ParseState:
     var unported: i32
 
 struct PrintValueOptions:
@@ -104,9 +86,6 @@ struct PromiseReactionData:
 struct RegExpStringIteratorData:
     var unported: i32
 
-struct RelocEntry:
-    var unported: i32
-
 struct ResolveState:
     var unported: i32
 
@@ -116,20 +95,8 @@ struct StackSizeState:
 struct SumPreciseState:
     var unported: i32
 
-struct Token:
-    var unported: i32
-
 struct ValueBuffer:
     var unported: i32
-
-struct VarDef:
-    var unported: i32
-
-enum ParseExportKind as i32:
-    unported = 0
-
-enum ParseFunctionKind as i32:
-    unported = 0
 
 enum PutLValueKind as i32:
     unported = 0
@@ -145,3 +112,9 @@ enum VarDefKind as i32:
 
 type PrintValueWrite = func() -> unit
 
+# Constants of unported regions that ported code already uses. The region that declares
+# each one deletes it here.
+
+# quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
+let global_var_offset: i32 = 0x40000000
+let argument_var_offset: i32 = 0x20000000

@@ -1,0 +1,539 @@
+#==============================================================================================
+#
+#   compiler_types - The parser's token kinds and the compiler's data structures
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "JS parser" declarations (lines 21783-22188): the token kinds,
+#       the break/continue stack entries, global variables, label and jump slots, the
+#       line/column cache, the function and export kinds, variable scopes and
+#       definitions, JSFunctionDef, JSToken and JSParseState. JSOpCode and opcode_info
+#       are generated in opcodes_table.lucb.
+#
+#       A token's `val` is a TokenType. QuickJS stores either a TOK_* value (all
+#       negative) or the character itself for one-character tokens; the characters the
+#       parser tests are named cases here ('(' is `TokenType.lparen`), so a `match` can
+#       mix both. Any other character is `(TokenType)(i32)c`, which is not checked.
+#
+#==============================================================================================
+
+# mark: Tokens ==================================================================================
+
+## The kind of a token (the TOK_* enum): a TOK_* value, or a character for the
+## one-character tokens.
+enum TokenType as i32:
+    number = -128
+    string = -127
+    template = -126
+    ident = -125
+    regexp = -124
+    # warning: order matters (see js_parse_assign_expr)
+    mul_assign = -123
+    div_assign = -122
+    mod_assign = -121
+    plus_assign = -120
+    minus_assign = -119
+    shl_assign = -118
+    sar_assign = -117
+    shr_assign = -116
+    and_assign = -115
+    xor_assign = -114
+    or_assign = -113
+    pow_assign = -112
+    land_assign = -111
+    lor_assign = -110
+    double_question_mark_assign = -109
+    dec = -108
+    inc = -107
+    shl = -106
+    sar = -105
+    shr = -104
+    lt = -103
+    lte = -102
+    gt = -101
+    gte = -100
+    eq = -99
+    strict_eq = -98
+    neq = -97
+    strict_neq = -96
+    land = -95
+    lor = -94
+    pow = -93
+    arrow = -92
+    ellipsis = -91
+    double_question_mark = -90
+    question_mark_dot = -89
+    error_ = -88
+    private_name = -87
+    eof = -86
+    # keywords: WARNING: same order as atoms
+    ## Must be first.
+    null = -85
+    false_ = -84
+    true_ = -83
+    if_ = -82
+    else_ = -81
+    return_ = -80
+    var_ = -79
+    this = -78
+    delete = -77
+    void_ = -76
+    typeof = -75
+    new_ = -74
+    in_ = -73
+    instanceof = -72
+    do = -71
+    while_ = -70
+    for_ = -69
+    break_ = -68
+    continue_ = -67
+    switch = -66
+    case = -65
+    default = -64
+    throw = -63
+    try_ = -62
+    catch_ = -61
+    finally = -60
+    function = -59
+    debugger = -58
+    with_ = -57
+    # FutureReservedWord
+    class_ = -56
+    const_ = -55
+    enum_ = -54
+    export_ = -53
+    extends = -52
+    import_ = -51
+    super = -50
+    # FutureReservedWords when parsing strict mode code
+    implements = -49
+    interface_ = -48
+    let_ = -47
+    package = -46
+    private = -45
+    protected = -44
+    public = -43
+    static_ = -42
+    yield = -41
+    ## Must be last.
+    await = -40
+    ## Only used for js_parse_skip_parens_token().
+    of = -39
+    # The one-character tokens, as their character code.
+    ## '\n': answered by simple_next_token() for a line terminator.
+    newline = 10
+    ## ' ': the token before the first one (js_parse_init).
+    space = 32
+    ## '!'
+    bang = 33
+    ## '%'
+    percent = 37
+    ## '&'
+    ampersand = 38
+    ## '('
+    lparen = 40
+    ## ')'
+    rparen = 41
+    ## '*'
+    star = 42
+    ## '+'
+    plus = 43
+    ## ','
+    comma = 44
+    ## '-'
+    minus = 45
+    ## '.'
+    dot = 46
+    ## '/'
+    slash = 47
+    ## ':'
+    colon = 58
+    ## ';'
+    semicolon = 59
+    ## '<' (TOK_LT is `lt`)
+    less = 60
+    ## '='
+    assign = 61
+    ## '>' (TOK_GT is `gt`)
+    greater = 62
+    ## '?'
+    question = 63
+    ## '@'
+    at = 64
+    ## '['
+    lbracket = 91
+    ## ']'
+    rbracket = 93
+    ## '^'
+    caret = 94
+    ## '`'
+    backquote = 96
+    ## '{'
+    lbrace = 123
+    ## '|'
+    pipe = 124
+    ## '}'
+    rbrace = 125
+    ## '~'
+    tilde = 126
+
+let tok_first_keyword: TokenType = TokenType.null
+let tok_last_keyword: TokenType = TokenType.await
+
+# unicode code points
+let cp_nbsp: u32 = 0x00a0
+let cp_bom: u32 = 0xfeff
+
+let cp_ls: u32 = 0x2028
+let cp_ps: u32 = 0x2029
+
+# mark: Blocks, globals, labels and line numbers ================================================
+
+## An entry of the break/continue label stack (BlockEnv).
+struct BlockEnv:
+    var prev: BlockEnv*?
+    ## atom_null if none.
+    var label_name: Atom
+    ## -1 if none.
+    var label_break: i32
+    ## -1 if none.
+    var label_cont: i32
+    ## Number of stack elements to drop.
+    var drop_count: i32
+    ## -1 if none.
+    var label_finally: i32
+    var scope_level: i32
+    var has_iterator: bool
+    ## i.e. not a loop statement.
+    var is_regular_stmt: bool
+
+## A variable or function the global or eval code defines (JSGlobalVar).
+struct GlobalVar:
+    ## If >= 0, index in the constant pool for hoisted function defintion.
+    var cpool_idx: i32
+    ## Force initialization to undefined.
+    var force_init: bool
+    ## Global let/const definition.
+    var is_lexical: bool
+    ## Const definition.
+    var is_const: bool
+    ## Scope of definition.
+    var scope_level: i32
+    ## Variable name.
+    var var_name: Atom
+
+## A place in the bytecode that refers to a label (RelocEntry).
+struct RelocEntry:
+    var next: RelocEntry*?
+    ## Address to patch.
+    var addr: u32
+    ## Address size: 1, 2 or 4 bytes.
+    var size: i32
+
+## A jump the last pass may shorten (JumpSlot).
+struct JumpSlot:
+    var op: i32
+    var size: i32
+    var pos: i32
+    var label: i32
+
+## A label of the function being compiled (LabelSlot).
+struct LabelSlot:
+    var ref_count: i32
+    ## Phase 1 address, -1 means not resolved yet.
+    var pos: i32
+    ## Phase 2 address, -1 means not resolved yet.
+    var pos2: i32
+    ## Phase 3 address, -1 means not resolved yet.
+    var addr: i32
+    var first_reloc: RelocEntry*?
+
+## A bytecode position and the source position it came from (LineNumberSlot).
+struct LineNumberSlot:
+    var pc: u32
+    var source_pos: u32
+
+## The last source position whose line and column were computed (GetLineColCache).
+struct GetLineColCache:
+    ## Last source position.
+    var ptr: const u8*
+    var line_num: i32
+    var col_num: i32
+    var buf_start: const u8*
+
+# mark: Function and export kinds ===============================================================
+
+## What a function being parsed is (JSParseFunctionEnum).
+enum ParseFunctionKind as i32:
+    statement = 0
+    var_ = 1
+    expr = 2
+    arrow = 3
+    getter = 4
+    setter = 5
+    method = 6
+    class_static_init = 7
+    class_constructor = 8
+    derived_class_constructor = 9
+
+## How a declaration is exported (JSParseExportEnum).
+enum ParseExportKind as i32:
+    none_ = 0
+    named = 1
+    default = 2
+
+# mark: Variables and scopes ====================================================================
+
+## A lexical scope of a function (JSVarScope).
+struct VarScope:
+    ## Index into fd.scopes of the enclosing scope.
+    var parent: i32
+    ## Index into fd.vars of the last variable in this scope.
+    var first: i32
+
+## A variable or argument of the function being compiled (JSVarDef).
+struct VarDef:
+    var var_name: Atom
+    ## Index into fd.scopes of this variable lexical scope.
+    var scope_level: i32
+    # - if scope_level = 0: scope in which the variable is defined
+    # - if scope_level != 0: index into fd.vars of the next variable in the same or
+    #   enclosing lexical scope
+    var scope_next: i32
+    var is_const: bool
+    var is_lexical: bool
+    ## XXX: could remove and use a var_ref_idx value.
+    var is_captured: bool
+    ## Only used during private class field parsing.
+    var is_static_private: bool
+    ## See VarKind.
+    var var_kind: VarKind
+    ## If is_captured, the index of the corresponding VarRef on stack.
+    var var_ref_idx: u16
+    # function pool index for lexical variables with var_kind =
+    # VarKind.function_decl/new_function_decl or scope level of the definition of the
+    # 'var' variables (they have scope_level = 0)
+    var func_pool_idx: i32
+
+# mark: The function being compiled =============================================================
+
+## A function being compiled (JSFunctionDef). It is allocated zeroed by
+## js_new_function_def; `scopes` points at `def_scope_array` until it grows.
+struct FunctionDef:
+    var ctx: Context*
+    var parent: FunctionDef*?
+    ## Index in the constant pool of the parent or -1 if none.
+    var parent_cpool_idx: i32
+    ## Scope level in parent at point of definition.
+    var parent_scope_level: i32
+    ## List of FunctionDef.link.
+    var child_list: cutils.ListHead
+    var link: cutils.ListHead
+
+    ## True if eval code.
+    var is_eval: bool
+    ## Only valid if is_eval.
+    var eval_type: i32
+    ## True if variables are not defined locally: eval global, eval module or non
+    ## strict eval.
+    var is_global_var: bool
+    ## True if function expression.
+    var is_func_expr: bool
+    ## True if the home object is available.
+    var has_home_object: bool
+    ## True if a prototype field is necessary.
+    var has_prototype: bool
+    var has_simple_parameter_list: bool
+    ## If true, an argument scope is created.
+    var has_parameter_expressions: bool
+    ## To reject directive in special cases.
+    var has_use_strict: bool
+    ## True if the function contains a call to eval().
+    var has_eval_call: bool
+    ## True if the 'arguments' binding is available in the function.
+    var has_arguments_binding: bool
+    ## True if the 'this' and new.target binding are available in the function.
+    var has_this_binding: bool
+    ## True if the 'new.target' does not throw a syntax error.
+    var new_target_allowed: bool
+    ## True if super() is allowed.
+    var super_call_allowed: bool
+    ## True if super. or super[] is allowed.
+    var super_allowed: bool
+    ## True if the 'arguments' identifier is allowed.
+    var arguments_allowed: bool
+    var is_derived_class_constructor: bool
+    var in_function_body: bool
+    ## The js_func_* bits (JSFunctionKindEnum).
+    var func_kind: u8
+    var func_type: ParseFunctionKind
+    ## Bitmap of js_mode_*.
+    var js_mode: u8
+    ## atom_null if no name.
+    var func_name: Atom
+
+    var vars: VarDef*?
+    ## Allocated size for vars[].
+    var var_size: i32
+    var var_count: i32
+    var args: VarDef*?
+    ## Allocated size for args[].
+    var arg_size: i32
+    ## Number of arguments.
+    var arg_count: i32
+    var defined_arg_count: i32
+    ## Number of local/arg variable references.
+    var var_ref_count: i32
+    ## -1 if none.
+    var var_object_idx: i32
+    ## -1 if none (var object for the argument scope).
+    var arg_var_object_idx: i32
+    ## -1 if none.
+    var arguments_var_idx: i32
+    ## Argument variable definition in argument scope, -1 if none.
+    var arguments_arg_idx: i32
+    ## Variable containing the current function (-1 if none, only used if is_func_expr
+    ## is true).
+    var func_var_idx: i32
+    ## Variable containing the return value of the eval, -1 if none.
+    var eval_ret_idx: i32
+    ## Variable containg the 'this' value, -1 if none.
+    var this_var_idx: i32
+    ## Variable containg the 'new.target' value, -1 if none.
+    var new_target_var_idx: i32
+    ## Variable containg the 'this.active_func' value, -1 if none.
+    var this_active_func_var_idx: i32
+    var home_object_var_idx: i32
+    var need_home_object: bool
+
+    ## Index into fd.scopes if the current lexical scope.
+    var scope_level: i32
+    ## Index into fd.vars of first lexically scoped variable.
+    var scope_first: i32
+    ## Allocated size of fd.scopes array.
+    var scope_size: i32
+    ## Number of entries used in the fd.scopes array.
+    var scope_count: i32
+    var scopes: VarScope*
+    var def_scope_array: VarScope[4]
+    ## Scope of the body of the function or eval.
+    var body_scope: i32
+
+    var global_var_count: i32
+    var global_var_size: i32
+    var global_vars: GlobalVar*?
+
+    var byte_code: cutils.DynBuf
+    ## -1 if no last opcode.
+    var last_opcode_pos: i32
+    var last_opcode_source_ptr: const u8*?
+    ## True if short opcodes are used in byte_code.
+    var use_short_opcodes: bool
+
+    var label_slots: LabelSlot*?
+    ## Allocated size for label_slots[].
+    var label_size: i32
+    var label_count: i32
+    ## Break/continue label stack.
+    var top_break: BlockEnv*?
+
+    # constant pool (strings, functions, numbers)
+    var cpool: Value*?
+    var cpool_count: i32
+    var cpool_size: i32
+
+    # list of variables in the closure
+    var closure_var_count: i32
+    var closure_var_size: i32
+    var closure_var: ClosureVar*?
+
+    var jump_slots: JumpSlot*?
+    var jump_size: i32
+    var jump_count: i32
+
+    var line_number_slots: LineNumberSlot*?
+    var line_number_size: i32
+    var line_number_count: i32
+    var line_number_last: i32
+    var line_number_last_pc: i32
+
+    # pc2line table
+    ## Strip all debug info (implies strip_source = true).
+    var strip_debug: bool
+    ## Strip only source code.
+    var strip_source: bool
+    var filename: Atom
+    ## Pointer in the eval() source.
+    var source_pos: u32
+    ## XXX: could remove to save memory.
+    var get_line_col_cache: GetLineColCache*
+    var pc2line: cutils.DynBuf
+
+    ## Raw source, utf-8 encoded.
+    var source: u8*?
+    var source_len: i32
+
+    ## Not none when parsing a module.
+    var module: ModuleDef*?
+    ## True if await is used (used in module eval).
+    var has_await: bool
+
+# mark: Tokens and the parser state =============================================================
+
+## The payload of a string or template token.
+struct TokenStr:
+    var str: Value
+    var sep: i32
+
+## The payload of a number token.
+struct TokenNum:
+    var val: Value
+
+## The payload of an identifier, keyword or private name token.
+struct TokenIdent:
+    var atom: Atom
+    var has_escape: bool
+    var is_reserved: bool
+
+## The payload of a regular expression token.
+struct TokenRegExp:
+    var body: Value
+    var flags: Value
+
+## A token's payload, by its kind.
+union TokenUnion:
+    str_: TokenStr
+    num: TokenNum
+    ident: TokenIdent
+    regexp: TokenRegExp
+
+## A token of the source (JSToken).
+struct Token:
+    var val: TokenType
+    ## Position in the source.
+    var ptr: const u8*
+    var u: TokenUnion
+
+## The parser's state (JSParseState).
+struct ParseState:
+    var ctx: Context*
+    var filename: const u8*
+    var token: Token
+    ## True if got line feed before the current token.
+    var got_lf: bool
+    var last_ptr: const u8*
+    var buf_start: const u8*
+    var buf_ptr: const u8*
+    var buf_end: const u8*
+
+    ## Current function code; none outside any function.
+    var cur_func: FunctionDef*?
+    ## Parsing a module.
+    var is_module: bool
+    var allow_html_comments: bool
+    ## JSON parsing: true if accepting JSON superset.
+    var ext_json: bool
+    var get_line_col_cache: GetLineColCache
+
+    ## The current function, which exists while parsing JavaScript (not JSON).
+    func fd() -> FunctionDef*:
+        return self.cur_func else trap("parser: no current function")

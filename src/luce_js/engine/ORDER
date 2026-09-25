@@ -7,6 +7,7 @@ types_object.lucb
 atoms_table.lucb
 opcodes_table.lucb
 stub_types.lucb
+compiler_types.lucb
 atoms.lucb
 atoms_convert.lucb
 malloc.lucb
@@ -50,7 +51,10 @@ stub_r12_conversions.lucb
 stub_r13_operators.lucb
 stub_r14_interpreter.lucb
 stub_r15_async_generators.lucb
-stub_r16_tokenizer.lucb
+tokenizer.lucb
+tokenizer_next.lucb
+tokenizer_json.lucb
+emitter.lucb
 stub_r17_parser.lucb
 stub_r18_modules.lucb
 stub_r19_resolve.lucb
@@ -74,3 +78,4 @@ tests_shapes_objects.lucb
 tests_r08.lucb
 tests_r10.lucb
 tests_r09.lucb
+tests_tokenizer.lucb
