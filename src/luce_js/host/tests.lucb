@@ -5,7 +5,8 @@
 #   DESCRIPTION:
 #       Checks the pieces a JavaScript test cannot isolate: C formats in std.sprintf, the
 #       target layouts of struct stat and struct dirent, file loading, the timer loop, the
-#       wait status decoding, os.exec's options and the signal and read handlers.
+#       wait status decoding, os.exec's options, the signal and read handlers, and the
+#       registered native modules.
 #       The upstream JavaScript tests (tests/run.py) cover the rest.
 #
 #==============================================================================================
@@ -174,4 +175,52 @@ test "signal and read handlers run from the loop":
     js_std_loop(ctx)
     let text = eval_to_text(ctx, "globalThis.result = globalThis.log.join();", buf)
     assert(text == "usr2,read 2")
+    free_test_context(ctx)
+
+# mark: Native modules ==========================================================================
+
+let test_native_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "answer", def_type = js.def_prop_int32, i32_value = 42),
+]
+
+func test_native_init(ctx: Context*, m: ModuleDef*) -> !:
+    try js.js_set_module_export_list(ctx, m, test_native_funcs)
+
+func test_native_module(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    let m = try js.js_new_c_module(ctx, module_name, test_native_init)
+    try js.js_add_module_export_list(ctx, m, test_native_funcs)
+    return m
+
+func test_native_broken(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    try js.js_throw_type_error(ctx, "not this one")
+
+test "registered native modules load by their .so file name or their bare name":
+    assert(js_register_native_module("answer", test_native_module))
+    assert(js_register_native_module("broken", test_native_broken))
+    let ctx = test_context()
+    js.js_set_module_loader_func2(js.js_get_runtime(ctx), none, js_module_loader, js_module_check_attributes, none)
+    var buf: u8[256]
+    let text = eval_to_text(ctx, """
+        import { answer } from "./some/dir/answer.so";
+        import * as bare from "answer";
+        let r = [answer, bare.answer];
+        for (const name of ["./broken.so", "./missing.so", "broken"]) {
+            try { await import(name); r.push("loaded"); } catch (e) { r.push(e.name + ": " + e.message); }
+        }
+        globalThis.result = r.join("|");
+        """, buf)
+    let parts = [
+        "42", "42",
+        "ReferenceError: could not load module filename 'broken.so': initialization error",
+        "ReferenceError: could not load module filename 'missing.so' as shared library",
+        "ReferenceError: could not load module filename 'broken': initialization error",
+    ]
+    var pos: usize = 0
+    for (i, part) in parts.indexed():
+        if i != 0:
+            assert(text.bytes[pos] == '|')
+            pos += 1
+        assert((str)text.bytes[pos..<pos + part.length] == part)
+        pos += part.length
+    assert(pos == text.length)
     free_test_context(ctx)

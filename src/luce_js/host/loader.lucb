@@ -7,7 +7,8 @@
 #       std.loadScript/std.loadFile builtins, import.meta (js_module_set_import_meta), the
 #       JSON modules, the import attribute checks and the default module loader. Module
 #       names are normalized by the engine's default normalizer (the host passes no
-#       normalize function, as qjs does). Shared-library (.so) modules are not supported.
+#       normalize function, as qjs does). Shared-library (.so) modules are the native
+#       modules the embedder registers (`native_modules`).
 #
 #==============================================================================================
 
@@ -166,7 +167,10 @@ pub func js_module_test_json(ctx: Context*, attributes: Value) -> i32:
 ## ends with .json or its attributes say so, else JavaScript (js_module_loader).
 pub func js_module_loader(ctx: Context*, module_name: const u8*, opaque: void*?, attributes: Value) -> ModuleDef*!:
     if has_suffix(module_name, ".so"):
-        try js.js_throw_reference_error(ctx, f"could not load module filename '{cutils.c_str_view(module_name)}' as shared library")
+        return try js_module_loader_so(ctx, module_name)
+    # a registered native module imported by its bare name (see native_modules)
+    if let init = find_native_module_by_name(module_name):
+        return try init_native_module(ctx, module_name, init)
     var buf_len: usize = 0
     let buf = js_load_file(ctx, &buf_len, module_name) else try js.js_throw_reference_error(ctx, f"could not load module filename '{cutils.c_str_view(module_name)}'")
     let res = js_module_test_json(ctx, attributes)

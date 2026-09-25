@@ -7,7 +7,9 @@
 #       a script or a module, `-e EXPR` evaluates an expression. Options: -m/--module,
 #       --script, --strict, --std (make 'std' and 'os' global), -I/--include FILE,
 #       --stack-size N, --no-unhandled-rejection, -q/--quit, -h/--help. The REPL, memory
-#       tracing and dumping, --memory-limit and stripping are not ported.
+#       tracing and dumping, --memory-limit and stripping are not ported. Shared-library
+#       modules are the native modules ljs links in and registers: "bjson" (tests/bjson.c)
+#       and the examples "fib" and "point", imported as "./bjson.so" or "bjson" and so on.
 #
 #       Build: luce-base build tests/ljs.lucb -o build/ljs
 #
@@ -16,6 +18,9 @@
 import c
 import js
 import host
+import bjson
+import fib
+import point
 
 # mark: Helpers =================================================================================
 
@@ -197,6 +202,11 @@ pub func main(arguments: str[]) -> i32:
             report(arg)
             report("'\n")
             help()
+
+    # the native modules qjs would load as shared libraries
+    discard(host.js_register_native_module("bjson", bjson.js_init_module_bjson))
+    discard(host.js_register_native_module("fib", fib.js_init_module_fib))
+    discard(host.js_register_native_module("point", point.js_init_module))
 
     let rt = js.js_new_runtime() else fatal("ljs: cannot allocate JS runtime\n")
     if stack_size != 0:

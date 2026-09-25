@@ -1,0 +1,83 @@
+#==============================================================================================
+#
+#   native_modules - Native modules an embedder links in, in place of shared libraries
+#
+#   DESCRIPTION:
+#       Replaces js_module_loader_so of quickjs-libc.c (lines 485-544). QuickJS loads a
+#       module whose name ends with ".so" with dlopen() and calls the library's
+#       `js_init_module(ctx, module_name)`. luce-base has no dlopen-style modules, so an
+#       embedder links the native module into its program and registers its init function
+#       under a name with js_register_native_module; the default module loader then
+#       creates the module when a program imports it:
+#
+#         - `import ... from "./bjson.so"` (any directory): the file name without ".so",
+#           "bjson", names the registered module, as the shared library would have;
+#         - `import ... from "bjson"`: the bare registered name, as a module linked
+#           statically (`qjsc -M bjson`) is imported.
+#
+#       The init function is called once per context that imports the module (the module
+#       is then cached by the engine), with the module's normalized name.
+#
+#==============================================================================================
+
+## Create a native module named `module_name` in `ctx`: a C module's `js_init_module`
+## (JSInitModuleFunc). It usually calls js_new_c_module and declares the exports.
+pub type InitModuleFunc = func(Context*, const u8*) -> ModuleDef*!
+
+## A registered native module.
+struct NativeModule:
+    var name: str
+    var init: InitModuleFunc?
+
+## The most native modules a program registers.
+let native_modules_max: usize = 64
+var native_modules: NativeModule[64]
+var native_module_count: usize
+
+## Register the native module `name` (a name without "/" and without ".so", such as
+## "bjson") created by `init`. Register the modules before loading any script; the
+## registry is process-wide, like the shared libraries it replaces. Answers false when the
+## registry is full; registering a name again replaces its init function.
+pub func js_register_native_module(name: str, init: InitModuleFunc) -> bool:
+    for i in 0..<native_module_count:
+        if native_modules[i].name == name:
+            native_modules[i].init = init
+            return true
+    if native_module_count >= native_modules_max:
+        return false
+    native_modules[native_module_count] = NativeModule(name = name, init = init)
+    native_module_count += 1
+    return true
+
+## The init function of the registered module whose name is the `len` bytes at `name`.
+func find_native_module(name: const u8*, len: usize) -> InitModuleFunc?:
+    let text = (str)u8[]((u8*)name, len)
+    for i in 0..<native_module_count:
+        if native_modules[i].name == text:
+            return native_modules[i].init
+    return none
+
+## The init function of the module `module_name` names when it is a registered bare name
+## (no "/", no ".so").
+func find_native_module_by_name(module_name: const u8*) -> InitModuleFunc?:
+    if strchr(module_name, (i32)'/') != none:
+        return none
+    return find_native_module(module_name, cutils.strlen(module_name))
+
+## Create the module `module_name` with `init`; a failure of the init function becomes the
+## ReferenceError QuickJS throws when js_init_module answers NULL.
+func init_native_module(ctx: Context*, module_name: const u8*, init: InitModuleFunc) -> ModuleDef*!:
+    return init(ctx, module_name) catch:
+        js.js_free_value(ctx, js.js_get_exception(ctx))
+        try js.js_throw_reference_error(ctx, f"could not load module filename '{cutils.c_str_view(module_name)}': initialization error")
+
+## Load the ".so" module `module_name` from the registry: the file name without its
+## directory and without ".so" names the registered module (js_module_loader_so).
+func js_module_loader_so(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    let len = cutils.strlen(module_name)
+    var start: usize = 0
+    for i in 0..<len:
+        if module_name[i] == '/':
+            start = i + 1
+    let init = find_native_module(module_name + start, len - 3 - start) else try js.js_throw_reference_error(ctx, f"could not load module filename '{cutils.c_str_view(module_name)}' as shared library")
+    return try init_native_module(ctx, module_name, init)

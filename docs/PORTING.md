@@ -22,6 +22,8 @@ reference is `../luce-base/docs/LIBRARY.md`.
 | `quickjs-libc.c` (POSIX, without workers) | `luce_js.host` (exported as `host`) | `src/luce_js/host/` |
 | `qjs.c` (without the REPL) | the `ljs` program | `tests/ljs.lucb` |
 | `run-test262.c` | the `run-test262` program | `tests/run_test262/` |
+| `tests/bjson.c` | the `bjson` native module of `ljs` | `tests/bjson.lucb` |
+| `examples/fib.c`, `examples/point.c` (+ the example `.js` files) | the `fib` and `point` native modules | `examples/` |
 
 Every module is a directory whose `ORDER` file lists its fragments (language §16.1). The
 fragments of one module share one scope, exactly like the one C file they came from, so a
