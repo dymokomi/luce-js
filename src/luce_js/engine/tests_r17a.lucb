@@ -1,0 +1,268 @@
+#==============================================================================================
+#
+#   tests_r17a - Unit tests of the parser's first half that need no runtime
+#
+#   DESCRIPTION:
+#       The look-ahead helpers, the with-scope and private field lookups on FunctionDefs
+#       laid out by hand, need_var_reference, the assignment targets (get_lvalue and
+#       put_lvalue on reads emitted into a bare bytecode buffer) and the renaming of
+#       anonymous functions and classes (set_object_name*). Only constant atoms are used,
+#       so nothing reads the (absent) context. test_function_def is in tests_tokenizer.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# A zeroed ParseState whose current function is `fd`, which gets an empty bytecode
+# buffer; the caller frees both with free_test_parse_state.
+func test_parse_state(fd: FunctionDef*) -> ParseState*:
+    cutils.dbuf_init(&fd.byte_code)
+    fd.last_opcode_pos = -1
+    let raw = cutils.malloc(sizeof(ParseState)) else trap("out of memory")
+    discard(cutils.memset(raw, 0, sizeof(ParseState)))
+    let s = (ParseState*)raw
+    s.cur_func = fd
+    return s
+
+func free_test_parse_state(s: ParseState*):
+    cutils.dbuf_free(&s.fd().byte_code)
+    cutils.c_free(s)
+
+# The bytecode of `fd` so far.
+func test_bytecode(fd: FunctionDef*) -> u8*:
+    return fd.byte_code.buf else trap("no bytecode")
+
+# mark: Look-ahead ==============================================================================
+
+test "has_lf_in_range looks between two positions in either order":
+    let text = "ab\ncd"
+    let p = text.bytes.data
+    assert(has_lf_in_range(p, p + 5))
+    assert(has_lf_in_range(p + 5, p))
+    assert(not has_lf_in_range(p, p + 2))
+    assert(not has_lf_in_range(p + 3, p + 5))
+    assert(not has_lf_in_range(p + 2, p + 2))
+
+test "regexps are allowed where an operand starts":
+    assert(not is_regexp_allowed(TokenType.number))
+    assert(not is_regexp_allowed(TokenType.ident))
+    assert(not is_regexp_allowed(TokenType.rparen))
+    assert(not is_regexp_allowed(TokenType.rbrace))
+    assert(not is_regexp_allowed(TokenType.this))
+    assert(is_regexp_allowed(TokenType.lparen))
+    assert(is_regexp_allowed(TokenType.assign))
+    assert(is_regexp_allowed(TokenType.return_))
+    assert(is_regexp_allowed(TokenType.of))
+    assert(is_regexp_allowed((TokenType)0))
+
+test "keywords are property names":
+    assert(token_is_ident(TokenType.ident))
+    assert(token_is_ident(TokenType.null))
+    assert(token_is_ident(TokenType.await))
+    assert(not token_is_ident(TokenType.of))
+    assert(not token_is_ident(TokenType.string))
+    assert(not token_is_ident(TokenType.lbracket))
+
+# mark: Scopes ==================================================================================
+
+test "has_with_scope walks the enclosing functions":
+    # the parent has a 'with' object variable in its scope 1; the child is defined there
+    var parent_vars: VarDef[1]
+    parent_vars[0] = VarDef(var_name = atom__with_, scope_level = 1, scope_next = -1)
+    let parent = test_function_def(&parent_vars[0], 1, 2)
+    defer cutils.c_free(parent)
+    fd_scope(parent, 0).parent = -1
+    fd_scope(parent, 0).first = -1
+    fd_scope(parent, 1).parent = 0
+    fd_scope(parent, 1).first = 0
+    let child = test_function_def(none, 0, 1)
+    defer cutils.c_free(child)
+    fd_scope(child, 0).parent = -1
+    fd_scope(child, 0).first = -1
+    child.parent = parent
+
+    child.parent_scope_level = 1
+    assert(has_with_scope(child, 0))
+    assert(has_with_scope(parent, 1))
+    assert(not has_with_scope(parent, 0))
+    child.parent_scope_level = 0
+    assert(not has_with_scope(child, 0))
+    # no with in strict mode
+    child.parent_scope_level = 1
+    parent.js_mode = (u8)js_mode_strict
+    assert(not has_with_scope(child, 0))
+
+test "find_private_class_field looks in one scope":
+    var vars: VarDef[3]
+    vars[0] = VarDef(var_name = atom_length, scope_level = 1, scope_next = -1,
+                     var_kind = VarKind.private_field)
+    vars[1] = VarDef(var_name = atom_name, scope_level = 2, scope_next = 0,
+                     var_kind = VarKind.private_method)
+    vars[2] = VarDef(var_name = atom_value, scope_level = 2, scope_next = 1,
+                     var_kind = VarKind.private_getter)
+    let fd = test_function_def(&vars[0], 3, 3)
+    defer cutils.c_free(fd)
+    fd_scope(fd, 1).first = 0
+    fd_scope(fd, 2).first = 2
+    assert(find_private_class_field(fd.ctx, fd, atom_value, 2) == 2)
+    assert(find_private_class_field(fd.ctx, fd, atom_name, 2) == 1)
+    # 'length' is in the enclosing scope 1
+    assert(find_private_class_field(fd.ctx, fd, atom_length, 2) == -1)
+    assert(find_private_class_field(fd.ctx, fd, atom_length, 1) == 0)
+    fd_scope(fd, 0).first = -1
+    assert(find_private_class_field(fd.ctx, fd, atom_length, 0) == -1)
+
+test "var declarations need a reference except in strict local code":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    let s = test_parse_state(fd)
+    defer free_test_parse_state(s)
+    assert(not need_var_reference(s, TokenType.let_))
+    assert(not need_var_reference(s, TokenType.const_))
+    assert(need_var_reference(s, TokenType.var_))
+    fd.js_mode = (u8)js_mode_strict
+    assert(not need_var_reference(s, TokenType.var_))
+    fd.is_global_var = true
+    assert(need_var_reference(s, TokenType.var_))
+    s.is_module = true
+    assert(not need_var_reference(s, TokenType.var_))
+
+# mark: Assignment targets ======================================================================
+
+test "a field read becomes a field store":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    let s = test_parse_state(fd)
+    defer free_test_parse_state(s)
+    emit_op(s, (u8)Op.push_this)
+    emit_op(s, (u8)Op.get_field)
+    emit_atom(s, atom_length)
+    var opcode: i32 = 0
+    var scope: i32 = -1
+    var name = atom_null
+    var label: i32 = 0
+    var depth: i32 = 0
+    try get_lvalue(s, &opcode, &scope, &name, &label, &depth, false, TokenType.assign)
+    assert(opcode == (i32)Op.get_field and name == atom_length)
+    assert(scope == 0 and label == -1 and depth == 1)
+    # the read is removed
+    assert(fd.byte_code.size == 1 and fd.last_opcode_pos == -1)
+
+    emit_op(s, (u8)Op.push_1)
+    put_lvalue(s, opcode, scope, name, label, PutLValueKind.keep_top, false)
+    let buf = test_bytecode(fd)
+    assert(fd.byte_code.size == 8)
+    assert(buf[2] == (u8)Op.insert2)
+    assert(buf[3] == (u8)Op.put_field)
+    assert(cutils.get_u32(buf + 4) == atom_length)
+
+test "an element read kept on the stack becomes an element store":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    let s = test_parse_state(fd)
+    defer free_test_parse_state(s)
+    emit_op(s, (u8)Op.get_array_el)
+    var opcode: i32 = 0
+    var scope: i32 = 0
+    var name = atom_null
+    var label: i32 = 0
+    try get_lvalue(s, &opcode, &scope, &name, &label, none, true, TokenType.inc)
+    assert(opcode == (i32)Op.get_array_el and name == atom_null)
+    assert(fd.byte_code.size == 1)
+    assert(get_prev_opcode(fd) == (u8)Op.get_array_el3)
+    put_lvalue(s, opcode, scope, name, label, PutLValueKind.nokeep, false)
+    let buf = test_bytecode(fd)
+    assert(fd.byte_code.size == 3)
+    assert(buf[1] == (u8)Op.nop and buf[2] == (u8)Op.put_array_el)
+
+test "a variable read becomes a variable store or initialization":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    fd_scope(fd, 0).parent = -1
+    fd_scope(fd, 0).first = -1
+    let s = test_parse_state(fd)
+    defer free_test_parse_state(s)
+    emit_op(s, (u8)TempOp.scope_get_var)
+    emit_atom(s, atom_value)
+    emit_u16(s, 0)
+    var opcode: i32 = 0
+    var scope: i32 = -1
+    var name = atom_null
+    var label: i32 = 0
+    var depth: i32 = -1
+    try get_lvalue(s, &opcode, &scope, &name, &label, &depth, true, TokenType.assign)
+    assert(opcode == (i32)TempOp.scope_get_var and name == atom_value)
+    assert(scope == 0 and depth == 0 and label == -1)
+    # the read is emitted again
+    assert(fd.byte_code.size == 7)
+    assert(get_prev_opcode(fd) == (u8)TempOp.scope_get_var)
+    put_lvalue(s, opcode, scope, name, label, PutLValueKind.keep_top, true)
+    let buf = test_bytecode(fd)
+    assert(fd.byte_code.size == 15)
+    assert(buf[7] == (u8)Op.dup)
+    assert(buf[8] == (u8)TempOp.scope_put_var_init)
+    assert(cutils.get_u32(buf + 9) == atom_value)
+    assert(cutils.get_u16(buf + 13) == 0)
+
+test "super property stores keep the stack order":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    let s = test_parse_state(fd)
+    defer free_test_parse_state(s)
+    put_lvalue(s, (i32)Op.get_super_value, 0, atom_null, -1, PutLValueKind.keep_second, false)
+    put_lvalue(s, (i32)Op.get_super_value, 0, atom_null, -1, PutLValueKind.nokeep_bottom, false)
+    let buf = test_bytecode(fd)
+    assert(fd.byte_code.size == 4)
+    assert(buf[0] == (u8)Op.perm5 and buf[1] == (u8)Op.put_super_value)
+    assert(buf[2] == (u8)Op.rot4l and buf[3] == (u8)Op.put_super_value)
+
+# mark: Function names ==========================================================================
+
+test "set_object_name renames an anonymous function":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    let s = test_parse_state(fd)
+    defer free_test_parse_state(s)
+    emit_op(s, (u8)Op.fclosure)
+    emit_u32(s, 0)
+    emit_op(s, (u8)Op.set_name)
+    emit_atom(s, atom_empty_string)
+    set_object_name(s, atom_length)
+    let buf = test_bytecode(fd)
+    assert(fd.byte_code.size == 10)
+    assert(buf[5] == (u8)Op.set_name and cutils.get_u32(buf + 6) == atom_length)
+    # a second name does not apply: the last opcode is forgotten
+    emit_op(s, (u8)Op.fclosure)
+    emit_u32(s, 0)
+    set_object_name_computed(s)
+    assert(fd.byte_code.size == 15)
+
+    emit_op(s, (u8)Op.set_name)
+    emit_atom(s, atom_empty_string)
+    set_object_name_computed(s)
+    let buf2 = test_bytecode(fd)
+    assert(fd.byte_code.size == 16)
+    assert(buf2[15] == (u8)Op.set_name_computed)
+
+test "set_object_name renames an anonymous class":
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    let s = test_parse_state(fd)
+    defer free_test_parse_state(s)
+    emit_op(s, (u8)Op.undefined)
+    emit_op(s, (u8)Op.define_class)
+    emit_atom(s, atom_empty_string)
+    emit_u8(s, 0)
+    let define_class_offset = fd.last_opcode_pos
+    emit_op(s, (u8)Op.drop)
+    emit_op(s, (u8)TempOp.set_class_name)
+    emit_u32(s, (u32)(fd.last_opcode_pos + 1 - define_class_offset))
+    set_object_name(s, atom_length)
+    let buf = test_bytecode(fd)
+    assert(fd.last_opcode_pos == -1)
+    assert(buf[1] == (u8)Op.define_class and cutils.get_u32(buf + 2) == atom_length)
+
+    fd.last_opcode_pos = 8
+    set_object_name_computed(s)
+    assert(buf[1] == (u8)Op.define_class_computed)
+    assert(fd.last_opcode_pos == -1)

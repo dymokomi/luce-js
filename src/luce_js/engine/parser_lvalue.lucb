@@ -1,0 +1,427 @@
+#==============================================================================================
+#
+#   parser_lvalue - Array literals, assignment targets and declared names
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 25786-26312: js_parse_array_literal, has_with_scope, the
+#       assignment targets (get_lvalue, which turns the last read into a reference, and
+#       put_lvalue with PutLValueEnum, which stores through it), js_parse_expr_paren,
+#       js_unsupported_keyword, js_define_var, js_emit_spread_code and the checks of
+#       declared and parameter names used by destructuring.
+#
+#       Opcodes are bytes here, as in the bytecode: an lvalue's opcode is the read it
+#       came from, a real opcode (OP_get_field, ...) or the temporary OP_scope_get_var,
+#       held in an `i32` as in C.
+#
+#==============================================================================================
+
+# mark: Array literals ==========================================================================
+
+# Compile the array literal at the current '['.
+func js_parse_array_literal(s: ParseState*) -> !:
+    try next_token(s)
+    # small regular arrays are created on the stack
+    var idx: u32 = 0
+    while s.token.val != TokenType.rbracket and idx < 32:
+        if s.token.val == TokenType.comma or s.token.val == TokenType.ellipsis:
+            break
+        try js_parse_assign_expr(s)
+        idx += 1
+        # accept trailing comma
+        if s.token.val == TokenType.comma:
+            try next_token(s)
+        elif s.token.val != TokenType.rbracket:
+            # done:
+            try js_parse_expect(s, TokenType.rbracket)
+            return
+    emit_op(s, (u8)Op.array_from)
+    emit_u16(s, (u16)idx)
+
+    # larger arrays and holes are handled with explicit indices
+    var need_length = false
+    while s.token.val != TokenType.rbracket and idx < 0x7fffffff:
+        if s.token.val == TokenType.ellipsis:
+            break
+        need_length = true
+        if s.token.val != TokenType.comma:
+            try js_parse_assign_expr(s)
+            emit_op(s, (u8)Op.define_field)
+            emit_u32(s, js_atom_from_uint32_raw(idx))
+            need_length = false
+        idx += 1
+        # accept trailing comma
+        if s.token.val == TokenType.comma:
+            try next_token(s)
+    if s.token.val == TokenType.rbracket:
+        if need_length:
+            # Set the length: Cannot use OP_define_field because length is not
+            # configurable
+            emit_op(s, (u8)Op.dup)
+            emit_op(s, (u8)Op.push_i32)
+            emit_u32(s, idx)
+            emit_op(s, (u8)Op.put_field)
+            emit_atom(s, atom_length)
+        # done:
+        try js_parse_expect(s, TokenType.rbracket)
+        return
+
+    # huge arrays and spread elements require a dynamic index on the stack
+    emit_op(s, (u8)Op.push_i32)
+    emit_u32(s, idx)
+
+    # stack has array, index
+    while s.token.val != TokenType.rbracket:
+        if s.token.val == TokenType.ellipsis:
+            try next_token(s)
+            try js_parse_assign_expr(s)
+            emit_op(s, (u8)Op.append)
+        else:
+            need_length = true
+            if s.token.val != TokenType.comma:
+                try js_parse_assign_expr(s)
+                # a idx val
+                emit_op(s, (u8)Op.define_array_el)
+                need_length = false
+            emit_op(s, (u8)Op.inc)
+        if s.token.val != TokenType.comma:
+            break
+        try next_token(s)
+    if need_length:
+        # Set the length: cannot use OP_define_field because length is not configurable
+        # array length - array array length
+        emit_op(s, (u8)Op.dup1)
+        emit_op(s, (u8)Op.put_field)
+        emit_atom(s, atom_length)
+    else:
+        # array length - array
+        emit_op(s, (u8)Op.drop)
+    # done:
+    try js_parse_expect(s, TokenType.rbracket)
+
+# mark: Assignment targets ======================================================================
+
+# check if scope chain contains a with statement
+func has_with_scope(s: FunctionDef*, scope_level0: i32) -> bool:
+    var cur: FunctionDef*? = s
+    var scope_level = scope_level0
+    while let f = cur:
+        # no with in strict mode
+        if ((i32)f.js_mode & js_mode_strict) == 0:
+            var scope_idx = fd_scope(f, scope_level).first
+            while scope_idx >= 0:
+                let vd = fd_var(f, scope_idx)
+                if vd.var_name == atom__with_:
+                    return true
+                scope_idx = vd.scope_next
+        # check parent scopes
+        scope_level = f.parent_scope_level
+        cur = f.parent
+    return false
+
+# The error for an expression that cannot be assigned, worded after the token `tok` of
+# the construct (TOK_FOR, '++'/'--', a destructuring pattern, or an assignment).
+func invalid_lvalue(s: ParseState*, tok: TokenType) -> never!:
+    if tok == TokenType.for_:
+        try js_parse_error(s, "invalid for in/of left hand-side")
+    elif tok == TokenType.inc or tok == TokenType.dec:
+        try js_parse_error(s, "invalid increment/decrement operand")
+    elif tok == TokenType.lbracket or tok == TokenType.lbrace:
+        try js_parse_error(s, "invalid destructuring target")
+    else:
+        try js_parse_error(s, "invalid assignment left-hand side")
+
+# Emit OP_scope_make_ref for `name` in `scope` with a new label; answers the label.
+func emit_scope_make_ref(s: ParseState*, fd: FunctionDef*, name: Atom, scope: i32) -> i32!:
+    let label = new_label(s)
+    if label < 0:
+        error(exception, "")
+    emit_op(s, (u8)TempOp.scope_make_ref)
+    emit_atom(s, name)
+    emit_u32(s, (u32)label)
+    emit_u16(s, (u16)scope)
+    discard(update_label(fd, label, 1))
+    return label
+
+# The last opcode emitted, in the bytecode (fd->byte_code.buf + fd->last_opcode_pos).
+func last_opcode_ptr(fd: FunctionDef*) -> u8*:
+    let buf = fd.byte_code.buf else trap("FunctionDef: no bytecode")
+    return buf + (isize)fd.last_opcode_pos
+
+# Turn the read just emitted (the last opcode) into an assignment target: remove it and
+# answer in the out parameters its kind (the opcode), scope, name, label and stack depth.
+# With `keep`, emit the read again so that the value is on the stack above the target.
+# `tok` words the error when the last opcode is not a read.
+func get_lvalue(s: ParseState*, popcode: i32*, pscope: i32*, pname: Atom*, plabel: i32*,
+                pdepth: i32*?, keep: bool, tok: TokenType) -> !:
+    # we check the last opcode to get the lvalue type
+    let fd = s.fd()
+    var scope: i32 = 0
+    var name = atom_null
+    var label: i32 = -1
+    var depth: i32 = 0
+    let op = get_prev_opcode(fd)
+    var opcode = (i32)op
+    if op == (u8)TempOp.scope_get_var:
+        name = cutils.get_u32(last_opcode_ptr(fd) + 1)
+        scope = (i32)cutils.get_u16(last_opcode_ptr(fd) + 5)
+        if ((name == atom_arguments or name == atom_eval) and
+            ((i32)fd.js_mode & js_mode_strict) != 0):
+            try js_parse_error(s, "invalid lvalue in strict mode")
+        if name == atom_this or name == atom_new_target:
+            try invalid_lvalue(s, tok)
+        if has_with_scope(fd, scope):
+            # will generate OP_get_ref_value
+            depth = 2
+        else:
+            depth = 0
+    elif op == (u8)Op.get_field:
+        name = cutils.get_u32(last_opcode_ptr(fd) + 1)
+        depth = 1
+    elif op == (u8)TempOp.scope_get_private_field:
+        name = cutils.get_u32(last_opcode_ptr(fd) + 1)
+        scope = (i32)cutils.get_u16(last_opcode_ptr(fd) + 5)
+        depth = 1
+    elif op == (u8)Op.get_array_el:
+        depth = 2
+    elif op == (u8)Op.get_super_value:
+        depth = 3
+    else:
+        try invalid_lvalue(s, tok)
+    # remove the last opcode
+    fd.byte_code.size = (usize)fd.last_opcode_pos
+    fd.last_opcode_pos = -1
+
+    if keep:
+        # get the value but keep the object/fields on the stack
+        if op == (u8)TempOp.scope_get_var:
+            if depth != 0:
+                label = try emit_scope_make_ref(s, fd, name, scope)
+                emit_op(s, (u8)Op.get_ref_value)
+                opcode = (i32)Op.get_ref_value
+            else:
+                emit_op(s, (u8)TempOp.scope_get_var)
+                emit_atom(s, name)
+                emit_u16(s, (u16)scope)
+        elif op == (u8)Op.get_field:
+            emit_op(s, (u8)Op.get_field2)
+            emit_atom(s, name)
+        elif op == (u8)TempOp.scope_get_private_field:
+            emit_op(s, (u8)TempOp.scope_get_private_field2)
+            emit_atom(s, name)
+            emit_u16(s, (u16)scope)
+        elif op == (u8)Op.get_array_el:
+            emit_op(s, (u8)Op.get_array_el3)
+        elif op == (u8)Op.get_super_value:
+            emit_op(s, (u8)Op.to_propkey)
+            emit_op(s, (u8)Op.dup3)
+            emit_op(s, (u8)Op.get_super_value)
+        else:
+            trap("get_lvalue: invalid opcode")
+    else:
+        if op == (u8)TempOp.scope_get_var and depth != 0:
+            label = try emit_scope_make_ref(s, fd, name, scope)
+            opcode = (i32)Op.get_ref_value
+
+    *popcode = opcode
+    *pscope = scope
+    # name has refcount for OP_get_field and OP_get_ref_value, and JS_ATOM_NULL for other
+    # opcodes
+    *pname = name
+    *plabel = label
+    if let d = pdepth:
+        *d = depth
+
+## What put_lvalue leaves on the stack (PutLValueEnum).
+enum PutLValueKind as i32:
+    ## [depth] v ->
+    nokeep = 0
+    ## [depth] v -> , keep depth (currently just disable optimizations)
+    nokeep_depth = 1
+    ## [depth] v -> v
+    keep_top = 2
+    ## [depth] v0 v -> v0
+    keep_second = 3
+    ## v [depth] ->
+    nokeep_bottom = 4
+
+# name has a live reference. 'is_let' is only used with opcode = OP_scope_get_var which
+# is never generated by get_lvalue().
+func put_lvalue(s: ParseState*, opcode: i32, scope: i32, name: Atom, label: i32,
+                special: PutLValueKind, is_let_: bool):
+    if opcode == (i32)TempOp.scope_get_var:
+        # depth = 0
+        match special:
+            .nokeep, .nokeep_depth, .keep_second, .nokeep_bottom:
+                discard(0)
+            .keep_top:
+                emit_op(s, (u8)Op.dup)
+            _:
+                trap("put_lvalue: invalid kind")
+    elif opcode == (i32)Op.get_field or opcode == (i32)TempOp.scope_get_private_field:
+        # depth = 1
+        match special:
+            .nokeep, .nokeep_depth:
+                discard(0)
+            .keep_top:
+                # obj v -> v obj v
+                emit_op(s, (u8)Op.insert2)
+            .keep_second:
+                # obj v0 v -> v0 obj v
+                emit_op(s, (u8)Op.perm3)
+            .nokeep_bottom:
+                emit_op(s, (u8)Op.swap)
+            _:
+                trap("put_lvalue: invalid kind")
+    elif opcode == (i32)Op.get_array_el or opcode == (i32)Op.get_ref_value:
+        # depth = 2
+        if opcode == (i32)Op.get_ref_value:
+            js_free_atom(s.ctx, name)
+            discard(emit_label(s, label))
+        match special:
+            .nokeep:
+                # will trigger optimization
+                emit_op(s, (u8)Op.nop)
+            .nokeep_depth:
+                discard(0)
+            .keep_top:
+                # obj prop v -> v obj prop v
+                emit_op(s, (u8)Op.insert3)
+            .keep_second:
+                # obj prop v0 v -> v0 obj prop v
+                emit_op(s, (u8)Op.perm4)
+            .nokeep_bottom:
+                emit_op(s, (u8)Op.rot3l)
+            _:
+                trap("put_lvalue: invalid kind")
+    elif opcode == (i32)Op.get_super_value:
+        # depth = 3
+        match special:
+            .nokeep, .nokeep_depth:
+                discard(0)
+            .keep_top:
+                # this obj prop v -> v this obj prop v
+                emit_op(s, (u8)Op.insert4)
+            .keep_second:
+                # this obj prop v0 v -> v0 this obj prop v
+                emit_op(s, (u8)Op.perm5)
+            .nokeep_bottom:
+                emit_op(s, (u8)Op.rot4l)
+            _:
+                trap("put_lvalue: invalid kind")
+
+    if opcode == (i32)TempOp.scope_get_var:
+        # val --
+        emit_op(s, (u8)TempOp.scope_put_var_init if is_let_ else (u8)TempOp.scope_put_var)
+        # has refcount
+        emit_u32(s, name)
+        emit_u16(s, (u16)scope)
+    elif opcode == (i32)Op.get_field:
+        emit_op(s, (u8)Op.put_field)
+        # name has refcount
+        emit_u32(s, name)
+    elif opcode == (i32)TempOp.scope_get_private_field:
+        emit_op(s, (u8)TempOp.scope_put_private_field)
+        # name has refcount
+        emit_u32(s, name)
+        emit_u16(s, (u16)scope)
+    elif opcode == (i32)Op.get_array_el:
+        emit_op(s, (u8)Op.put_array_el)
+    elif opcode == (i32)Op.get_ref_value:
+        emit_op(s, (u8)Op.put_ref_value)
+    elif opcode == (i32)Op.get_super_value:
+        emit_op(s, (u8)Op.put_super_value)
+    else:
+        trap("put_lvalue: invalid opcode")
+
+# mark: Declared names ==========================================================================
+
+# Compile the parenthesized expression at the current '('.
+func js_parse_expr_paren(s: ParseState*) -> !:
+    try js_parse_expect(s, TokenType.lparen)
+    try js_parse_expr(s)
+    try js_parse_expect(s, TokenType.rparen)
+
+func js_unsupported_keyword(s: ParseState*, atom: Atom) -> never!:
+    var buf: u8[atom_get_str_buf_size] = ---
+    try js_parse_error(s, f"unsupported keyword: {js_atom_get_str(s.ctx, buf, atom)}")
+
+# Define the variable `name` a declaration `tok` (TOK_LET, TOK_CONST, TOK_VAR or
+# TOK_CATCH) introduces, after checking that the name may be declared.
+func js_define_var(s: ParseState*, name: Atom, tok: TokenType) -> !:
+    let fd = s.fd()
+
+    if name == atom_yield and fd.func_kind == js_func_generator:
+        try js_parse_error(s, "yield is a reserved identifier")
+    if (name == atom_arguments or name == atom_eval) and ((i32)fd.js_mode & js_mode_strict) != 0:
+        try js_parse_error(s, "invalid variable name in strict mode")
+    if name == atom_let and (tok == TokenType.let_ or tok == TokenType.const_):
+        try js_parse_error(s, "invalid lexical variable name")
+    var var_def_type = VarDefKind.var_
+    match tok:
+        .let_:
+            var_def_type = VarDefKind.let_
+        .const_:
+            var_def_type = VarDefKind.const_
+        .var_:
+            var_def_type = VarDefKind.var_
+        .catch_:
+            var_def_type = VarDefKind.catch_
+        _:
+            trap("js_define_var: invalid declaration token")
+    discard(try define_var(s, fd, name, var_def_type))
+
+# Emit the collection of the rest of an iteration into a new array (a rest element);
+# `depth` values lie between the enumeration record and the array.
+func js_emit_spread_code(s: ParseState*, depth: i32):
+    # XXX: could check if enum object is an actual array and optimize slice extraction.
+    # enumeration record and target array are in a different order from OP_append case.
+    # enum_rec xxx -- enum_rec xxx array 0
+    emit_op(s, (u8)Op.array_from)
+    emit_u16(s, 0)
+    emit_op(s, (u8)Op.push_i32)
+    emit_u32(s, 0)
+    let label_rest_next = new_label(s)
+    discard(emit_label(s, label_rest_next))
+    emit_op(s, (u8)Op.for_of_next)
+    emit_u8(s, (u8)(2 + depth))
+    let label_rest_done = emit_goto(s, (i32)Op.if_true, -1)
+    # array idx val -- array idx
+    emit_op(s, (u8)Op.define_array_el)
+    emit_op(s, (u8)Op.inc)
+    discard(emit_goto(s, (i32)Op.goto_, label_rest_next))
+    discard(emit_label(s, label_rest_done))
+    # enum_rec xxx array idx undef -- enum_rec xxx array
+    emit_op(s, (u8)Op.drop)
+    emit_op(s, (u8)Op.drop)
+
+# Check for duplicate parameter names
+func js_parse_check_duplicate_parameter(s: ParseState*, name: Atom) -> !:
+    let fd = s.fd()
+    for i in 0..<fd.arg_count:
+        if fd_arg(fd, i).var_name == name:
+            try js_parse_duplicate_parameter_error(s)
+    for i in 0..<fd.var_count:
+        if fd_var(fd, i).var_name == name:
+            try js_parse_duplicate_parameter_error(s)
+
+# duplicate:
+func js_parse_duplicate_parameter_error(s: ParseState*) -> never!:
+    try js_parse_error(s, "duplicate parameter names not allowed in this context")
+
+# tok = TOK_VAR, TOK_LET or TOK_CONST. Return whether a reference must be taken to the
+# variable for proper 'with' or global variable evaluation
+# Note: this function is needed only because variable references are not yet optimized
+# in destructuring
+func need_var_reference(s: ParseState*, tok: TokenType) -> bool:
+    let fd = s.fd()
+    if tok != TokenType.var_:
+        # no reference for let/const
+        return false
+    if ((i32)fd.js_mode & js_mode_strict) != 0:
+        if not fd.is_global_var:
+            # local definitions in strict mode in function or direct eval
+            return false
+        if s.is_module:
+            # in a module global variables are like closure variables
+            return false
+    return true

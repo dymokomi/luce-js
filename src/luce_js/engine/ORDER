@@ -55,6 +55,11 @@ tokenizer.lucb
 tokenizer_next.lucb
 tokenizer_json.lucb
 emitter.lucb
+parser_vars_templates.lucb
+parser_property_names.lucb
+parser_class.lucb
+parser_lvalue.lucb
+parser_destructuring.lucb
 stub_r17_parser.lucb
 stub_r18_modules.lucb
 stub_r19_resolve.lucb
@@ -79,3 +84,4 @@ tests_r08.lucb
 tests_r10.lucb
 tests_r09.lucb
 tests_tokenizer.lucb
+tests_r17a.lucb

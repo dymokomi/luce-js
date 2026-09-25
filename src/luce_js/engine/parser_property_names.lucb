@@ -1,0 +1,425 @@
+#==============================================================================================
+#
+#   parser_property_names - Property names, look-ahead, function names and object literals
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 24597-25089: the property kinds and js_parse_property_name,
+#       JSParsePos with js_parse_get_pos/js_parse_seek_token, the look-ahead over a
+#       parenthesized group (js_parse_skip_parens_token), set_object_name and
+#       set_object_name_computed, which name an anonymous function or class after the
+#       property or variable it is stored in, js_parse_object_literal, and the PF_* flags
+#       of the expression parser.
+#
+#==============================================================================================
+
+# mark: Property names ==========================================================================
+
+let prop_type_ident: i32 = 0
+let prop_type_var: i32 = 1
+let prop_type_get: i32 = 2
+let prop_type_set: i32 = 3
+let prop_type_star: i32 = 4
+let prop_type_async: i32 = 5
+let prop_type_async_star: i32 = 6
+
+let prop_type_private: i32 = 1 << 4
+
+# Whether `tok` can be a property name: an identifier, or a keyword or reserved word.
+func token_is_ident(tok: TokenType) -> bool:
+    # Accept keywords and reserved words as property names
+    return tok == TokenType.ident or tok_is_keyword(tok)
+
+# Whether the current token ends a get/set/async prefix, which is then the property name
+# itself.
+func token_ends_prefix_name(s: ParseState*) -> bool:
+    let t = s.token.val
+    return (t == TokenType.colon or t == TokenType.comma or t == TokenType.rbrace or
+            t == TokenType.lparen or t == TokenType.assign)
+
+# Parse a property name into `*pname` and answer its kind: a prop_type_* value, with
+# prop_type_private for a private name. If the property is an expression (a computed
+# name, left on the stack), the name is atom_null. `*pname` is atom_null on failure.
+func js_parse_property_name(s: ParseState*, pname: Atom*, allow_method: bool, allow_var: bool,
+                            allow_private: bool) -> i32!:
+    var is_private: i32 = 0
+    var is_non_reserved_ident = false
+    var ident_found = false
+    var prop_type = prop_type_ident
+    # the atom owned until it is answered (the fail1 cleanup)
+    var name = atom_null
+    *pname = atom_null
+    errdefer free_atom_at(s.ctx, &name)
+
+    if allow_method:
+        # if allow_private is true (for class field parsing) and get/set is following by
+        # ';' (or LF with ASI), then it is a field name
+        if ((token_is_pseudo_keyword(s, atom_get) or token_is_pseudo_keyword(s, atom_set)) and
+            (not allow_private or peek_token(s, true) != TokenType.newline)):
+            # get x(), set x()
+            name = js_dup_atom(s.ctx, s.token.u.ident.atom)
+            try next_token(s)
+            if token_ends_prefix_name(s) or (s.token.val == TokenType.semicolon and allow_private):
+                is_non_reserved_ident = true
+                ident_found = true
+            else:
+                prop_type = prop_type_get + (1 if name == atom_set else 0)
+                free_atom_at(s.ctx, &name)
+        elif s.token.val == TokenType.star:
+            try next_token(s)
+            prop_type = prop_type_star
+        elif token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) != TokenType.newline:
+            name = js_dup_atom(s.ctx, s.token.u.ident.atom)
+            try next_token(s)
+            if token_ends_prefix_name(s):
+                is_non_reserved_ident = true
+                ident_found = true
+            else:
+                free_atom_at(s.ctx, &name)
+                if s.token.val == TokenType.star:
+                    try next_token(s)
+                    prop_type = prop_type_async_star
+                else:
+                    prop_type = prop_type_async
+
+    if ident_found or token_is_ident(s.token.val):
+        if not ident_found:
+            # variable can only be a non-reserved identifier
+            is_non_reserved_ident = (s.token.val == TokenType.ident and
+                                     not s.token.u.ident.is_reserved)
+            # keywords and reserved words have a valid atom
+            name = js_dup_atom(s.ctx, s.token.u.ident.atom)
+            try next_token(s)
+        # ident_found:
+        if is_non_reserved_ident and prop_type == prop_type_ident and allow_var:
+            if not (s.token.val == TokenType.colon or
+                    (s.token.val == TokenType.lparen and allow_method)):
+                prop_type = prop_type_var
+    elif s.token.val == TokenType.string:
+        name = try js_value_to_atom(s.ctx, s.token.u.str_.str)
+        try next_token(s)
+    elif s.token.val == TokenType.number:
+        let val = s.token.u.num.val
+        name = try js_value_to_atom(s.ctx, val)
+        try next_token(s)
+    elif s.token.val == TokenType.lbracket:
+        try next_token(s)
+        try js_parse_assign_expr(s)
+        try js_parse_expect(s, TokenType.rbracket)
+        name = atom_null
+    elif s.token.val == TokenType.private_name and allow_private:
+        name = js_dup_atom(s.ctx, s.token.u.ident.atom)
+        try next_token(s)
+        is_private = prop_type_private
+    else:
+        # invalid_prop:
+        try js_parse_error(s, "invalid property name")
+    if prop_type != prop_type_ident and prop_type != prop_type_var and s.token.val != TokenType.lparen:
+        free_atom_at(s.ctx, &name)
+        # invalid_prop:
+        try js_parse_error(s, "invalid property name")
+    *pname = name
+    return prop_type | is_private
+
+# mark: Look-ahead ==============================================================================
+
+## A position of the parser to come back to (JSParsePos).
+struct ParsePos:
+    var got_lf: bool
+    var ptr: const u8*
+
+# Save the position of the current token in `sp`.
+func js_parse_get_pos(s: ParseState*, sp: ParsePos*):
+    sp.ptr = s.token.ptr
+    sp.got_lf = s.got_lf
+
+# Go back to the position `sp` and read its token again.
+func js_parse_seek_token(s: ParseState*, sp: const ParsePos*) -> !:
+    s.buf_ptr = sp.ptr
+    s.got_lf = sp.got_lf
+    try next_token(s)
+
+# return true if a regexp literal is allowed after this token
+func is_regexp_allowed(tok: TokenType) -> bool:
+    match tok:
+        .number, .string, .regexp, .dec, .inc, .null, .false_, .true_, .this:
+            return false
+        # XXX: regexp may occur after '}'
+        .rparen, .rbracket, .rbrace, .ident:
+            return false
+        _:
+            return true
+
+let skip_has_semi: i32 = 1 << 0
+let skip_has_ellipsis: i32 = 1 << 1
+let skip_has_assignment: i32 = 1 << 2
+
+# Whether a line feed lies between `p1` and `p2` (in either order).
+func has_lf_in_range(p1: const u8*, p2: const u8*) -> bool:
+    var lo = p1
+    var hi = p2
+    if lo > hi:
+        lo = p2
+        hi = p1
+    while lo < hi:
+        if *lo == '\n':
+            return true
+        lo = lo + 1
+    return false
+
+# Push the opening token `c` on the look-ahead stack; false if it is full.
+func skip_parens_push(state: u8[], level: usize*, c: u8) -> bool:
+    if *level >= state.length:
+        return false
+    state[*level] = c
+    *level += 1
+    return true
+
+# Pop the look-ahead stack; answers the opening token it held.
+func skip_parens_pop(state: u8[], level: usize*) -> u8:
+    *level -= 1
+    return state[*level]
+
+# Skip the group that starts at the current token ('(', '[' or '{') and answer the token
+# that follows it: TOK_OF for 'of', '\n' if `no_line_terminator` and a line feed comes
+# first, TOK_EOF if the group could not be skipped. The SKIP_HAS_* facts of its top level
+# go to `*pbits`. The parser then goes back to where it was.
+# XXX: improve speed with early bailout
+# XXX: no longer works if regexps are present. Could use previous regexp parsing
+# heuristics to handle most cases
+func js_parse_skip_parens_token(s: ParseState*, pbits: i32*?, no_line_terminator: bool) -> TokenType!:
+    var state: u8[256] = ---
+    var level: usize = 0
+    var pos: ParsePos = ---
+    var last_tok = (TokenType)0
+    var tok = TokenType.eof
+    var bits: i32 = 0
+
+    # protect from underflow
+    state[level] = 0
+    level += 1
+
+    js_parse_get_pos(s, &pos)
+    tokens: while true:
+        var is_template = false
+        match s.token.val:
+            .lparen, .lbracket, .lbrace:
+                if not skip_parens_push(state, &level, (u8)(i32)s.token.val):
+                    break tokens
+            .rparen:
+                if skip_parens_pop(state, &level) != '(':
+                    break tokens
+            .rbracket:
+                if skip_parens_pop(state, &level) != '[':
+                    break tokens
+            .rbrace:
+                let c = skip_parens_pop(state, &level)
+                if c == '`':
+                    # continue the parsing of the template
+                    free_token(s, &s.token)
+                    # Resume TOK_TEMPLATE parsing (s->token.line_num and s->token.ptr
+                    # are OK)
+                    s.got_lf = false
+                    js_parse_template_part(s, s.buf_ptr) catch failure:
+                        break tokens
+                    is_template = true
+                elif c != '{':
+                    break tokens
+            .template:
+                is_template = true
+            .eof:
+                break tokens
+            .semicolon:
+                if level == 2:
+                    bits |= skip_has_semi
+            .ellipsis:
+                if level == 2:
+                    bits |= skip_has_ellipsis
+            .assign:
+                bits |= skip_has_assignment
+            .div_assign, .slash:
+                let tok_len: usize = 2 if s.token.val == TokenType.div_assign else 1
+                # parse_regexp:
+                if is_regexp_allowed(last_tok):
+                    s.buf_ptr = s.buf_ptr - tok_len
+                    js_parse_regexp(s) catch failure:
+                        # XXX: should clear the exception
+                        break tokens
+            _:
+                discard(0)
+        if is_template:
+            # handle_template:
+            if s.token.u.str_.sep != (i32)'`':
+                # '${' inside the template : closing '}' and continue parsing the
+                # template
+                if not skip_parens_push(state, &level, '`'):
+                    break tokens
+        # last_tok is only used to recognize regexps
+        if (s.token.val == TokenType.ident and
+            (token_is_pseudo_keyword(s, atom_of) or token_is_pseudo_keyword(s, atom_yield))):
+            last_tok = TokenType.of
+        else:
+            last_tok = s.token.val
+        let last_token_ptr = s.token.ptr
+        next_token(s) catch failure:
+            # XXX: should clear the exception generated by next_token()
+            break tokens
+        if level <= 1:
+            tok = s.token.val
+            if token_is_pseudo_keyword(s, atom_of):
+                tok = TokenType.of
+            if no_line_terminator and has_lf_in_range(last_token_ptr, s.token.ptr):
+                tok = TokenType.newline
+            break
+    # done:
+    if let b = pbits:
+        *b = bits
+    try js_parse_seek_token(s, &pos)
+    return tok
+
+# mark: Function names ==========================================================================
+
+# The position of the OP_define_class whose OP_set_class_name was the last opcode.
+func set_class_name_define_pos(fd: FunctionDef*, buf: u8*) -> isize:
+    let define_class_pos = ((isize)fd.last_opcode_pos + 1 -
+                            (isize)cutils.get_u32(buf + (isize)(fd.last_opcode_pos + 1)))
+    assert(buf[define_class_pos] == (u8)Op.define_class)
+    return define_class_pos
+
+# Name the anonymous function or class just compiled `name`: rewrite its OP_set_name, or
+# the name of its OP_define_class.
+func set_object_name(s: ParseState*, name: Atom):
+    let fd = s.fd()
+    let opcode = get_prev_opcode(fd)
+    if opcode == (u8)Op.set_name:
+        # XXX: should free atom after OP_set_name?
+        fd.byte_code.size = (usize)fd.last_opcode_pos
+        fd.last_opcode_pos = -1
+        emit_op(s, (u8)Op.set_name)
+        emit_atom(s, name)
+    elif opcode == (u8)TempOp.set_class_name:
+        let buf = fd.byte_code.buf else trap("set_object_name: no bytecode")
+        let define_class_pos = set_class_name_define_pos(fd, buf)
+        # for consistency we free the previous atom which is JS_ATOM_empty_string
+        let atom = cutils.get_u32(buf + define_class_pos + 1)
+        js_free_atom(s.ctx, atom)
+        cutils.put_u32(buf + define_class_pos + 1, js_dup_atom(s.ctx, name))
+        fd.last_opcode_pos = -1
+
+# Name the anonymous function or class just compiled after the computed property key
+# below it on the stack.
+func set_object_name_computed(s: ParseState*):
+    let fd = s.fd()
+    let opcode = get_prev_opcode(fd)
+    if opcode == (u8)Op.set_name:
+        # XXX: should free atom after OP_set_name?
+        fd.byte_code.size = (usize)fd.last_opcode_pos
+        fd.last_opcode_pos = -1
+        emit_op(s, (u8)Op.set_name_computed)
+    elif opcode == (u8)TempOp.set_class_name:
+        let buf = fd.byte_code.buf else trap("set_object_name_computed: no bytecode")
+        let define_class_pos = set_class_name_define_pos(fd, buf)
+        buf[define_class_pos] = (u8)Op.define_class_computed
+        fd.last_opcode_pos = -1
+
+# mark: Object literals =========================================================================
+
+# The function kind of a method whose property kind is `prop_type`.
+func method_func_kind(prop_type: i32) -> u8:
+    if prop_type == prop_type_star:
+        return js_func_generator
+    elif prop_type == prop_type_async:
+        return js_func_async
+    elif prop_type == prop_type_async_star:
+        return js_func_async_generator
+    return js_func_normal
+
+# Compile the object literal at the current '{'.
+func js_parse_object_literal(s: ParseState*) -> !:
+    var name = atom_null
+    errdefer free_atom_at(s.ctx, &name)
+
+    try next_token(s)
+    # XXX: add an initial length that will be patched back
+    emit_op(s, (u8)Op.object)
+    var has_proto = false
+    while s.token.val != TokenType.rbrace:
+        # specific case for getter/setter
+        let start_ptr = s.token.ptr
+
+        if s.token.val == TokenType.ellipsis:
+            try next_token(s)
+            try js_parse_assign_expr(s)
+            # dummy excludeList
+            emit_op(s, (u8)Op.null)
+            emit_op(s, (u8)Op.copy_data_properties)
+            emit_u8(s, (u8)(2 | (1 << 2) | (0 << 5)))
+            # pop excludeList
+            emit_op(s, (u8)Op.drop)
+            # pop src object
+            emit_op(s, (u8)Op.drop)
+        else:
+            let prop_type = try js_parse_property_name(s, &name, true, true, false)
+
+            if prop_type == prop_type_var:
+                # shortcut for x: x
+                emit_op(s, (u8)TempOp.scope_get_var)
+                emit_atom(s, name)
+                emit_u16(s, (u16)s.fd().scope_level)
+                emit_op(s, (u8)Op.define_field)
+                emit_atom(s, name)
+            elif s.token.val == TokenType.lparen:
+                let is_getset = prop_type == prop_type_get or prop_type == prop_type_set
+                var func_type = ParseFunctionKind.method
+                var func_kind = js_func_normal
+                if is_getset:
+                    func_type = (ParseFunctionKind)((i32)ParseFunctionKind.getter + prop_type - prop_type_get)
+                else:
+                    func_kind = method_func_kind(prop_type)
+                try js_parse_function_decl(s, func_type, func_kind, atom_null, start_ptr)
+                if name == atom_null:
+                    emit_op(s, (u8)Op.define_method_computed)
+                else:
+                    emit_op(s, (u8)Op.define_method)
+                    emit_atom(s, name)
+                var op_flags: i32 = 0
+                if is_getset:
+                    op_flags = op_define_method_getter + prop_type - prop_type_get
+                else:
+                    op_flags = op_define_method_method
+                emit_u8(s, (u8)(op_flags | op_define_method_enumerable))
+            else:
+                if name == atom_null:
+                    # must be done before evaluating expr
+                    emit_op(s, (u8)Op.to_propkey)
+                try js_parse_expect(s, TokenType.colon)
+                try js_parse_assign_expr(s)
+                if name == atom_null:
+                    set_object_name_computed(s)
+                    emit_op(s, (u8)Op.define_array_el)
+                    emit_op(s, (u8)Op.drop)
+                elif name == atom___proto__:
+                    if has_proto:
+                        try js_parse_error(s, "duplicate __proto__ property name")
+                    emit_op(s, (u8)Op.set_proto)
+                    has_proto = true
+                else:
+                    set_object_name(s, name)
+                    emit_op(s, (u8)Op.define_field)
+                    emit_atom(s, name)
+            free_atom_at(s.ctx, &name)
+        # next:
+        if s.token.val != TokenType.comma:
+            break
+        try next_token(s)
+    try js_parse_expect(s, TokenType.rbrace)
+
+# mark: Expression flags ========================================================================
+
+# allow the 'in' binary operator
+let pf_in_accepted: i32 = 1 << 0
+# allow function calls parsing in js_parse_postfix_expr()
+let pf_postfix_call: i32 = 1 << 1
+# allow the exponentiation operator in js_parse_unary()
+let pf_pow_allowed: i32 = 1 << 2
+# forbid the exponentiation operator in js_parse_unary()
+let pf_pow_forbidden: i32 = 1 << 3

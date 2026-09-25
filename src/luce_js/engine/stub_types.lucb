@@ -23,9 +23,6 @@ struct BCReaderState:
 struct BCWriterState:
     var unported: i32
 
-struct ClassFieldsDef:
-    var unported: i32
-
 struct CodeContext:
     var unported: i32
 
@@ -62,9 +59,6 @@ struct MapIteratorData:
 struct ObjectList:
     var unported: i32
 
-struct ParsePos:
-    var unported: i32
-
 struct PrintValueOptions:
     var unported: i32
 
@@ -98,16 +92,10 @@ struct SumPreciseState:
 struct ValueBuffer:
     var unported: i32
 
-enum PutLValueKind as i32:
-    unported = 0
-
 enum ResolveResult as i32:
     unported = 0
 
 enum StrictEqMode as i32:
-    unported = 0
-
-enum VarDefKind as i32:
     unported = 0
 
 type PrintValueWrite = func() -> unit
@@ -118,3 +106,12 @@ type PrintValueWrite = func() -> unit
 # quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
 let global_var_offset: i32 = 0x40000000
 let argument_var_offset: i32 = 0x20000000
+
+# quickjs.c:17424 (region r13): js_op_define_class's class flags.
+let js_define_class_has_heritage: i32 = 1 << 0
+
+# quickjs.c:19328 (region r14): the flags operand of OP_define_method.
+let op_define_method_method: i32 = 0
+let op_define_method_getter: i32 = 1
+let op_define_method_setter: i32 = 2
+let op_define_method_enumerable: i32 = 4
