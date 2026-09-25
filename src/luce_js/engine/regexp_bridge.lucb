@@ -1,0 +1,114 @@
+#==============================================================================================
+#
+#   regexp_bridge - The regular expression engine: luce-regex's ECMAScript dialect
+#
+#   DESCRIPTION:
+#       QuickJS calls libregexp; the port calls the ECMAScript dialect of luce-regex
+#       (`regex`), which has libregexp's syntax, errors and results. Every use of it
+#       outside the RegExp builtins goes through this fragment: the lre_flag_* names
+#       QuickJS uses (the same bits as regex.es_*), the Host that hands the engine's
+#       allocator, stack check and interrupt handler to the regex engine, matching a
+#       JSString, and lre_parse_escape for the JavaScript tokenizer.
+#
+#       One design change against QuickJS: a RegExp object holds its compiled program
+#       (`regex.Regex*`, RegExp.program) instead of a bytecode JSString, and owns it. A
+#       regular expression literal therefore keeps its pattern and flags strings in the
+#       constant pool (so the bytecode writer and reader see only strings), and OP_regexp
+#       compiles them (js_new_regexp); the parser compiles the literal once to report
+#       syntax errors early. The Host's opaque pointer is the Runtime, not the Context as
+#       in QuickJS: a program lives as long as its RegExp object, which may outlive the
+#       context that created it, and every callback needs only the runtime.
+#
+#==============================================================================================
+
+# mark: Flags and results =======================================================================
+
+# The flags of a regular expression (LRE_FLAG_*), as luce-regex numbers them.
+let lre_flag_global: i32 = 1 << 0
+let lre_flag_ignorecase: i32 = 1 << 1
+let lre_flag_multiline: i32 = 1 << 2
+let lre_flag_dotall: i32 = 1 << 3
+let lre_flag_unicode: i32 = 1 << 4
+let lre_flag_sticky: i32 = 1 << 5
+# Unused by the matcher, just recorded.
+let lre_flag_indices: i32 = 1 << 6
+# named groups are present in the regexp
+let lre_flag_named_groups: i32 = 1 << 7
+let lre_flag_unicode_sets: i32 = 1 << 8
+
+assert(lre_flag_global == regex.es_global and lre_flag_ignorecase == regex.es_ignore_case and
+       lre_flag_multiline == regex.es_multiline and lre_flag_dotall == regex.es_dotall and
+       lre_flag_unicode == regex.es_unicode and lre_flag_sticky == regex.es_sticky and
+       lre_flag_indices == regex.es_indices and lre_flag_named_groups == regex.es_named_groups and
+       lre_flag_unicode_sets == regex.es_unicode_sets, "the lre_flag_* bits are luce-regex's")
+
+# The failures of a match (LRE_RET_*).
+let lre_ret_memory_error: i32 = -1
+let lre_ret_timeout: i32 = -2
+
+# trailer length after the group name including the trailing '\0'
+let lre_group_name_trailer_len: usize = 2
+
+# mark: The host ================================================================================
+
+# The callbacks of the regex engine for programs of the runtime `rt`: its allocator (so a
+# program is part of the runtime's memory accounting), its stack limit and its interrupt
+# handler (the hooks are in regexp_constructor.lucb).
+func js_regexp_host(rt: Runtime*) -> regex.Host:
+    return regex.Host(opaque = rt, check_stack_overflow = lre_check_stack_overflow,
+                      check_timeout = lre_check_timeout, realloc_func = lre_realloc)
+
+# The program of a RegExp record; every RegExp the builtins see has one.
+func js_regexp_program(re: const RegExp*) -> regex.Regex*:
+    return re.program else trap("RegExp without a compiled program")
+
+# lre_get_flags: the lre_flag_* flags of the program, with lre_flag_named_groups.
+func lre_get_flags(program: const regex.Regex*) -> i32:
+    return regex.program_flags(program)
+
+# lre_get_capture_count: the number of capture groups, the whole match included.
+func lre_get_capture_count(program: const regex.Regex*) -> i32:
+    return regex.capture_count(program)
+
+# lre_get_groupnames: for each group after group 0, its name, a NUL and one more byte
+# (an empty name for an unnamed group); none without named groups.
+func lre_get_groupnames(program: const regex.Regex*) -> const u8*?:
+    if let names = regex.group_names(program):
+        return names.data
+    return none
+
+# lre_exec on the characters of `text` (8-bit or 16-bit) from the character index
+# `cindex`: 1 on a match, with the start and end index of each group in `capture` (-1 for
+# a group that did not participate), 0 without one, or lre_ret_memory_error /
+# lre_ret_timeout. `capture` holds 2 * lre_get_capture_count(program) indices.
+func lre_exec(capture: i32[], program: regex.Regex*, text: const String*, cindex: i32, rt: Runtime*) -> i32:
+    let host = js_regexp_host(rt)
+    if text.is_wide_char:
+        return regex.exec16(program, u16[]((u16*)str16(text), (usize)text.len), cindex, capture, &host)
+    return regex.exec8(program, u8[]((u8*)str8(text), (usize)text.len), cindex, capture, &host)
+
+# mark: Escapes =================================================================================
+
+# Parse an escape sequence; `*pp` points after the '\\' in NUL-terminated text.
+# `allow_utf16` is 0 when no UTF-16 escapes are allowed, 1 when they are, and 2 when they
+# are and escapes of surrogate pairs are converted to a unicode character (unicode regexp
+# case). Answers the unicode char and updates `*pp` if recognized, -1 if the escape is
+# malformed, and -2 otherwise.
+func lre_parse_escape(pp: const u8**, allow_utf16: i32) -> i32:
+    let p = *pp
+    # the bytes the escape may use: at most 11 ('u', 4 digits, then '\\u' and 4 more),
+    # except the '\\u{...}' form, which runs to its '}'
+    let braced = p[0] == 'u' and p[1] == '{'
+    var n: usize = 0
+    while p[n] != 0:
+        if braced:
+            if n >= 2 and p[n] == '}':
+                n += 1
+                break
+        elif n >= 12:
+            break
+        n += 1
+    var pos: usize = 0
+    let c = regex.parse_escape(u8[]((u8*)p, n), &pos, allow_utf16)
+    *pp = p + pos
+    return c

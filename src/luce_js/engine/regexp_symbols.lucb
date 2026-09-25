@@ -1,0 +1,438 @@
+#==============================================================================================
+#
+#   regexp_symbols - RegExp's Symbol.match, Symbol.matchAll and Symbol.replace
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 48479-49042: RegExp.prototype[Symbol.match], the RegExp
+#       String Iterator that [Symbol.matchAll] answers, ValueBuffer (a growable array of
+#       values with four inline slots), the check that a RegExp still has its standard
+#       exec and flag getters (which lets [Symbol.replace] take the fast path of
+#       js_regexp_replace), and RegExp.prototype[Symbol.replace].
+#
+#==============================================================================================
+
+# mark: Symbol.match ============================================================================
+
+# RegExp.prototype[Symbol.match](string)
+func js_regexp_symbol_match(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # [Symbol.match](str)
+    let rx = this_val
+
+    if not js_is_object(rx):
+        try js_throw_type_error_not_an_object(ctx)
+
+    var a = js_undefined()
+    var flags = js_undefined()
+    var result = js_undefined()
+    let s = try js_to_string(ctx, argv[0])
+    defer js_free_value(ctx, s)
+    defer js_free_value_at(ctx, &flags)
+    defer js_free_value_at(ctx, &result)
+    errdefer js_free_value_at(ctx, &a)
+
+    let flags0 = try js_get_property(ctx, rx, atom_flags)
+    flags = try js_to_string_free(ctx, flags0)
+    let p = flags.u.string
+
+    let global = -1 != string_indexof_char(p, (i32)'g', 0)
+    if not global:
+        a = try js_reg_exp_exec(ctx, rx, s)
+    else:
+        let full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or
+                            string_indexof_char(p, (i32)'v', 0) >= 0)
+
+        discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0)))
+        a = try js_new_array(ctx)
+        var n: i64 = 0
+        while true:
+            js_free_value(ctx, result)
+            result = js_undefined()
+            result = try js_reg_exp_exec(ctx, rx, s)
+            if js_is_null(result):
+                break
+            let match_str = try js_to_string_free(ctx, js_get_property_int64(ctx, result, 0))
+            let is_empty = js_is_empty_string(match_str)
+            let index = n
+            n += 1
+            discard(try js_define_property_value_int64(ctx, a, index, match_str, prop_c_w_e | prop_throw))
+            if is_empty:
+                var this_index: i64 = 0
+                try js_to_length_free(ctx, &this_index, js_get_property(ctx, rx, atom_lastIndex))
+                let next_index = string_advance_index(s.u.string, this_index, full_unicode)
+                discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int64(next_index)))
+        if n == 0:
+            js_free_value(ctx, a)
+            a = js_null()
+    return a
+
+# mark: The RegExp String Iterator ==============================================================
+
+## The state of a RegExp String Iterator, the result of [Symbol.matchAll]
+## (JSRegExpStringIteratorData).
+struct RegExpStringIteratorData:
+    var iterating_regexp: Value
+    var iterated_string: Value
+    var global: bool
+    var unicode: bool
+    var done: bool
+
+# Finalizer of the RegExp String Iterator class.
+func js_regexp_string_iterator_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (RegExpStringIteratorData*)raw
+        js_free_value_rt(rt, it.iterating_regexp)
+        js_free_value_rt(rt, it.iterated_string)
+        js_free_rt(rt, it)
+
+# Marker of the RegExp String Iterator class.
+func js_regexp_string_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let it = (RegExpStringIteratorData*)raw
+        js_mark_value(rt, it.iterating_regexp, mark_func)
+        js_mark_value(rt, it.iterated_string, mark_func)
+
+# `next` of the RegExp String Iterator prototype.
+func js_regexp_string_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, pdone: i32*,
+                                    magic: i32) -> Value!:
+    # an exception leaves the iterator not done
+    *pdone = 0
+    let it = (RegExpStringIteratorData*)(try js_get_opaque2(ctx, this_val, (u32)ClassId.regexp_string_iterator))
+    if it.done:
+        *pdone = 1
+        return js_undefined()
+    let r = it.iterating_regexp
+    let s = it.iterated_string
+    let m = try js_reg_exp_exec(ctx, r, s)
+    if js_is_null(m):
+        it.done = true
+        *pdone = 1
+        return js_undefined()
+    elif it.global:
+        errdefer js_free_value(ctx, m)
+        let match_str = try js_to_string_free(ctx, js_get_property_int64(ctx, m, 0))
+        defer js_free_value(ctx, match_str)
+        if js_is_empty_string(match_str):
+            var this_index: i64 = 0
+            try js_to_length_free(ctx, &this_index, js_get_property(ctx, r, atom_lastIndex))
+            let sp = s.u.string
+            let next_index = string_advance_index(sp, this_index, it.unicode)
+            discard(try js_set_property(ctx, r, atom_lastIndex, js_new_int64(next_index)))
+    else:
+        it.done = true
+    *pdone = 0
+    return m
+
+# RegExp.prototype[Symbol.matchAll](string)
+func js_regexp_symbol_match_all(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # [Symbol.matchAll](str)
+    let r = this_val
+    var args: Value[2] = ---
+
+    if not js_is_object(r):
+        try js_throw_type_error_not_an_object(ctx)
+
+    var ctor = js_undefined()
+    var flags = js_undefined()
+    var matcher = js_undefined()
+    var iter = js_undefined()
+
+    let s = try js_to_string(ctx, argv[0])
+    errdefer js_free_value(ctx, s)
+    defer js_free_value_at(ctx, &ctor)
+    defer js_free_value_at(ctx, &flags)
+    errdefer js_free_value_at(ctx, &matcher)
+    errdefer js_free_value_at(ctx, &iter)
+    ctor = try js_species_constructor(ctx, r, ctx.regexp_ctor)
+    flags = try js_to_string_free(ctx, js_get_property(ctx, r, atom_flags))
+    args[0] = r
+    args[1] = flags
+    matcher = try js_call_constructor(ctx, ctor, 2, &args[0])
+    var last_index: i64 = 0
+    try js_to_length_free(ctx, &last_index, js_get_property(ctx, r, atom_lastIndex))
+    discard(try js_set_property(ctx, matcher, atom_lastIndex, js_new_int64(last_index)))
+
+    iter = try js_new_object_class(ctx, (i32)ClassId.regexp_string_iterator)
+    let it = (RegExpStringIteratorData*)(try js_malloc(ctx, sizeof(RegExpStringIteratorData)))
+    it.iterating_regexp = matcher
+    it.iterated_string = s
+    let strp = flags.u.string
+    it.global = string_indexof_char(strp, (i32)'g', 0) >= 0
+    it.unicode = (string_indexof_char(strp, (i32)'u', 0) >= 0 or
+                  string_indexof_char(strp, (i32)'v', 0) >= 0)
+    it.done = false
+    js_set_opaque(iter, it)
+    return iter
+
+# mark: ValueBuffer =============================================================================
+
+## A growable array of values, its first four in the struct (ValueBuffer).
+struct ValueBuffer:
+    var ctx: Context*
+    ## `def` while at most four values are held, else a js_malloc'ed array.
+    var arr: Value*
+    var def: Value[4]
+    var len: i32
+    var size: i32
+    var error_status: i32
+
+func value_buffer_init(ctx: Context*, b: ValueBuffer*):
+    b.ctx = ctx
+    b.len = 0
+    b.size = 4
+    b.error_status = 0
+    b.arr = &b.def[0]
+
+func value_buffer_free(b: ValueBuffer*):
+    while b.len > 0:
+        b.len -= 1
+        js_free_value(b.ctx, b.arr[(usize)b.len])
+    if b.arr != &b.def[0]:
+        js_free(b.ctx, b.arr)
+    b.arr = &b.def[0]
+    b.size = 4
+
+# Append `val`, which the buffer owns. On failure (out of memory) the buffer is freed and
+# every later append fails.
+func value_buffer_append(b: ValueBuffer*, val: Value) -> !:
+    if b.error_status != 0:
+        error(exception, "")
+
+    if b.len >= b.size:
+        var new_size = (b.len + (b.len >> 1) + 31) & ~16
+        var slack: usize = 0
+        let inline_arr = b.arr == &b.def[0]
+        var old_arr: void*? = none
+        if not inline_arr:
+            old_arr = (void*)b.arr
+
+        let raw = js_realloc2(b.ctx, old_arr, sizeof(Value) * (usize)new_size, &slack) catch failure:
+            value_buffer_free(b)
+            js_free_value(b.ctx, val)
+            b.error_status = -1
+            error(failure.code, failure.message)
+        let new_arr = (Value*)(raw else trap("value_buffer_append: empty allocation"))
+        if inline_arr:
+            discard(cutils.memcpy(new_arr, &b.def[0], sizeof(Value) * 4))
+        new_size += (i32)(slack // sizeof(Value))
+        b.arr = new_arr
+        b.size = new_size
+    b.arr[(usize)b.len] = val
+    b.len += 1
+
+# mark: Standard RegExps ========================================================================
+
+# find in 'p' or its prototypes
+func find_property_regexp(ppr: Property*?*, p0: Object*, atom: Atom) -> ShapeProperty*?:
+    var p = p0
+    while true:
+        if let prs = find_own_property(ppr, p, atom):
+            return prs
+        p = p.shape.proto else return none
+        if p.is_exotic:
+            return none
+
+# Whether the property `atom` of `p` (or of its prototypes) is a getter that is the C
+# function `func_` with the magic `magic`.
+func check_regexp_getter(ctx: Context*, p: Object*, atom: Atom, func_: CFunction, magic: i32) -> bool:
+    var pr: Property*? = none
+
+    let prs = find_property_regexp(&pr, p, atom) else return false
+    if ((i32)prs.flags & prop_tmask) != prop_getset:
+        return false
+    let pr1 = pr else return false
+    let getter = pr1.u.getset.getter else return false
+    return js_is_c_function(ctx, js_mkptr(Tag.object, getter), func_, magic)
+
+# Whether `obj` is a RegExp whose lastIndex is a number and whose exec, flags, global
+# and unicode are still the builtins, so that no user code can observe the fast path.
+func js_is_standard_regexp(ctx: Context*, obj: Value) -> bool:
+    var pr: Property*? = none
+
+    if obj.tag != Tag.object:
+        return false
+    let p = obj.u.obj
+    if p.class_id != ClassId.regexp:
+        return false
+    # check that the lastIndex is a number (no side effect while getting it)
+    if find_own_property(&pr, p, atom_lastIndex) == none:
+        return false
+    let last_index_pr = pr else return false
+    if not js_is_number(last_index_pr.u.value):
+        return false
+
+    # check the 'exec' method.
+    let prs = find_property_regexp(&pr, p, atom_exec) else return false
+    if ((i32)prs.flags & prop_tmask) != prop_normal:
+        return false
+    let exec_pr = pr else return false
+    if not js_is_c_function(ctx, exec_pr.u.value, js_regexp_exec, 0):
+        return false
+    # check the flag getters
+    var ft: CFunctionType = ---
+    ft.getter = js_regexp_get_flags
+    if not check_regexp_getter(ctx, p, atom_flags, ft.generic, 0):
+        return false
+    ft.getter_magic = js_regexp_get_flag
+    if not check_regexp_getter(ctx, p, atom_global, ft.generic, lre_flag_global):
+        return false
+    if not check_regexp_getter(ctx, p, atom_unicode, ft.generic, lre_flag_unicode):
+        return false
+    # XXX: need to check all accessors, need a faster way.
+    return true
+
+# mark: Symbol.replace ==========================================================================
+
+# RegExp.prototype[Symbol.replace](string, replaceValue)
+func js_regexp_symbol_replace(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # [Symbol.replace](str, rep)
+    let rx = this_val
+    let rep = argv[1]
+    var args: Value[6] = ---
+    var b_s: StringBuffer = ---
+    let b = &b_s
+    var v_b: ValueBuffer = ---
+    let results = &v_b
+
+    if not js_is_object(rx):
+        try js_throw_type_error_not_an_object(ctx)
+
+    # as upstream, a failed append is reported by string_buffer_end
+    string_buffer_init(ctx, b, 0) catch: recover ()
+    value_buffer_init(ctx, results)
+
+    var rep_val = js_undefined()
+    var matched = js_undefined()
+    var tab = js_undefined()
+    var flags = js_undefined()
+    var rep_str = js_undefined()
+    var named_captures = js_undefined()
+    var text = js_undefined()
+    # the done1 label, which every exit runs; string_buffer_free is a no-op after
+    # string_buffer_end
+    defer string_buffer_free(b)
+    defer value_buffer_free(results)
+    defer js_free_value_at(ctx, &text)
+    defer js_free_value_at(ctx, &named_captures)
+    defer js_free_value_at(ctx, &rep_str)
+    defer js_free_value_at(ctx, &tab)
+    defer js_free_value_at(ctx, &flags)
+    defer js_free_value_at(ctx, &matched)
+    defer js_free_value_at(ctx, &rep_val)
+
+    text = try js_to_string(ctx, argv[0])
+
+    let sp = text.u.string
+    let functional_replace = js_is_function(ctx, rep)
+    if not functional_replace:
+        rep_val = try js_to_string(ctx, rep)
+
+    if not functional_replace and js_is_standard_regexp(ctx, rx):
+        # use faster version for simple cases
+        let res = try js_regexp_replace(ctx, rx, text, rep_val)
+        if not js_is_undefined(res):
+            return res
+
+    let flags0 = try js_get_property(ctx, rx, atom_flags)
+    flags = try js_to_string_free(ctx, flags0)
+    let p = flags.u.string
+
+    var full_unicode = false
+    let is_global = -1 != string_indexof_char(p, (i32)'g', 0)
+    if is_global:
+        full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or
+                        string_indexof_char(p, (i32)'v', 0) >= 0)
+        discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0)))
+
+    while true:
+        let result = try js_reg_exp_exec(ctx, rx, text)
+        if js_is_null(result):
+            break
+        try value_buffer_append(results, result)
+        if not is_global:
+            break
+        js_free_value(ctx, matched)
+        matched = js_undefined()
+        matched = try js_to_string_free(ctx, js_get_property_int64(ctx, result, 0))
+        if js_is_empty_string(matched):
+            # always advance of at least one char
+            var this_index: i64 = 0
+            try js_to_length_free(ctx, &this_index, js_get_property(ctx, rx, atom_lastIndex))
+            let next_index = string_advance_index(sp, this_index, full_unicode)
+            discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int64(next_index)))
+    var next_source_position: i64 = 0
+    for j in 0..<(usize)results.len:
+        let result = results.arr[j]
+        var n_captures: u32 = 0
+        try js_get_length32(ctx, &n_captures, result)
+        js_free_value(ctx, matched)
+        matched = js_undefined()
+        matched = try js_to_string_free(ctx, js_get_property_int64(ctx, result, 0))
+        var position: i64 = 0
+        try js_to_length_free(ctx, &position, js_get_property(ctx, result, atom_index))
+        if position > (i64)sp.len:
+            position = (i64)sp.len
+        elif position < 0:
+            position = 0
+        # ignore substition if going backward (can happen
+        # with custom regexp object)
+        js_free_value(ctx, tab)
+        tab = js_undefined()
+        tab = try js_new_array(ctx)
+        discard(try js_define_property_value_int64(ctx, tab, 0, js_dup_value(ctx, matched),
+                                                   prop_c_w_e | prop_throw))
+        var n: i64 = 1
+        while n < (i64)n_captures:
+            var cap_n = try js_get_property_int64(ctx, result, n)
+            if not js_is_undefined(cap_n):
+                cap_n = try js_to_string_free(ctx, cap_n)
+            discard(try js_define_property_value_int64(ctx, tab, n, cap_n, prop_c_w_e | prop_throw))
+            n += 1
+        js_free_value(ctx, named_captures)
+        named_captures = js_undefined()
+        named_captures = try js_get_property(ctx, result, atom_groups)
+        if functional_replace:
+            discard(try js_define_property_value_int64(ctx, tab, n, js_new_int32((i32)position),
+                                                       prop_c_w_e | prop_throw))
+            n += 1
+            discard(try js_define_property_value_int64(ctx, tab, n, js_dup_value(ctx, text), prop_c_w_e | prop_throw))
+            n += 1
+            if not js_is_undefined(named_captures):
+                discard(try js_define_property_value_int64(ctx, tab, n, js_dup_value(ctx, named_captures),
+                                                           prop_c_w_e | prop_throw))
+                n += 1
+            args[0] = js_undefined()
+            args[1] = tab
+            js_free_value(ctx, rep_str)
+            rep_str = js_undefined()
+            rep_str = try js_to_string_free(ctx, js_function_apply(ctx, rep, 2, &args[0], 0))
+        else:
+            var b1_s: StringBuffer = ---
+            let b1 = &b1_s
+
+            var named_captures1 = js_undefined()
+            if not js_is_undefined(named_captures):
+                named_captures1 = try js_to_object(ctx, named_captures)
+            js_free_value(ctx, rep_str)
+            rep_str = js_undefined()
+
+            string_buffer_init(ctx, b1, 0) catch: recover ()
+            var failed = false
+            js_string_get_substitution(ctx, b1, matched, sp, (u32)position, tab, named_captures1, rep_val,
+                                       none, 0) catch:
+                failed = true
+                recover ()
+            let rs = string_buffer_end(b1) catch failure:
+                js_free_value(ctx, named_captures1)
+                error(failure.code, failure.message)
+            rep_str = rs
+            js_free_value(ctx, named_captures1)
+            if failed:
+                error(exception, "")
+        if position >= next_source_position:
+            string_buffer_concat(b, sp, (u32)next_source_position, (u32)position) catch: recover ()
+            string_buffer_concat_value(b, rep_str) catch: recover ()
+            next_source_position = position + (i64)matched.u.string.len
+    string_buffer_concat(b, sp, (u32)next_source_position, sp.len) catch: recover ()
+    return try string_buffer_end(b)

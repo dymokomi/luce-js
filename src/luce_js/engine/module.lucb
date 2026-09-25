@@ -15,8 +15,8 @@ import memory
 import os
 import luce_js.cutils as cutils
 import luce_js.dtoa as dtoa
+import regex
 import luce_js.unicode as unicode
-# import luce_js.regexp as regexp
 
 ## The failure every fallible engine function reports when a JavaScript exception is
 ## pending: the thrown value itself is in `rt.current_exception`, as in QuickJS.

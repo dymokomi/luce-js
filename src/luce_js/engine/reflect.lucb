@@ -1,0 +1,126 @@
+#==============================================================================================
+#
+#   reflect - The Reflect object
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 50410-50576: Reflect.apply, construct, deleteProperty,
+#       get, has, set, setPrototypeOf and ownKeys, and the Reflect object's table; the
+#       methods it shares with Object (defineProperty, getOwnPropertyDescriptor,
+#       getPrototypeOf, isExtensible, preventExtensions) are Object's with the magic 1.
+#       JS_AddIntrinsicBaseObjects installs js_reflect_obj on the global object.
+#
+#==============================================================================================
+
+# mark: Reflect methods =========================================================================
+
+# Reflect.apply(target, thisArgument, argumentsList)
+func js_reflect_apply(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_function_apply(ctx, argv[0], cutils.max_int(0, argc - 1), argv + 1, 2)
+
+# Reflect.construct(target, argumentsList, newTarget)
+func js_reflect_construct(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let func_obj = argv[0]
+    let array_arg = argv[1]
+    var new_target = func_obj
+    if argc > 2:
+        new_target = argv[2]
+        if not js_is_constructor(ctx, new_target):
+            try js_throw_type_error_not_a_constructor(ctx, new_target)
+    var len: u32 = 0
+    let tab = try build_arg_list(ctx, &len, array_arg)
+    defer free_arg_list(ctx, tab, len)
+    return try js_call_constructor2(ctx, func_obj, new_target, (i32)len, tab)
+
+# Reflect.deleteProperty(target, propertyKey)
+func js_reflect_delete_property(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = argv[0]
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    let atom = try js_value_to_atom(ctx, argv[1])
+    defer js_free_atom(ctx, atom)
+    let ret = try js_delete_property(ctx, obj, atom, 0)
+    return js_new_bool(ret)
+
+# Reflect.get(target, propertyKey, receiver)
+func js_reflect_get(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = argv[0]
+    let prop = argv[1]
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    var receiver = obj
+    if argc > 2:
+        receiver = argv[2]
+    let atom = try js_value_to_atom(ctx, prop)
+    defer js_free_atom(ctx, atom)
+    return try js_get_property_internal(ctx, obj, atom, receiver, false)
+
+# Reflect.has(target, propertyKey)
+func js_reflect_has(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = argv[0]
+    let prop = argv[1]
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    let atom = try js_value_to_atom(ctx, prop)
+    defer js_free_atom(ctx, atom)
+    let ret = try js_has_property(ctx, obj, atom)
+    return js_new_bool(ret)
+
+# Reflect.set(target, propertyKey, value, receiver)
+func js_reflect_set(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = argv[0]
+    let prop = argv[1]
+    let val = argv[2]
+    var receiver = obj
+    if argc > 3:
+        receiver = argv[3]
+    if obj.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    let atom = try js_value_to_atom(ctx, prop)
+    defer js_free_atom(ctx, atom)
+    let ret = try js_set_property_internal(ctx, obj, atom, js_dup_value(ctx, val), receiver, 0)
+    return js_new_bool(ret)
+
+# Reflect.setPrototypeOf(target, proto)
+func js_reflect_set_prototype_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let ret = try js_set_prototype_internal(ctx, argv[0], argv[1], false)
+    return js_new_bool(ret)
+
+# Reflect.ownKeys(target)
+func js_reflect_own_keys(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if argv[0].tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+    return try js_get_own_property_names2(ctx, argv[0], gpn_string_mask | gpn_symbol_mask,
+                                          (i32)IteratorKind.key)
+
+# mark: Tables ==================================================================================
+
+## The Reflect object.
+let js_reflect_funcs: CFunctionListEntry[14] = [
+    CFunctionListEntry(name = "apply", def_type = def_cfunc, length = 3, generic = js_reflect_apply),
+    CFunctionListEntry(name = "construct", def_type = def_cfunc, length = 2, generic = js_reflect_construct),
+    CFunctionListEntry(name = "defineProperty", def_type = def_cfunc, length = 3, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_object_define_property, magic = 1),
+    CFunctionListEntry(name = "deleteProperty", def_type = def_cfunc, length = 2, generic = js_reflect_delete_property),
+    CFunctionListEntry(name = "get", def_type = def_cfunc, length = 2, generic = js_reflect_get),
+    CFunctionListEntry(name = "getOwnPropertyDescriptor", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_object_get_own_property_descriptor,
+                       magic = 1),
+    CFunctionListEntry(name = "getPrototypeOf", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_object_get_prototype_of, magic = 1),
+    CFunctionListEntry(name = "has", def_type = def_cfunc, length = 2, generic = js_reflect_has),
+    CFunctionListEntry(name = "isExtensible", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_object_is_extensible, magic = 1),
+    CFunctionListEntry(name = "ownKeys", def_type = def_cfunc, length = 1, generic = js_reflect_own_keys),
+    CFunctionListEntry(name = "preventExtensions", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_object_prevent_extensions, magic = 1),
+    CFunctionListEntry(name = "set", def_type = def_cfunc, length = 3, generic = js_reflect_set),
+    CFunctionListEntry(name = "setPrototypeOf", def_type = def_cfunc, length = 2, generic = js_reflect_set_prototype_of),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string,
+                       string_value = "Reflect"),
+]
+
+## The Reflect global, as JS_AddIntrinsicBaseObjects installs it. prop_flags 3:
+## JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE.
+let js_reflect_obj: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "Reflect", prop_flags = 3, def_type = def_object, prop_list = js_reflect_funcs),
+]

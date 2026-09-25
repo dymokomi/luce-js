@@ -1,0 +1,155 @@
+#==============================================================================================
+#
+#   json_builtins - JSON.parse with a reviver, JSON.isRawJSON and JSON.rawJSON
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 49708-49921: InternalizeJSONProperty (the reviver walk,
+#       which hands the reviver each primitive's source text through the parse records
+#       of json_parse.lucb), JSON.parse, JSON.isRawJSON and JSON.rawJSON.
+#
+#==============================================================================================
+
+# mark: JSON.parse ==============================================================================
+
+# The members of `val` walked by internalize_json_property: each is revived in turn and
+# replaced or deleted; for a primitive with a matching parse record, its source text is
+# stored in `context.source`.
+func internalize_json_members(ctx: Context*, val: Value, context: Value, reviver: Value, text_str: const u8*,
+                              pr: JSONParseRecord*?) -> !:
+    if js_is_object(val):
+        var atoms: PropertyEnum*? = none
+        var len: u32 = 0
+        let is_array = try js_is_array(ctx, val)
+        if is_array:
+            try js_get_length32(ctx, &len, val)
+        else:
+            try js_get_own_property_names_internal(ctx, &atoms, &len, val.u.obj,
+                                                   gpn_enum_only | gpn_string_mask)
+        defer js_free_property_enum(ctx, atoms, len)
+        for i: u32 in 0..<len:
+            var prop: Atom = no_atom
+            if is_array:
+                prop = try js_new_atom_uint32(ctx, i)
+            else:
+                let tab = atoms else trap("internalize_json_property: no property names")
+                prop = js_dup_atom(ctx, tab[(usize)i].atom)
+            defer js_free_atom(ctx, prop)
+            let new_el = try internalize_json_property(ctx, val, prop, reviver, text_str, pr)
+            if js_is_undefined(new_el):
+                discard(try js_delete_property(ctx, val, prop, 0))
+            else:
+                discard(try js_define_property_value(ctx, val, prop, new_el, prop_c_w_e))
+    else:
+        if let r = pr:
+            let new_el = try js_new_string_len(ctx, text_str + (usize)r.u.primitive.source_pos,
+                                               (usize)r.u.primitive.source_len)
+            discard(try js_define_property_value(ctx, context, atom_source, new_el, prop_c_w_e))
+
+# InternalizeJSONProperty: revive the property `name` of `holder`. `text_str` is the parsed
+# text. If pr != none, then pr.value = holder by construction.
+func internalize_json_property(ctx: Context*, holder: Value, name: Atom, reviver: Value, text_str: const u8*,
+                               pr0: JSONParseRecord*?) -> Value!:
+    var pr = pr0
+
+    if js_check_stack_overflow(ctx.rt, 0):
+        try js_throw_stack_overflow(ctx)
+
+    let val = try js_get_property(ctx, holder, name)
+    defer js_free_value(ctx, val)
+
+    if let r = pr:
+        # the values of parse records are the parser's own objects and arrays, for which
+        # js_is_array cannot fail (a failure is read as true, as C reads -1)
+        let is_array = js_is_array(ctx, r.value) catch: recover true
+        if is_array:
+            if js_atom_is_tagged_int_raw(name):
+                let idx = js_atom_to_uint32_raw(name)
+                if idx < (u32)r.u.array.count:
+                    let elements = r.u.array.elements else trap("internalize_json_property: no elements")
+                    pr = elements + (usize)idx
+                else:
+                    pr = none
+        else:
+            pr = json_parse_record_find(r, name)
+        if let r1 = pr:
+            if not js_same_value(ctx, r1.value, val):
+                pr = none
+
+    let context = try js_new_object(ctx)
+    defer js_free_value(ctx, context)
+
+    try internalize_json_members(ctx, val, context, reviver, text_str, pr)
+    let name_val = try js_atom_to_value(ctx, name)
+    defer js_free_value(ctx, name_val)
+    var args: Value[3] = [name_val, val, context]
+    return try js_call(ctx, reviver, holder, 3, &args[0])
+
+# JSON.parse(text, reviver)
+func js_json_parse(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var len: usize = 0
+
+    let text = try js_to_c_string_len(ctx, &len, argv[0])
+    defer js_free_c_string(ctx, text)
+    if argc > 1 and js_is_function(ctx, argv[1]):
+        var pr_s: JSONParseRecord = ---
+        let pr = &pr_s
+
+        let reviver = argv[1]
+        let root = try js_new_object(ctx)
+        json_parse_record_init_obj(ctx, pr, root)
+        # fail1, and the exit of the walk
+        defer js_free_value(ctx, root)
+        defer json_free_parse_record(ctx, pr)
+        var size: i32 = 0
+        let pr1 = try json_parse_record_add(ctx, pr, atom_empty_string, &size)
+
+        let obj = try js_parse_json3(ctx, text, len, "<input>".bytes.data, 0, pr1)
+
+        # js_define_property_value frees `obj` on failure (upstream frees it a second time)
+        discard(try js_define_property_value(ctx, root, atom_empty_string, obj, prop_c_w_e))
+
+        return try internalize_json_property(ctx, root, atom_empty_string, reviver, text, pr)
+    return try js_parse_json3(ctx, text, len, "<input>".bytes.data, 0, none)
+
+# mark: Raw JSON ================================================================================
+
+# JSON.isRawJSON(value)
+func js_json_is_raw_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = argv[0]
+    if obj.tag == Tag.object:
+        let p = obj.u.obj
+        return js_new_bool(p.class_id == ClassId.rawjson)
+    return js_false()
+
+# Whether `c` may start or end the text of JSON.rawJSON.
+func is_valid_raw_json_char(c: i32) -> bool:
+    return ((c >= (i32)'a' and c <= (i32)'z') or
+            (c >= (i32)'0' and c <= (i32)'9') or
+            c == (i32)'-' or
+            c == (i32)'"')
+
+# JSON.rawJSON(text)
+func js_json_raw_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_string(ctx, argv[0])
+    let p = text.u.string
+    var valid = false
+    if (p.len != 0 and is_valid_raw_json_char(string_get(p, 0)) and
+        is_valid_raw_json_char(string_get(p, (i32)p.len - 1))):
+        var arg = text
+        let res = js_json_parse(ctx, js_undefined(), 1, &arg) catch: recover js_exception()
+        if not js_is_exception(res):
+            js_free_value(ctx, res)
+            valid = true
+    if not valid:
+        # syntax_error: the exception of the parse, if any, is replaced
+        js_free_value(ctx, text)
+        try js_throw_syntax_error(ctx, "invalid rawJSON string")
+
+    let obj = js_new_object_proto_class(ctx, js_null(), (u32)ClassId.rawjson) catch failure:
+        js_free_value(ctx, text)
+        error(failure.code, failure.message)
+    js_define_property_value(ctx, obj, atom_rawJSON, text, prop_enumerable) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    discard(js_prevent_extensions(ctx, obj) catch: recover false)
+    return obj

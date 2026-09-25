@@ -1,0 +1,167 @@
+#==============================================================================================
+#
+#   tests_r25 - Tests of the RegExp, JSON and Reflect helpers that need no context
+#
+#   DESCRIPTION:
+#       The hex escapes of RegExp.escape and JSON.stringify, the characters RegExp.escape
+#       and JSON.rawJSON single out, the flag letters of a RegExp, the parse-record
+#       lookup of JSON.parse on records built by hand, and the regex bridge: the escape
+#       parser the tokenizer uses, and compiling and matching through luce-regex with a
+#       runtime's allocator (strings from tests_r04's test_string8 and test_string16).
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# The text format_hex_escape writes for (`prefix`, `c`, `n_digits`).
+func test_hex_escape(buf: u8[], prefix: u8, c: u32, n_digits: usize) -> str:
+    let n = format_hex_escape(buf, prefix, c, n_digits)
+    assert(buf[n] == 0)
+    return (str)buf[..<n]
+
+# lre_parse_escape on the NUL-terminated `text` (what follows a '\\'): its answer and the
+# number of bytes it consumed.
+func test_parse_escape(text: str, allow_utf16: i32) -> (i32, usize):
+    let start: const u8* = text.bytes.data
+    var p = start
+    let c = lre_parse_escape(&p, allow_utf16)
+    return (c, (usize)(p - start))
+
+# mark: Escapes and characters ==================================================================
+
+test "hex escapes are snprintf's \\x%02x and \\u%04x":
+    var buf: u8[16] = ---
+    assert(test_hex_escape(buf, 'x', 0x7, 2) == "\\x07")
+    assert(test_hex_escape(buf, 'x', 0xff, 2) == "\\xff")
+    assert(test_hex_escape(buf, 'x', 0x2c, 2) == "\\x2c")
+    assert(test_hex_escape(buf, 'u', 0x1f, 4) == "\\u001f")
+    assert(test_hex_escape(buf, 'u', 0xd800, 4) == "\\ud800")
+    assert(test_hex_escape(buf, 'u', 0xfeff, 4) == "\\ufeff")
+    assert(test_hex_escape(buf, 'u', 0x10ffff, 4) == "\\u10ffff")
+
+test "RegExp.escape hex-escapes the syntax punctuators strchr finds":
+    for c in ",-=<>#&!%:;@~'`\"".bytes:
+        assert(regexp_escape_is_hex_punctuator((u32)c))
+    for c in "_$.*+?^()[]{}|/\\ aZ09".bytes:
+        assert(not regexp_escape_is_hex_punctuator((u32)c))
+
+test "JSON.rawJSON accepts text starting and ending with a-z, 0-9, - or \"":
+    for c in "az09-\"tfn".bytes:
+        assert(is_valid_raw_json_char((i32)c))
+    for c in "AZ {}[] .+\n".bytes:
+        assert(not is_valid_raw_json_char((i32)c))
+    assert(not is_valid_raw_json_char(0x100))
+
+test "RegExp flag letters map to the lre_flag_* bits once each":
+    let all = "dgimsuvy"
+    assert(js_regexp_parse_flags(all.bytes.data, all.bytes.length) ==
+           (lre_flag_indices | lre_flag_global | lre_flag_ignorecase | lre_flag_multiline |
+            lre_flag_dotall | lre_flag_unicode | lre_flag_unicode_sets | lre_flag_sticky))
+    assert(js_regexp_parse_flags("".bytes.data, 0) == 0)
+    assert(js_regexp_parse_flags("gy".bytes.data, 2) == lre_flag_global | lre_flag_sticky)
+    assert(js_regexp_parse_flags("gg".bytes.data, 2) == -1)
+    assert(js_regexp_parse_flags("x".bytes.data, 1) == -1)
+    assert(js_regexp_parse_flags("G".bytes.data, 1) == -1)
+    # the letters of the flags getter, in the order of its result
+    for i in 0..<re_flag_char.length:
+        let one: u8[1] = [re_flag_char[i]]
+        assert(js_regexp_parse_flags(&one[0], 1) > 0)
+
+# mark: JSON parse records ======================================================================
+
+test "parse records find members linearly and through the hash table":
+    var entries: JSONParseRecordEntry[10] = ---
+    var pr_s: JSONParseRecord = ---
+    let pr = &pr_s
+    pr.value = js_undefined()
+    pr.u.obj.count = 10
+    pr.u.obj.entries = &entries[0]
+    pr.u.obj.hash_size = 0
+    pr.u.obj.hash_table = none
+    for i: u32 in 0..<10:
+        entries[(usize)i].atom = 100 + 7 * i
+        entries[(usize)i].parse_record.value = js_new_int32((i32)i)
+    for i: u32 in 0..<10:
+        let found = json_parse_record_find(pr, 100 + 7 * i) else trap("member not found")
+        assert(js_value_get_int(found.value) == (i32)i)
+    assert(json_parse_record_find(pr, 99) == none)
+
+    # the table json_parse_record_resize_hash builds, by hand: 16 buckets
+    var hash_table: u32[16] = ---
+    for h in 0..<hash_table.length:
+        hash_table[h] = 0xffffffff
+    for i: u32 in 0..<10:
+        let h = (usize)(entries[(usize)i].atom & 15)
+        entries[(usize)i].hash_next = hash_table[h]
+        hash_table[h] = i
+    pr.u.obj.hash_size = 16
+    pr.u.obj.hash_table = &hash_table[0]
+    for i: u32 in 0..<10:
+        let found = json_parse_record_find(pr, 100 + 7 * i) else trap("member not found")
+        assert(js_value_get_int(found.value) == (i32)i)
+    assert(json_parse_record_find(pr, 99) == none)
+    assert(json_parse_record_find(pr, 100 + 7 * 10) == none)
+
+test "an empty object record finds nothing":
+    var pr_s: JSONParseRecord = ---
+    pr_s.value = js_undefined()
+    pr_s.u.obj.count = 0
+    pr_s.u.obj.entries = none
+    pr_s.u.obj.hash_size = 0
+    pr_s.u.obj.hash_table = none
+    assert(json_parse_record_find(&pr_s, 1) == none)
+
+# mark: The regex bridge ========================================================================
+
+test "lre_parse_escape reads what follows a backslash, as libregexp":
+    assert(test_parse_escape("n", 1) == (10, 1))
+    assert(test_parse_escape("x41z", 1) == (0x41, 3))
+    assert(test_parse_escape("u0041", 1) == (0x41, 5))
+    assert(test_parse_escape("u{1F600}!", 1) == (0x1f600, 8))
+    assert(test_parse_escape("u{000000000000000041}", 1) == (0x41, 21))
+    assert(test_parse_escape("u{110000}", 1).0 == -1)
+    assert(test_parse_escape("x4", 1).0 == -1)
+    assert(test_parse_escape("q", 1) == (-2, 0))
+    assert(test_parse_escape("", 1) == (-2, 0))
+    # a surrogate pair is joined only in the unicode regexp case
+    assert(test_parse_escape("ud83d\\ude00", 1) == (0xd83d, 5))
+    assert(test_parse_escape("ud83d\\ude00", 2) == (0x1f600, 11))
+    # legacy octal
+    assert(test_parse_escape("101", 1) == (0x41, 3))
+    assert(test_parse_escape("0", 2) == (0, 1))
+
+test "RegExp programs compile and match through the bridge with the runtime's heap":
+    let rt = js_new_runtime() else trap("out of memory")
+    defer js_free_runtime(rt)
+    let host = js_regexp_host(rt)
+    var message: u8[64] = ---
+
+    let pattern = "(?<year>\\d{4})-(\\d\\d)"
+    let program = regex.compile_ecmascript(pattern.bytes, lre_flag_global | lre_flag_indices, message,
+                                           &host) else trap("the pattern compiles")
+    defer regex.free_ecmascript(program)
+    assert(lre_get_flags(program) == lre_flag_global | lre_flag_indices | lre_flag_named_groups)
+    assert(lre_get_capture_count(program) == 3)
+    # the group names: "year" then an unnamed group
+    let names = lre_get_groupnames(program) else trap("the pattern has named groups")
+    assert(cutils.strlen(names) == 4)
+    let second = names + cutils.strlen(names) + lre_group_name_trailer_len
+    assert(*second == 0)
+
+    var caps: i32[6] = ---
+    let text8 = test_string8("on 2024-05-01")
+    defer cutils.c_free(text8)
+    assert(lre_exec(caps, program, text8, 0, rt) == 1)
+    assert(caps[0] == 3 and caps[1] == 10)
+    assert(caps[2] == 3 and caps[3] == 7)
+    assert(caps[4] == 8 and caps[5] == 10)
+    assert(lre_exec(caps, program, text8, 4, rt) == 0)
+
+    let units: u16[6] = [0x65e5, 0x31, 0x39, 0x39, 0x39, 0x2d]
+    let text16 = test_string16(units)
+    defer cutils.c_free(text16)
+    assert(lre_exec(caps, program, text16, 0, rt) == 0)
+
+    let bad = regex.compile_ecmascript("a{2,1}".bytes, 0, message, &host)
+    assert(bad == none)
+    assert(message[0] != 0)

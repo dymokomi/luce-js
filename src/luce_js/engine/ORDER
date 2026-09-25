@@ -122,7 +122,15 @@ iterator_helpers.lucb
 iterator_helper_next.lucb
 array_iterator_tables.lucb
 number_constructor.lucb
-stub_r25_regexp_json_reflect.lucb
+regexp_bridge.lucb
+regexp_constructor.lucb
+regexp_exec.lucb
+regexp_symbols.lucb
+regexp_search_split.lucb
+json_parse.lucb
+json_builtins.lucb
+json_stringify.lucb
+reflect.lucb
 proxy_traps.lucb
 proxy.lucb
 symbol.lucb
@@ -170,3 +178,4 @@ tests_r24.lucb
 tests_r23.lucb
 tests_r26.lucb
 tests_r27.lucb
+tests_r25.lucb

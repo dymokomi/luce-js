@@ -17,11 +17,6 @@
 
 # mark: Tokens ==================================================================================
 
-# The escape parser of libregexp (lre_parse_escape), until luce_js.regexp is merged:
-# then `regexp.lre_parse_escape` replaces it, with this signature.
-func lre_parse_escape(pp: const u8**, allow_utf16: i32) -> i32:
-    trap("unported: lre_parse_escape (luce_js.regexp is not merged yet)")
-
 # Whether `tok` is a keyword token (TOK_FIRST_KEYWORD to TOK_LAST_KEYWORD).
 func tok_is_keyword(tok: TokenType) -> bool:
     return (i32)tok >= (i32)tok_first_keyword and (i32)tok <= (i32)tok_last_keyword

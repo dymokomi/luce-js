@@ -1,0 +1,309 @@
+#==============================================================================================
+#
+#   json_parse - Parsing JSON text, with the parse records of JSON.parse's source access
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 49317-49707: json_parse_expect, the parse records (a tree
+#       beside the parsed value that keeps, for each primitive, where its source text is,
+#       so a reviver receives `context.source`), json_parse_value and JS_ParseJSON3 /
+#       JS_ParseJSON2 / JS_ParseJSON. The JSON tokenizer is json_next_token
+#       (tokenizer_json.lucb).
+#
+#==============================================================================================
+
+# mark: Parse records ===========================================================================
+
+# Read the token `tok` and the one after it.
+func json_parse_expect(s: ParseState*, tok: TokenType) -> !:
+    if s.token.val != tok:
+        # XXX: dump token correctly in all cases
+        try js_parse_error(s, f"expecting '{tok_char(tok)}'")
+    try json_next_token(s)
+
+## The members of an object's parse record: its entries in parse order, and a hash table
+## of their indices once there are more than 8 (JSONParseRecordObject).
+struct JSONParseRecordObject:
+    var count: i32
+    var hash_size: u32
+    var entries: JSONParseRecordEntry*?
+    ## hash_size indices into entries, 0xffffffff for none; chained by hash_next.
+    var hash_table: u32*?
+
+## The elements of an array's parse record (the array struct of JSONParseRecord).
+struct JSONParseRecordArray:
+    var count: i32
+    var elements: JSONParseRecord*?
+
+## Where a primitive's source text is in the parsed text (the primitive struct of
+## JSONParseRecord).
+struct JSONParseRecordPrimitive:
+    var source_pos: u32
+    var source_len: u32
+
+## A parse record's payload: an object's, an array's or a primitive's, by its value.
+union JSONParseRecordUnion:
+    obj: JSONParseRecordObject
+    array: JSONParseRecordArray
+    primitive: JSONParseRecordPrimitive
+
+## The parse record of a parsed value (JSONParseRecord).
+struct JSONParseRecord:
+    var value: Value
+    var u: JSONParseRecordUnion
+
+## A member of an object's parse record (JSONParseRecordEntry).
+struct JSONParseRecordEntry:
+    var atom: Atom
+    var hash_next: u32
+    var parse_record: JSONParseRecord
+
+func json_parse_record_init_obj(ctx: Context*, pr: JSONParseRecord*, val: Value):
+    pr.value = js_dup_value(ctx, val)
+    pr.u.obj.count = 0
+    pr.u.obj.entries = none
+    pr.u.obj.hash_table = none
+    pr.u.obj.hash_size = 0
+
+func json_parse_record_init_array(ctx: Context*, pr: JSONParseRecord*, val: Value):
+    pr.value = js_dup_value(ctx, val)
+    pr.u.array.count = 0
+    pr.u.array.elements = none
+
+func json_parse_record_init_primitive(ctx: Context*, pr: JSONParseRecord*, val: Value, source_pos: u32,
+                                      source_len: u32):
+    pr.value = js_dup_value(ctx, val)
+    pr.u.primitive.source_pos = source_pos
+    pr.u.primitive.source_len = source_len
+
+func json_parse_record_resize_hash(ctx: Context*, po: JSONParseRecordObject*, new_hash_size: u32) -> !:
+    let new_hash_table = (u32*)(try js_malloc(ctx, sizeof(u32) * (usize)new_hash_size))
+    if let old = po.hash_table:
+        js_free(ctx, old)
+    po.hash_table = new_hash_table
+    po.hash_size = new_hash_size
+
+    for i: u32 in 0..<po.hash_size:
+        new_hash_table[(usize)i] = 0xffffffff
+    if let entries = po.entries:
+        for i: u32 in 0..<(u32)po.count:
+            let e = entries + (usize)i
+            let h = e.atom & (po.hash_size - 1)
+            e.hash_next = new_hash_table[(usize)h]
+            new_hash_table[(usize)h] = i
+
+# Add the member `key` to the object record `pr` (`*psize` is the allocated size of its
+# entries) and answer the member's record, whose value is undefined.
+func json_parse_record_add(ctx: Context*, pr: JSONParseRecord*, key: Atom, psize: i32*) -> JSONParseRecord*!:
+    let po = &pr.u.obj
+
+    try js_resize_array(ctx, (void*?*)&po.entries, (i32)sizeof(JSONParseRecordEntry), psize, po.count + 1)
+    # don't use a hash table when the number of entries is small
+    if po.count >= 8 and (u32)(po.count + 1) > po.hash_size:
+        let hash_bits = 32 - cutils.clz32((u32)po.count)
+        try json_parse_record_resize_hash(ctx, po, (u32)1 << (u32)hash_bits)
+
+    let entries = po.entries else trap("json_parse_record_add: no entries")
+    let e = entries + (usize)po.count
+    po.count += 1
+    e.atom = js_dup_atom(ctx, key)
+    let pr1 = &e.parse_record
+    pr1.value = js_undefined()
+    if po.hash_size != 0:
+        let hash_table = po.hash_table else trap("json_parse_record_add: no hash table")
+        let h = key & (po.hash_size - 1)
+        e.hash_next = hash_table[(usize)h]
+        hash_table[(usize)h] = (u32)(po.count - 1)
+    return pr1
+
+# The record of the member `key` of the object record `pr`, if any.
+func json_parse_record_find(pr: JSONParseRecord*, key: Atom) -> JSONParseRecord*?:
+    let po = &pr.u.obj
+
+    let entries = po.entries else return none
+    if po.hash_size == 0:
+        for i in 0..<(usize)po.count:
+            let e = entries + i
+            if e.atom == key:
+                return &e.parse_record
+    else:
+        let hash_table = po.hash_table else return none
+        let h = key & (po.hash_size - 1)
+        var i = hash_table[(usize)h]
+        while i != 0xffffffff:
+            let e = entries + (usize)i
+            if e.atom == key:
+                return &e.parse_record
+            i = e.hash_next
+    return none
+
+# Free the record `pr` (none is ignored) and what it holds.
+func json_free_parse_record(ctx: Context*, pr: JSONParseRecord*?):
+    let r = pr else return
+    if js_is_object(r.value):
+        # the values of parse records are the parser's own objects and arrays, for which
+        # js_is_array cannot fail (a failure is read as true, as C reads -1)
+        let is_array = js_is_array(ctx, r.value) catch: recover true
+        if is_array:
+            if let elements = r.u.array.elements:
+                for i in 0..<(usize)r.u.array.count:
+                    json_free_parse_record(ctx, elements + i)
+                js_free(ctx, elements)
+        else:
+            if let entries = r.u.obj.entries:
+                for i in 0..<(usize)r.u.obj.count:
+                    let e = entries + i
+                    js_free_atom(ctx, e.atom)
+                    json_free_parse_record(ctx, &e.parse_record)
+                js_free(ctx, entries)
+            if let hash_table = r.u.obj.hash_table:
+                js_free(ctx, hash_table)
+    js_free_value(ctx, r.value)
+    r.value = js_undefined() # fail safe
+
+# mark: Parsing =================================================================================
+
+# The name of a member: a string token, or an identifier in extended JSON.
+func json_parse_prop_name(s: ParseState*) -> Atom!:
+    let ctx = s.ctx
+    if s.token.val == TokenType.string:
+        return try js_value_to_atom(ctx, s.token.u.str_.str)
+    elif s.ext_json and s.token.val == TokenType.ident:
+        return js_dup_atom(ctx, s.token.u.ident.atom)
+    try js_parse_error(s, "expecting property name")
+
+# The error of a token that cannot start a value.
+func json_parse_bad_token(s: ParseState*) -> never!:
+    if s.token.val == TokenType.eof:
+        try js_parse_error(s, "Unexpected end of JSON input")
+    let bytes: const u8[] = u8[]((u8*)s.token.ptr, (usize)(s.buf_ptr - s.token.ptr))
+    try js_parse_error(s, f"unexpected token: '{(str)bytes}'")
+
+# Where the current token's text is: its offset in the parsed text and its length.
+func json_token_source(s: ParseState*) -> (u32, u32):
+    return ((u32)(s.token.ptr - s.buf_start), (u32)(s.buf_ptr - s.token.ptr))
+
+# Parse a value; with `pr`, also fill its parse record ('pr' can be none).
+func json_parse_value(s: ParseState*, pr: JSONParseRecord*?) -> Value!:
+    let ctx = s.ctx
+    var val = js_null()
+
+    if let r = pr:
+        r.value = js_undefined()
+    errdefer js_free_value_at(ctx, &val)
+    errdefer json_free_parse_record(ctx, pr)
+
+    match s.token.val:
+        .lbrace:
+            try json_next_token(s)
+            val = try js_new_object(ctx)
+            var pr_size: i32 = 0
+            if let r = pr:
+                json_parse_record_init_obj(ctx, r, val)
+            if s.token.val != TokenType.rbrace:
+                while true:
+                    let prop_name = try json_parse_prop_name(s)
+                    defer js_free_atom(ctx, prop_name)
+                    try json_next_token(s)
+                    try json_parse_expect(s, TokenType.colon)
+                    var pr1: JSONParseRecord*? = none
+                    if let r = pr:
+                        pr1 = try json_parse_record_add(ctx, r, prop_name, &pr_size)
+                    let prop_val = try json_parse_value(s, pr1)
+                    discard(try js_define_property_value(ctx, val, prop_name, prop_val, prop_c_w_e))
+
+                    if s.token.val != TokenType.comma:
+                        break
+                    try json_next_token(s)
+                    if s.ext_json and s.token.val == TokenType.rbrace:
+                        break
+            try json_parse_expect(s, TokenType.rbrace)
+        .lbracket:
+            try json_next_token(s)
+            val = try js_new_array(ctx)
+            var pr_size: i32 = 0
+            if let r = pr:
+                json_parse_record_init_array(ctx, r, val)
+            if s.token.val != TokenType.rbracket:
+                var idx: u32 = 0
+                while true:
+                    var pr1: JSONParseRecord*? = none
+                    if let r = pr:
+                        try js_resize_array(ctx, (void*?*)&r.u.array.elements, (i32)sizeof(JSONParseRecord),
+                                            &pr_size, r.u.array.count + 1)
+                        let elements = r.u.array.elements else trap("json_parse_value: no elements")
+                        let e = elements + (usize)r.u.array.count
+                        r.u.array.count += 1
+                        e.value = js_undefined()
+                        pr1 = e
+                    let el = try json_parse_value(s, pr1)
+                    discard(try js_define_property_value_uint32(ctx, val, idx, el, prop_c_w_e))
+                    if s.token.val != TokenType.comma:
+                        break
+                    try json_next_token(s)
+                    idx += 1
+                    if s.ext_json and s.token.val == TokenType.rbracket:
+                        break
+            try json_parse_expect(s, TokenType.rbracket)
+        .string:
+            val = js_dup_value(ctx, s.token.u.str_.str)
+            if let r = pr:
+                let (source_pos, source_len) = json_token_source(s)
+                json_parse_record_init_primitive(ctx, r, val, source_pos, source_len)
+            try json_next_token(s)
+        .number:
+            val = s.token.u.num.val
+            if let r = pr:
+                let (source_pos, source_len) = json_token_source(s)
+                json_parse_record_init_primitive(ctx, r, val, source_pos, source_len)
+            try json_next_token(s)
+        .ident:
+            let atom = s.token.u.ident.atom
+            if atom == atom_false or atom == atom_true:
+                val = js_new_bool(atom == atom_true)
+                if let r = pr:
+                    let (source_pos, source_len) = json_token_source(s)
+                    json_parse_record_init_primitive(ctx, r, val, source_pos, source_len)
+            elif atom == atom_null_keyword:
+                val = js_null()
+                if let r = pr:
+                    let (source_pos, source_len) = json_token_source(s)
+                    json_parse_record_init_primitive(ctx, r, val, source_pos, source_len)
+            elif atom == atom_NaN and s.ext_json:
+                # Note: json5 identifier handling is ambiguous e.g. is
+                # '{ NaN: 1 }' a valid JSON5 production ?
+                val = js_new_float64(math.nan)
+            elif atom == atom_Infinity and s.ext_json:
+                val = js_new_float64(math.infinity)
+            else:
+                try json_parse_bad_token(s)
+            try json_next_token(s)
+        _:
+            try json_parse_bad_token(s)
+    return val
+
+## Parse the JSON text `buf` (`buf_len` bytes followed by a NUL); with parse_json_ext in
+## `flags`, the extended JSON QuickJS accepts. With `pr`, fill the parse records
+## (JS_ParseJSON3).
+func js_parse_json3(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*, flags: i32,
+                    pr: JSONParseRecord*?) -> Value!:
+    var s1: ParseState = ---
+    let s = &s1
+
+    js_parse_init(ctx, s, buf, buf_len, filename)
+    s.ext_json = (flags & parse_json_ext) != 0
+    errdefer free_token(s, &s.token)
+    try json_next_token(s)
+    let val = try json_parse_value(s, pr)
+    if s.token.val != TokenType.eof:
+        json_free_parse_record(ctx, pr)
+        js_free_value(ctx, val)
+        try js_parse_error(s, "unexpected data at the end")
+    return val
+
+## Parse the JSON text `buf` with the parse_json_* `flags` (JS_ParseJSON2).
+pub func js_parse_json2(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*, flags: i32) -> Value!:
+    return try js_parse_json3(ctx, buf, buf_len, filename, flags, none)
+
+## Parse the JSON text `buf` (JS_ParseJSON).
+pub func js_parse_json(ctx: Context*, buf: const u8*, buf_len: usize, filename: const u8*) -> Value!:
+    return try js_parse_json3(ctx, buf, buf_len, filename, 0, none)

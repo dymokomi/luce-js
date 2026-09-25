@@ -1,0 +1,267 @@
+#==============================================================================================
+#
+#   regexp_exec - Running a RegExp: lastIndex, exec, the fast replace, RegExpExec, test
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 48076-48477: the fast lastIndex accessors (lastIndex is
+#       always a RegExp's first property), RegExp.prototype.exec with the global, sticky
+#       and hasIndices flags and named groups, the fast path of Symbol.replace for
+#       standard RegExps, the RegExpExec abstract operation and RegExp.prototype.test.
+#       The matching itself is lre_exec of regexp_bridge.lucb, whose captures are
+#       character indices where libregexp answers pointers into the string.
+#
+#==============================================================================================
+
+# mark: lastIndex ===============================================================================
+
+# this_val must be of ClassId.regexp
+func js_regexp_get_last_index(ctx: Context*, plast_index: i64*, this_val: Value) -> !:
+    let p = this_val.u.obj
+
+    # lastIndex is always the first property (it is not configurable)
+    if p.prop[0].u.value.tag == Tag.int:
+        *plast_index = (i64)cutils.max_int(js_value_get_int(p.prop[0].u.value), 0)
+    else:
+        try js_to_length_free(ctx, plast_index, js_dup_value(ctx, p.prop[0].u.value))
+
+# this_val must be of ClassId.regexp
+func js_regexp_set_last_index(ctx: Context*, this_val: Value, last_index: i32) -> !:
+    let p = this_val.u.obj
+
+    # lastIndex is always the first property (it is not configurable)
+    if p.prop[0].u.value.tag == Tag.int and ((i32)get_shape_prop(p.shape).flags & prop_writable) != 0:
+        set_value(ctx, &p.prop[0].u.value, js_new_int32(last_index))
+    else:
+        discard(try js_set_property(ctx, this_val, atom_lastIndex, js_new_int32(last_index)))
+
+# The capture array lre_exec fills: a start and an end index per capture group (QuickJS
+# allocates lre_get_alloc_count pointers).
+func js_regexp_alloc_capture(ctx: Context*, capture_count: i32) -> i32*!:
+    return (i32*)(try js_malloc(ctx, sizeof(i32) * 2 * (usize)capture_count))
+
+# Throw the error of a failed lre_exec: `rc` is lre_ret_timeout or lre_ret_memory_error.
+func js_regexp_exec_error(ctx: Context*, rc: i32) -> never!:
+    if rc == lre_ret_timeout:
+        try js_throw_interrupted(ctx)
+    try js_throw_internal_error(ctx, "out of memory in regexp execution")
+
+# mark: exec ====================================================================================
+
+# RegExp.prototype.exec(string)
+func js_regexp_exec(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let re = try js_get_regexp(ctx, this_val, true) else trap("js_regexp_exec: no RegExp")
+    var last_index: i64 = 0
+
+    var str_val = try js_to_string(ctx, argv[0])
+
+    var obj = js_null()
+    var groups = js_undefined()
+    var indices = js_undefined()
+    var indices_groups = js_undefined()
+    var group_name: Atom = no_atom
+    # the fail label, which the success path runs too
+    defer js_free_value_at(ctx, &obj)
+    defer js_free_value_at(ctx, &groups)
+    defer js_free_value_at(ctx, &str_val)
+    defer js_free_value_at(ctx, &indices)
+    defer js_free_value_at(ctx, &indices_groups)
+    defer free_atom_at(ctx, &group_name)
+
+    try js_regexp_get_last_index(ctx, &last_index, this_val)
+
+    let re_program = js_regexp_program(re)
+    let re_flags = lre_get_flags(re_program)
+    if (re_flags & (lre_flag_global | lre_flag_sticky)) == 0:
+        last_index = 0
+    let text = str_val.u.string
+    let capture_count = lre_get_capture_count(re_program)
+    let capture_buf = try js_regexp_alloc_capture(ctx, capture_count)
+    defer js_free(ctx, capture_buf)
+    let caps = i32[](capture_buf, 2 * (usize)capture_count)
+    var rc: i32 = 0
+    if last_index > (i64)text.len:
+        rc = 2
+    else:
+        rc = lre_exec(caps, re_program, text, (i32)last_index, ctx.rt)
+    if rc != 1:
+        if rc >= 0:
+            if rc == 2 or (re_flags & (lre_flag_global | lre_flag_sticky)) != 0:
+                try js_regexp_set_last_index(ctx, this_val, 0)
+        else:
+            try js_regexp_exec_error(ctx, rc)
+    else:
+        var props: Property[4] = ---
+
+        if (re_flags & (lre_flag_global | lre_flag_sticky)) != 0:
+            try js_regexp_set_last_index(ctx, this_val, caps[1])
+        let prop_flags = prop_c_w_e | prop_throw
+        var group_name_ptr = lre_get_groupnames(re_program)
+        if group_name_ptr != none:
+            groups = try js_new_object_proto(ctx, js_null())
+        if (re_flags & lre_flag_indices) != 0:
+            indices = try js_new_array(ctx)
+            if group_name_ptr != none:
+                indices_groups = try js_new_object_proto(ctx, js_null())
+
+        props[0].u.value = js_new_int32(capture_count) # length
+        props[1].u.value = js_new_int32(caps[0]) # index
+        props[2].u.value = str_val # input
+        props[3].u.value = js_dup_value(ctx, groups) # groups
+
+        str_val = js_undefined()
+        let result_shape = ctx.regexp_result_shape else trap("js_regexp_exec: no regexp result shape")
+        obj = try js_new_object_from_shape(ctx, js_dup_shape(result_shape), (u32)ClassId.array, &props[0])
+
+        let p_obj = obj.u.obj
+        try expand_fast_array(ctx, p_obj, (u32)capture_count)
+
+        for i in 0..<(usize)capture_count:
+            var start: i32 = -1
+            var end: i32 = -1
+
+            if let names = group_name_ptr:
+                if i > 0:
+                    if *names != 0:
+                        # XXX: slow, should create a shape when the regexp is compiled
+                        group_name = try js_new_atom_len(ctx, names, cutils.strlen(names))
+                    group_name_ptr = names + cutils.strlen(names) + lre_group_name_trailer_len
+
+            if caps[2 * i] >= 0 and caps[2 * i + 1] >= 0:
+                start = caps[2 * i]
+                end = caps[2 * i + 1]
+
+            if not js_is_undefined(indices):
+                var ival = js_undefined()
+                if start != -1:
+                    ival = try js_new_array(ctx)
+                    js_define_property_value_uint32(ctx, ival, 0, js_new_int32(start), prop_flags) catch failure:
+                        js_free_value(ctx, ival)
+                        error(failure.code, failure.message)
+                    js_define_property_value_uint32(ctx, ival, 1, js_new_int32(end), prop_flags) catch failure:
+                        js_free_value(ctx, ival)
+                        error(failure.code, failure.message)
+                if group_name != no_atom:
+                    # js_has_property() cannot fail here
+                    if not js_is_undefined(ival) or not (try js_has_property(ctx, indices_groups, group_name)):
+                        js_define_property_value(ctx, indices_groups, group_name, js_dup_value(ctx, ival), prop_flags) catch failure:
+                            js_free_value(ctx, ival)
+                            error(failure.code, failure.message)
+                discard(try js_define_property_value_uint32(ctx, indices, (u32)i, ival, prop_flags))
+
+            var val = js_undefined()
+            if start != -1:
+                val = try js_sub_string(ctx, text, start, end)
+
+            if group_name != no_atom:
+                # js_has_property() cannot fail here
+                if not js_is_undefined(val) or not (try js_has_property(ctx, groups, group_name)):
+                    js_define_property_value(ctx, groups, group_name, js_dup_value(ctx, val), prop_flags) catch failure:
+                        js_free_value(ctx, val)
+                        error(failure.code, failure.message)
+                js_free_atom(ctx, group_name)
+                group_name = no_atom
+            p_obj.u.array.u.values[(usize)p_obj.u.array.count] = val
+            p_obj.u.array.count += 1
+
+        if not js_is_undefined(indices):
+            let t = indices_groups
+            indices_groups = js_undefined()
+            discard(try js_define_property_value(ctx, indices, atom_groups, t, prop_flags))
+            let t2 = indices
+            indices = js_undefined()
+            discard(try js_define_property_value(ctx, obj, atom_indices, t2, prop_flags))
+    let ret = obj
+    obj = js_undefined()
+    return ret
+
+# mark: The fast replace ========================================================================
+
+# The replacement of Symbol.replace for a standard RegExp and a string replacement;
+# undefined when the RegExp has named groups.
+# XXX: add group names support
+func js_regexp_replace(ctx: Context*, this_val: Value, arg: Value, rep_val: Value) -> Value!:
+    let re = try js_get_regexp(ctx, this_val, true) else trap("js_regexp_replace: no RegExp")
+    var b_s: StringBuffer = ---
+    let b = &b_s
+    let rp = rep_val.u.string
+    var last_index: i64 = 0
+
+    let re_program = js_regexp_program(re)
+    if lre_get_groupnames(re_program) != none:
+        return js_undefined() # group names are not supported yet
+
+    # as upstream, a failed append is reported by string_buffer_end
+    string_buffer_init(ctx, b, 0) catch: recover ()
+    errdefer string_buffer_free(b)
+
+    let str_val = try js_to_string(ctx, arg)
+    defer js_free_value(ctx, str_val)
+    let text = str_val.u.string
+    let re_flags = lre_get_flags(re_program)
+
+    if (re_flags & lre_flag_global) != 0:
+        try js_regexp_set_last_index(ctx, this_val, 0)
+    if (re_flags & (lre_flag_global | lre_flag_sticky)) == 0:
+        last_index = 0
+    else:
+        try js_regexp_get_last_index(ctx, &last_index, this_val)
+    let capture_count = lre_get_capture_count(re_program)
+    let capture_buf = try js_regexp_alloc_capture(ctx, capture_count)
+    defer js_free(ctx, capture_buf)
+    let caps = i32[](capture_buf, 2 * (usize)capture_count)
+    let full_unicode = (re_flags & (lre_flag_unicode | lre_flag_unicode_sets)) != 0
+    var next_src_pos: i32 = 0
+    while true:
+        var ret: i32 = 0
+        if last_index > (i64)text.len:
+            ret = 0
+        else:
+            ret = lre_exec(caps, re_program, text, (i32)last_index, ctx.rt)
+        if ret != 1:
+            if ret >= 0:
+                if ret == 2 or (re_flags & (lre_flag_global | lre_flag_sticky)) != 0:
+                    try js_regexp_set_last_index(ctx, this_val, 0)
+            else:
+                try js_regexp_exec_error(ctx, ret)
+            break
+        let start = caps[0]
+        var end = caps[1]
+        last_index = (i64)end
+        if next_src_pos < start:
+            try string_buffer_concat(b, text, (u32)next_src_pos, (u32)start)
+        if rp.len != 0:
+            try js_string_get_substitution(ctx, b, js_undefined(), text, (u32)start, js_undefined(),
+                                           js_undefined(), rep_val, capture_buf, (u32)capture_count)
+        next_src_pos = end
+        if (re_flags & lre_flag_global) == 0:
+            if (re_flags & lre_flag_sticky) != 0:
+                try js_regexp_set_last_index(ctx, this_val, end)
+            break
+        if end == start:
+            end = (i32)string_advance_index(text, (i64)end, full_unicode)
+        last_index = (i64)end
+    try string_buffer_concat(b, text, (u32)next_src_pos, text.len)
+    return try string_buffer_end(b)
+
+# mark: RegExpExec and test =====================================================================
+
+# RegExpExec(r, s): the `exec` method of `r` when callable, else the builtin exec.
+func js_reg_exp_exec(ctx: Context*, r: Value, s: Value) -> Value!:
+    let method = try js_get_property(ctx, r, atom_exec)
+    if js_is_function(ctx, method):
+        var call_arg = s
+        let ret = try js_call_free(ctx, method, r, 1, &call_arg)
+        if not js_is_object(ret) and not js_is_null(ret):
+            js_free_value(ctx, ret)
+            try js_throw_type_error(ctx, "RegExp exec method must return an object or null")
+        return ret
+    js_free_value(ctx, method)
+    var exec_arg = s
+    return try js_regexp_exec(ctx, r, 1, &exec_arg)
+
+# RegExp.prototype.test(string)
+func js_regexp_test(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_reg_exp_exec(ctx, this_val, argv[0])
+    let ret = not js_is_null(val)
+    js_free_value(ctx, val)
+    return js_new_bool(ret)

@@ -1,0 +1,238 @@
+#==============================================================================================
+#
+#   regexp_search_split - RegExp's Symbol.search and Symbol.split, its tables and setup
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 49044-49316: RegExp.prototype[Symbol.search] and
+#       [Symbol.split], the builtin tables of RegExp, RegExp.prototype and the RegExp
+#       String Iterator prototype, and the intrinsics setup (JS_AddIntrinsicRegExpCompiler
+#       and JS_AddIntrinsicRegExp, which also builds the shapes of RegExp objects and of
+#       exec results).
+#
+#==============================================================================================
+
+# mark: Symbol.search ===========================================================================
+
+# RegExp.prototype[Symbol.search](string)
+func js_regexp_symbol_search(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let rx = this_val
+
+    if not js_is_object(rx):
+        try js_throw_type_error_not_an_object(ctx)
+
+    var result = js_undefined()
+    var current_last_index = js_undefined()
+    var previous_last_index = js_undefined()
+    let s = try js_to_string(ctx, argv[0])
+    defer js_free_value(ctx, s)
+    errdefer js_free_value_at(ctx, &previous_last_index)
+    errdefer js_free_value_at(ctx, &current_last_index)
+    errdefer js_free_value_at(ctx, &result)
+
+    previous_last_index = try js_get_property(ctx, rx, atom_lastIndex)
+
+    if not js_same_value(ctx, previous_last_index, js_new_int32(0)):
+        discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0)))
+    result = try js_reg_exp_exec(ctx, rx, s)
+    current_last_index = try js_get_property(ctx, rx, atom_lastIndex)
+    if js_same_value(ctx, current_last_index, previous_last_index):
+        js_free_value(ctx, previous_last_index)
+        previous_last_index = js_undefined()
+    else:
+        let prev = previous_last_index
+        previous_last_index = js_undefined()
+        discard(try js_set_property(ctx, rx, atom_lastIndex, prev))
+    js_free_value(ctx, current_last_index)
+    current_last_index = js_undefined()
+
+    if js_is_null(result):
+        return js_new_int32(-1)
+    let res = result
+    result = js_undefined()
+    defer js_free_value(ctx, res)
+    return try js_get_property(ctx, res, atom_index)
+
+# mark: Symbol.split ============================================================================
+
+# RegExp.prototype[Symbol.split](string, limit)
+func js_regexp_symbol_split(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # [Symbol.split](str, limit)
+    let rx = this_val
+    var args: Value[2] = ---
+
+    if not js_is_object(rx):
+        try js_throw_type_error_not_an_object(ctx)
+
+    var ctor = js_undefined()
+    var splitter = js_undefined()
+    var a = js_undefined()
+    var flags = js_undefined()
+    var z = js_undefined()
+    let s = try js_to_string(ctx, argv[0])
+    # the done label, which the exception path runs too
+    defer js_free_value(ctx, s)
+    defer js_free_value_at(ctx, &z)
+    defer js_free_value_at(ctx, &flags)
+    defer js_free_value_at(ctx, &splitter)
+    defer js_free_value_at(ctx, &ctor)
+    errdefer js_free_value_at(ctx, &a)
+    ctor = try js_species_constructor(ctx, rx, ctx.regexp_ctor)
+    flags = try js_to_string_free(ctx, js_get_property(ctx, rx, atom_flags))
+    var strp = flags.u.string
+    let unicode_matching = (string_indexof_char(strp, (i32)'u', 0) >= 0 or
+                            string_indexof_char(strp, (i32)'v', 0) >= 0)
+    if string_indexof_char(strp, (i32)'y', 0) < 0:
+        let flags0 = flags
+        flags = js_undefined()
+        flags = try js_concat_string3(ctx, "".bytes.data, flags0, "y".bytes.data)
+    args[0] = rx
+    args[1] = flags
+    splitter = try js_call_constructor(ctx, ctor, 2, &args[0])
+    a = try js_new_array(ctx)
+    var length_a: i64 = 0
+    var lim: u32 = 0
+    if js_is_undefined(argv[1]):
+        lim = 0xffffffff
+    else:
+        try js_to_uint32(ctx, &lim, argv[1])
+        if lim == 0:
+            return a
+    strp = s.u.string
+    var p: u32 = 0
+    var q: u32 = 0
+    let size = strp.len
+    if size == 0:
+        z = try js_reg_exp_exec(ctx, splitter, s)
+        if not js_is_null(z):
+            return a
+    else:
+        while q < size:
+            discard(try js_set_property(ctx, splitter, atom_lastIndex, js_new_int32((i32)q)))
+            js_free_value(ctx, z)
+            z = js_undefined()
+            z = try js_reg_exp_exec(ctx, splitter, s)
+            if js_is_null(z):
+                q = (u32)string_advance_index(strp, (i64)q, unicode_matching)
+            else:
+                var e: i64 = 0
+                try js_to_length_free(ctx, &e, js_get_property(ctx, splitter, atom_lastIndex))
+                if e > (i64)size:
+                    e = (i64)size
+                if e == (i64)p:
+                    q = (u32)string_advance_index(strp, (i64)q, unicode_matching)
+                else:
+                    let sub = try js_sub_string(ctx, strp, (i32)p, (i32)q)
+                    discard(try js_define_property_value_int64(ctx, a, length_a, sub, prop_c_w_e | prop_throw))
+                    length_a += 1
+                    if length_a == (i64)lim:
+                        return a
+                    p = (u32)e
+                    var number_of_captures: i64 = 0
+                    try js_get_length64(ctx, &number_of_captures, z)
+                    var i: i64 = 1
+                    while i < number_of_captures:
+                        let sub1 = try js_get_property_int64(ctx, z, i)
+                        discard(try js_define_property_value_int64(ctx, a, length_a, sub1, prop_c_w_e | prop_throw))
+                        length_a += 1
+                        if length_a == (i64)lim:
+                            return a
+                        i += 1
+                    q = p
+    # add_tail
+    if p > size:
+        p = size
+    let sub = try js_sub_string(ctx, strp, (i32)p, (i32)size)
+    discard(try js_define_property_value_int64(ctx, a, length_a, sub, prop_c_w_e | prop_throw))
+    length_a += 1
+    return a
+
+# mark: Tables ==================================================================================
+
+## The static members of RegExp.
+let js_regexp_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "escape", def_type = def_cfunc, length = 1, generic = js_regexp_escape),
+    CFunctionListEntry(name = "[Symbol.species]", prop_flags = 1, def_type = def_cgetset, getter = js_get_this),
+]
+
+## RegExp.prototype.
+let js_regexp_proto_funcs: CFunctionListEntry[19] = [
+    CFunctionListEntry(name = "flags", prop_flags = 1, def_type = def_cgetset, getter = js_regexp_get_flags),
+    CFunctionListEntry(name = "source", prop_flags = 1, def_type = def_cgetset, getter = js_regexp_get_source),
+    CFunctionListEntry(name = "global", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_global),
+    CFunctionListEntry(name = "ignoreCase", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_ignorecase),
+    CFunctionListEntry(name = "multiline", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_multiline),
+    CFunctionListEntry(name = "dotAll", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_dotall),
+    CFunctionListEntry(name = "unicode", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_unicode),
+    CFunctionListEntry(name = "unicodeSets", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_unicode_sets),
+    CFunctionListEntry(name = "sticky", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_sticky),
+    CFunctionListEntry(name = "hasIndices", prop_flags = 1, def_type = def_cgetset_magic,
+                       getter_magic = js_regexp_get_flag, magic = (i16)lre_flag_indices),
+    CFunctionListEntry(name = "exec", def_type = def_cfunc, length = 1, generic = js_regexp_exec),
+    CFunctionListEntry(name = "compile", def_type = def_cfunc, length = 2, generic = js_regexp_compile),
+    CFunctionListEntry(name = "test", def_type = def_cfunc, length = 1, generic = js_regexp_test),
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_regexp_to_string),
+    CFunctionListEntry(name = "[Symbol.replace]", def_type = def_cfunc, length = 2, generic = js_regexp_symbol_replace),
+    CFunctionListEntry(name = "[Symbol.match]", def_type = def_cfunc, length = 1, generic = js_regexp_symbol_match),
+    CFunctionListEntry(name = "[Symbol.matchAll]", def_type = def_cfunc, length = 1, generic = js_regexp_symbol_match_all),
+    CFunctionListEntry(name = "[Symbol.search]", def_type = def_cfunc, length = 1, generic = js_regexp_symbol_search),
+    CFunctionListEntry(name = "[Symbol.split]", def_type = def_cfunc, length = 2, generic = js_regexp_symbol_split),
+]
+
+## The RegExp String Iterator prototype.
+let js_regexp_string_iterator_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_regexp_string_iterator_next, magic = 0),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string,
+                       string_value = "RegExp String Iterator"),
+]
+
+# mark: Intrinsics ==============================================================================
+
+## Enable RegExp compilation in `ctx` (JS_AddIntrinsicRegExpCompiler).
+pub func js_add_intrinsic_reg_exp_compiler(ctx: Context*):
+    ctx.compile_regexp = js_compile_regexp
+
+# Append the property (`atom`, `prop_flags`) to the context's shape `*psh`, which is
+# replaced when it grows.
+func add_context_shape_property(ctx: Context*, psh: Shape*?*, atom: Atom, prop_flags: i32) -> !:
+    var sh = *psh else trap("add_context_shape_property: no shape")
+    try add_shape_property(ctx, &sh, none, atom, prop_flags)
+    *psh = sh
+
+## Add RegExp, the RegExp String Iterator prototype and the RegExp shapes to `ctx`
+## (JS_AddIntrinsicRegExp).
+pub func js_add_intrinsic_reg_exp(ctx: Context*) -> !:
+    js_add_intrinsic_reg_exp_compiler(ctx)
+
+    let obj = try js_new_c_constructor(ctx, (i32)ClassId.regexp, "RegExp",
+                                       js_regexp_constructor, 2, CFunctionEnum.constructor_or_func, 0,
+                                       js_undefined(),
+                                       js_regexp_funcs,
+                                       js_regexp_proto_funcs,
+                                       0)
+    ctx.regexp_ctor = obj
+
+    let class_proto = context_class_proto(ctx)
+    # upstream stores the JS_EXCEPTION marker in the slot on failure; the slot keeps its
+    # previous value here
+    let iterator_proto = try js_new_object_proto_list(ctx, class_proto[(usize)ClassId.iterator],
+                                                      js_regexp_string_iterator_proto_funcs)
+    class_proto[(usize)ClassId.regexp_string_iterator] = iterator_proto
+
+    ctx.regexp_shape = try js_new_shape2(ctx, get_proto_obj(class_proto[(usize)ClassId.regexp]),
+                                         js_prop_initial_hash_size, 1)
+    try add_context_shape_property(ctx, &ctx.regexp_shape, atom_lastIndex, prop_writable)
+
+    ctx.regexp_result_shape = try js_new_shape2(ctx, get_proto_obj(class_proto[(usize)ClassId.array]),
+                                                js_prop_initial_hash_size, 4)
+    try add_context_shape_property(ctx, &ctx.regexp_result_shape, atom_length, prop_writable | prop_length)
+    try add_context_shape_property(ctx, &ctx.regexp_result_shape, atom_index, prop_c_w_e)
+    try add_context_shape_property(ctx, &ctx.regexp_result_shape, atom_input, prop_c_w_e)
+    try add_context_shape_property(ctx, &ctx.regexp_result_shape, atom_groups, prop_c_w_e)

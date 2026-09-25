@@ -17,21 +17,6 @@ struct CodeContext:
 struct GeneratorData:
     var unported: i32
 
-struct JSONParseRecord:
-    var unported: i32
-
-struct JSONParseRecordObject:
-    var unported: i32
-
-struct JSONStringifyContext:
-    var unported: i32
-
-struct RegExpStringIteratorData:
-    var unported: i32
-
-struct ValueBuffer:
-    var unported: i32
-
 # mark: Declared by other regions ===============================================================
 
 # Placeholders for the builtin tables of the typed arrays region (r28) that

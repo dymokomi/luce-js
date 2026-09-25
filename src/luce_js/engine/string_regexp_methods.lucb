@@ -65,22 +65,20 @@ func js_string_match(ctx: Context*, this_val: Value, argc: i32, argv: Value*, ma
 
 ## Append to `b` the replacement string `rep` with its `$` patterns expanded, for the match
 ## `matched` at `position` of `sp` (GetSubstitution). If captures != none, captures_val and
-## matched are ignored and the captures are the regexp's pointers into `sp` (2 per group).
+## matched are ignored and the captures are the regexp's start and end indices in `sp` (2
+## per group, -1 for a group that did not participate; QuickJS passes pointers into `sp`).
 ## Otherwise, captures_len is ignored and the captures are the array-like captures_val.
 func js_string_get_substitution(ctx: Context*, b: StringBuffer*, matched: Value, sp: const String*,
                                 position: u32, captures_val: Value, named_captures: Value,
-                                rep: Value, captures: u8*?*?, captures_len_arg: u32) -> !:
+                                rep: Value, captures: const i32*?, captures_len_arg: u32) -> !:
     var captures_len = captures_len_arg
     if rep.tag != Tag.string:
         try js_throw_type_error(ctx, "not a string")
-    let shift = (u32)sp.is_wide_char
     let rp = rep.u.string
 
     var matched_len: u32 = 0
     if let caps = captures:
-        let m0 = caps[0] else trap("js_string_GetSubstitution: no match start")
-        let m1 = caps[1] else trap("js_string_GetSubstitution: no match end")
-        matched_len = (u32)(m1 - m0) >> shift
+        matched_len = (u32)(caps[1] - caps[0])
     else:
         captures_len = 0
         if not js_is_undefined(captures_val):
@@ -126,11 +124,10 @@ func js_string_get_substitution(ctx: Context*, b: StringBuffer*, matched: Value,
                         j += 1
             if k >= 1 and (u32)k < captures_len:
                 if let caps = captures:
-                    if let cap_start = caps[2 * k]:
-                        if let cap_end = caps[2 * k + 1]:
-                            let start = (u32)(cap_start - str8(sp)) >> shift
-                            let end = (u32)(cap_end - str8(sp)) >> shift
-                            string_buffer_concat(b, sp, start, end) catch: recover ()
+                    let start = caps[(usize)(2 * k)]
+                    let end = caps[(usize)(2 * k + 1)]
+                    if start >= 0 and end >= 0:
+                        string_buffer_concat(b, sp, (u32)start, (u32)end) catch: recover ()
                 else:
                     let s = try js_get_property_int64(ctx, captures_val, (i64)k)
                     if not js_is_undefined(s):

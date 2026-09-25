@@ -284,7 +284,8 @@ func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
                                        (i64)fd.data_len * (i64)sizeof(Value))
         .regexp: # u.regexp
             compute_jsstring_size(p.u.regexp.pattern, hp)
-            compute_jsstring_size(p.u.regexp.bytecode, hp)
+            # upstream also counts the bytecode string; the port's compiled program is
+            # not a JSString (regexp_bridge.lucb)
         .for_in_iterator: # u.for_in_iterator
             if not pointer_word_is_null(&p.u):
                 let it = p.u.for_in_iterator

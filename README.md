@@ -13,7 +13,7 @@ ported region by region (see `docs/PORTING.md`).
 | `luce_js.cutils` | `cutils.c`, `list.h` | ported, tested |
 | `luce_js.dtoa` | `dtoa.c` | ported, bit-exact with C on the pinned tables |
 | `luce_js.unicode` | `libunicode.c` | in progress |
-| `luce_js.regexp` | `libregexp.c` | not started |
+| `regex` (the luce-regex package) | `libregexp.c` | replaced by luce-regex's ECMAScript dialect |
 | `luce_js.engine` | `quickjs.c` | skeleton: types and typed stubs |
 
 Run the tests of a module with `luce-base test src/luce_js/<module>`.

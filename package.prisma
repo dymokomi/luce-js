@@ -16,4 +16,10 @@ def package "luce-js" {
         str version = "^0.1.0"
         str path = "../luce-std"
     }
+
+    def dependency "luce-regex" {
+        str owner = "dymokomi"
+        str version = "^0.2.0"
+        str path = "../luce-regex"
+    }
 }
