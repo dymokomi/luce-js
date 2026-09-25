@@ -1,0 +1,366 @@
+#==============================================================================================
+#
+#   interp_ops_compare - Opcodes: comparisons, operators and with statements
+#
+#   DESCRIPTION:
+#       Port of the opcode bodies of JS_CallInternal, quickjs.c lines 20268-20661: OP_lt to
+#       OP_invalid. Each body is a function taking the interpreter state (InterpState, see
+#       interpreter.lucb); the dispatch loop calls it from its arm. A body that can raise
+#       answers false with the exception pending, which the loop treats as C's `goto
+#       exception`; one that cannot raise answers nothing.
+#
+#==============================================================================================
+
+# mark: Comparisons ===========================================================================
+
+## The body of OP_lt in JS_CallInternal.
+noinline func interp_lt(st: InterpState*) -> bool:
+    let op1 = st.sp[(isize)-2]
+    let op2 = st.sp[(isize)-1]
+    var slow = false
+    if js_value_is_both_int(op1, op2):
+        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) < js_value_get_int(op2))
+        st.sp = st.sp - 1
+    elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
+        var d1: f64 = 0.0
+        var d2: f64 = 0.0
+        if js_tag_is_float64(op1.tag):
+            d1 = js_value_get_float64(op1)
+        elif op1.tag == Tag.int:
+            d1 = f64(js_value_get_int(op1))
+        else:
+            slow = true
+        if js_tag_is_float64(op2.tag):
+            d2 = js_value_get_float64(op2)
+        elif op2.tag == Tag.int:
+            d2 = f64(js_value_get_int(op2))
+        else:
+            slow = true
+        if not slow:
+            st.sp[(isize)-2] = js_new_bool(d1 < d2)
+            st.sp = st.sp - 1
+    else:
+        slow = true
+    if slow:
+        st.sf.cur_pc = st.pc
+        js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
+        st.sp = st.sp - 1
+    return true
+
+## The body of OP_lte in JS_CallInternal.
+noinline func interp_lte(st: InterpState*) -> bool:
+    let op1 = st.sp[(isize)-2]
+    let op2 = st.sp[(isize)-1]
+    var slow = false
+    if js_value_is_both_int(op1, op2):
+        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) <= js_value_get_int(op2))
+        st.sp = st.sp - 1
+    elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
+        var d1: f64 = 0.0
+        var d2: f64 = 0.0
+        if js_tag_is_float64(op1.tag):
+            d1 = js_value_get_float64(op1)
+        elif op1.tag == Tag.int:
+            d1 = f64(js_value_get_int(op1))
+        else:
+            slow = true
+        if js_tag_is_float64(op2.tag):
+            d2 = js_value_get_float64(op2)
+        elif op2.tag == Tag.int:
+            d2 = f64(js_value_get_int(op2))
+        else:
+            slow = true
+        if not slow:
+            st.sp[(isize)-2] = js_new_bool(d1 <= d2)
+            st.sp = st.sp - 1
+    else:
+        slow = true
+    if slow:
+        st.sf.cur_pc = st.pc
+        js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
+        st.sp = st.sp - 1
+    return true
+
+## The body of OP_gt in JS_CallInternal.
+noinline func interp_gt(st: InterpState*) -> bool:
+    let op1 = st.sp[(isize)-2]
+    let op2 = st.sp[(isize)-1]
+    var slow = false
+    if js_value_is_both_int(op1, op2):
+        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) > js_value_get_int(op2))
+        st.sp = st.sp - 1
+    elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
+        var d1: f64 = 0.0
+        var d2: f64 = 0.0
+        if js_tag_is_float64(op1.tag):
+            d1 = js_value_get_float64(op1)
+        elif op1.tag == Tag.int:
+            d1 = f64(js_value_get_int(op1))
+        else:
+            slow = true
+        if js_tag_is_float64(op2.tag):
+            d2 = js_value_get_float64(op2)
+        elif op2.tag == Tag.int:
+            d2 = f64(js_value_get_int(op2))
+        else:
+            slow = true
+        if not slow:
+            st.sp[(isize)-2] = js_new_bool(d1 > d2)
+            st.sp = st.sp - 1
+    else:
+        slow = true
+    if slow:
+        st.sf.cur_pc = st.pc
+        js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
+        st.sp = st.sp - 1
+    return true
+
+## The body of OP_gte in JS_CallInternal.
+noinline func interp_gte(st: InterpState*) -> bool:
+    let op1 = st.sp[(isize)-2]
+    let op2 = st.sp[(isize)-1]
+    var slow = false
+    if js_value_is_both_int(op1, op2):
+        st.sp[(isize)-2] = js_new_bool(js_value_get_int(op1) >= js_value_get_int(op2))
+        st.sp = st.sp - 1
+    elif js_tag_is_float64(op1.tag) or js_tag_is_float64(op2.tag):
+        var d1: f64 = 0.0
+        var d2: f64 = 0.0
+        if js_tag_is_float64(op1.tag):
+            d1 = js_value_get_float64(op1)
+        elif op1.tag == Tag.int:
+            d1 = f64(js_value_get_int(op1))
+        else:
+            slow = true
+        if js_tag_is_float64(op2.tag):
+            d2 = js_value_get_float64(op2)
+        elif op2.tag == Tag.int:
+            d2 = f64(js_value_get_int(op2))
+        else:
+            slow = true
+        if not slow:
+            st.sp[(isize)-2] = js_new_bool(d1 >= d2)
+            st.sp = st.sp - 1
+    else:
+        slow = true
+    if slow:
+        st.sf.cur_pc = st.pc
+        js_relational_slow(st.ctx, st.sp, st.opcode) catch: return false
+        st.sp = st.sp - 1
+    return true
+
+## The body of OP_eq in JS_CallInternal.
+noinline func interp_eq(st: InterpState*) -> bool:
+    eq_inline(st.ctx, st.sf, st.pc, st.sp, false) catch: return false
+    st.sp = st.sp - 1
+    return true
+
+## The body of OP_neq in JS_CallInternal.
+noinline func interp_neq(st: InterpState*) -> bool:
+    eq_inline(st.ctx, st.sf, st.pc, st.sp, true) catch: return false
+    st.sp = st.sp - 1
+    return true
+
+## The body of OP_strict_eq in JS_CallInternal.
+noinline func interp_strict_eq(st: InterpState*):
+    strict_eq_inline(st.ctx, st.sp, false)
+    st.sp = st.sp - 1
+
+## The body of OP_strict_neq in JS_CallInternal.
+noinline func interp_strict_neq(st: InterpState*):
+    strict_eq_inline(st.ctx, st.sp, true)
+    st.sp = st.sp - 1
+
+# mark: in, instanceof, typeof and delete =====================================================
+
+## The body of OP_in in JS_CallInternal.
+noinline func interp_in(st: InterpState*) -> bool:
+    st.sf.cur_pc = st.pc
+    js_operator_in(st.ctx, st.sp) catch: return false
+    st.sp = st.sp - 1
+    return true
+
+## The body of OP_private_in in JS_CallInternal.
+noinline func interp_private_in(st: InterpState*) -> bool:
+    st.sf.cur_pc = st.pc
+    js_operator_private_in(st.ctx, st.sp) catch: return false
+    st.sp = st.sp - 1
+    return true
+
+## The body of OP_instanceof in JS_CallInternal.
+noinline func interp_instanceof(st: InterpState*) -> bool:
+    st.sf.cur_pc = st.pc
+    js_operator_instanceof(st.ctx, st.sp) catch: return false
+    st.sp = st.sp - 1
+    return true
+
+## The body of OP_typeof in JS_CallInternal.
+noinline func interp_typeof(st: InterpState*):
+    let op1 = st.sp[(isize)-1]
+    let atom = js_operator_typeof(st.ctx, op1)
+    js_free_value(st.ctx, op1)
+    # a predefined atom: C does not test for an exception
+    st.sp[(isize)-1] = js_atom_to_string(st.ctx, atom) catch: recover js_exception()
+
+## The body of OP_delete in JS_CallInternal.
+noinline func interp_delete(st: InterpState*) -> bool:
+    st.sf.cur_pc = st.pc
+    js_operator_delete(st.ctx, st.sp) catch: return false
+    st.sp = st.sp - 1
+    return true
+
+## The body of OP_delete_var in JS_CallInternal.
+noinline func interp_delete_var(st: InterpState*) -> bool:
+    let atom = cutils.get_u32(st.pc)
+    st.pc = st.pc + 4
+    st.sf.cur_pc = st.pc
+
+    let ret = js_delete_global_var(st.ctx, atom) catch: return false
+    *st.sp = js_new_bool(ret)
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_to_object in JS_CallInternal.
+noinline func interp_to_object(st: InterpState*) -> bool:
+    if st.sp[(isize)-1].tag != Tag.object:
+        st.sf.cur_pc = st.pc
+        st.ret_val = js_to_object(st.ctx, st.sp[(isize)-1]) catch: return false
+        js_free_value(st.ctx, st.sp[(isize)-1])
+        st.sp[(isize)-1] = st.ret_val
+    return true
+
+## The body of OP_to_propkey in JS_CallInternal.
+noinline func interp_to_propkey(st: InterpState*) -> bool:
+    let tag = st.sp[(isize)-1].tag
+    if not (tag == Tag.int or tag == Tag.string or tag == Tag.symbol):
+        st.sf.cur_pc = st.pc
+        st.ret_val = js_to_property_key(st.ctx, st.sp[(isize)-1]) catch: return false
+        js_free_value(st.ctx, st.sp[(isize)-1])
+        st.sp[(isize)-1] = st.ret_val
+    return true
+
+# mark: with statements =======================================================================
+
+## The body of OP_with_get_var, OP_with_put_var, OP_with_delete_var, OP_with_make_ref, OP_with_get_ref in JS_CallInternal.
+noinline func interp_with_get_var(st: InterpState*) -> bool:
+    let atom = cutils.get_u32(st.pc)
+    let diff = (i32)cutils.get_u32(st.pc + 4)
+    let is_with = st.pc[8] != 0
+    st.pc = st.pc + 9
+    st.sf.cur_pc = st.pc
+
+    let obj = st.sp[(isize)-1]
+    var ret = js_has_property(st.ctx, obj, atom) catch: return false
+    var found = ret
+    if found and is_with:
+        ret = js_has_unscopable(st.ctx, obj, atom) catch: return false
+        if ret:
+            found = false # goto no_with
+    if found:
+        match st.opcode:
+            .with_get_var:
+                # in Object Environment Records, GetBindingValue() calls
+                # HasProperty()
+                ret = js_has_property(st.ctx, obj, atom) catch: return false
+                var val = js_undefined()
+                if not ret:
+                    if is_strict_mode(st.ctx):
+                        js_throw_reference_error_not_defined(st.ctx, atom) catch: return false
+                    val = js_undefined()
+                else:
+                    val = js_get_property(st.ctx, obj, atom) catch: return false
+                set_value(st.ctx, st.sp - 1, val)
+            .with_put_var: # used e.g. in for in/of
+                # in Object Environment Records, SetMutableBinding()
+                # calls HasProperty()
+                ret = js_has_property(st.ctx, obj, atom) catch: return false
+                if not ret and is_strict_mode(st.ctx):
+                    js_throw_reference_error_not_defined(st.ctx, atom) catch: return false
+                let set_ret = bool_status(js_set_property_internal(st.ctx, obj, atom, st.sp[(isize)-2], obj, prop_throw_strict) catch: recover none)
+                js_free_value(st.ctx, st.sp[(isize)-1])
+                st.sp = st.sp - 2
+                if set_ret < 0:
+                    return false
+            .with_delete_var:
+                ret = js_delete_property(st.ctx, obj, atom, 0) catch: return false
+                js_free_value(st.ctx, st.sp[(isize)-1])
+                st.sp[(isize)-1] = js_new_bool(ret)
+            .with_make_ref:
+                # produce a pair object/propname on the stack
+                *st.sp = js_atom_to_value(st.ctx, atom) catch: return false
+                st.sp = st.sp + 1
+            .with_get_ref:
+                # produce a pair object/method on the stack
+                # in Object Environment Records, GetBindingValue() calls
+                # HasProperty()
+                ret = js_has_property(st.ctx, obj, atom) catch: return false
+                var val = js_undefined()
+                if not ret:
+                    val = js_undefined()
+                else:
+                    val = js_get_property(st.ctx, obj, atom) catch: return false
+                *st.sp = val
+                st.sp = st.sp + 1
+            _:
+                trap("not a with opcode")
+        st.pc = st.pc + (isize)(diff - 5)
+    else:
+        # no_with: if not jumping, drop the object argument
+        js_free_value(st.ctx, st.sp[(isize)-1])
+        st.sp = st.sp - 1
+    return true
+
+# mark: Tests and the invalid opcode ==========================================================
+
+## The body of OP_is_undefined_or_null in JS_CallInternal.
+noinline func interp_is_undefined_or_null(st: InterpState*):
+    if st.sp[(isize)-1].tag == Tag.undefined or st.sp[(isize)-1].tag == Tag.null:
+        # set_true
+        st.sp[(isize)-1] = js_true()
+    else:
+        # free_and_set_false
+        js_free_value(st.ctx, st.sp[(isize)-1])
+        st.sp[(isize)-1] = js_false()
+
+## The body of OP_is_undefined in JS_CallInternal.
+noinline func interp_is_undefined(st: InterpState*):
+    if st.sp[(isize)-1].tag == Tag.undefined:
+        # set_true
+        st.sp[(isize)-1] = js_true()
+    else:
+        # free_and_set_false
+        js_free_value(st.ctx, st.sp[(isize)-1])
+        st.sp[(isize)-1] = js_false()
+
+## The body of OP_is_null in JS_CallInternal.
+noinline func interp_is_null(st: InterpState*):
+    if st.sp[(isize)-1].tag == Tag.null:
+        # set_true
+        st.sp[(isize)-1] = js_true()
+    else:
+        # free_and_set_false
+        js_free_value(st.ctx, st.sp[(isize)-1])
+        st.sp[(isize)-1] = js_false()
+
+## The body of OP_typeof_is_undefined in JS_CallInternal.
+noinline func interp_typeof_is_undefined(st: InterpState*):
+    # different from OP_is_undefined because of isHTMLDDA
+    let res = js_operator_typeof(st.ctx, st.sp[(isize)-1]) == atom_undefined
+    # free_and_set_true / free_and_set_false
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp[(isize)-1] = js_new_bool(res)
+
+## The body of OP_typeof_is_function in JS_CallInternal.
+noinline func interp_typeof_is_function(st: InterpState*):
+    let res = js_operator_typeof(st.ctx, st.sp[(isize)-1]) == atom_function
+    # free_and_set_true / free_and_set_false
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp[(isize)-1] = js_new_bool(res)
+
+## The body of OP_invalid and DEFAULT in JS_CallInternal.
+noinline func interp_invalid(st: InterpState*) -> bool:
+    # OP_invalid and DEFAULT
+    let bad_pc = (i32)(st.pc - st.bc_buf - 1)
+    let bad_op = (u8)st.opcode
+    js_throw_internal_error(st.ctx, f"invalid opcode: pc={bad_pc} opcode=0x{hex_byte_prefix(bad_op)}{hex(bad_op)}") catch: return false
+    return true
