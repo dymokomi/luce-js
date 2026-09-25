@@ -5,7 +5,7 @@
 #   DESCRIPTION:
 #       Port of quickjs-libc.c lines 1735-1830 (open, close, seek, read, write, isatty),
 #       1879-1937 (ttyGetWinSize, ttySetRaw), 1939-1983 (remove, rename) and 1985-2130
-#       (setReadHandler, setWriteHandler, signal). The timers and js_os_poll are in
+#       (is_main_thread, setReadHandler, setWriteHandler, signal). The timers and js_os_poll are in
 #       `os_poll`, the file system in `os_files`, the processes in `os_process` and the
 #       module's table in `os_tables`.
 #
@@ -131,6 +131,11 @@ func js_os_rename(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
 
 # mark: Read/write handlers =====================================================================
 
+## Whether `rt` runs on the main thread rather than in a worker.
+func is_main_thread(rt: Runtime*) -> bool:
+    let ts = thread_state(rt)
+    return ts.recv_pipe == none
+
 ## The read/write handler whose list link is `el`.
 func rw_handler_of(el: ListHead*) -> OSRWHandler*:
     return (OSRWHandler*)((u8*)el - offsetof(OSRWHandler, link))
@@ -211,7 +216,8 @@ func os_signal_handler(sig_num: i32):
 func js_os_signal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let rt = js.js_get_runtime(ctx)
     let ts = thread_state(rt)
-    # without workers, every runtime is the main thread, where signal handlers can be set
+    if not is_main_thread(rt):
+        try js.js_throw_type_error(ctx, "signal handler can only be set in the main thread")
 
     var sig_num: u32 = 0
     try js.js_to_uint32(ctx, &sig_num, argv[0])

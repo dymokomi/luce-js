@@ -25,6 +25,25 @@ let v = try js.js_eval_text(ctx, "[1, 2, 3].map(x => x * 2).join()", "<input>", 
 
 The engine is QuickJS's C API with `JS_` spelled `js_` (`JS_NewObject` is `js_new_object`);
 a JavaScript exception is a Luce failure (`!`) and the thrown value is `js_get_exception(ctx)`.
+An embedder using `host` calls `host.js_std_set_worker_new_context_func` with its
+context constructor, as qjs does, so that `os.Worker` can make each worker thread's context.
+
+**Native modules.** QuickJS loads a module whose name ends with `.so` as a shared library;
+luce-base has no dlopen-style modules, so an embedder links its native modules in and
+registers each one's init function (QuickJS's `js_init_module`) before loading scripts:
+
+```luce
+import host
+
+discard(host.js_register_native_module("fib", fib.js_init_module_fib))
+```
+
+The default module loader (`host.js_module_loader`) then creates the module when a program
+imports `"./fib.so"` (from any directory: the file name without `.so` names it) or the bare
+name `"fib"`. `examples/` holds QuickJS's examples: `fib.lucb` and `point.lucb` (a native
+class with accessors and a method) are ports of `fib.c` and `point.c`, and `ljs` registers
+them and `tests/bjson.lucb` (the `bjson` module of `tests/test_bjson.js`), so
+`build/ljs examples/test_point.js` runs as `qjs examples/test_point.js` does.
 
 | Module | Port of | State |
 | --- | --- | --- |
@@ -33,7 +52,7 @@ a JavaScript exception is a Luce failure (`!`) and the thrown value is `js_get_e
 | `regex` (the luce-regex package) | `libregexp.c` | replaced by luce-regex's ECMAScript dialect |
 | `libunicode` (the luce-regex package) | `libunicode.c` | ported in luce-regex |
 | `luce_js.engine` | `quickjs.c` | ported |
-| `luce_js.host` | `quickjs-libc.c` (POSIX, without workers) | helpers, module loader, event loop (timers, signals, read/write handlers), `std`, `os` |
+| `luce_js.host` | `quickjs-libc.c` (POSIX) | helpers, module loader, event loop (timers, signals, read/write handlers, worker message ports), `std`, `os` with `os.Worker`, registered native modules in place of `.so` |
 
 Run the tests of a module with `luce-base test src/luce_js/<module>`; `./test.sh` runs every
 module's tests and then QuickJS's own JavaScript tests (`tests/run.py`).

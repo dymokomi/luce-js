@@ -1,0 +1,66 @@
+#==============================================================================================
+#
+#   bjson - The binary JSON module of QuickJS's tests: read and write objects
+#
+#   DESCRIPTION:
+#       Port of QuickJS's tests/bjson.c, the native module tests/test_bjson.js imports
+#       (as "./bjson.so"): `write(obj, reference)` serializes a value with JS_WriteObject
+#       into a new ArrayBuffer, `read(buf, pos, len, reference)` reads one back with
+#       JS_ReadObject; `reference` sets write_obj_reference / read_obj_reference. QuickJS
+#       builds it as a shared library; ljs links it in and registers it with
+#       host.js_register_native_module("bjson", js_init_module_bjson).
+#
+#       QuickJS: binary JSON module (test only)
+#
+#       Copyright (c) 2017-2019 Fabrice Bellard
+#
+#       Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#       software and associated documentation files (the "Software"), to deal in the Software
+#       without restriction, including without limitation the rights to use, copy, modify,
+#       merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#       permit persons to whom the Software is furnished to do so, subject to the following
+#       conditions: the above copyright notice and this permission notice shall be included
+#       in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS
+#       IS", WITHOUT WARRANTY OF ANY KIND.
+#
+#==============================================================================================
+
+import js
+from js import Context, Value, ModuleDef, CFunctionListEntry
+
+func js_bjson_read(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var pos: u64 = 0
+    var len: u64 = 0
+    try js.js_to_index(ctx, &pos, argv[1])
+    try js.js_to_index(ctx, &len, argv[2])
+    var size: usize = 0
+    let buf = (try js.js_get_array_buffer(ctx, &size, argv[0])) else error(js.exception, "")
+    if pos + len > (u64)size:
+        try js.js_throw_range_error(ctx, "array buffer overflow")
+    var flags: i32 = 0
+    if try js.js_to_bool(ctx, argv[3]):
+        flags |= js.read_obj_reference
+    return try js.js_read_object(ctx, buf + (usize)pos, (usize)len, flags)
+
+func js_bjson_write(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var flags: i32 = 0
+    if try js.js_to_bool(ctx, argv[1]):
+        flags |= js.write_obj_reference
+    var len: usize = 0
+    let buf = try js.js_write_object(ctx, &len, argv[0], flags)
+    defer js.js_free(ctx, buf)
+    return try js.js_new_array_buffer_copy(ctx, buf, len)
+
+let js_bjson_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "read", def_type = js.def_cfunc, length = 4, generic = js_bjson_read),
+    CFunctionListEntry(name = "write", def_type = js.def_cfunc, length = 2, generic = js_bjson_write),
+]
+
+func js_bjson_init(ctx: Context*, m: ModuleDef*) -> !:
+    try js.js_set_module_export_list(ctx, m, js_bjson_funcs)
+
+## Create the bjson module named `module_name` in `ctx` (js_init_module_bjson).
+pub func js_init_module_bjson(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    let m = try js.js_new_c_module(ctx, module_name, js_bjson_init)
+    try js.js_add_module_export_list(ctx, m, js_bjson_funcs)
+    return m

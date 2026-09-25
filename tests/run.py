@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Build the ljs runner and run QuickJS's own tests with it.
 
-The tests are upstream's tests/*.js (copied into tests/js/, MIT, see tests/js/LICENSE),
-run the way upstream's Makefile `test:` target runs them with qjs: one process per file,
+The tests are upstream's tests/*.js (copied into tests/js/, MIT, see tests/js/LICENSE)
+and examples/*.js (in examples/), run the way upstream's Makefile `test:` target runs them with qjs: one process per file,
 from the repository root, `--std` for test_builtin.js. A file passes when ljs exits with
-status 0.
+status 0 and, for the files in EXPECTED_OUTPUT, prints exactly that.
 
 Files that cannot pass yet are listed in KNOWN_FAILURES with the reason; they are
 reported as XFAIL and do not fail the run. A known failure that passes is reported as
@@ -22,8 +22,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LJS = os.path.join(ROOT, "build", "ljs")
 
-# (file, extra ljs options), in the order of upstream's Makefile. test_worker.js needs
-# os.Worker, which the host does not port.
+# (file, extra ljs options), in the order of upstream's Makefile.
 TESTS = [
     ("test_closure.js", []),
     ("test_language.js", []),
@@ -31,11 +30,36 @@ TESTS = [
     ("test_loop.js", []),
     ("test_bigint.js", []),
     ("test_cyclic_import.js", []),
+    ("test_worker.js", []),
     ("test_std.js", []),
     ("test_rw_handler.js", []),
+    # the native modules qjs loads as shared libraries are linked into ljs
+    ("test_bjson.js", []),
+    ("examples/test_point.js", []),
     # not upstream: regressions found by test262 (tests/test262.py)
     ("test_conformance.js", []),
+    # not upstream: Atomics.wait/notify between a worker and the main thread
+    ("test_worker_atomics.js", []),
+    # the other examples (upstream compiles them with qjsc), checked against their output
+    ("examples/hello.js", []),
+    ("examples/hello_module.js", []),
+    ("examples/test_fib.js", []),
+    ("examples/pi_bigint.js", []),
 ]
+
+# file -> the script arguments after the file name.
+SCRIPT_ARGS = {
+    "examples/pi_bigint.js": ["100"],
+}
+
+# file -> what it must print on standard output.
+EXPECTED_OUTPUT = {
+    "examples/hello.js": "Hello World\n",
+    "examples/hello_module.js": "Hello World\nfib(10)= 55\nmsg= { x: 1, tab: [ 1, 2, 3 ] }\n",
+    "examples/test_fib.js": "Hello World\nfib(10)= 55\n",
+    "examples/pi_bigint.js": "3.14159265358979323846264338327950288419716939937510"
+                             "58209749445923078164062862089986280348253421170679\n",
+}
 
 # file -> why it cannot pass. Keep the classification: (a) a port bug, (b) a compiler bug,
 # (c) a host feature deliberately not ported.
@@ -62,8 +86,9 @@ def first_error_line(output):
 
 
 def run_test(name, options, timeout):
-    path = os.path.join("tests", "js", name)
-    command = [LJS] + options + [path]
+    # a name with a directory is relative to the repository root (the examples)
+    path = name if "/" in name else os.path.join("tests", "js", name)
+    command = [LJS] + options + [path] + SCRIPT_ARGS.get(name, [])
     started = time.time()
     try:
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
@@ -71,6 +96,9 @@ def run_test(name, options, timeout):
     except subprocess.TimeoutExpired:
         return False, f"timeout after {timeout}s", time.time() - started
     output = result.stdout + result.stderr
+    expected = EXPECTED_OUTPUT.get(name)
+    if result.returncode == 0 and expected is not None and result.stdout != expected:
+        return False, f"unexpected output: {result.stdout[:60]!r}", time.time() - started
     if result.returncode == 0:
         return True, "", time.time() - started
     reason = first_error_line(output)
@@ -100,7 +128,7 @@ def main():
         else:
             status = "XFAIL" if known else "FAIL"
         counts[status] += 1
-        line = f"{status:5}  {name:24} {seconds:6.1f}s"
+        line = f"{status:5}  {name:28} {seconds:6.1f}s"
         if reason:
             line += f"  {reason}"
         print(line, flush=True)

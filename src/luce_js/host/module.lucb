@@ -7,10 +7,11 @@
 #       and QuickJS's own tests: the global helpers (print, console.log, scriptArgs), the
 #       default module loader reading files, the job and timer loop, and the `std` and `os`
 #       modules on POSIX targets (macOS and Linux), with their processes, pipes, signals,
-#       read/write handlers and ttys, and the running of precompiled bytecode. Workers and
-#       their message ports and shared-library modules are not ported. This fragment holds
-#       the module's imports and the per-runtime state (JSThreadState); the C library
-#       bindings are in `libc` and `libc_process`.
+#       read/write handlers and ttys, os.Worker (worker threads with their own runtime and
+#       their message pipes) and the running of precompiled bytecode. Shared-library (.so)
+#       modules are native modules the embedder registers (native_modules). This fragment
+#       holds the imports and the state (JSThreadState); the C library bindings are in
+#       `libc` and `libc_process`.
 #
 #       QuickJS C library
 #
@@ -30,6 +31,7 @@
 
 import c
 import platform
+import sync
 import thread
 import time
 import luce_js.cutils as cutils
@@ -62,15 +64,47 @@ struct OSTimer:
     var timeout: i64
     var func_: Value
 
+## A message posted to a worker or its parent (JSWorkerMessage): the value serialized
+## with JS_WriteObject2 in C malloc'ed memory.
+struct WorkerMessage:
+    var link: ListHead
+    var data: u8*?
+    var data_len: usize
+    ## list of SharedArrayBuffers, necessary to free the message
+    var sab_tab: u8*?*?
+    var sab_tab_len: usize
+
+## The wake-up of a message pipe (JSWaker): a POSIX pipe whose read end is readable while
+## messages are queued.
+struct Waker:
+    var read_fd: i32
+    var write_fd: i32
+
+## A queue of messages from one thread to another, shared by both and reference counted
+## (JSWorkerMessagePipe).
+struct WorkerMessagePipe:
+    var ref_count: @i32
+    var mutex: sync.Mutex
+    ## list of WorkerMessage.link
+    var msg_queue: ListHead
+    var waker: Waker
+
+## A message port: the receiving end of a pipe with its onmessage handler
+## (JSWorkerMessageHandler).
+struct WorkerMessageHandler:
+    var link: ListHead
+    var recv_pipe: WorkerMessagePipe*?
+    var on_message_func: Value
+    ## temporary use in js_os_poll()
+    var poll_fd_index: i32
+
 ## A rejected promise without a handler yet (JSRejectedPromiseEntry).
 struct RejectedPromiseEntry:
     var link: ListHead
     var promise: Value
     var reason: Value
 
-## The host state of one runtime, its opaque pointer (JSThreadState). QuickJS also keeps
-## the worker ports and message pipes here; without workers every runtime is the main
-## thread.
+## The host state of one runtime, its opaque pointer (JSThreadState).
 struct ThreadState:
     ## list of OSRWHandler.link
     var os_rw_handlers: ListHead
@@ -78,12 +112,17 @@ struct ThreadState:
     var os_signal_handlers: ListHead
     ## list of OSTimer.link
     var os_timers: ListHead
+    ## list of WorkerMessageHandler.link
+    var port_list: ListHead
     ## list of RejectedPromiseEntry.link
     var rejected_promise_list: ListHead
     ## only used in the main thread
     var eval_script_recurse: i32
     ## for setTimeout()
     var next_timer_id: i32
+    # not used in the main thread
+    var recv_pipe: WorkerMessagePipe*?
+    var send_pipe: WorkerMessagePipe*?
     ## the descriptors js_os_poll waits for, poll_fds_size of them allocated
     var poll_fds: PollFd*?
     var poll_fds_size: i32

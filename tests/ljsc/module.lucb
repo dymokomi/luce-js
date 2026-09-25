@@ -25,8 +25,8 @@
 #       it (qjsc declares an extern C function of that name); "std" and "os" are the host's.
 #       Such a module must be visible from the package the generated file is built in, so
 #       executable output supports only std and os. Shared-library modules (.so) are
-#       declared as in the C, but luce-js cannot load them. Workers are not ported, so the
-#       generated main does not call js_std_set_worker_new_context_func.
+#       declared as in the C; at run time they are the native modules the program
+#       registers with host.js_register_native_module.
 #
 #       Build: luce-base build tests/ljsc -o build/ljsc
 #

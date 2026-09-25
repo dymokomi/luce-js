@@ -2,7 +2,7 @@
    JSON module and the std system module), with import.meta and scriptArgs */
 import * as std from "std";
 import { area, describe } from "./imports_lib.js";
-import msg from "./message.json";
+import msg from "./imports_data.json";
 
 std.printf("area=%d\n", area(3, 4));
 console.log(describe([1, 2, 3]));

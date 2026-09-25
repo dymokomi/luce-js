@@ -3,6 +3,7 @@ libc.lucb
 libc_process.lucb
 printf.lucb
 loader.lucb
+native_modules.lucb
 std_file.lucb
 url_get.lucb
 std_module.lucb
@@ -10,7 +11,10 @@ os_module.lucb
 os_poll.lucb
 os_files.lucb
 os_process.lucb
+worker_pipes.lucb
+worker.lucb
 os_tables.lucb
 helpers.lucb
 eval_binary.lucb
 tests.lucb
+tests_worker.lucb

@@ -7,7 +7,8 @@
     prints them, and the REPL (-i) driven through a pipe.
   - tests/repl.lucb, the REPL bytecode ljs embeds, is what ljsc generates from
     tests/repl.js today (the Makefile's `qjsc -s -c -o repl.c -m repl.js`).
-  - ljsc: the programs of QuickJS's examples and a module with a chain of imports are
+  - ljsc: the programs of QuickJS's examples (examples/, whose fib.lucb is the native module
+    of test_fib.js) and a module with a chain of imports (tests/tools/) are
     compiled to executables (the default output), to a Luce file with main (-e, with a
     native module given by -M) and to bytecode only (-c), built with luce-base, run, and
     their output compared with running the source with ljs.
@@ -30,6 +31,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = os.path.join(ROOT, "tests")
 TOOLS = os.path.join(TESTS, "tools")
+EXAMPLES = os.path.join(ROOT, "examples")
 BUILD = os.path.join(ROOT, "build")
 LJS = os.path.join(BUILD, "ljs")
 LJSC = os.path.join(BUILD, "ljsc")
@@ -173,21 +175,23 @@ def test_repl_bytecode():
           err or "regenerate it: cd tests && ../build/ljsc -s -c -o repl.lucb -m repl.js")
 
 
-def package(directory, extra_files=()):
-    """A package in `directory` that depends on this luce-js tree."""
+def package(directory, examples=False):
+    """A package in `directory` that depends on this luce-js tree (and on its examples,
+    whose fib module is the native module of test_fib.js)."""
     if os.path.exists(directory):
         shutil.rmtree(directory)
     os.makedirs(directory)
     with open(os.path.join(directory, "package.prisma"), "w") as f:
         f.write('#prisma 4.0\ndef package "ljsc_test" {\n    str source = "."\n'
-                f'    def dependency "luce-js" {{\n        str path = "{ROOT}"\n    }}\n}}\n')
-    for file in extra_files:
-        shutil.copy(os.path.join(TOOLS, file), directory)
+                f'    def dependency "luce-js" {{\n        str path = "{ROOT}"\n    }}\n')
+        if examples:
+            f.write(f'    def dependency "luce-js-examples" {{\n        str path = "{EXAMPLES}"\n    }}\n')
+        f.write('}\n')
 
 
-def ljs_output(args):
+def ljs_output(args, cwd):
     """What ljs prints running the source: the reference for the compiled programs."""
-    return run([LJS] + args, cwd=TOOLS)
+    return run([LJS] + args, cwd=cwd)
 
 
 def test_ljsc():
@@ -198,36 +202,39 @@ def test_ljsc():
                          "-fno-regexp", "-fno-json", "-fno-eval", "-fno-proxy", "-fno-date", "-m"]
 
     # executables, as the Makefile builds examples/hello and examples/hello_module
-    for name, opts, source, args in (
-            ("hello", hello_opts, "hello.js", []),
-            ("hello_module", hello_module_opts, "hello_module.js", []),
-            ("imports_main", ["-N", "main_program", "-S", "2M"], "imports_main.js", ["a", "b"])):
+    for name, opts, where, source, args in (
+            ("hello", hello_opts, EXAMPLES, "hello.js", []),
+            ("hello_module", hello_module_opts, EXAMPLES, "hello_module.js", []),
+            ("imports_main", ["-N", "main_program", "-S", "2M"], TOOLS, "imports_main.js", ["a", "b"])):
         exe = os.path.join(WORK, name)
-        code, out, err = run([LJSC, "-o", exe] + opts + [source], cwd=TOOLS)
+        code, out, err = run([LJSC, "-o", exe] + opts + [source], cwd=where)
         if code != 0:
             check(f"ljsc {name} (executable)", False, out + err)
             continue
-        expected = ljs_output([source] + args)
-        actual = run([exe] + args, cwd=TOOLS)
+        expected = ljs_output([source] + args, where)
+        actual = run([exe] + args, cwd=where)
         check(f"ljsc {name} (executable)", expected[0] == 0 and actual == expected,
               f"ljs: {expected!r}\ncompiled: {actual!r}")
 
     # -e with a native module, as the Makefile makes test_fib.c: qjsc -e -M examples/fib.so,fib
     directory = os.path.join(WORK, "test_fib")
-    package(directory, ["fib.lucb"])
+    # (examples/fib.lucb, the port of examples/fib.c, is the native module)
+    package(directory, examples=True)
     code, out, err = run([LJSC, "-e", "-M", "fib.so,fib", "-m", "-o",
-                          os.path.join(directory, "test_fib.lucb"), "test_fib.js"], cwd=TOOLS)
+                          os.path.join(directory, "test_fib.lucb"), "test_fib.js"], cwd=EXAMPLES)
     exe = os.path.join(directory, "test_fib")
     if code == 0:
         code, out, err = run(["luce-base", "build", os.path.join(directory, "test_fib.lucb"), "-o", exe])
     actual = run([exe]) if code == 0 else (code, out, err)
-    check("ljsc -e -M test_fib (native module)", actual == (0, "Hello World\nfib(10)= 55\n", ""), repr(actual))
+    expected = ljs_output(["test_fib.js"], EXAMPLES)
+    check("ljsc -e -M test_fib (native module)",
+          actual == (0, "Hello World\nfib(10)= 55\n", "") and actual == expected, f"{actual!r}\nljs: {expected!r}")
 
     # -c: only the bytecode, used from a program of ours; -p changes the prefix
     directory = os.path.join(WORK, "bytecode_only")
     package(directory)
     code, out, err = run([LJSC, "-c", "-p", "demo_", "-o", os.path.join(directory, "hello_data.lucb"),
-                          "hello.js"], cwd=TOOLS)
+                          "hello.js"], cwd=EXAMPLES)
     with open(os.path.join(directory, "main.lucb"), "w") as f:
         f.write("import js\nimport host\nimport hello_data\n\n"
                 "pub func main(arguments: str[]) -> i32:\n"
@@ -245,12 +252,12 @@ def test_ljsc():
     # the same bytecode as C qjsc
     qjsc = os.environ.get("QJSC")
     if qjsc:
-        for opts, source in (([], "hello.js"), (["-m"], "hello_module.js"), (["-m"], "imports_main.js"),
-                             (["-s", "-m"], "test_fib.js")):
+        for opts, where, source in (([], EXAMPLES, "hello.js"), (["-m"], EXAMPLES, "hello_module.js"),
+                                    (["-m"], TOOLS, "imports_main.js"), (["-s", "-m"], EXAMPLES, "test_fib.js")):
             ours = os.path.join(WORK, "ours.lucb")
             theirs = os.path.join(WORK, "theirs.c")
-            ok = run([LJSC, "-c", "-o", ours] + opts + [source], cwd=TOOLS)[0] == 0 and \
-                run([qjsc, "-c", "-o", theirs] + opts + [source], cwd=TOOLS)[0] == 0
+            ok = run([LJSC, "-c", "-o", ours] + opts + [source], cwd=where)[0] == 0 and \
+                run([qjsc, "-c", "-o", theirs] + opts + [source], cwd=where)[0] == 0
             if ok:
                 hex_ours = re.findall(r"0x[0-9a-f]{2}", open(ours).read())
                 hex_theirs = re.findall(r"0x[0-9a-f]{2}", open(theirs).read())

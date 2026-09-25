@@ -14,9 +14,12 @@
 #       instantiation times: `ljs -qd` is `make stats`), --memory-limit, --stack-size,
 #       --no-unhandled-rejection, -s, --strip-source and -q.
 #
-#       Differences from the C: the program is named ljs in its messages; workers are not
-#       ported, so there is no js_std_set_worker_new_context_func; the default stack size
-#       is luce-js's (js_default_stack_size).
+#       Shared-library modules are the native modules ljs links in and registers: "bjson"
+#       (tests/bjson.c) and the examples "fib" and "point", imported as "./bjson.so" or
+#       "bjson" and so on.
+#
+#       Differences from the C: the program is named ljs in its messages; the default stack
+#       size is luce-js's (js_default_stack_size).
 #
 #       Build: luce-base build tests/ljs.lucb -o build/ljs
 #
@@ -41,6 +44,9 @@ import platform
 import js
 import host
 import repl
+import bjson
+import fib
+import point
 
 extern func malloc(size: usize) -> void*?
 extern func realloc(ptr: void*?, size: usize) -> void*?
@@ -390,6 +396,11 @@ pub func main(argv: str[]) -> i32:
     o.stack_size = 0
     let optind = parse_options(&o, argv)
 
+    # the native modules qjs would load as shared libraries
+    discard(host.js_register_native_module("bjson", bjson.js_init_module_bjson))
+    discard(host.js_register_native_module("fib", fib.js_init_module_fib))
+    discard(host.js_register_native_module("point", point.js_init_module))
+
     var created: js.Runtime*? = none
     if o.trace_memory != 0:
         js_trace_malloc_init(&trace_data)
@@ -404,6 +415,7 @@ pub func main(argv: str[]) -> i32:
     if o.stack_size != 0:
         js.js_set_max_stack_size(rt, o.stack_size)
     js.js_set_strip_info(rt, o.strip_flags)
+    host.js_std_set_worker_new_context_func(js_new_custom_context)
     host.js_std_init_handlers(rt)
     let new_ctx = js_new_custom_context(rt)
     if new_ctx == none:

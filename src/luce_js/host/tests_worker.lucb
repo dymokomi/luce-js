@@ -1,0 +1,65 @@
+#==============================================================================================
+#
+#   tests_worker - Unit tests of the worker message pipes and the SharedArrayBuffer allocator
+#
+#   DESCRIPTION:
+#       Checks the reference counts of shared storage and pipes, and a message's way
+#       through a pipe (postMessage, the waker, js_os_poll, handle_posted_message) with a
+#       Worker object whose send and receive pipes are the same pipe, in one thread.
+#       Worker threads are covered by tests/js/test_worker.js and
+#       tests/js/test_worker_atomics.js.
+#
+#==============================================================================================
+
+test "the SharedArrayBuffer allocator counts references to its storage":
+    assert(sizeof(SABHeader) == 8)
+    let ptr = js_sab_alloc(none, 24) else trap("no storage")
+    assert(((usize)ptr & 7) == 0)
+    let sab = sab_header_of(ptr)
+    assert(sab.ref_count.load() == 1)
+    js_sab_dup(none, ptr)
+    assert(sab.ref_count.load() == 2)
+    js_sab_free(none, ptr)
+    assert(sab.ref_count.load() == 1)
+    js_sab_free(none, ptr)
+
+test "a message posted to a pipe wakes its port and reaches onmessage":
+    let ps = js_new_message_pipe() else trap("no pipe")
+    let ctx = test_context()
+    var buf: u8[256]
+    # initializing the os module registers the Worker class
+    discard(eval_to_text(ctx, "import * as os from 'os'; globalThis.result = '';", buf))
+    let loopback = js_worker_ctor_internal(ctx, js.js_undefined(), ps, ps) catch: trap("no worker")
+    assert(ps.ref_count.load() == 3)
+    let global_obj = js.js_get_global_object(ctx)
+    discard(js.js_set_property_str(ctx, global_obj, "loopback", loopback) catch: trap("no global"))
+    js.js_free_value(ctx, global_obj)
+
+    discard(eval_to_text(ctx, """
+        let r = [];
+        let sab = new SharedArrayBuffer(8);
+        loopback.onmessage = (e) => {
+            r.push(e.data.n, e.data.list.join("+"), e.data.buf.buffer === sab);
+            if (e.data.n == 2)
+                loopback.onmessage = null;
+        };
+        loopback.postMessage({ n: 1, list: [1, 2], buf: new Uint8Array(sab) });
+        loopback.postMessage({ n: 2, list: [], buf: new Uint8Array(4) });
+        globalThis.log = r;
+        globalThis.result = "";
+        """, buf))
+    # the port's reference to the pipe
+    assert(ps.ref_count.load() == 4)
+    js_std_loop(ctx)
+    let text = eval_to_text(ctx, "globalThis.result = globalThis.log.join();", buf)
+    # the SharedArrayBuffer comes back as a new object over the same storage
+    assert(text == "1,1+2,false,2,,false")
+    # the queue is empty and the waker cleared
+    assert(cutils.list_empty(&ps.msg_queue))
+    var fds = PollFd(fd = ps.waker.read_fd, events = poll_in, revents = 0)
+    assert(c_poll(&fds, 1, 0) == 0)
+    # removing onmessage freed the port
+    assert(ps.ref_count.load() == 3)
+    free_test_context(ctx)
+    assert(ps.ref_count.load() == 1)
+    js_free_message_pipe(ps)

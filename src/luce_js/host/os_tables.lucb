@@ -3,8 +3,8 @@
 #   os_tables - The `os` module's table, js_os_init and js_init_module_os
 #
 #   DESCRIPTION:
-#       Port of quickjs-libc.c lines 3915-4060, without the Worker class. The
-#       platform string, whose value depends on the target, is exported beside the table
+#       Port of quickjs-libc.c lines 3915-4060; the Worker class is registered by
+#       js_worker_init (`worker`). The platform string, whose value depends on the target, is exported beside the table
 #       rather than in it, since a table entry is a constant.
 #
 #==============================================================================================
@@ -100,6 +100,9 @@ func os_platform() -> str:
 
 func js_os_init(ctx: Context*, m: ModuleDef*) -> !:
     os_poll_func = js_os_poll
+
+    discard(try js.js_set_module_export(ctx, m, "Worker".bytes.data, try js_worker_init(ctx)))
+
     try js.js_set_module_export_list(ctx, m, js_os_funcs)
     let name = os_platform()
     discard(try js.js_set_module_export(ctx, m, "platform".bytes.data,
@@ -110,4 +113,5 @@ pub func js_init_module_os(ctx: Context*, module_name: const u8*) -> ModuleDef*!
     let m = try js.js_new_c_module(ctx, module_name, js_os_init)
     try js.js_add_module_export_list(ctx, m, js_os_funcs)
     try js.js_add_module_export(ctx, m, "platform".bytes.data)
+    try js.js_add_module_export(ctx, m, "Worker".bytes.data)
     return m
