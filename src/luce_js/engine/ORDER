@@ -63,7 +63,9 @@ calls.lucb
 interpreter_support.lucb
 interpreter.lucb
 call_entry.lucb
-stub_r15_async_generators.lucb
+generators.lucb
+async_functions.lucb
+async_generators.lucb
 tokenizer.lucb
 tokenizer_next.lucb
 tokenizer_json.lucb
@@ -194,3 +196,4 @@ tests_r26.lucb
 tests_r27.lucb
 tests_r19.lucb
 tests_r28.lucb
+tests_r15.lucb

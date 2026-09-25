@@ -1,0 +1,125 @@
+#==============================================================================================
+#
+#   async_functions - Async function calls and their await continuations
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "AsyncFunction" (lines 21195-21343): the resolve and reject
+#       functions an `await` registers on the awaited promise (the classes
+#       JS_CLASS_ASYNC_FUNCTION_RESOLVE and _REJECT, which hold the AsyncFunctionState),
+#       resuming an async function until it awaits or ends, and the call of an async
+#       function, which answers the promise of its result.
+#
+#==============================================================================================
+
+# mark: Resolving functions =====================================================================
+
+## Finalizer of the async function resolve and reject classes.
+func js_async_function_resolve_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        async_func_free(rt, (AsyncFunctionState*)raw)
+
+## Marking function of the async function resolve and reject classes.
+func js_async_function_resolve_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    let p = val.u.obj
+    if let raw = p.u.opaque:
+        let s = (AsyncFunctionState*)raw
+        mark_func(rt, &s.header)
+
+## The resolve and reject functions that resume `s` after an await, into
+## `resolving_funcs[0..1]`; each holds a reference to `s`.
+func js_async_function_resolve_create(ctx: Context*, s: AsyncFunctionState*, resolving_funcs: Value*) -> !:
+    for i: usize in 0..<2:
+        resolving_funcs[i] = js_new_object_proto_class(ctx, ctx.function_proto, (u32)ClassId.async_function_resolve + (u32)i) catch failure:
+            if i == 1:
+                js_free_value(ctx, resolving_funcs[0])
+            error(failure.code, failure.message)
+        let p = resolving_funcs[i].u.obj
+        js_rc(s).ref_count += 1
+        p.u.async_function_data = s
+
+# mark: Resuming =================================================================================
+
+# Reject the promise of the async function `s` with the pending exception (the `fail`
+# label of js_async_function_resume).
+func js_async_function_reject_pending(ctx: Context*, s: AsyncFunctionState*):
+    var err = js_get_exception(ctx)
+    let ret2 = js_call(ctx, s.resolving_funcs[1], js_undefined(), 1, &err) catch: recover js_undefined()
+    js_free_value(ctx, err)
+    js_free_value(ctx, ret2) # XXX: what to do if exception ?
+
+# await: resume `s` when the promise of `value` settles; `value` is freed.
+func js_async_function_await(ctx: Context*, s: AsyncFunctionState*, value: Value) -> !:
+    var arg = value
+    let promise = js_promise_resolve(ctx, ctx.promise_ctor, 1, &arg, 0) catch failure:
+        js_free_value(ctx, arg)
+        error(failure.code, failure.message)
+    js_free_value(ctx, arg)
+    defer js_free_value(ctx, promise)
+    var resolving_funcs: Value[2] = ---
+    try js_async_function_resolve_create(ctx, s, &resolving_funcs[0])
+    defer js_free_value(ctx, resolving_funcs[1])
+    defer js_free_value(ctx, resolving_funcs[0])
+
+    # Note: no need to create 'thrownawayCapability' as in
+    # the spec
+    var resolving_funcs1: Value[2] = [js_undefined(), js_undefined()]
+    try perform_promise_then(ctx, promise, &resolving_funcs[0], &resolving_funcs1[0])
+
+## Resume the async function `s` until it awaits (registering its continuation on the
+## awaited promise) or ends (settling its promise).
+func js_async_function_resume(ctx: Context*, s: AsyncFunctionState*):
+    let func_ret = async_func_resume(ctx, s) catch:
+        # s.is_completed: the function threw
+        js_async_function_reject_pending(ctx, s)
+        return
+    if s.is_completed:
+        # normal return
+        var result = func_ret
+        let ret2 = js_call(ctx, s.resolving_funcs[0], js_undefined(), 1, &result) catch: recover js_undefined()
+        js_free_value(ctx, func_ret)
+        js_free_value(ctx, ret2) # XXX: what to do if exception ?
+    else:
+        let cur_sp = s.frame.cur_sp else trap("js_async_function_resume: the frame is running")
+        let value = *(cur_sp - 1)
+        *(cur_sp - 1) = js_undefined()
+
+        # await
+        js_free_value(ctx, func_ret) # not used
+        js_async_function_await(ctx, s, value) catch:
+            js_async_function_reject_pending(ctx, s)
+            return
+
+## The call of an async function resolve or reject function: resume the function with
+## the settled value as the result of its `await`, or throw the rejection reason in it.
+func js_async_function_resolve_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let p = func_obj.u.obj
+    let s = p.u.async_function_data
+    let is_reject = p.class_id != ClassId.async_function_resolve
+    let arg = argv[0] if argc > 0 else js_undefined()
+    s.throw_flag = is_reject
+    if is_reject:
+        js_throw_pending(ctx, js_dup_value(ctx, arg))
+    else:
+        # return value of await
+        let cur_sp = s.frame.cur_sp else trap("js_async_function_resolve_call: the frame is running")
+        *(cur_sp - 1) = js_dup_value(ctx, arg)
+    js_async_function_resume(ctx, s)
+    return js_undefined()
+
+# mark: Calls =====================================================================================
+
+## The call of an async function: run it up to its first await and answer the promise
+## of its result.
+func js_async_function_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    let s = try async_func_init(ctx, func_obj, this_obj, argc, argv)
+
+    let promise = js_new_promise_capability(ctx, &s.resolving_funcs[0]) catch failure:
+        async_func_free(ctx.rt, s)
+        error(failure.code, failure.message)
+
+    js_async_function_resume(ctx, s)
+
+    async_func_free(ctx.rt, s)
+
+    return promise
