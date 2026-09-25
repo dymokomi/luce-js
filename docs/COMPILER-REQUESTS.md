@@ -138,6 +138,21 @@ on the other platforms unless its body is wrapped in `if platform.X:`. `build` p
 unreachable. Expected: prune unreferenced non-test functions in test builds too, or document
 the rule.
 
+### 11. The interpreter's start-up is quadratic in the length of a global array literal (interpreter)
+
+`luce-base test` (interpreted) of a module with one `let big: u16[24000] = [...]` takes 3.5 s
+(6000 elements 0.38 s, 12000 1.1 s, ×3 per doubling); `check` takes 0.05 s and
+`test --native` 0.2 s. LibTextCodec's encoding indexes (~85k entries) make every interpreted
+test run of that module take 35 s before the first test.
+
+```luce
+let big: u16[24000] = [0, 7, 14, 21, 28]   # ...continue to 24000 elements
+test "first":
+    assert(big[1] == 7)
+```
+
+Expected: linear, like the native build. (luce-browser runs that module's tests `--native`.)
+
 ## Done on a branch, waiting for merge and release
 
 - **Dense `match` → jump table; u8 match subject kept in a register; `(i32)`/`(i64)` float
