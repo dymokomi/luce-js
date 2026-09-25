@@ -1,0 +1,203 @@
+#==============================================================================================
+#
+#   compile - Compiling scripts and modules and writing their bytecode as Luce byte arrays
+#
+#   DESCRIPTION:
+#       Port of qjsc.c lines 128-363: the names of the generated arrays (get_c_name,
+#       find_unique_cname), the byte array output (dump_hex, output_object_code), the module
+#       loader that follows the imports of the compiled modules (jsc_module_loader) and
+#       compile_file.
+#
+#==============================================================================================
+
+# mark: Names ===================================================================================
+
+## The identifier of the arrays of `file`: the prefix and the base name without its
+## extension, other characters than letters and digits replaced by '_' (get_c_name).
+func get_c_name(buf: u8*, buf_size: usize, file: const u8*):
+    var p = file
+    if let slash = strrchr(file, (i32)'/'):
+        p = slash + 1
+    var len: usize = 0
+    if let r = strrchr(p, (i32)'.'):
+        len = (usize)(r - p)
+    else:
+        len = strlen(p)
+    pstrcpy(buf, buf_size, c_ident_prefix.bytes.data)
+    var q = strlen(buf)
+    for i in 0..<len:
+        var ch = p[i]
+        if not ((ch >= '0' and ch <= '9') or (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z')):
+            ch = '_'
+        if q < buf_size - 1:
+            buf[q] = ch
+            q += 1
+    buf[q] = 0
+
+## find a C name not matching an existing module C name by adding a numeric suffix
+func find_unique_cname(cname: u8*, cname_size: usize):
+    var cname1: u8[1024] = ---
+    assert(cname_size >= 32)
+    let len = strlen(cname)
+    let max_len = cname_size - 16
+    if len > max_len:
+        cname[max_len] = 0
+    var suffix_num: i32 = 1
+    while true:
+        discard(snprintf(&cname1[0], 1024, z("%s_%d"), cname, suffix_num))
+        if namelist_find(&cname_list, &cname1[0]) == none:
+            break
+        suffix_num += 1
+    pstrcpy(cname, cname_size, &cname1[0])
+
+# mark: Output ==================================================================================
+
+## The bytes of `buf` as the elements of a Luce array literal, eight per line.
+func dump_hex(f: void*, buf: const u8*, len: usize):
+    var col = 0
+    for i in 0..<len:
+        if col == 0:
+            discard(fputs(z("   "), f))
+        discard(fprintf(f, z(" 0x%02x,"), (u32)buf[i]))
+        col += 1
+        if col == 8:
+            discard(fprintf(f, z("\n")))
+            col = 0
+    if col != 0:
+        discard(fprintf(f, z("\n")))
+
+## the kinds of the generated arrays (CNameTypeEnum)
+let cname_type_script: i32 = 0
+let cname_type_module: i32 = 1
+let cname_type_json_module: i32 = 2
+
+## Write `obj` with JS_WriteObject as the arrays `c_name` and `c_name`_size.
+func output_object_code(ctx: js.Context*, fo: void*, obj: js.Value, c_name: const u8*, c_name_type: i32):
+    var flags: i32 = 0
+    if c_name_type != cname_type_json_module:
+        flags = js.write_obj_bytecode
+    if byte_swap:
+        flags |= js.write_obj_bswap
+    var out_buf_len: usize = 0
+    let out_buf = js.js_write_object(ctx, &out_buf_len, obj, flags) catch:
+        host.js_std_dump_error(ctx)
+        c_exit(1)
+
+    namelist_add(&cname_list, c_name, none, c_name_type)
+
+    discard(fprintf(fo, z("## The size of %s.\npub let %s_size: u32 = %u\n\n"),
+                    c_name, c_name, (u32)out_buf_len))
+    if c_name_type == cname_type_json_module:
+        discard(fprintf(fo, z("## The JSON value of the module %s, written by JS_WriteObject.\n"), c_name))
+    else:
+        discard(fprintf(fo, z("## The bytecode of %s, written by JS_WriteObject.\n"), c_name))
+    discard(fprintf(fo, z("pub let %s: u8[%u] = [\n"), c_name, (u32)out_buf_len))
+    dump_hex(fo, out_buf, out_buf_len)
+    discard(fprintf(fo, z("]\n\n")))
+
+    js.js_free(ctx, out_buf)
+
+# mark: Module loader ===========================================================================
+
+func js_module_dummy_init(ctx: js.Context*, m: js.ModuleDef*) -> !:
+    # should never be called when compiling JS code
+    abort()
+
+## The module loader while compiling: a declared native module or a .so becomes a dummy
+## module; any other module is compiled and written out too (jsc_module_loader).
+func jsc_module_loader(ctx: js.Context*, module_name: const u8*, opaque: void*?,
+                       attributes: js.Value) -> js.ModuleDef*!:
+    # check if it is a declared C or system module
+    if let e = namelist_find(&cmodule_list, module_name):
+        # add in the static init module list
+        namelist_add(&init_module_list, e.name, e.short_name, 0)
+        # create a dummy module
+        return try js.js_new_c_module(ctx, module_name, js_module_dummy_init)
+    if has_suffix(module_name, ".so"):
+        discard(fprintf(stderr(), z("Warning: binary module '%s' will be dynamically loaded\n"), module_name))
+        # create a dummy module
+        let m = try js.js_new_c_module(ctx, module_name, js_module_dummy_init)
+        # the resulting executable will export its symbols for the dynamic library
+        dynamic_export = true
+        return m
+
+    let fo = outfile else abort()
+    var buf_len: usize = 0
+    var cname: u8[1024] = ---
+    let buf = host.js_load_file(ctx, &buf_len, module_name) else try js.js_throw_reference_error(ctx, f"could not load module filename '{view(module_name)}'")
+
+    let res = host.js_module_test_json(ctx, attributes)
+    if has_suffix(module_name, ".json") or res > 0:
+        # compile as JSON or JSON5 depending on "type"
+        var flags: i32 = 0
+        if res == 2:
+            flags = js.parse_json_ext
+        let parsed = js.js_parse_json2(ctx, buf, buf_len, module_name, flags) catch failure:
+            js.js_free(ctx, buf)
+            error(failure.code, failure.message)
+        js.js_free(ctx, buf)
+        let val = parsed
+        defer js.js_free_value(ctx, val)
+        # create a dummy module
+        let m = try js.js_new_c_module(ctx, module_name, js_module_dummy_init)
+
+        get_c_name(&cname[0], 1024, module_name)
+        if namelist_find(&cname_list, &cname[0]) != none:
+            find_unique_cname(&cname[0], 1024)
+
+        # output the module name
+        discard(fprintf(fo, z("## The name of the JSON module %s.\npub let %s_module_name: u8[%u] = [\n"),
+                        &cname[0], &cname[0], (u32)(strlen(module_name) + 1)))
+        dump_hex(fo, module_name, strlen(module_name) + 1)
+        discard(fprintf(fo, z("]\n\n")))
+
+        output_object_code(ctx, fo, val, &cname[0], cname_type_json_module)
+        return m
+
+    # compile the module
+    let compiled = js.js_eval(ctx, buf, buf_len, module_name, js.eval_type_module | js.eval_flag_compile_only) catch failure:
+        js.js_free(ctx, buf)
+        error(failure.code, failure.message)
+    js.js_free(ctx, buf)
+    let func_val = compiled
+    get_c_name(&cname[0], 1024, module_name)
+    if namelist_find(&cname_list, &cname[0]) != none:
+        find_unique_cname(&cname[0], 1024)
+    output_object_code(ctx, fo, func_val, &cname[0], cname_type_module)
+
+    # the module is already referenced, so we must free it
+    let m = (js.ModuleDef*)js.js_value_get_ptr(func_val)
+    js.js_free_value(ctx, func_val)
+    return m
+
+# mark: Files ===================================================================================
+
+## Compile the file `filename` and write it as the arrays `c_name1` (by default, named
+## after the file); module: 1 module, 0 script, -1 detect (compile_file).
+func compile_file(ctx: js.Context*, fo: void*, filename: const u8*, c_name1: const u8*?, module: i32):
+    var c_name: u8[1024] = ---
+    var buf_len: usize = 0
+    let loaded = host.js_load_file(ctx, &buf_len, filename)
+    if loaded == none:
+        discard(fprintf(stderr(), z("Could not load '%s'\n"), filename))
+    let buf = loaded else c_exit(1)
+    var eval_flags = js.eval_flag_compile_only
+    var is_module = module > 0
+    if module < 0:
+        is_module = has_suffix(filename, ".mjs") or js.js_detect_module(buf, buf_len)
+    if is_module:
+        eval_flags |= js.eval_type_module
+    else:
+        eval_flags |= js.eval_type_global
+    let obj = js.js_eval(ctx, buf, buf_len, filename, eval_flags) catch:
+        host.js_std_dump_error(ctx)
+        c_exit(1)
+    js.js_free(ctx, buf)
+    if let name = c_name1:
+        pstrcpy(&c_name[0], 1024, name)
+    else:
+        get_c_name(&c_name[0], 1024, filename)
+        if namelist_find(&cname_list, &c_name[0]) != none:
+            find_unique_cname(&c_name[0], 1024)
+    output_object_code(ctx, fo, obj, &c_name[0], cname_type_script)
+    js.js_free_value(ctx, obj)

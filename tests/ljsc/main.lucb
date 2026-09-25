@@ -1,0 +1,400 @@
+#==============================================================================================
+#
+#   main - ljsc's options, the generated main and the executable output
+#
+#   DESCRIPTION:
+#       Port of qjsc.c lines 365-876: the templates of the generated main, help, the
+#       executable output (qjsc runs the C compiler; ljsc runs `luce-base build`), the
+#       option parser and main, which compiles the files and writes JS_NewCustomContext
+#       and main.
+#
+#==============================================================================================
+
+extern func execvp(file: const u8*, argv: (const u8*?)*) -> i32
+extern func fork() -> i32
+extern func waitpid(pid: i32, status: i32*, options: i32) -> i32
+extern func mkdir(path: const u8*, mode: u32) -> i32
+extern func rmdir(path: const u8*) -> i32
+
+# mark: Templates ===============================================================================
+
+let main_c_template1: str = """
+## Run the precompiled program.
+pub func main(arguments: str[]) -> i32:
+    let rt = js.js_new_runtime() else return 1
+    host.js_std_init_handlers(rt)
+"""
+
+let main_c_template2: str = """    host.js_std_loop(ctx)
+    host.js_std_free_handlers(rt)
+    js.js_free_context(ctx)
+    js.js_free_runtime(rt)
+    return 0
+"""
+
+let prog_name: str = "ljsc"
+
+## The QuickJS version luce-js ports (CONFIG_VERSION).
+let config_version: str = "2026-06-04"
+
+func help() -> never:
+    discard(printf(z("luce-js compiler (QuickJS Compiler version %s)\nusage: %s [options] [files]\n\noptions are:\n-c          only output bytecode to a Luce file\n-e          output main() and bytecode to a Luce file (default = executable output)\n-o output   set the output filename\n-N cname    set the Luce name of the generated data\n-m          compile as Javascript module (default=autodetect)\n-D module_name         compile a dynamically loaded module or worker\n-M module_name[,cname] add initialization code for an external native module\n-x          byte swapped output\n-p prefix   set the prefix of the generated Luce names\n-S n        set the maximum stack size to 'n' bytes (default=%d)\n-s            strip all the debug info\n--keep-source keep the source code\n"),
+                   config_version.bytes.data, z(prog_name), (i32)js.js_default_stack_size))
+    discard(printf(z("-flto       accepted and ignored\n")))
+    discard(printf(z("-fno-[")))
+    for i in 0..<feature_list.length:
+        if i != 0:
+            discard(printf(z("|")))
+        discard(printf(z("%s"), feature_list[i].option_name.bytes.data))
+    discard(printf(z("]\n            disable selected language features (smaller code size)\n")))
+    c_exit(1)
+
+# mark: Executable output =======================================================================
+
+func exec_cmd(argv: (const u8*?)*) -> i32:
+    let file = argv[0] else return 1
+    let pid = fork()
+    if pid == 0:
+        discard(execvp(file, argv))
+        c_exit(1)
+    var status: i32 = 0
+    while true:
+        let ret = waitpid(pid, &status, 0)
+        # WIFEXITED
+        if ret == pid and (status & 0x7f) == 0:
+            break
+    # WEXITSTATUS
+    return (status >> 8) & 0xff
+
+## Build the generated `cfilename` into `out_filename` with `luce-base build --release` in
+## the temporary package `package_dir` whose luce-js dependency is the tree the ljsc
+## executable `exename` was built in (its build/..), as qjsc links libquickjs.a found next
+## to its executable.
+func output_executable(out_filename: const u8*, cfilename: const u8*, package_dir: const u8*,
+                       verbose: bool, exename: const u8*) -> i32:
+    var exe_dir: u8[1024] = ---
+    var buf: u8[1024] = ---
+    var lib_dir: u8[1024] = ---
+
+    # get the directory of the executable
+    pstrcpy(&exe_dir[0], 1024, exename)
+    if let p = strrchr(&exe_dir[0], (i32)'/'):
+        *p = 0
+    else:
+        pstrcpy(&exe_dir[0], 1024, z("."))
+
+    # the luce-js tree: the parent of the directory of the executable
+    discard(snprintf(&buf[0], 1024, z("%s/../package.prisma"), &exe_dir[0]))
+    if access(&buf[0], r_ok) != 0:
+        discard(fprintf(stderr(), z("%s: cannot find the luce-js package (%s)\n"), z(prog_name), &buf[0]))
+        c_exit(1)
+    discard(snprintf(&buf[0], 1024, z("%s/.."), &exe_dir[0]))
+    if realpath(&buf[0], &lib_dir[0]) == none:
+        perror(&buf[0])
+        c_exit(1)
+
+    # the manifest of the temporary package
+    discard(snprintf(&buf[0], 1024, z("%s/package.prisma"), package_dir))
+    let manifest = &buf[0]
+    let opened = fopen(manifest, z("w"))
+    if opened == none:
+        perror(manifest)
+    let f = opened else c_exit(1)
+    discard(fprintf(f, z("#prisma 4.0\ndef package \"ljsc_output\" {\n    str source = \".\"\n    def dependency \"luce-js\" {\n        str path = \"%s\"\n    }\n}\n"),
+                    &lib_dir[0]))
+    discard(fclose(f))
+
+    # the temporary package is removed afterwards: no build cache in it
+    var argv: (const u8*?)[9] = [z("luce-base"), z("build"), cfilename, z("-o"), out_filename, z("--release"),
+                                 z("--cache-dir"), z("none"), none]
+    let n: usize = 8
+
+    if verbose:
+        for i in 0..<n:
+            if let a = argv[i]:
+                discard(printf(z("%s "), a))
+        discard(printf(z("\n")))
+
+    let ret = exec_cmd(&argv[0])
+    discard(unlink(cfilename))
+    discard(unlink(manifest))
+    discard(rmdir(package_dir))
+    return ret
+
+## A size with an optional k, M or G suffix (get_suffixed_size).
+func get_suffixed_size(text: const u8*) -> usize:
+    var p: u8* = ---
+    var v = (usize)strtod(text, &p)
+    match p[0]:
+        'G':
+            v <<= 30
+        'M':
+            v <<= 20
+        'k', 'K':
+            v <<= 10
+        _:
+            if p[0] != 0:
+                discard(fprintf(stderr(), z("qjs: invalid suffix: %s\n"), p))
+                c_exit(1)
+    return v
+
+## the kinds of output (OutputTypeEnum)
+let output_c: i32 = 0
+let output_c_main: i32 = 1
+let output_executable_type: i32 = 2
+
+func get_short_optarg(poptind: usize*, opt: u8, arg: const u8*, argv: str[]) -> const u8*:
+    if arg[0] != 0:
+        return arg
+    if *poptind < argv.length:
+        let optarg = argv[*poptind].bytes.data
+        *poptind += 1
+        return optarg
+    discard(fprintf(stderr(), z("qjsc: expecting parameter for -%c\n"), (i32)opt))
+    c_exit(1)
+
+# mark: main ====================================================================================
+
+pub func main(argv: str[]) -> i32:
+    var out_filename: const u8*? = none
+    var output_type = output_executable_type
+    var cname: const u8*? = none
+    feature_bitmap = fe_all
+    var module: i32 = -1
+    byte_swap = false
+    var verbose = false
+    var strip_flags = js.strip_source
+    var stack_size: usize = 0
+    var dynamic_module_list = NameList(array = none, count = 0, size = 0)
+
+    # add system modules
+    namelist_add(&cmodule_list, z("std"), z("std"), 0)
+    namelist_add(&cmodule_list, z("os"), z("os"), 0)
+
+    var optind: usize = 1
+    while optind < argv.length and argv[optind].length > 0 and argv[optind].bytes[0] == '-':
+        var arg: const u8* = argv[optind].bytes.data + 1
+        var longopt: const u8* = z("")
+        # a single - is not an option, it also stops argument scanning
+        if arg[0] == 0:
+            break
+        optind += 1
+        if arg[0] == '-':
+            longopt = arg + 1
+            arg = arg + strlen(arg)
+            # -- stops argument scanning
+            if longopt[0] == 0:
+                break
+        while arg[0] != 0 or longopt[0] != 0:
+            let opt = arg[0]
+            if opt != 0:
+                arg = arg + 1
+            let long_name = view(longopt)
+            longopt = z("")
+            if opt == 'h' or opt == '?' or long_name == "help":
+                help()
+            if opt == 'o':
+                out_filename = get_short_optarg(&optind, opt, arg, argv)
+                break
+            if opt == 'c':
+                output_type = output_c
+                continue
+            if opt == 'e':
+                output_type = output_c_main
+                continue
+            if opt == 'N':
+                cname = get_short_optarg(&optind, opt, arg, argv)
+                break
+            if opt == 'f':
+                let optarg = get_short_optarg(&optind, opt, arg, argv)
+                var p = optarg
+                # -flto (use_lto) is accepted: luce-base builds have no separate LTO step
+                if strcmp(p, z("lto")) == 0:
+                    break
+                if strstart(p, "no-", &p):
+                    var found = false
+                    for i in 0..<feature_list.length:
+                        if view(p) == feature_list[i].option_name:
+                            feature_bitmap &= ~((u64)1 << (u64)i)
+                            found = true
+                            break
+                    if not found:
+                        discard(fprintf(stderr(), z("unsupported feature: %s\n"), optarg))
+                        c_exit(1)
+                else:
+                    discard(fprintf(stderr(), z("unsupported feature: %s\n"), optarg))
+                    c_exit(1)
+                break
+            if opt == 'm':
+                module = 1
+                continue
+            if opt == 'M':
+                var path: u8[1024] = ---
+                var mcname: u8[1024] = ---
+                let optarg = get_short_optarg(&optind, opt, arg, argv)
+                pstrcpy(&path[0], 1024, optarg)
+                if let p = strchr(&path[0], (i32)','):
+                    *p = 0
+                    pstrcpy(&mcname[0], 1024, p + 1)
+                else:
+                    get_c_name(&mcname[0], 1024, &path[0])
+                namelist_add(&cmodule_list, &path[0], &mcname[0], 0)
+                break
+            if opt == 'D':
+                let optarg = get_short_optarg(&optind, opt, arg, argv)
+                namelist_add(&dynamic_module_list, optarg, none, 0)
+                break
+            if opt == 'x':
+                byte_swap = true
+                continue
+            if opt == 'v':
+                verbose = true
+                continue
+            if opt == 'p':
+                c_ident_prefix = view(get_short_optarg(&optind, opt, arg, argv))
+                break
+            if opt == 'S':
+                let optarg = get_short_optarg(&optind, opt, arg, argv)
+                stack_size = get_suffixed_size(optarg)
+                break
+            if opt == 's':
+                strip_flags = js.strip_debug
+                continue
+            if long_name == "keep-source":
+                strip_flags = 0
+                continue
+            if opt != 0:
+                discard(fprintf(stderr(), z("qjsc: unknown option '-%c'\n"), (i32)opt))
+            else:
+                discard(fprintf(stderr(), z("qjsc: unknown option '--%.*s'\n"), (i32)long_name.length,
+                                long_name.bytes.data))
+            help()
+
+    if optind >= argv.length:
+        help()
+
+    let out_name = out_filename else (z("a.out") if output_type == output_executable_type else z("out.lucb"))
+
+    var cfilename: u8[1024] = ---
+    var package_dir: u8[1024] = ---
+    if output_type == output_executable_type:
+        # a temporary package holding the generated file
+        discard(snprintf(&package_dir[0], 1024, z("/tmp/ljsc%d"), getpid()))
+        if mkdir(&package_dir[0], 0o700) != 0:
+            perror(&package_dir[0])
+            c_exit(1)
+        discard(snprintf(&cfilename[0], 1024, z("%s/out.lucb"), &package_dir[0]))
+    else:
+        pstrcpy(&cfilename[0], 1024, out_name)
+
+    let opened = fopen(&cfilename[0], z("w"))
+    if opened == none:
+        perror(&cfilename[0])
+    let fo = opened else c_exit(1)
+    outfile = fo
+
+    let rt = js.js_new_runtime() else abort()
+    let ctx = js.js_new_context(rt) else abort()
+
+    js.js_set_strip_info(rt, strip_flags)
+
+    # loader for ES6 modules
+    js.js_set_module_loader_func2(rt, none, jsc_module_loader, none, none)
+
+    discard(fprintf(fo, z("# File generated automatically by the luce-js compiler (ljsc).\n\n")))
+
+    if output_type != output_c:
+        discard(fprintf(fo, z("import js\nimport host\n\n")))
+
+    for i in optind..<argv.length:
+        compile_file(ctx, fo, argv[i].bytes.data, cname, module)
+        cname = none
+
+    if let array = dynamic_module_list.array:
+        for i in 0..<dynamic_module_list.count:
+            let name = array[i].name
+            discard(jsc_module_loader(ctx, name, none, js.js_undefined()) catch:
+                discard(fprintf(stderr(), z("Could not load dynamic module '%s'\n"), name))
+                c_exit(1))
+
+    if output_type != output_c:
+        write_main(fo, stack_size)
+
+    js.js_free_context(ctx)
+    js.js_free_runtime(rt)
+
+    discard(fclose(fo))
+
+    if output_type == output_executable_type:
+        return output_executable(out_name, &cfilename[0], &package_dir[0], verbose, argv[0].bytes.data)
+    namelist_free(&cname_list)
+    namelist_free(&cmodule_list)
+    namelist_free(&init_module_list)
+    return 0
+
+## Write JS_NewCustomContext, which adds the intrinsics left in by -fno-, the native modules
+## and the precompiled modules, and main, which runs the precompiled scripts.
+func write_main(fo: void*, stack_size: usize):
+    # the imports of the native modules, as qjsc declares their init functions extern
+    if let array = init_module_list.array:
+        for i in 0..<init_module_list.count:
+            let e = &array[i]
+            let short_name = e.short_name else abort()
+            if not is_system_module(short_name):
+                discard(fprintf(fo, z("import %s\n\n"), short_name))
+
+    discard(fprintf(fo, z("## A context with the intrinsics and the modules of this program (JS_NewCustomContext).\nfunc js_new_custom_context(rt: js.Runtime*) -> js.Context*?:\n    let ctx = js.js_new_context_raw(rt) else return none\n    init_custom_context(ctx) catch:\n        js.js_free_context(ctx)\n        return none\n    return ctx\n\n")))
+    discard(fprintf(fo, z("func init_custom_context(ctx: js.Context*) -> !:\n")))
+    # add the basic objects
+    discard(fprintf(fo, z("    try js.js_add_intrinsic_base_objects(ctx)\n")))
+    for i in 0..<feature_list.length:
+        if (feature_bitmap & ((u64)1 << (u64)i)) != 0:
+            if let init_name = feature_list[i].init_name:
+                if init_name == "eval":
+                    # JS_AddIntrinsicEval cannot fail
+                    discard(fprintf(fo, z("    discard(js.js_add_intrinsic_eval(ctx))\n")))
+                else:
+                    discard(fprintf(fo, z("    try js.js_add_intrinsic_%s(ctx)\n"), init_name.bytes.data))
+    # add the precompiled modules (XXX: could modify the module loader instead)
+    if let array = init_module_list.array:
+        for i in 0..<init_module_list.count:
+            let e = &array[i]
+            let short_name = e.short_name else abort()
+            # initialize the static native modules
+            if is_system_module(short_name):
+                discard(fprintf(fo, z("    discard(try host.js_init_module_%s(ctx, \"%s\".bytes.data))\n"),
+                                short_name, e.name))
+            else:
+                discard(fprintf(fo, z("    discard(try %s.js_init_module_%s(ctx, \"%s\".bytes.data))\n"),
+                                short_name, short_name, e.name))
+    if let array = cname_list.array:
+        for i in 0..<cname_list.count:
+            let e = &array[i]
+            if e.flags == cname_type_module:
+                discard(fprintf(fo, z("    host.js_std_eval_binary(ctx, &%s[0], %s_size, true)\n"), e.name, e.name))
+            elif e.flags == cname_type_json_module:
+                discard(fprintf(fo, z("    host.js_std_eval_binary_json_module(ctx, &%s[0], %s_size, &%s_module_name[0])\n"),
+                                e.name, e.name, e.name))
+
+    discard(fprintf(fo, z("\n")))
+    discard(fputs(main_c_template1.bytes.data, fo))
+
+    if stack_size != 0:
+        discard(fprintf(fo, z("    js.js_set_max_stack_size(rt, %u)\n"), (u32)stack_size))
+
+    # add the module loader if necessary
+    if (feature_bitmap & ((u64)1 << fe_module_loader)) != 0:
+        discard(fprintf(fo, z("    js.js_set_module_loader_func2(rt, none, host.js_module_loader, host.js_module_check_attributes, none)\n")))
+
+    discard(fprintf(fo, z("    let ctx = js_new_custom_context(rt) else return 1\n    host.js_std_add_helpers(ctx, arguments) catch: recover ()\n")))
+
+    if let array = cname_list.array:
+        for i in 0..<cname_list.count:
+            let e = &array[i]
+            if e.flags == cname_type_script:
+                discard(fprintf(fo, z("    host.js_std_eval_binary(ctx, &%s[0], %s_size, false)\n"), e.name, e.name))
+    discard(fputs(main_c_template2.bytes.data, fo))
+
+## Whether the native module `short_name` is one of the host's, std or os.
+func is_system_module(short_name: const u8*) -> bool:
+    return strcmp(short_name, z("std")) == 0 or strcmp(short_name, z("os")) == 0

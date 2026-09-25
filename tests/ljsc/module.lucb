@@ -1,0 +1,204 @@
+#==============================================================================================
+#
+#   ljsc - Compile JavaScript to bytecode embedded in a Luce program, like QuickJS's qjsc
+#
+#   DESCRIPTION:
+#       Port of qjsc.c (QuickJS 2026-06-04). Every file on the command line is compiled
+#       (as a script or an ES module, autodetected as qjsc does), the modules it imports
+#       are followed and compiled too, and each result is written with JS_WriteObject as a
+#       byte array in a generated Luce source file, the Luce counterpart of qjsc's
+#       generated C:
+#
+#           pub let qjsc_hello_size: u32 = 180
+#           pub let qjsc_hello: u8[180] = [ 0x02, 0x04, ... ]
+#
+#       With -e the file also gets JS_NewCustomContext and a `main` that run the bytecode
+#       with the `host` module (js_std_eval_binary); without -c or -e, ljsc builds that file
+#       into an executable with `luce-base build`, in a temporary package that depends on
+#       the luce-js tree ljsc was built from, as qjsc runs the C compiler with libquickjs.a.
+#       Every option of qjsc is ported, with the same meaning: -c, -e, -o, -N, -m, -D, -M,
+#       -x, -p, -S, -s, --keep-source, -v and -f (lto is accepted and ignored).
+#
+#       Differences from the C: a native module given with -M NAME[,CNAME] is the Luce
+#       module CNAME, imported by the generated file, whose `pub func
+#       js_init_module_CNAME(ctx: js.Context*, name: const u8*) -> js.ModuleDef*!` creates
+#       it (qjsc declares an extern C function of that name); "std" and "os" are the host's.
+#       Such a module must be visible from the package the generated file is built in, so
+#       executable output supports only std and os. Shared-library modules (.so) are
+#       declared as in the C, but luce-js cannot load them. Workers are not ported, so the
+#       generated main does not call js_std_set_worker_new_context_func.
+#
+#       Build: luce-base build tests/ljsc -o build/ljsc
+#
+#       QuickJS command line compiler
+#
+#       Copyright (c) 2018-2021 Fabrice Bellard
+#
+#       Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#       software and associated documentation files (the "Software"), to deal in the Software
+#       without restriction, including without limitation the rights to use, copy, modify,
+#       merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#       permit persons to whom the Software is furnished to do so, subject to the following
+#       conditions: the above copyright notice and this permission notice shall be included
+#       in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS
+#       IS", WITHOUT WARRANTY OF ANY KIND.
+#
+#==============================================================================================
+
+import c
+import js
+import host
+
+# mark: C library ===============================================================================
+
+extern func malloc(size: usize) -> void*?
+extern func realloc(ptr: void*?, size: usize) -> void*?
+extern func c_free as "free"(ptr: void*?)
+extern func strdup(s: const u8*) -> u8*?
+extern func strlen(s: const u8*) -> usize
+extern func strcmp(a: const u8*, b: const u8*) -> i32
+extern func strncmp(a: const u8*, b: const u8*, n: usize) -> i32
+extern func strchr(s: const u8*, ch: i32) -> u8*?
+extern func strrchr(s: const u8*, ch: i32) -> u8*?
+extern func strtod(s: const u8*, endp: (u8*)*?) -> f64
+extern func fopen(path: const u8*, mode: const u8*) -> void*?
+extern func fclose(f: void*) -> i32
+extern func fputs(s: const u8*, f: void*) -> i32
+extern func fprintf(f: void*, cformat: const u8*, ...) -> i32
+extern func printf(cformat: const u8*, ...) -> i32
+extern func snprintf(buf: u8*, size: usize, cformat: const u8*, ...) -> i32
+extern func perror(s: const u8*)
+extern func c_exit as "exit"(status: i32) -> never
+extern func abort() -> never
+extern func access(path: const u8*, mode: i32) -> i32
+extern func realpath(path: const u8*, resolved: u8*?) -> u8*?
+extern func unlink(path: const u8*) -> i32
+extern func getpid() -> i32
+extern func system(command: const u8*) -> i32
+
+## access() mode: the file exists and can be read.
+let r_ok: i32 = 4
+
+## The NUL-terminated text of a literal.
+func z(text: str) -> const u8*:
+    return text.bytes.data
+
+## The NUL-terminated `text` as a `str` view.
+func view(text: const u8*) -> str:
+    return (str)u8[]((u8*)text, strlen(text))
+
+func stderr() -> void*:
+    return c.stderr()
+
+func xstrdup(s: const u8*) -> u8*:
+    return strdup(s) else abort()
+
+## Copy `text` to `buf` of `buf_size` bytes, truncated and NUL-terminated (cutils pstrcpy).
+func pstrcpy(buf: u8*, buf_size: usize, text: const u8*):
+    if buf_size == 0:
+        return
+    var q: usize = 0
+    while q < buf_size - 1:
+        let ch = text[q]
+        if ch == 0:
+            break
+        buf[q] = ch
+        q += 1
+    buf[q] = 0
+
+## Whether `text` ends with `suffix` (cutils has_suffix).
+func has_suffix(text: const u8*, suffix: str) -> bool:
+    let len = strlen(text)
+    return len >= suffix.length and (str)u8[]((u8*)text + (len - suffix.length), suffix.length) == suffix
+
+## Whether `text` starts with `prefix`; the rest in `*ptr` (cutils strstart).
+func strstart(text: const u8*, prefix: str, ptr: (const u8*)*) -> bool:
+    if strncmp(text, prefix.bytes.data, prefix.length) != 0:
+        return false
+    *ptr = text + prefix.length
+    return true
+
+# mark: Name lists ==============================================================================
+
+## A name, an optional short name and flags (namelist_entry_t).
+struct NameListEntry:
+    var name: u8*
+    var short_name: u8*?
+    var flags: i32
+
+## A growable array of names (namelist_t).
+struct NameList:
+    var array: NameListEntry*?
+    var count: i32
+    var size: i32
+
+func namelist_add(lp: NameList*, name: const u8*, short_name: const u8*?, flags: i32):
+    if lp.count == lp.size:
+        let newsize = lp.size + (lp.size >> 1) + 4
+        let a = realloc(lp.array, sizeof(NameListEntry) * (usize)newsize) else abort()
+        lp.array = (NameListEntry*)a
+        lp.size = newsize
+    let array = lp.array else abort()
+    let e = &array[lp.count]
+    lp.count += 1
+    e.name = xstrdup(name)
+    if let s = short_name:
+        e.short_name = xstrdup(s)
+    else:
+        e.short_name = none
+    e.flags = flags
+
+func namelist_free(lp: NameList*):
+    if let array = lp.array:
+        while lp.count > 0:
+            lp.count -= 1
+            let e = &array[lp.count]
+            c_free(e.name)
+            c_free(e.short_name)
+    c_free(lp.array)
+    lp.array = none
+    lp.size = 0
+
+func namelist_find(lp: NameList*, name: const u8*) -> NameListEntry*?:
+    let array = lp.array else return none
+    for i in 0..<lp.count:
+        let e = &array[i]
+        if strcmp(e.name, name) == 0:
+            return e
+    return none
+
+# mark: Global state ============================================================================
+
+## A -fno-NAME language feature and the JS_AddIntrinsic function it leaves out
+## (FeatureEntry). `init_name` is the Luce name: js_add_intrinsic_NAME.
+struct FeatureEntry:
+    var option_name: str
+    var init_name: str?
+
+let fe_all: u64 = 0xffffffffffffffff
+
+let feature_list: FeatureEntry[11] = [
+    FeatureEntry(option_name = "date", init_name = "date"),
+    FeatureEntry(option_name = "eval", init_name = "eval"),
+    FeatureEntry(option_name = "string-normalize", init_name = "string_normalize"),
+    FeatureEntry(option_name = "regexp", init_name = "reg_exp"),
+    FeatureEntry(option_name = "json", init_name = "json"),
+    FeatureEntry(option_name = "proxy", init_name = "proxy"),
+    FeatureEntry(option_name = "map", init_name = "map_set"),
+    FeatureEntry(option_name = "typedarray", init_name = "typed_arrays"),
+    FeatureEntry(option_name = "promise", init_name = "promise"),
+    FeatureEntry(option_name = "module-loader", init_name = none),
+    FeatureEntry(option_name = "weakref", init_name = "weak_ref"),
+]
+
+## The index of "module-loader" in feature_list.
+let fe_module_loader: u64 = 9
+
+var cname_list: NameList
+var cmodule_list: NameList
+var init_module_list: NameList
+var feature_bitmap: u64
+var outfile: void*?
+var byte_swap: bool
+var dynamic_export: bool
+var c_ident_prefix: str = "qjsc_"
