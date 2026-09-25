@@ -359,7 +359,7 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
                     # Transformation: insert3 put_array_el|put_ref_value drop ->
                     # put_array_el|put_ref_value
                     if code_match(&cc, pos_next,
-                                  [m2(Op.put_array_el, Op.put_ref_value), (i32)Op.drop, -1]):
+                                  [ops2(Op.put_array_el, Op.put_ref_value), (i32)Op.drop, -1]):
                         dbuf_byte(&bc_out, (u8)cc.op)
                         pos_next = cc.pos
                         if cc.line_num != -1 and cc.line_num != line_num:
@@ -390,7 +390,7 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
                     # Transformation: dup if_false(l1) drop, l1: if_false(l2) -> if_false(l2)
                     # Transformation: dup if_true(l1) drop, l1: if_true(l2) -> if_true(l2)
                     no_change = true
-                    if code_match(&cc, pos_next, [m2(Op.if_false, Op.if_true), (i32)Op.drop, -1]):
+                    if code_match(&cc, pos_next, [ops2(Op.if_false, Op.if_true), (i32)Op.drop, -1]):
                         let lab0 = cc.label
                         var lab1 = cc.label
                         assert(lab1 >= 0 and lab1 < s.label_count)

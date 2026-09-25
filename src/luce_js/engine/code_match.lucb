@@ -8,7 +8,7 @@
 #       resolve_labels. C's code_match is variadic; the port takes the pattern as a span
 #       of i32 ending with -1, as the C arguments do:
 #
-#           code_match(&cc, pos, [m2(Op.if_false, Op.if_true), (i32)Op.drop, -1])
+#           code_match(&cc, pos, [ops2(Op.if_false, Op.if_true), (i32)Op.drop, -1])
 #
 #       The bytecode matched has not been through resolve_labels yet, so its bytes are
 #       read as temporary opcodes where they are in TempOp's range.
@@ -32,19 +32,19 @@ struct CodeContext:
     var atom: Atom
 
 # A pattern element matching either opcode (M2).
-func m2(op1: Op, op2: Op) -> i32:
+func ops2(op1: Op, op2: Op) -> i32:
     return (i32)op1 | ((i32)op2 << 8)
 
 # A pattern element matching any of three opcodes (M3).
-func m3(op1: Op, op2: Op, op3: Op) -> i32:
+func ops3(op1: Op, op2: Op, op3: Op) -> i32:
     return (i32)op1 | ((i32)op2 << 8) | ((i32)op3 << 16)
 
 # A pattern element matching any of four opcodes (M4).
-func m4(op1: Op, op2: Op, op3: Op, op4: Op) -> i32:
+func ops4(op1: Op, op2: Op, op3: Op, op4: Op) -> i32:
     return (i32)op1 | ((i32)op2 << 8) | ((i32)op3 << 16) | ((i32)op4 << 24)
 
 # Whether the code at `pos0` matches `pattern`, skipping line number opcodes. Each
-# element of `pattern` is an opcode, or several packed by m2/m3/m4 (the one matched is
+# element of `pattern` is an opcode, or several packed by ops2/ops3/ops4 (the one matched is
 # then stored in s.op); an opcode with a u8, u16, loc, arg or var_ref operand is followed
 # by the operand's value, or -1 to store it in s.idx; -1 ends the pattern. Label, i32,
 # u32, const and atom operands are stored in s.label, s.atom and s.val. On success,

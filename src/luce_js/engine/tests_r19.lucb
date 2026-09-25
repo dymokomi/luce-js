@@ -80,23 +80,23 @@ test "code_match skips line numbers and reads operands":
     assert(not code_match(&cc, 0, [(i32)Op.get_loc, 4, -1]))
     assert(code_match(&cc, 5, [(i32)Op.get_loc, -1, (i32)Op.put_loc, -1, (i32)Op.drop, -1]))
     assert(cc.idx == 3 and cc.pos == 12 and cc.line_num == -1)
-    assert(code_match(&cc, 11, [(i32)Op.drop, m2(Op.if_true, Op.if_false), -1]))
+    assert(code_match(&cc, 11, [(i32)Op.drop, ops2(Op.if_true, Op.if_false), -1]))
     assert(cc.op == (i32)Op.if_false and cc.label == 9 and cc.pos == 17)
     assert(code_match(&cc, 17, [(i32)Op.push_atom_value, -1]))
     assert(cc.atom == 0x55 and cc.pos == 22)
     # the end of the code does not match
     assert(not code_match(&cc, 17, [(i32)Op.push_atom_value, (i32)Op.drop, -1]))
-    assert(not code_match(&cc, 11, [m3(Op.put_loc, Op.get_loc, Op.dup), -1]))
+    assert(not code_match(&cc, 11, [ops3(Op.put_loc, Op.get_loc, Op.dup), -1]))
     # an opcode that runs past the end does not match
     cc.bc_len = 20
     assert(not code_match(&cc, 17, [(i32)Op.push_atom_value, -1]))
 
-test "code_match packs opcodes above 127 in m4":
+test "code_match packs opcodes above 127 in ops4":
     var code: u8[2] = [(u8)Op.typeof_is_function, (u8)Op.drop]
     var cc = CodeContext(bc_buf = &code[0], bc_len = 2)
-    assert(code_match(&cc, 0, [m4(Op.drop, Op.dup, Op.nop, Op.typeof_is_function), -1]))
+    assert(code_match(&cc, 0, [ops4(Op.drop, Op.dup, Op.nop, Op.typeof_is_function), -1]))
     assert(cc.op == (i32)Op.typeof_is_function and cc.pos == 1)
-    assert(not code_match(&cc, 1, [m4(Op.dup, Op.nop, Op.swap, Op.typeof_is_function), -1]))
+    assert(not code_match(&cc, 1, [ops4(Op.dup, Op.nop, Op.swap, Op.typeof_is_function), -1]))
 
 test "code_has_label looks through labels, line numbers and a goto":
     var code: cutils.DynBuf

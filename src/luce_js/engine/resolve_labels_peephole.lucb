@@ -17,7 +17,7 @@
 # if_false/if_true.
 func peephole_push_bool(p: ResolveLabelsState*) -> LabelStep:
     p.val = (i32)(p.op == (i32)Op.push_true)
-    if code_match(&p.cc, p.pos_next, [m2(Op.if_false, Op.if_true), -1]):
+    if code_match(&p.cc, p.pos_next, [ops2(Op.if_false, Op.if_true), -1]):
         return LabelStep.has_constant_test
     return LabelStep.no_change
 
@@ -32,7 +32,7 @@ func peephole_null(p: ResolveLabelsState*) -> LabelStep:
         return LabelStep.done
     # transform null strict_neq if_false/if_true -> is_null if_true/if_false
     if code_match(&p.cc, p.pos_next,
-                  [(i32)Op.strict_neq, m2(Op.if_false, Op.if_true), -1]):
+                  [(i32)Op.strict_neq, ops2(Op.if_false, Op.if_true), -1]):
         state_match_line(p)
         state_pc2line(p)
         dbuf_op(&p.bc_out, Op.is_null)
@@ -63,7 +63,7 @@ func peephole_push_i32(p: ResolveLabelsState*) -> LabelStep:
         p.pos_next = p.cc.pos
         return LabelStep.done
     # Optimize constant tests: `if (0)`, `if (1)`, `if (!0)`...
-    if code_match(&p.cc, p.pos_next, [m2(Op.if_false, Op.if_true), -1]):
+    if code_match(&p.cc, p.pos_next, [ops2(Op.if_false, Op.if_true), -1]):
         p.val = (i32)(val != 0)
         return LabelStep.has_constant_test
     state_pc2line(p)
@@ -117,7 +117,7 @@ func peephole_undefined(p: ResolveLabelsState*) -> LabelStep:
         p.pos_next = p.cc.pos
         return LabelStep.done
     # transform undefined if_true(l1)/if_false(l1) -> nop/goto(l1)
-    if code_match(&p.cc, p.pos_next, [m2(Op.if_false, Op.if_true), -1]):
+    if code_match(&p.cc, p.pos_next, [ops2(Op.if_false, Op.if_true), -1]):
         p.val = 0
         return LabelStep.has_constant_test
     # transform undefined strict_eq -> is_undefined
@@ -129,7 +129,7 @@ func peephole_undefined(p: ResolveLabelsState*) -> LabelStep:
         return LabelStep.done
     # transform undefined strict_neq if_false/if_true -> is_undefined if_true/if_false
     if code_match(&p.cc, p.pos_next,
-                  [(i32)Op.strict_neq, m2(Op.if_false, Op.if_true), -1]):
+                  [(i32)Op.strict_neq, ops2(Op.if_false, Op.if_true), -1]):
         state_match_line(p)
         state_pc2line(p)
         dbuf_op(&p.bc_out, Op.is_undefined)
@@ -147,7 +147,7 @@ func peephole_dup(p: ResolveLabelsState*) -> LabelStep:
     var line2: i32 = -1
     # Transformation: dup put_x(n) -> set_x(n)
     if code_match(&p.cc, p.pos_next,
-                  [m4(Op.put_loc, Op.put_loc_check, Op.put_arg, Op.put_var_ref), -1, -1]):
+                  [ops4(Op.put_loc, Op.put_loc_check, Op.put_arg, Op.put_var_ref), -1, -1]):
         state_match_line(p)
         var op1 = p.cc.op + 1 # put_x -> set_x
         p.pos_next = p.cc.pos
@@ -183,9 +183,9 @@ func peephole_get_loc(p: ResolveLabelsState*) -> LabelStep:
     if idx >= 256:
         return LabelStep.no_change
     if (code_match(&p.cc, p.pos_next,
-                   [m2(Op.post_dec, Op.post_inc), (i32)Op.put_loc, idx, (i32)Op.drop, -1]) or
+                   [ops2(Op.post_dec, Op.post_inc), (i32)Op.put_loc, idx, (i32)Op.drop, -1]) or
         code_match(&p.cc, p.pos_next,
-                   [m2(Op.dec, Op.inc), (i32)Op.dup, (i32)Op.put_loc, idx, (i32)Op.drop, -1])):
+                   [ops2(Op.dec, Op.inc), (i32)Op.dup, (i32)Op.put_loc, idx, (i32)Op.drop, -1])):
         state_match_line(p)
         state_pc2line(p)
         if p.cc.op == (i32)Op.inc or p.cc.op == (i32)Op.post_inc:
@@ -225,7 +225,7 @@ func peephole_get_loc(p: ResolveLabelsState*) -> LabelStep:
     # get_loc(n) get_arg(x) add dup put_loc(n) drop -> get_arg(x) add_loc(n)
     # get_loc(n) get_var_ref(x) add dup put_loc(n) drop -> get_var_ref(x) add_loc(n)
     if code_match(&p.cc, p.pos_next,
-                  [m3(Op.get_loc, Op.get_arg, Op.get_var_ref), -1, (i32)Op.add, (i32)Op.dup,
+                  [ops3(Op.get_loc, Op.get_arg, Op.get_var_ref), -1, (i32)Op.add, (i32)Op.dup,
                    (i32)Op.put_loc, idx, (i32)Op.drop, -1]):
         state_match_line(p)
         state_pc2line(p)
@@ -259,7 +259,7 @@ func peephole_post_inc(p: ResolveLabelsState*) -> LabelStep:
     # post_inc perm4 put_array_el drop -> inc put_array_el
     let inc_op = (u8)((i32)Op.dec + (p.op - (i32)Op.post_dec))
     if code_match(&p.cc, p.pos_next,
-                  [m3(Op.put_loc, Op.put_arg, Op.put_var_ref), -1, (i32)Op.drop, -1]):
+                  [ops3(Op.put_loc, Op.put_arg, Op.put_var_ref), -1, (i32)Op.drop, -1]):
         state_match_line(p)
         var op1 = p.cc.op
         let idx = p.cc.idx
@@ -294,12 +294,12 @@ func peephole_post_inc(p: ResolveLabelsState*) -> LabelStep:
 # to_propkey: remove redundant to_propkey opcodes when storing simple data
 func peephole_to_propkey(p: ResolveLabelsState*) -> LabelStep:
     if (code_match(&p.cc, p.pos_next,
-                   [m3(Op.get_loc, Op.get_arg, Op.get_var_ref), -1, (i32)Op.put_array_el, -1]) or
+                   [ops3(Op.get_loc, Op.get_arg, Op.get_var_ref), -1, (i32)Op.put_array_el, -1]) or
         code_match(&p.cc, p.pos_next,
-                   [m3(Op.push_i32, Op.push_const, Op.push_atom_value), (i32)Op.put_array_el,
+                   [ops3(Op.push_i32, Op.push_const, Op.push_atom_value), (i32)Op.put_array_el,
                     -1]) or
         code_match(&p.cc, p.pos_next,
-                   [m4(Op.undefined, Op.null, Op.push_true, Op.push_false),
+                   [ops4(Op.undefined, Op.null, Op.push_true, Op.push_false),
                     (i32)Op.put_array_el, -1])):
         return LabelStep.done
     return LabelStep.no_change
@@ -319,7 +319,7 @@ func peephole_insert2(p: ResolveLabelsState*) -> LabelStep:
 func peephole_typeof(p: ResolveLabelsState*) -> LabelStep:
     if code_match(&p.cc, p.pos_next,
                   [(i32)Op.push_atom_value,
-                   m4(Op.strict_eq, Op.strict_neq, Op.eq, Op.neq), -1]):
+                   ops4(Op.strict_eq, Op.strict_neq, Op.eq, Op.neq), -1]):
         state_match_line(p)
         var op1 = Op.strict_neq
         if p.cc.op == (i32)Op.strict_eq or p.cc.op == (i32)Op.eq:
