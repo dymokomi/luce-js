@@ -89,6 +89,13 @@ let js_call_inline_frame_values: usize = 16
 ## hook; with call_flag_generator, `func_obj` holds the AsyncFunctionState of a
 ## suspended generator frame, which is resumed (JS_CallInternal).
 func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    # A C function (or another class's call hook) is called before a frame is set up, as C
+    # does; interp_enter takes the other cases (and the interrupt handler's call).
+    if func_obj.tag == Tag.object and func_obj.u.obj.class_id != ClassId.bytecode_function and caller_ctx.interrupt_counter > 1:
+        if let class_array = caller_ctx.rt.class_array:
+            if let call_func = class_array[(usize)(u16)func_obj.u.obj.class_id].call:
+                caller_ctx.interrupt_counter -%= 1
+                return try call_func(caller_ctx, func_obj, this_obj, argc, argv, flags)
     var st: InterpState = ---
     var sf_s: StackFrame = ---
     # the frame when it fits; C allocates it with alloca
@@ -556,8 +563,11 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             sp[-1].tag = Tag.boolean
                             continue dispatch
 
-                    # Arithmetic, comparisons and bitwise operators on two ints; a result
-                    # outside the int range (or -0) and other operands take the outlined body.
+                    # Arithmetic, comparisons and bitwise operators on two ints, and (for
+                    # add, sub, mul and the comparisons, as in C) on numbers of which one is a
+                    # float: the float result of two ints outside the int range (or -0) is
+                    # the same exact value rounded once. Other operands take the outlined
+                    # body.
                     .add:
                         if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
                             let r = (i64)(i32)sp[-2].u.uint64 + (i64)(i32)sp[-1].u.uint64
@@ -566,6 +576,13 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                 sp[-2].tag = Tag.int
                                 sp -= 1
                                 continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.float64 = d1 + d2
+                            sp[-2].tag = Tag.float64
+                            sp -= 1
+                            continue dispatch
                     .add_loc:
                         let pv = var_buf + (usize)*pc
                         if ((i64)pv.tag | (i64)sp[-1].tag) == 0:
@@ -576,6 +593,11 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                 sp -= 1
                                 pc += 1
                                 continue dispatch
+                        elif pv.tag == Tag.float64 and sp[-1].tag == Tag.float64:
+                            pv.u.float64 = pv.u.float64 + sp[-1].u.float64
+                            sp -= 1
+                            pc += 1
+                            continue dispatch
                     .sub:
                         if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
                             let r = (i64)(i32)sp[-2].u.uint64 - (i64)(i32)sp[-1].u.uint64
@@ -584,6 +606,13 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                 sp[-2].tag = Tag.int
                                 sp -= 1
                                 continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.float64 = d1 - d2
+                            sp[-2].tag = Tag.float64
+                            sp -= 1
+                            continue dispatch
                     .mul:
                         if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
                             let v1 = (i32)sp[-2].u.uint64
@@ -595,6 +624,20 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                                 sp[-2].tag = Tag.int
                                 sp -= 1
                                 continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.float64 = d1 * d2
+                            sp[-2].tag = Tag.float64
+                            sp -= 1
+                            continue dispatch
+                    .mod:
+                        # v2 = 0, v1 = INT32_MIN with v2 = -1 and the results that are -0 take
+                        # the slow path
+                        if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0 and (i32)sp[-2].u.uint64 >= 0 and (i32)sp[-1].u.uint64 > 0:
+                            sp[-2].u.uint64 = (u64)(u32)((i32)sp[-2].u.uint64 % (i32)sp[-1].u.uint64)
+                            sp -= 1
+                            continue dispatch
                     .inc:
                         if sp[-1].tag == Tag.int and (i32)sp[-1].u.uint64 != 2147483647:
                             sp[-1].u.uint64 = (u64)(u32)((i32)sp[-1].u.uint64 + 1)
@@ -669,9 +712,23 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             sp[-2].tag = Tag.boolean
                             sp -= 1
                             continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.uint64 = (u64)(d1 < d2)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
                     .lte:
                         if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
                             sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 <= (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.uint64 = (u64)(d1 <= d2)
                             sp[-2].tag = Tag.boolean
                             sp -= 1
                             continue dispatch
@@ -681,9 +738,23 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             sp[-2].tag = Tag.boolean
                             sp -= 1
                             continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.uint64 = (u64)(d1 > d2)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
                     .gte:
                         if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
                             sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 >= (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.uint64 = (u64)(d1 >= d2)
                             sp[-2].tag = Tag.boolean
                             sp -= 1
                             continue dispatch
@@ -693,9 +764,23 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             sp[-2].tag = Tag.boolean
                             sp -= 1
                             continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.uint64 = (u64)(d1 == d2)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
                     .neq, .strict_neq:
                         if ((i64)sp[-2].tag | (i64)sp[-1].tag) == 0:
                             sp[-2].u.uint64 = (u64)((i32)sp[-2].u.uint64 != (i32)sp[-1].u.uint64)
+                            sp[-2].tag = Tag.boolean
+                            sp -= 1
+                            continue dispatch
+                        if (sp[-2].tag == Tag.float64 or sp[-2].tag == Tag.int) and (sp[-1].tag == Tag.float64 or sp[-1].tag == Tag.int):
+                            let d1 = sp[-2].u.float64 if sp[-2].tag == Tag.float64 else f64((i32)sp[-2].u.uint64)
+                            let d2 = sp[-1].u.float64 if sp[-1].tag == Tag.float64 else f64((i32)sp[-1].u.uint64)
+                            sp[-2].u.uint64 = (u64)(d1 != d2)
                             sp[-2].tag = Tag.boolean
                             sp -= 1
                             continue dispatch

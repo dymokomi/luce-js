@@ -46,9 +46,14 @@ noinline func js_call_c_function_padded(caller_ctx: Context*, func_obj: Value, t
         arg_buf[i] = js_undefined()
     return try js_call_c_function_frame(caller_ctx, func_obj, this_obj, argc, &arg_buf[0], arg_count, flags)
 
-## Push the C function's frame, call it in its realm, and pop the frame. `arg_buf` holds
-## `sf_arg_count` readable arguments, of which `argc` were given.
-func js_call_c_function_frame(caller_ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, arg_buf: Value*, sf_arg_count: i32, flags: i32) -> Value!:
+## Make `sf` the runtime's current frame again (the pop of a C function's frame).
+func set_current_stack_frame(rt: Runtime*, sf: StackFrame*?):
+    rt.current_stack_frame = sf
+
+## Push the C function's frame, call it in its realm by its calling shape (the switch of
+## js_call_c_function), and pop the frame. `arg_buf` holds `sf_arg_count` readable
+## arguments, of which `argc` were given.
+func js_call_c_function_frame(caller_ctx: Context*, func_obj: Value, this_val: Value, argc: i32, arg_buf: Value*, sf_arg_count: i32, flags: i32) -> Value!:
     let rt = caller_ctx.rt
     let p = func_obj.u.obj
     var sf_s: StackFrame = ---
@@ -61,15 +66,9 @@ func js_call_c_function_frame(caller_ctx: Context*, func_obj: Value, this_obj: V
     sf.cur_func = func_obj
     sf.arg_count = sf_arg_count
     sf.arg_buf = arg_buf
+    # the frame is popped on both exits
+    defer set_current_stack_frame(rt, prev_sf)
 
-    let ret_val = js_call_c_function_switch(ctx, p, this_obj, argc, arg_buf, flags) catch failure:
-        rt.current_stack_frame = sf.prev_frame
-        error(failure.code, failure.message)
-    rt.current_stack_frame = sf.prev_frame
-    return ret_val
-
-## Call the C function of `p` by its calling shape (the switch of js_call_c_function).
-func js_call_c_function_switch(ctx: Context*, p: Object*, this_val: Value, argc: i32, arg_buf: Value*, flags: i32) -> Value!:
     var this_obj = this_val
     let cproto = p.u.cfunc.cproto
     let func_ = p.u.cfunc.c_function
