@@ -59,9 +59,6 @@ struct JSONStringifyContext:
 struct MapIteratorData:
     var unported: i32
 
-struct ObjectList:
-    var unported: i32
-
 struct ParsePos:
     var unported: i32
 
@@ -89,9 +86,6 @@ struct RegExpStringIteratorData:
 struct ResolveState:
     var unported: i32
 
-struct StackSizeState:
-    var unported: i32
-
 struct SumPreciseState:
     var unported: i32
 
@@ -107,8 +101,18 @@ enum ResolveResult as i32:
 enum StrictEqMode as i32:
     unported = 0
 
+# The cases are those of quickjs.c's JSVarDefEnum (region r17), which region r20 passes
+# to define_var.
 enum VarDefKind as i32:
-    unported = 0
+    with_ = 0
+    let_ = 1
+    const_ = 2
+    ## Function declaration.
+    function_decl = 3
+    ## Async/generator function declaration.
+    new_function_decl = 4
+    catch_ = 5
+    var_ = 6
 
 type PrintValueWrite = func() -> unit
 
@@ -118,3 +122,6 @@ type PrintValueWrite = func() -> unit
 # quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
 let global_var_offset: i32 = 0x40000000
 let argument_var_offset: i32 = 0x20000000
+
+# quickjs.c:24784 (region r17): the bits js_parse_skip_parens_token answers.
+let skip_has_assignment: i32 = 1 << 2

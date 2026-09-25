@@ -1,0 +1,177 @@
+#==============================================================================================
+#
+#   tests_r20 - Unit tests of the function creation and eval helpers that need no runtime
+#
+#   DESCRIPTION:
+#       The "use strict" directive test, the strict-mode future keywords, the stack size
+#       explorer's catch tracking and jump offsets, the scope linkage js_create_function
+#       recomputes, the flags a new function gets from its type, the object list hash
+#       and the byte order test. FunctionDefs are laid out by hand with the helpers of
+#       tests_tokenizer.lucb; nothing here makes a runtime.
+#
+#==============================================================================================
+
+# mark: Directives and names ====================================================================
+
+# Whether the directive text `text` (between its quotes) is "use strict".
+func text_is_use_strict(text: str) -> bool:
+    return directive_is_use_strict(text.bytes.data, (i32)text.length)
+
+test "only the exact text 'use strict' is the strict directive":
+    assert(text_is_use_strict("use strict"))
+    assert(not text_is_use_strict("use  strict"))
+    assert(not text_is_use_strict("use strict "))
+    assert(not text_is_use_strict("use stric"))
+    assert(not text_is_use_strict("Use strict"))
+    assert(not text_is_use_strict(""))
+    # the source text is compared, escapes included
+    assert(not text_is_use_strict("use\\u0020strict"))
+
+test "the directive copy stops at a NUL byte and after 19 bytes":
+    # snprintf's "%.*s" stops at the NUL, so the text before it is compared
+    let with_nul = "use strict\0tail"
+    assert(directive_is_use_strict(with_nul.bytes.data, (i32)with_nul.length))
+    # a longer text is cut to 19 bytes, which are not "use strict"
+    let long = "use strict and more text"
+    assert(not directive_is_use_strict(long.bytes.data, (i32)long.length))
+    # the length bounds the copy: the text is read only up to it
+    assert(not directive_is_use_strict(long.bytes.data, 7))
+    assert(directive_is_use_strict(long.bytes.data, 10))
+
+test "strict-mode future keywords are those after the keywords up to yield":
+    assert(is_strict_future_keyword(atom_implements))
+    assert(is_strict_future_keyword(atom_static))
+    assert(is_strict_future_keyword(atom_yield))
+    assert(not is_strict_future_keyword(atom_super))
+    assert(not is_strict_future_keyword(atom_await))
+    assert(not is_strict_future_keyword(atom_eval))
+    assert(not is_strict_future_keyword(no_atom))
+
+# mark: Stack size ==============================================================================
+
+test "jump offsets are signed":
+    var buf: u8[4] = [0xfe, 0xff, 0xff, 0xff]
+    assert(ss_get_diff32(&buf[0]) == -2)
+    buf = [0x10, 0x00, 0x00, 0x00]
+    assert(ss_get_diff32(&buf[0]) == 16)
+
+test "an opcode that drops the catch offset leaves the catch":
+    # pc 0: OP_catch reached with 2 values on the stack, inside no catch;
+    # pc 5: OP_for_of_start reached with 1 value, inside the catch at pc 0
+    var bc: u8[8]
+    bc[0] = (u8)Op.catch_
+    bc[5] = (u8)Op.for_of_start
+    var levels: u16[8]
+    var catches: i32[8]
+    levels[0] = 2
+    catches[0] = -1
+    levels[5] = 1
+    catches[5] = 0
+    var s = StackSizeState(bc_len = 8, stack_len_max = 0, stack_level_tab = levels,
+                           catch_pos_tab = catches, pc_stack = none, pc_stack_len = 0,
+                           pc_stack_size = 0)
+    # the catch offset is the value above the level before OP_catch
+    assert(ss_check_catch(&s, &bc[0], 0, 2) == -1)
+    assert(ss_check_catch(&s, &bc[0], 0, 3) == 0)
+    assert(ss_check_catch(&s, &bc[0], 0, 1) == 0)
+    # for for_of_start the catch offset is one entry higher
+    assert(ss_check_catch(&s, &bc[0], 5, 2) == 0)
+    assert(ss_check_catch(&s, &bc[0], 5, 1) == 5)
+    # outside any catch nothing changes
+    assert(ss_check_catch(&s, &bc[0], -1, 0) == -1)
+
+# mark: Scope linkage ===========================================================================
+
+# A FunctionDef of 5 scopes, each the child of the one before, over `vars`.
+func linked_scopes_function_def(vars: VarDef*, var_count: i32) -> FunctionDef*:
+    let fd = test_function_def(vars, var_count, 5)
+    fd_scope(fd, 0).parent = -1
+    for scope: i32 in 1..<5:
+        fd_scope(fd, scope).parent = scope - 1
+    return fd
+
+test "js_create_function links every variable to the next one in scope":
+    var vars: VarDef[4]
+    vars[0] = VarDef(var_name = atom_length, scope_level = 0, scope_next = 7)
+    vars[1] = VarDef(var_name = atom_name, scope_level = 2, scope_next = 7)
+    vars[2] = VarDef(var_name = atom_value, scope_level = 3, scope_next = 7)
+    vars[3] = VarDef(var_name = atom_eval, scope_level = 2, scope_next = 7)
+    let fd = linked_scopes_function_def(&vars[0], 4)
+    defer cutils.c_free(fd)
+    create_function_link_scopes(fd)
+    # each scope's first variable is its last one, or its parent's (from scope 2 on)
+    assert(fd_scope(fd, 0).first == 0)
+    assert(fd_scope(fd, 1).first == -1)
+    assert(fd_scope(fd, 2).first == 3)
+    assert(fd_scope(fd, 3).first == 2)
+    assert(fd_scope(fd, 4).first == 2)
+    # a variable links to the previous one of its scope, else to the parent scope's
+    # first (except at the function level)
+    assert(vars[0].scope_next == -1)
+    assert(vars[1].scope_next == -1)
+    assert(vars[2].scope_next == 3)
+    assert(vars[3].scope_next == 1)
+
+test "the argument scope ends the chain with its own marker":
+    var vars: VarDef[2]
+    vars[0] = VarDef(var_name = atom_length, scope_level = 2, scope_next = 7)
+    vars[1] = VarDef(var_name = atom_name, scope_level = 3, scope_next = 7)
+    let fd = linked_scopes_function_def(&vars[0], 2)
+    defer cutils.c_free(fd)
+    fd.has_parameter_expressions = true
+    create_function_link_scopes(fd)
+    assert(fd_scope(fd, arg_scope_index).first == arg_scope_end)
+    assert(vars[0].scope_next == arg_scope_end)
+    assert(vars[1].scope_next == 0)
+
+# mark: Function kinds ==========================================================================
+
+test "a new function's bindings follow its type":
+    let parent = test_function_def(none, 0, 1)
+    defer cutils.c_free(parent)
+    parent.new_target_allowed = true
+    parent.super_call_allowed = true
+    parent.super_allowed = false
+    parent.arguments_allowed = false
+
+    let fd = test_function_def(none, 0, 1)
+    defer cutils.c_free(fd)
+    fd.parent = parent
+    js_parse_function_init(fd, ParseFunctionKind.arrow, js_func_async)
+    assert(not fd.has_prototype and not fd.has_home_object)
+    assert(not fd.has_arguments_binding and not fd.has_this_binding)
+    assert(fd.new_target_allowed and fd.super_call_allowed)
+    assert(not fd.super_allowed and not fd.arguments_allowed)
+    assert(fd.func_kind == js_func_async and fd.func_type == ParseFunctionKind.arrow)
+
+    js_parse_function_init(fd, ParseFunctionKind.statement, js_func_normal)
+    assert(fd.has_prototype and not fd.has_home_object)
+    assert(fd.has_arguments_binding and fd.has_this_binding)
+    assert(fd.new_target_allowed and not fd.super_call_allowed and not fd.super_allowed)
+    assert(fd.arguments_allowed)
+
+    js_parse_function_init(fd, ParseFunctionKind.expr, js_func_generator)
+    assert(not fd.has_prototype)
+
+    js_parse_function_init(fd, ParseFunctionKind.derived_class_constructor, js_func_normal)
+    assert(fd.is_derived_class_constructor and fd.has_home_object)
+    assert(fd.super_call_allowed and fd.super_allowed and not fd.has_prototype)
+
+    js_parse_function_init(fd, ParseFunctionKind.class_static_init, js_func_normal)
+    assert(not fd.has_arguments_binding and not fd.is_derived_class_constructor)
+    assert(fd.new_target_allowed and not fd.super_call_allowed and fd.super_allowed)
+    assert(not fd.arguments_allowed)
+
+# mark: Object list and byte order ==============================================================
+
+test "the object list hash spreads addresses over the table":
+    let p = (Object*?)(usize)0x1000 else trap("null")
+    assert(js_object_list_get_hash(p, 8) == (u32)((0x1000 * 3163) & 7))
+    let q = (Object*?)(usize)0x1040 else trap("null")
+    let sizes: u32[5] = [1, 2, 4, 64, 1024]
+    for size in sizes:
+        assert(js_object_list_get_hash(q, size) < size)
+    assert(js_object_list_get_hash(q, 1) == 0)
+
+test "the supported hosts are little-endian":
+    assert(not is_be())

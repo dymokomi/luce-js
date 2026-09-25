@@ -1,0 +1,138 @@
+#==============================================================================================
+#
+#   parse_function - Directives, function name checks and the class fields initializer
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 36327-36497: js_parse_directives (the "use strict"
+#       prologue), is_strict_future_keyword, js_parse_function_check_names (the strict
+#       mode and duplicate parameter rules) and js_parse_function_class_fields_init.
+#       The function declarations themselves are in parse_function_decl.lucb.
+#
+#==============================================================================================
+
+# mark: Directives ==============================================================================
+
+# Whether a directive's source text, the `len` bytes at `p` between its quotes, reads
+# "use strict" the way QuickJS tests it: copied by snprintf's "%.*s" into a 20-byte
+# buffer (so stopping at a NUL byte and after 19 bytes), then compared with strcmp.
+func directive_is_use_strict(p: const u8*, len: i32) -> bool:
+    let expected = "use strict"
+    var n: usize = 0
+    # a negative precision is ignored by printf: the copy then stops at the NUL
+    while (len < 0 or n < (usize)len) and n < 19 and p[n] != 0:
+        n += 1
+    if n != expected.length:
+        return false
+    return cutils.memcmp(p, expected.bytes.data, n) == 0
+
+# Parse the directive prologue at the current token: a "use strict" directive makes the
+# current function strict. The tokens are read again afterwards (from the first string).
+func js_parse_directives(s: ParseState*) -> !:
+    if s.token.val != TokenType.string:
+        return
+
+    var pos: ParsePos = ---
+    js_parse_get_pos(s, &pos)
+
+    while s.token.val == TokenType.string:
+        # Copy actual source string representation
+        let use_strict = directive_is_use_strict(s.token.ptr + 1,
+                                                 (i32)(s.buf_ptr - s.token.ptr) - 2)
+
+        try next_token(s)
+
+        var has_semi = false
+        match s.token.val:
+            .semicolon:
+                try next_token(s)
+                has_semi = true
+            .rbrace, .eof:
+                has_semi = true
+            .number, .string, .template, .ident, .regexp, .dec, .inc, .null, .false_, .true_:
+                # automatic insertion of ';'
+                if s.got_lf:
+                    has_semi = true
+            .if_, .return_, .var_, .this, .delete, .typeof, .new_, .do, .while_, .for_, .switch:
+                if s.got_lf:
+                    has_semi = true
+            .throw, .try_, .function, .debugger, .with_, .class_, .const_, .enum_, .export_:
+                if s.got_lf:
+                    has_semi = true
+            .import_, .super, .interface_, .let_, .package, .private, .protected, .public, .static_:
+                if s.got_lf:
+                    has_semi = true
+            _:
+                discard(0)
+        if not has_semi:
+            break
+        if use_strict:
+            let fd = s.fd()
+            fd.has_use_strict = true
+            fd.js_mode |= (u8)js_mode_strict
+    try js_parse_seek_token(s, &pos)
+
+# mark: Function names ==========================================================================
+
+# return TRUE if the keyword is forbidden only in strict mode
+func is_strict_future_keyword(atom: Atom) -> bool:
+    return atom >= atom_last_keyword + 1 and atom <= atom_last_strict_keyword
+
+# Check the names of the function `fd` and of its parameters: the strict mode rules,
+# and no duplicate parameters where they are not allowed.
+func js_parse_function_check_names(s: ParseState*, fd: FunctionDef*, func_name: Atom) -> !:
+    if ((i32)fd.js_mode & js_mode_strict) != 0:
+        if not fd.has_simple_parameter_list and fd.has_use_strict:
+            try js_parse_error(s, "\"use strict\" not allowed in function with default or destructuring parameter")
+        if (func_name == atom_eval or func_name == atom_arguments or
+            is_strict_future_keyword(func_name)):
+            try js_parse_error(s, "invalid function name in strict code")
+        for idx in 0..<fd.arg_count:
+            let name = fd_arg(fd, idx).var_name
+            if name == atom_eval or name == atom_arguments or is_strict_future_keyword(name):
+                try js_parse_error(s, "invalid argument name in strict code")
+    # check async_generator case
+    if (((i32)fd.js_mode & js_mode_strict) != 0 or
+        not fd.has_simple_parameter_list or
+        (fd.func_type == ParseFunctionKind.method and fd.func_kind == js_func_async) or
+        fd.func_type == ParseFunctionKind.arrow or
+        fd.func_type == ParseFunctionKind.method):
+        for idx in 0..<fd.arg_count:
+            let name = fd_arg(fd, idx).var_name
+            if name != no_atom:
+                for i in 0..<idx:
+                    if fd_arg(fd, i).var_name == name:
+                        try js_parse_function_duplicate_error(s)
+                # Check if argument name duplicates a destructuring parameter
+                # XXX: should have a flag for such variables
+                for i in 0..<fd.var_count:
+                    let vd = fd_var(fd, i)
+                    if vd.var_name == name and vd.scope_level == 0:
+                        try js_parse_function_duplicate_error(s)
+
+# The error of js_parse_function_check_names for a duplicate parameter (its duplicate
+# label).
+func js_parse_function_duplicate_error(s: ParseState*) -> never!:
+    try js_parse_error(s, "duplicate argument names not allowed in this context")
+
+# mark: Class fields ============================================================================
+
+# create a function to initialize class fields
+## A new method of the current function that initializes the fields of a class.
+func js_parse_function_class_fields_init(s: ParseState*) -> FunctionDef*!:
+    let fd = try js_new_function_def(s.ctx, s.cur_func, false, false, s.filename,
+                                     s.buf_start, &s.get_line_col_cache)
+    fd.func_name = no_atom
+    fd.has_prototype = false
+    fd.has_home_object = true
+
+    fd.has_arguments_binding = false
+    fd.has_this_binding = true
+    fd.is_derived_class_constructor = false
+    fd.new_target_allowed = true
+    fd.super_call_allowed = false
+    fd.super_allowed = fd.has_home_object
+    fd.arguments_allowed = false
+
+    fd.func_kind = js_func_normal
+    fd.func_type = ParseFunctionKind.method
+    return fd

@@ -1,0 +1,247 @@
+#==============================================================================================
+#
+#   eval - Compiling and running source text: JS_Eval and its internal entry points
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 37130-37391: js_parse_init, JS_EvalFunctionInternal,
+#       JS_EvalFunction, __JS_EvalInternal (the parser, compiler and first run of a
+#       script, module or eval code), JS_EvalInternal (the indirection that makes eval
+#       optional), JS_EvalObject, JS_EvalThis, JS_Eval and JS_ResolveModule, plus
+#       `js_eval_text`, a Luce-friendly JS_Eval over `str`s.
+#
+#       __JS_EvalInternal's two cleanup labels are helpers here: `fail` (the token and
+#       the FunctionDef are freed) wraps the parse, `fail1` (the module is freed) is the
+#       errdefer of the compile step, which ends before the code runs.
+#
+#==============================================================================================
+
+# mark: The parser state ========================================================================
+
+## Initialize the parser state `s` over `input` (`input_len` bytes, NUL-terminated),
+## named `filename` in errors.
+func js_parse_init(ctx: Context*, s: ParseState*, input: const u8*, input_len: usize,
+                   filename: const u8*):
+    discard(cutils.memset(s, 0, sizeof(ParseState)))
+    s.ctx = ctx
+    s.filename = filename
+    s.buf_start = input
+    s.buf_ptr = input
+    s.buf_end = s.buf_ptr + input_len
+    s.token.val = TokenType.space
+    s.token.ptr = s.buf_ptr
+
+    s.get_line_col_cache.ptr = s.buf_start
+    s.get_line_col_cache.buf_start = s.buf_start
+    s.get_line_col_cache.line_num = 0
+    s.get_line_col_cache.col_num = 0
+
+# mark: Running compiled code ===================================================================
+
+# Run the compiled code `fun_obj` (consumed): a bytecode function is made a closure over
+# `var_refs` and `sf` and called with `this_obj`; a module is linked and evaluated.
+func js_eval_function_internal(ctx: Context*, fun_obj: Value, this_obj: Value,
+                               var_refs: VarRef*?*?, sf: StackFrame*?) -> Value!:
+    let tag = fun_obj.tag
+    if tag == Tag.function_bytecode:
+        let closure = try js_closure(ctx, fun_obj, var_refs, sf, true)
+        var no_args = js_undefined()
+        return try js_call_free(ctx, closure, this_obj, 0, &no_args)
+    elif tag == Tag.module:
+        let m = fun_obj.u.module
+        # the module refcount should be >= 2
+        js_free_value(ctx, fun_obj)
+        try js_create_module_function(ctx, m)
+        try js_link_module(ctx, m)
+        return try js_evaluate_module(ctx, m)
+    else:
+        js_free_value(ctx, fun_obj)
+        try js_throw_type_error(ctx, "bytecode function expected")
+
+## Run the compiled script or module `fun_obj` (consumed), as compiled by `js_eval` with
+## eval_flag_compile_only, in the global scope (JS_EvalFunction).
+pub func js_eval_function(ctx: Context*, fun_obj: Value) -> Value!:
+    return try js_eval_function_internal(ctx, fun_obj, ctx.global_obj, none, none)
+
+# mark: __JS_EvalInternal =======================================================================
+
+# The fail label of __JS_EvalInternal: the current token and the eval function are
+# freed.
+func js_eval_parse_fail(s: ParseState*, fd: FunctionDef*):
+    free_token(s, &s.token)
+    js_free_function_def(s.ctx, fd)
+
+# Set up the eval function `fd` of the program being evaluated and parse the program
+# into it; on failure the token and `fd` are freed.
+func js_eval_parse(ctx: Context*, s: ParseState*, fd: FunctionDef*, eval_type: i32, flags: i32,
+                   js_mode: i32, b: FunctionBytecode*?, scope_idx: i32, m: ModuleDef*?) -> !:
+    errdefer js_eval_parse_fail(s, fd)
+    s.cur_func = fd
+    fd.eval_type = eval_type
+    fd.has_this_binding = eval_type != eval_type_direct
+    if let b1 = b:
+        # direct eval: b is the calling function
+        fd.new_target_allowed = b1.new_target_allowed
+        fd.super_call_allowed = b1.super_call_allowed
+        fd.super_allowed = b1.super_allowed
+        fd.arguments_allowed = b1.arguments_allowed
+    else:
+        fd.new_target_allowed = false
+        fd.super_call_allowed = false
+        fd.super_allowed = false
+        fd.arguments_allowed = true
+    fd.js_mode = (u8)js_mode
+    fd.func_name = js_dup_atom(ctx, atom__eval_)
+    if let b1 = b:
+        try add_closure_variables(ctx, fd, b1, scope_idx)
+    fd.module = m
+    if m != none or (flags & eval_flag_async) != 0:
+        fd.in_function_body = true
+        fd.func_kind = js_func_async
+    s.is_module = m != none
+    s.allow_html_comments = not s.is_module
+
+    # body scope (C ignores a failure here)
+    discard(push_scope(s) catch failure: recover -1)
+    fd.body_scope = fd.scope_level
+
+    try js_parse_program(s)
+
+# The fail1 label of __JS_EvalInternal: the module being compiled, if any, is freed.
+# XXX: should free all the unresolved dependencies
+func js_eval_free_module(ctx: Context*, m: ModuleDef*?):
+    if let m1 = m:
+        js_free_value(ctx, js_mkptr(Tag.module, m1))
+
+# Parse and compile the program of `s`: the bytecode function, or the module value for
+# eval_type_module.
+func js_eval_compile(ctx: Context*, s: ParseState*, eval_type: i32, flags: i32, js_mode0: i32,
+                     b: FunctionBytecode*?, scope_idx: i32) -> Value!:
+    var js_mode = js_mode0
+    var m: ModuleDef*? = none
+    if eval_type == eval_type_module:
+        let module_name = try js_new_atom_len(ctx, s.filename, cutils.strlen(s.filename))
+        m = try js_new_module_def(ctx, module_name)
+        js_mode |= js_mode_strict
+    errdefer js_eval_free_module(ctx, m)
+
+    let fd = try js_new_function_def(ctx, none, true, false, s.filename, s.buf_start,
+                                     &s.get_line_col_cache)
+    try js_eval_parse(ctx, s, fd, eval_type, flags, js_mode, b, scope_idx, m)
+
+    if let m1 = m:
+        m1.has_tla = fd.has_await
+
+    # create the function object and all the enclosed functions
+    var fun_obj = try js_create_function(ctx, fd)
+    # Could add a flag to avoid resolution if necessary
+    if let m1 = m:
+        m1.func_obj = fun_obj
+        try js_resolve_module_internal(ctx, m1)
+        fun_obj = js_new_module_value(ctx, m1)
+    return fun_obj
+
+# 'input' must be zero terminated i.e. input[input_len] = '\0'.
+## Parse, compile and (unless eval_flag_compile_only) run `input` as the `flags` say, with
+## `this_obj` as 'this'; a direct eval sees the variables of the calling function's
+## scope `scope_idx` (__JS_EvalInternal, the context's eval_internal).
+func js_eval_internal_raw(ctx: Context*, this_obj: Value, input: const u8*, input_len: usize,
+                          filename: const u8*, flags: i32, scope_idx: i32) -> Value!:
+    var s1: ParseState = ---
+    let s = &s1
+    js_parse_init(ctx, s, input, input_len, filename)
+    skip_shebang(&s.buf_ptr, s.buf_end)
+
+    let eval_type = flags & eval_type_mask
+    var sf: StackFrame*? = none
+    var b: FunctionBytecode*? = none
+    var var_refs: VarRef*?*? = none
+    var js_mode: i32 = 0
+    if eval_type == eval_type_direct:
+        let sf1 = ctx.rt.current_stack_frame else trap("direct eval without a stack frame")
+        assert(sf1.cur_func.tag == Tag.object)
+        let p = sf1.cur_func.u.obj
+        assert(js_class_has_bytecode((u32)p.class_id))
+        let b1 = p.u.func_.function_bytecode
+        sf = sf1
+        b = b1
+        var_refs = p.u.func_.var_refs
+        js_mode = (i32)b1.js_mode
+    elif (flags & eval_flag_strict) != 0:
+        js_mode |= js_mode_strict
+    # (the module of eval_type_module is made by js_eval_compile)
+
+    let fun_obj = try js_eval_compile(ctx, s, eval_type, flags, js_mode, b, scope_idx)
+    if (flags & eval_flag_compile_only) != 0:
+        return fun_obj
+    return try js_eval_function_internal(ctx, fun_obj, this_obj, var_refs, sf)
+
+# mark: The entry points ========================================================================
+
+# Restore the mode of the current stack frame after an eval with a backtrace barrier.
+func js_eval_restore_js_mode(ctx: Context*, backtrace_barrier: bool, saved_js_mode: i32):
+    if backtrace_barrier:
+        if let sf = ctx.rt.current_stack_frame:
+            sf.js_mode = saved_js_mode
+
+# the indirection is needed to make 'eval' optional
+## Evaluate `input` through the context's eval_internal, if eval is supported
+## (JS_EvalInternal).
+func js_eval_internal(ctx: Context*, this_obj: Value, input: const u8*, input_len: usize,
+                      filename: const u8*, flags: i32, scope_idx: i32) -> Value!:
+    let backtrace_barrier = (flags & eval_flag_backtrace_barrier) != 0
+    var saved_js_mode: i32 = 0
+
+    let eval_fn = ctx.eval_internal else try js_throw_type_error(ctx, "eval is not supported")
+    if backtrace_barrier:
+        if let sf = ctx.rt.current_stack_frame:
+            saved_js_mode = sf.js_mode
+            sf.js_mode |= js_mode_backtrace_barrier
+    defer js_eval_restore_js_mode(ctx, backtrace_barrier, saved_js_mode)
+    return try eval_fn(ctx, this_obj, input, input_len, filename, flags, scope_idx)
+
+## Evaluate `val` if it is a string, else answer it (JS_EvalObject: the eval() builtin).
+func js_eval_object(ctx: Context*, this_obj: Value, val: Value, flags: i32, scope_idx: i32) -> Value!:
+    if not js_is_string(val):
+        return js_dup_value(ctx, val)
+    var len: usize = 0
+    let text = try js_to_c_string_len(ctx, &len, val)
+    defer js_free_c_string(ctx, text)
+    return try js_eval_internal(ctx, this_obj, text, len, "<input>".bytes.data, flags, scope_idx)
+
+## Evaluate the script or module `input` (`input_len` bytes, NUL-terminated after them)
+## named `filename`, with `this_obj` as 'this' (JS_EvalThis). `eval_flags` holds
+## eval_type_global or eval_type_module and eval_flag_* bits.
+pub func js_eval_this(ctx: Context*, this_obj: Value, input: const u8*, input_len: usize,
+                      filename: const u8*, eval_flags: i32) -> Value!:
+    let eval_type = eval_flags & eval_type_mask
+    assert(eval_type == eval_type_global or eval_type == eval_type_module)
+    return try js_eval_internal(ctx, this_obj, input, input_len, filename, eval_flags, -1)
+
+## Evaluate the script or module `input` (`input_len` bytes, NUL-terminated after them)
+## named `filename` in the global scope (JS_Eval). With eval_flag_compile_only the
+## compiled code is answered, for `js_eval_function`.
+pub func js_eval(ctx: Context*, input: const u8*, input_len: usize, filename: const u8*,
+                 eval_flags: i32) -> Value!:
+    return try js_eval_this(ctx, ctx.global_obj, input, input_len, filename, eval_flags)
+
+## `js_eval` over Luce text: `source` and `filename` are copied with the NUL the parser
+## needs after them.
+pub func js_eval_text(ctx: Context*, source: str, filename: str, eval_flags: i32) -> Value!:
+    let input = (u8*)try js_malloc(ctx, source.length + 1)
+    defer js_free(ctx, input)
+    discard(cutils.memcpy(input, source.bytes.data, source.length))
+    input[source.length] = 0
+    let name = (u8*)try js_malloc(ctx, filename.length + 1)
+    defer js_free(ctx, name)
+    discard(cutils.memcpy(name, filename.bytes.data, filename.length))
+    name[filename.length] = 0
+    return try js_eval(ctx, input, source.length, name, eval_flags)
+
+## Resolve the imports of the module `obj` compiled with eval_flag_compile_only; on
+## failure the modules not resolved are freed (JS_ResolveModule).
+pub func js_resolve_module(ctx: Context*, obj: Value) -> !:
+    if obj.tag == Tag.module:
+        let m = obj.u.module
+        js_resolve_module_internal(ctx, m) catch failure:
+            js_free_modules(ctx, FreeModuleKind.not_resolved)
+            error(failure.code, failure.message)

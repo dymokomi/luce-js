@@ -27,7 +27,7 @@ func find_export_entry(ctx: Context*, m: ModuleDef*, export_name: Atom) -> Expor
 func add_export_entry2(ctx: Context*, s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom, export_type: ExportType) -> ExportEntry*!:
     trap("unported: add_export_entry2")
 ## Ported from quickjs.c:29828 add_export_entry.
-func add_export_entry(s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom, export_type: ExportType) -> ExportEntry*:
+func add_export_entry(s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom, export_type: ExportType) -> ExportEntry*!:
     trap("unported: add_export_entry")
 ## Ported from quickjs.c:29836 add_star_export_entry.
 func add_star_export_entry(ctx: Context*, m: ModuleDef*, req_module_idx: i32) -> i32!:
@@ -129,7 +129,7 @@ func js_get_import_meta(ctx: Context*, m: ModuleDef*) -> Value!:
 func js_import_meta(ctx: Context*) -> Value!:
     trap("unported: js_import_meta")
 ## Ported from quickjs.c:30929 JS_NewModuleValue.
-func js_new_module_value(ctx: Context*, m: ModuleDef*) -> Value!:
+func js_new_module_value(ctx: Context*, m: ModuleDef*) -> Value:
     trap("unported: JS_NewModuleValue")
 ## Ported from quickjs.c:30934 js_load_module_rejected.
 func js_load_module_rejected(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
@@ -198,10 +198,10 @@ func add_import(s: ParseState*, m: ModuleDef*, local_name: Atom, import_name: At
 func js_parse_import(s: ParseState*) -> i32:
     trap("unported: js_parse_import")
 ## Ported from quickjs.c:32034 js_parse_source_element.
-func js_parse_source_element(s: ParseState*) -> i32:
+func js_parse_source_element(s: ParseState*) -> !:
     trap("unported: js_parse_source_element")
 ## Ported from quickjs.c:32062 js_new_function_def.
-func js_new_function_def(ctx: Context*, parent: FunctionDef*, is_eval: bool, is_func_expr: bool, filename: const u8*, source_ptr: const u8*, get_line_col_cache: GetLineColCache*) -> FunctionDef*!:
+func js_new_function_def(ctx: Context*, parent: FunctionDef*?, is_eval: bool, is_func_expr: bool, filename: const u8*, source_ptr: const u8*, get_line_col_cache: GetLineColCache*) -> FunctionDef*!:
     trap("unported: js_new_function_def")
 ## Ported from quickjs.c:32127 free_bytecode_atoms.
 func free_bytecode_atoms(rt: Runtime*, bc_buf: const u8*, bc_len: i32, use_short_opcodes: bool):

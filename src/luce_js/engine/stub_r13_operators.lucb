@@ -186,7 +186,7 @@ func js_closure2(ctx: Context*, func_obj: Value, b: FunctionBytecode*, cur_var_r
 func js_instantiate_prototype(ctx: Context*, p: Object*, atom: Atom, opaque: void*?) -> Value!:
     trap("unported: js_instantiate_prototype")
 ## Ported from quickjs.c:17369 js_closure.
-func js_closure(ctx: Context*, bfunc: Value, cur_var_refs: VarRef**, sf: StackFrame*, is_eval: bool) -> Value!:
+func js_closure(ctx: Context*, bfunc: Value, cur_var_refs: VarRef*?*?, sf: StackFrame*?, is_eval: bool) -> Value!:
     trap("unported: js_closure")
 ## Ported from quickjs.c:17426 js_op_define_class.
 func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags: i32, cur_var_refs: VarRef**, sf: StackFrame*, is_computed_name: bool) -> i32!:
