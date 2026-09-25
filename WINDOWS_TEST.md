@@ -10,23 +10,23 @@ from the expected output below.
 
 Use PowerShell in an MSYS2 UCRT64 setup where `luce-base.exe` has been built
 (`../luce-base/docs/WINDOWS.md`: `python tools/build_windows.py`) and `gcc`, `git` and
-`python` are on PATH. All repositories are siblings in one directory, and Git must not
-convert line endings (the tests compare bytes and the errors file is read in binary):
+`python` are on PATH. All repositories are siblings in one directory, and the clones
+must not convert line endings (the tests compare bytes and the errors file is read in
+binary), so each clone passes `-c core.autocrlf=false` (no global setting changes):
 
 ```powershell
-git config --global core.autocrlf false
-cd C:\luce_dev          # the directory holding luce-base
-git clone https://github.com/dymokomi/luce-std.git
-git clone https://github.com/dymokomi/luce-regex.git
-git clone -b work/windows https://github.com/dymokomi/luce-js.git
+cd C:\luce_dev          # the directory holding luce-base: keep this root short
+git clone -c core.autocrlf=false https://github.com/dymokomi/luce-std.git
+git clone -c core.autocrlf=false https://github.com/dymokomi/luce-regex.git
+git clone -c core.autocrlf=false -b work/windows https://github.com/dymokomi/luce-js.git
 git -C luce-base checkout 8eb0c283b885fdc4ece93aead27ae1b530bbfc50   # or newer
 git -C luce-std checkout 1ccc1e5cbbe599902ac534856496ec9c546d9909
 git -C luce-regex checkout 292c1592945c9cde9b25a9d616f2a62911cb815d
 git -C luce-js log --oneline -2
 ```
 
-The last command must show `Add WINDOWS_TEST.md ...` above
-`04888c1 Host and test programs on Windows: quickjs-libc.c's _WIN32 branches`. For an
+The last command must show `Windows time zone offsets ...` and the updated
+`WINDOWS_TEST.md` commit at the top of `work/windows`. For an
 existing checkout: `git -C luce-js fetch origin work/windows` then
 `git -C luce-js checkout -B work/windows origin/work/windows`.
 
@@ -48,6 +48,21 @@ luce-base build tests/run_test262 -o build/run-test262.exe --release
 
 Expected: both builds succeed without errors, and the last command prints
 `win32 undefined 32768 22`.
+
+### The time zone
+
+With the machine's time zone set to Pacific Time and `TZ` unset:
+
+```powershell
+.\build\ljs.exe -e "for (const y of [1600, 1900, 1969, 1970, 2000, 2037, 2999, 3000, 3001, 5000]) print(y, new Date(y, 6, 1).getTimezoneOffset(), new Date(y, 0, 1).getTimezoneOffset())"
+```
+
+Expected: every line `YEAR 420 480` (July in daylight saving time, January not).
+Upstream's Windows code answers 480 for July and 0 outside 1970..3000; this port
+reads the offset from `_localtime64`'s fields and maps other years to an equivalent
+year (see `get_timezone_offset` in `src/luce_js/engine/timezone_regexp_objects.lucb`).
+Windows applies this year's daylight saving rules to every year, so historical dates
+can differ from macOS and Linux.
 
 ## 3. Unit tests of each module
 
@@ -77,6 +92,13 @@ upstream's Makefile), ending with
 ```
 
 ## 5. A test262 subset
+
+Keep the checkout's path short. run-test262 opens test files with the C library's
+`fopen` and relative names, as upstream does, so a file fails with "No such file or
+directory" once the working directory plus the relative name reaches Windows' 260
+character MAX_PATH (the first victims are in `language/module-code`). `C:\luce_dev\luce-js`
+is short enough; the test262 checkout itself is `..\.test262\test262`, reached through
+the `tests\test262` junction.
 
 Fetch and patch test262 once (git clone, `git apply`, and a junction at `tests\test262`):
 
