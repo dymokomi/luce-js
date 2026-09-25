@@ -94,9 +94,11 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
     # the frame when it fits; C allocates it with alloca
     var frame_space: Value[js_call_inline_frame_values] = ---
     st.sf = &sf_s
-    let entry = try interp_enter(&st, caller_ctx, func_obj, this_obj, new_target, argc, argv, flags, &frame_space[0])
+    let entry = interp_enter(&st, caller_ctx, func_obj, this_obj, new_target, argc, argv, flags, &frame_space[0])
     if entry == InterpEntry.returned:
         return st.ret_val
+    if entry == InterpEntry.failed:
+        error(st.failure_code, st.failure_message)
     # set when the frame starts at the exception handler
     var throwing = entry == InterpEntry.throwing
     var exit = FrameExit.exception
@@ -454,6 +456,32 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             sp += 1
                             pc += 2
                             continue dispatch
+                    # Global variables (their references): an initialized one, and for a
+                    # write one that is not const; the rest (the global object's
+                    # properties, the errors) is the outlined body's.
+                    .get_var_undef, .get_var:
+                        let pv = var_ref_at(var_refs, (usize)((const Operand16*)pc).v).pvalue
+                        if pv.tag != Tag.uninitialized:
+                            *sp = *pv
+                            if (i64)sp.tag < 0:
+                                *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
+                            sp += 1
+                            pc += 2
+                            continue dispatch
+                    .put_var, .put_var_init:
+                        let var_ref = var_ref_at(var_refs, (usize)((const Operand16*)pc).v)
+                        let pv = var_ref.pvalue
+                        if pv.tag != Tag.uninitialized and var_ref.is_const == 0:
+                            pc += 2
+                            let old_tag = pv.tag
+                            let old_bits = pv.u.uint64
+                            sp -= 1
+                            *pv = *sp
+                            if (i64)old_tag < 0:
+                                *(i32*)((usize)old_bits -% 4) -%= 1
+                                if *(i32*)((usize)old_bits -% 4) <= 0:
+                                    free_counted(ctx, old_tag, old_bits)
+                            continue dispatch
 
                     # Jumps. js_poll_interrupts counts down to the interrupt handler's call;
                     # while that call is more than one step away the count is taken here,
@@ -664,6 +692,46 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             sp[-2].tag = Tag.boolean
                             sp -= 1
                             continue dispatch
+
+                    # Named properties: their bodies directly, without the outlined match
+                    # (C's GET_FIELD_INLINE and OP_put_field are shape searches that call out
+                    # anyway).
+                    .get_field:
+                        st.pc = pc
+                        st.sp = sp
+                        st.opcode = op
+                        if not interp_get_field(&st):
+                            break dispatch
+                        pc = st.pc
+                        sp = st.sp
+                        continue dispatch
+                    .get_field2:
+                        st.pc = pc
+                        st.sp = sp
+                        st.opcode = op
+                        if not interp_get_field2(&st):
+                            break dispatch
+                        pc = st.pc
+                        sp = st.sp
+                        continue dispatch
+                    .get_length:
+                        st.pc = pc
+                        st.sp = sp
+                        st.opcode = op
+                        if not interp_get_length(&st):
+                            break dispatch
+                        pc = st.pc
+                        sp = st.sp
+                        continue dispatch
+                    .put_field:
+                        st.pc = pc
+                        st.sp = sp
+                        st.opcode = op
+                        if not interp_put_field(&st):
+                            break dispatch
+                        pc = st.pc
+                        sp = st.sp
+                        continue dispatch
 
                     # Elements of fast arrays at an int index inside them
                     # (GET_ARRAY_EL_INLINE, OP_put_array_el).

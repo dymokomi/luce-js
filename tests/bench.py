@@ -5,6 +5,8 @@ Each benchmark runs `--runs` times with each engine; the best wall time is repor
 ljs/qjs as the ratio. `--save FILE` writes the times as JSON, `--compare FILE` adds a
 column with the ljs times of an earlier run and the speed-up since.
 
+QJS names the qjs binary and LUCE_BASE the compiler (defaults: qjs, luce-base on the PATH).
+
 Usage: tests/bench.py [--no-build] [--qjs PATH] [--runs N] [--save F] [--compare F] [bench ...]
 """
 
@@ -19,12 +21,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = os.path.join(ROOT, "tests", "bench")
 LJS = os.path.join(ROOT, "build", "ljs-release")
 QJS = os.environ.get("QJS", "qjs")
+# the compiler that builds ljs (LUCE_BASE, default luce-base on the PATH)
+LUCE_BASE = os.environ.get("LUCE_BASE", "luce-base")
 
 
 def build():
     print("building build/ljs-release ...", flush=True)
     os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
-    r = subprocess.run(["luce-base", "build", "tests/ljs.lucb", "-o", LJS, "--release"], cwd=ROOT)
+    r = subprocess.run([LUCE_BASE, "build", "tests/ljs.lucb", "-o", LJS, "--release"], cwd=ROOT)
     if r.returncode != 0:
         sys.exit("FAIL: cannot build ljs")
 

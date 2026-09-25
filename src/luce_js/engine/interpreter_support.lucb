@@ -77,6 +77,9 @@ struct InterpState:
     var bc_buf: const u8*
     ## The frame when it does not fit js_call_internal's frame_space.
     var heap_frame: void*?
+    ## Why interp_enter failed (InterpEntry.failed).
+    var failure_code: ErrorCode
+    var failure_message: str
 
 # mark: Frame access ============================================================================
 

@@ -87,12 +87,27 @@ enum InterpEntry:
     ## The object was not a bytecode function: its class's call hook ran and st.ret_val
     ## is its result.
     returned
+    ## The call failed (C: return JS_EXCEPTION): st.failure_code and st.failure_message
+    ## are the failure to raise.
+    failed
+
+## Record a failure of interp_enter's for js_call_internal to raise. interp_enter answers
+## its result without an error union: a fallible result is copied out through memcpy at
+## every return, on every JavaScript call.
+func enter_failed(st: InterpState*, code: ErrorCode, message: str) -> InterpEntry:
+    st.failure_code = code
+    st.failure_message = message
+    return InterpEntry.failed
+
+## Throw "not a function" (the not_a_function label) and record the failure.
+func enter_not_a_function(st: InterpState*) -> InterpEntry:
+    js_throw_type_error(st.caller_ctx, "not a function") catch failure: return enter_failed(st, failure.code, failure.message)
 
 ## The start of JS_CallInternal: fill `st` from the call, then set up the frame of a
 ## bytecode function (its arguments, variables, stack and variable references in
 ## `frame_space`, or on the heap when they do not fit), or take the suspended frame of a
 ## generator, and make it the runtime's current frame.
-noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Value, this_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32, frame_space: Value*) -> InterpEntry!:
+noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Value, this_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32, frame_space: Value*) -> InterpEntry:
     st.caller_ctx = caller_ctx
     st.rt = caller_ctx.rt
     st.ctx = caller_ctx
@@ -105,11 +120,10 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
     st.ret_val = js_undefined()
     st.var_refs = none
     st.heap_frame = none
-    try js_poll_interrupts(st.caller_ctx)
+    js_poll_interrupts(st.caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
     if st.func_obj.tag != Tag.object:
         if (flags & call_flag_generator) == 0:
-            # not_a_function
-            try js_throw_type_error(st.caller_ctx, "not a function")
+            return enter_not_a_function(st)
         let s = (AsyncFunctionState*)st.func_obj.u.ptr
         # func_obj get contains a pointer to JSFuncAsyncState
         # the stack frame is already allocated
@@ -134,8 +148,8 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
         st.p = st.func_obj.u.obj
         if st.p.class_id != ClassId.bytecode_function:
             let class_array = st.rt.class_array else trap("the class array is not allocated")
-            let call_func = class_array[(usize)(u16)st.p.class_id].call else try js_throw_type_error(st.caller_ctx, "not a function")
-            st.ret_val = try call_func(st.caller_ctx, st.func_obj, st.this_obj, st.argc, st.argv, flags)
+            let call_func = class_array[(usize)(u16)st.p.class_id].call else return enter_not_a_function(st)
+            st.ret_val = call_func(st.caller_ctx, st.func_obj, st.this_obj, st.argc, st.argv, flags) catch failure: return enter_failed(st, failure.code, failure.message)
             return InterpEntry.returned
         st.b = st.p.u.func_.function_bytecode
         st.bc_buf = st.b.byte_code_buf
@@ -146,7 +160,7 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
 
         let alloca_size = sizeof(Value) * ((usize)arg_allocated_size + (usize)st.b.var_count + (usize)st.b.stack_size) + sizeof(VarRef*) * (usize)st.b.var_ref_count
         if js_check_stack_overflow(st.rt, alloca_size):
-            try js_throw_stack_overflow(st.caller_ctx)
+            js_throw_stack_overflow(st.caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
 
         st.sf.js_mode = (i32)st.b.js_mode
         st.arg_buf = st.argv
@@ -157,7 +171,7 @@ noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Val
         if alloca_size <= sizeof(Value) * js_call_inline_frame_values:
             st.local_buf = frame_space
         else:
-            let block = try js_malloc(st.caller_ctx, alloca_size)
+            let block = js_malloc(st.caller_ctx, alloca_size) catch failure: return enter_failed(st, failure.code, failure.message)
             st.heap_frame = block
             st.local_buf = (Value*)block
         if arg_allocated_size != 0:
