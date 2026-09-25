@@ -71,11 +71,11 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         new_setter = setter.u.obj
 
                     if ((i32)prs.flags & prop_tmask) != prop_getset:
-                        discard(try js_shape_prepare_update(ctx, p, &prs))
+                        try js_shape_prepare_update(ctx, p, &prs)
                         # convert to getset
                         if ((i32)prs.flags & prop_tmask) == prop_varref:
                             if p.class_id == ClassId.global_object:
-                                discard(try remove_global_object_property(ctx, p, prs, pr))
+                                try remove_global_object_property(ctx, p, prs, pr)
                             free_var_ref(ctx.rt, pr.u.var_ref)
                         else:
                             js_free_value(ctx, pr.u.value)
@@ -105,10 +105,9 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         var var_ref: VarRef*? = none
                         if p.class_id == ClassId.global_object:
                             var_ref = try js_global_object_find_uninitialized_var(ctx, p, prop, false)
-                        discard(js_shape_prepare_update(ctx, p, &prs) catch failure:
+                        js_shape_prepare_update(ctx, p, &prs) catch failure:
                             free_var_ref(ctx.rt, var_ref)
                             error(failure.code, failure.message)
-                        )
                         if let old_getter = pr.u.getset.getter:
                             js_free_value(ctx, js_mkptr(Tag.object, old_getter))
                         if let old_setter = pr.u.getset.setter:
@@ -141,7 +140,7 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         if (flags & (prop_has_writable | prop_writable)) == prop_has_writable:
                             if p.class_id == ClassId.module_ns:
                                 return try js_throw_type_error_or_false(ctx, flags, "module namespace properties have writable = false")
-                            discard(try js_shape_prepare_update(ctx, p, &prs))
+                            try js_shape_prepare_update(ctx, p, &prs)
                             if p.class_id == ClassId.global_object:
                                 # mark as read-only
                                 pr.u.var_ref.is_const = 1
@@ -158,27 +157,27 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         if (flags & prop_has_value) != 0:
                             # Note: no JS code is executable because
                             # 'val' is guaranted to be a Uint32
-                            res = (try set_array_length(ctx, p, js_dup_value(ctx, val), flags)) != 0
+                            res = try set_array_length(ctx, p, js_dup_value(ctx, val), flags)
                         # still need to reset the writable flag if
                         # needed. The JS_PROP_LENGTH is kept because the
                         # Uint32 test is still done if the length
                         # property is read-only.
                         if (flags & (prop_has_writable | prop_writable)) == prop_has_writable:
                             prs = get_shape_prop(p.shape)
-                            discard(try js_update_property_flags(ctx, p, &prs, (i32)prs.flags & ~prop_writable))
+                            try js_update_property_flags(ctx, p, &prs, (i32)prs.flags & ~prop_writable)
                         return res
                     else:
                         if (flags & prop_has_value) != 0:
                             js_free_value(ctx, pr.u.value)
                             pr.u.value = js_dup_value(ctx, val)
                         if (flags & prop_has_writable) != 0:
-                            discard(try js_update_property_flags(ctx, p, &prs, ((i32)prs.flags & ~prop_writable) | (flags & prop_writable)))
+                            try js_update_property_flags(ctx, p, &prs, ((i32)prs.flags & ~prop_writable) | (flags & prop_writable))
             var mask: i32 = 0
             if (flags & prop_has_configurable) != 0:
                 mask |= prop_configurable
             if (flags & prop_has_enumerable) != 0:
                 mask |= prop_enumerable
-            discard(try js_update_property_flags(ctx, p, &prs, ((i32)prs.flags & ~mask) | (flags & mask)))
+            try js_update_property_flags(ctx, p, &prs, ((i32)prs.flags & ~mask) | (flags & mask))
             return true
 
         # handle modification of fast array elements
@@ -190,7 +189,7 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         let prop_flags = get_prop_flags(flags, prop_c_w_e)
                         if prop_flags != prop_c_w_e or (flags & (prop_has_get | prop_has_set)) != 0:
                             # convert_to_slow_array
-                            discard(try convert_fast_array_to_array(ctx, p))
+                            try convert_fast_array_to_array(ctx, p)
                             continue
                         if (flags & prop_has_value) != 0:
                             set_value(ctx, p.u.array.u.values + (usize)idx, js_dup_value(ctx, val))
@@ -224,7 +223,7 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                     if (flags & (prop_has_get | prop_has_set)) != 0 or prop_flags != (prop_enumerable | prop_writable | prop_configurable):
                         return try js_throw_type_error_or_false(ctx, flags, "invalid descriptor flags")
                     if (flags & prop_has_value) != 0:
-                        return (try js_set_property_value(ctx, this_obj, js_new_int32((i32)idx), js_dup_value(ctx, val), flags)) != 0
+                        return try js_set_property_value(ctx, this_obj, js_new_int32((i32)idx), js_dup_value(ctx, val), flags)
                     return true
 
-        return (try js_create_property(ctx, p, prop, val, getter, setter, flags)) != 0
+        return try js_create_property(ctx, p, prop, val, getter, setter, flags)

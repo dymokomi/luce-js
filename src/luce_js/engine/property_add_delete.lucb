@@ -1,0 +1,269 @@
+#==============================================================================================
+#
+#   property_add_delete - Adding and deleting own properties, setters and array lengths
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 9177-9521: add_property (sharing hashed shapes where one
+#       matches), convert_fast_array_to_array, remove_global_object_property,
+#       delete_property, call_setter and set_array_length. A function QuickJS writes as
+#       "-1 on exception, else FALSE/TRUE" answers `bool!`.
+#
+#==============================================================================================
+
+# mark: Adding properties =======================================================================
+
+# Note: the property value is not initialized. Fails (out of memory) if memory error.
+## Add the own property `prop` with `prop_flags` to `p` and answer its storage.
+func add_property(ctx: Context*, p: Object*, prop: Atom, prop_flags: i32) -> Property*!:
+    if js_atom_is_tagged_int_raw(prop):
+        # update is_std_array_prototype
+        if p.is_std_array_prototype:
+            p.is_std_array_prototype = false
+        elif p.has_immutable_prototype:
+            # modifying Object.prototype : reset the corresponding is_std_array_prototype
+            let head = &ctx.rt.context_list
+            var el = head.next else trap("unlinked context list")
+            while el != head:
+                let ctx1 = (Context*)((u8*)el - offsetof(Context, link))
+                let class_proto = ctx1.class_proto else trap("context without class prototypes")
+                let object_proto = class_proto[(usize)ClassId.object]
+                if js_is_object(object_proto) and object_proto.u.obj == p:
+                    let array_proto = class_proto[(usize)ClassId.array]
+                    if js_is_object(array_proto):
+                        let p1 = array_proto.u.obj
+                        p1.is_std_array_prototype = false
+                    break
+                el = el.next else trap("unlinked context list")
+    let sh = p.shape
+    if sh.is_hashed != 0:
+        # try to find an existing shape
+        if let new_sh = find_hashed_shape_prop(ctx.rt, sh, prop, prop_flags):
+            # matching shape found: use it
+            #  the property array may need to be resized
+            if new_sh.prop_size != sh.prop_size:
+                let new_prop = try js_realloc(ctx, p.prop, sizeof(Property) * (usize)new_sh.prop_size)
+                # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+                p.prop = (Property*)(new_prop else trap("js_realloc answered none"))
+            p.shape = js_dup_shape(new_sh)
+            js_free_shape(ctx.rt, sh)
+            return p.prop + (usize)(new_sh.prop_count - 1)
+        elif js_rc(sh).ref_count != 1:
+            # if the shape is shared, clone it
+            let cloned = try js_clone_shape(ctx, sh)
+            # hash the cloned shape
+            cloned.is_hashed = 1
+            js_shape_hash_link(ctx.rt, cloned)
+            js_free_shape(ctx.rt, p.shape)
+            p.shape = cloned
+    assert(js_rc(p.shape).ref_count == 1)
+    try add_shape_property(ctx, &p.shape, p, prop, prop_flags)
+    return p.prop + (usize)(p.shape.prop_count - 1)
+
+# can be called on ClassId.array, ClassId.arguments or ClassId.mapped_arguments objects.
+# fails if memory alloc error.
+## Move the elements of the fast array `p` into ordinary properties.
+func convert_fast_array_to_array(ctx: Context*, p: Object*) -> !:
+    try js_shape_prepare_update(ctx, p, none)
+    let len = p.u.array.count
+    # resize the properties once to simplify the error handling
+    let sh = p.shape
+    let new_count = (u32)sh.prop_count + len
+    if new_count > (u32)sh.prop_size:
+        try resize_properties(ctx, &p.shape, p, new_count)
+
+    if p.class_id == ClassId.mapped_arguments:
+        for i in 0..<len:
+            # add_property cannot fail here but
+            # __JS_AtomFromUInt32(i) fails for i > INT32_MAX
+            let pr = add_property(ctx, p, js_atom_from_uint32_raw(i), prop_c_w_e | prop_varref) else trap("add_property cannot fail here")
+            pr.u.var_ref = p.u.array.u.var_refs[(usize)i]
+    else:
+        for i in 0..<len:
+            # add_property cannot fail here but
+            # __JS_AtomFromUInt32(i) fails for i > INT32_MAX
+            let pr = add_property(ctx, p, js_atom_from_uint32_raw(i), prop_c_w_e) else trap("add_property cannot fail here")
+            pr.u.value = p.u.array.u.values[(usize)i]
+    js_free(ctx, p.u.array.u.ptr)
+    p.u.array.count = 0
+    p.u.array.u.ptr = none # fail safe
+    p.u.array.u1.size = 0
+    p.fast_array = false
+    p.is_std_array_prototype = false
+
+# mark: Deleting properties =====================================================================
+
+## Before the global variable `pr` (described by `prs`) of the global object `p` is
+## deleted, keep a still referenced variable in the uninitialized variables object.
+func remove_global_object_property(ctx: Context*, p: Object*, prs: ShapeProperty*, pr: Property*) -> !:
+    let var_ref = pr.u.var_ref
+    if js_rc(var_ref).ref_count == 1:
+        return
+    let p1 = p.u.global_object.uninitialized_vars.u.obj
+    let pr1 = try add_property(ctx, p1, prs.atom, prop_c_w_e | prop_varref)
+    pr1.u.var_ref = var_ref
+    js_rc(var_ref).ref_count += 1
+    js_free_value(ctx, var_ref.u.value)
+    var_ref.is_lexical = 0
+    var_ref.is_const = 0
+    var_ref.u.value = js_uninitialized()
+
+## Delete the own property `atom` of `p`: false if it is not configurable, true if it was
+## deleted or does not exist.
+func delete_property(ctx: Context*, p: Object*, atom: Atom) -> bool!:
+    redo: while true:
+        var sh = p.shape
+        let h1 = (usize)(atom & sh.prop_hash_mask)
+        var h = get_shape_hash_table(sh)[h1]
+        let prop = get_shape_prop(sh)
+        var lpr: ShapeProperty*? = none
+        var lpr_idx: usize = 0 # prevent warning
+        while h != 0:
+            var pr = prop + (usize)(h - 1)
+            if pr.atom == atom:
+                # found !
+                if ((i32)pr.flags & prop_configurable) == 0:
+                    return false
+                # realloc the shape if needed
+                if let l = lpr:
+                    lpr_idx = (usize)(l - get_shape_prop(sh))
+                try js_shape_prepare_update(ctx, p, &pr)
+                sh = p.shape
+                # remove property
+                if lpr != none:
+                    let l = get_shape_prop(sh) + lpr_idx
+                    l.hash_next = pr.hash_next
+                else:
+                    get_shape_hash_table(sh)[h1] = pr.hash_next
+                sh.deleted_prop_count += 1
+                # free the entry
+                let pr1 = p.prop + (usize)(h - 1)
+                if p.class_id == ClassId.global_object:
+                    if ((i32)pr.flags & prop_tmask) == prop_varref:
+                        try remove_global_object_property(ctx, p, pr, pr1)
+                free_property(ctx.rt, pr1, (i32)pr.flags)
+                js_free_atom(ctx, pr.atom)
+                # put default values
+                pr.flags = 0
+                pr.atom = no_atom
+                pr1.u.value = js_undefined()
+
+                # compact the properties if too many deleted properties (as in QuickJS, a
+                # failure to compact is not reported)
+                if (sh.deleted_prop_count >= 8 and
+                        (u32)sh.deleted_prop_count >= (u32)sh.prop_count // 2):
+                    compact_properties(ctx, p) catch: recover ()
+                return true
+            lpr = pr
+            h = pr.hash_next
+
+        if p.is_exotic:
+            if p.fast_array:
+                var idx: u32 = 0
+                if js_atom_is_array_index(ctx, &idx, atom) and idx < p.u.array.count:
+                    if (p.class_id == ClassId.array or p.class_id == ClassId.arguments or
+                            p.class_id == ClassId.mapped_arguments):
+                        # Special case deleting the last element of a fast Array
+                        if idx == p.u.array.count - 1:
+                            if p.class_id == ClassId.mapped_arguments:
+                                free_var_ref(ctx.rt, p.u.array.u.var_refs[(usize)idx])
+                            else:
+                                js_free_value(ctx, p.u.array.u.values[(usize)idx])
+                            p.u.array.count = idx
+                            return true
+                        try convert_fast_array_to_array(ctx, p)
+                        continue redo
+                    else:
+                        return false
+            else:
+                let class_array = ctx.rt.class_array else trap("the class array is not allocated")
+                if let em = class_array[(usize)p.class_id].exotic:
+                    if let delete_fn = em.delete_property:
+                        return try delete_fn(ctx, js_mkptr(Tag.object, p), atom)
+        # not found
+        return true
+
+# mark: Setters and array lengths ===============================================================
+
+## Call `setter` with `this_obj` and `val`, taking ownership of `val`. Without a setter,
+## answer false or throw, following `flags` (prop_throw, prop_throw_strict).
+func call_setter(ctx: Context*, setter: Object*?, this_obj: Value, val: Value, flags: i32) -> bool!:
+    if let s = setter:
+        # Note: the field could be removed in the setter
+        let func_obj = js_dup_value(ctx, js_mkptr(Tag.object, s))
+        var arg = val
+        defer js_free_value(ctx, val)
+        let ret = try js_call_free(ctx, func_obj, this_obj, 1, &arg)
+        js_free_value(ctx, ret)
+        return true
+    else:
+        js_free_value(ctx, val)
+        if (flags & prop_throw) != 0 or ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx)):
+            try js_throw_type_error(ctx, "no setter for property")
+        return false
+
+# set the array length and remove the array elements if necessary.
+## Takes ownership of `val`.
+func set_array_length(ctx: Context*, p: Object*, val: Value, flags: i32) -> bool!:
+    var len: u32 = 0
+    # Note: this call can reallocate the properties of 'p'
+    discard(try js_to_array_length_free(ctx, &len, val, false))
+    # JS_ToArrayLengthFree() must be done before the read-only test
+    if ((i32)get_shape_prop(p.shape)[0].flags & prop_writable) == 0:
+        return try js_throw_type_error_read_only(ctx, flags, atom_length)
+
+    if p.fast_array:
+        let old_len = p.u.array.count
+        if len < old_len:
+            for i in len..<old_len:
+                js_free_value(ctx, p.u.array.u.values[(usize)i])
+            p.u.array.count = len
+        p.prop[0].u.value = js_new_uint32(len)
+    else:
+        # Note: length is always a uint32 because the object is an
+        # array (JS_ToUint32, which cannot fail on a number)
+        var cur_len: u32 = 0
+        discard(js_to_int32(ctx, (i32*)&cur_len, p.prop[0].u.value) else 0)
+        if len < cur_len:
+            let d = cur_len - len
+            var sh = p.shape
+            if d <= (u32)sh.prop_count:
+                # faster to iterate. As in QuickJS, a failure (out of memory) is not
+                # reported: the element is taken as deleted.
+                while cur_len > len:
+                    let atom = js_new_atom_uint32(ctx, cur_len - 1) else no_atom
+                    let ret = delete_property(ctx, p, atom) else true
+                    js_free_atom(ctx, atom)
+                    if not ret:
+                        # unlikely case: property is not
+                        # configurable
+                        break
+                    cur_len -= 1
+            else:
+                # faster to iterate thru all the properties. Need two
+                # passes in case one of the property is not
+                # configurable
+                cur_len = len
+                var idx: u32 = 0
+                let prs = get_shape_prop(sh)
+                for i in 0..<(usize)sh.prop_count:
+                    let pr = prs + i
+                    if pr.atom != no_atom and js_atom_is_array_index(ctx, &idx, pr.atom):
+                        if idx >= cur_len and ((i32)pr.flags & prop_configurable) == 0:
+                            cur_len = idx + 1
+
+                var i: i32 = 0
+                while i < sh.prop_count:
+                    let pr = get_shape_prop(sh) + (usize)i
+                    if pr.atom != no_atom and js_atom_is_array_index(ctx, &idx, pr.atom):
+                        if idx >= cur_len:
+                            # remove the property (as in QuickJS, the result is ignored)
+                            discard(delete_property(ctx, p, pr.atom) else false)
+                            # WARNING: the shape may have been modified
+                            sh = p.shape
+                    i += 1
+        else:
+            cur_len = len
+        set_value(ctx, &p.prop[0].u.value, js_new_uint32(cur_len))
+        if cur_len > len:
+            return try js_throw_type_error_or_false(ctx, flags, "not configurable")
+    return true

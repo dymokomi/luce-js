@@ -29,7 +29,6 @@ prototype.lucb
 property_get.lucb
 private_fields.lucb
 own_properties.lucb
-stub_r09_property_set.lucb
 bigint_limbs.lucb
 bigint_alloc.lucb
 bigint_ops.lucb
@@ -41,6 +40,12 @@ define_property_wrappers.lucb
 global_vars.lucb
 object_predicates.lucb
 to_primitive.lucb
+property_values.lucb
+property_add_delete.lucb
+fast_arrays.lucb
+property_set.lucb
+property_set_value.lucb
+property_create.lucb
 stub_r12_conversions.lucb
 stub_r13_operators.lucb
 stub_r14_interpreter.lucb
@@ -68,3 +73,4 @@ tests_r04.lucb
 tests_shapes_objects.lucb
 tests_r08.lucb
 tests_r10.lucb
+tests_r09.lucb

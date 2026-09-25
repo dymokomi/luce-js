@@ -120,7 +120,7 @@ func js_autoinit_clear(rt: Runtime*, pr: Property*, prs: ShapeProperty*):
 ## caller looks the property up again.
 func js_auto_init_property(ctx: Context*, p: Object*, prop: Atom, pr: Property*, prs0: ShapeProperty*) -> !:
     var prs = prs0
-    discard(try js_shape_prepare_update(ctx, p, &prs))
+    try js_shape_prepare_update(ctx, p, &prs)
 
     let realm = js_autoinit_get_realm(pr)
     let id = js_autoinit_get_id(pr)

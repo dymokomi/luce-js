@@ -1,0 +1,132 @@
+#==============================================================================================
+#
+#   property_set_value - Writing properties by value, index and name
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 9934-10117: can_extend_fast_array, JS_SetPropertyValue
+#       (with its fast path writing fast arrays and typed arrays directly),
+#       JS_SetPropertyUint32, JS_SetPropertyInt64 and JS_SetPropertyStr. Each takes
+#       ownership of the value written, and answers true, false (only without
+#       prop_throw) or fails with the exception pending.
+#
+#==============================================================================================
+
+# return true if an element can be added to a fast array without further tests
+func can_extend_fast_array(p: Object*) -> bool:
+    if not p.extensible:
+        return false
+    if let proto = p.shape.proto:
+        return proto.is_std_array_prototype
+    return true
+
+# flags can be prop_throw or prop_throw_strict
+## Set the property `prop` of `this_obj` to `val`, taking ownership of both
+## (JS_SetPropertyValue).
+func js_set_property_value(ctx: Context*, this_obj: Value, prop: Value, val: Value, flags: i32) -> bool!:
+    if this_obj.tag == Tag.object and prop.tag == Tag.int:
+        # fast path for array access; the cases that fall out of the match take the slow
+        # path
+        let p = this_obj.u.obj
+        let idx = (u32)js_value_get_int(prop)
+        let i = (usize)idx
+        var v: i32 = 0
+        var d: f64 = 0.0
+        # Note for the typed arrays: the conversion can detach the typed array, so the
+        # array bound check must be done after. An out of bound index is ignored
+        # (ta_out_of_bound).
+        match p.class_id:
+            .array:
+                if idx >= p.u.array.count:
+                    # fast path to add an element to the array
+                    if idx == p.u.array.count and p.fast_array and can_extend_fast_array(p):
+                        # add element
+                        return try add_fast_array_element(ctx, p, val, flags)
+                else:
+                    set_value(ctx, &p.u.array.u.values[i], val)
+                    return true
+            .arguments:
+                if idx < p.u.array.count:
+                    set_value(ctx, &p.u.array.u.values[i], val)
+                    return true
+            .mapped_arguments:
+                if idx < p.u.array.count:
+                    set_value(ctx, p.u.array.u.var_refs[i].pvalue, val)
+                    return true
+            .uint8c_array:
+                discard(try js_to_uint8_clamp_free(ctx, &v, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.uint8_ptr[i] = (u8)v
+                return true
+            .int8_array, .uint8_array:
+                discard(try js_to_int32_free(ctx, &v, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.uint8_ptr[i] = (u8)v
+                return true
+            .int16_array, .uint16_array:
+                discard(try js_to_int32_free(ctx, &v, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.uint16_ptr[i] = (u16)v
+                return true
+            .int32_array, .uint32_array:
+                discard(try js_to_int32_free(ctx, &v, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.uint32_ptr[i] = (u32)v
+                return true
+            .big_int64_array, .big_uint64_array:
+                # XXX: need specific conversion function
+                var v64: i64 = 0
+                discard(try js_to_bigint64_free(ctx, &v64, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.uint64_ptr[i] = (u64)v64
+                return true
+            .float16_array:
+                discard(try js_to_float64_free(ctx, &d, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.fp16_ptr[i] = cutils.tofp16(d)
+                return true
+            .float32_array:
+                discard(try js_to_float64_free(ctx, &d, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.float_ptr[i] = (f32)d
+                return true
+            .float64_array:
+                discard(try js_to_float64_free(ctx, &d, val))
+                if idx < p.u.array.count:
+                    p.u.array.u.double_ptr[i] = d
+                return true
+            _:
+                discard(0)
+
+    # slow_path:
+    let atom = js_value_to_atom(ctx, prop) catch failure:
+        js_free_value(ctx, prop)
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, prop)
+    defer js_free_atom(ctx, atom)
+    return try js_set_property_internal(ctx, this_obj, atom, val, this_obj, flags)
+
+## Set the element `idx` of `this_obj`, taking ownership of `val` (JS_SetPropertyUint32).
+pub func js_set_property_uint32(ctx: Context*, this_obj: Value, idx: u32, val: Value) -> bool!:
+    return try js_set_property_value(ctx, this_obj, js_new_uint32(idx), val, prop_throw)
+
+## Set the element `idx` of `this_obj`, for any index a 64-bit integer holds, taking
+## ownership of `val` (JS_SetPropertyInt64).
+pub func js_set_property_int64(ctx: Context*, this_obj: Value, idx: i64, val: Value) -> bool!:
+    if (u64)idx <= 0x7fffffff:
+        # fast path for fast arrays
+        return try js_set_property_value(ctx, this_obj, js_new_int32((i32)idx), val, prop_throw)
+    let prop = js_new_atom_int64(ctx, idx) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    defer js_free_atom(ctx, prop)
+    return try js_set_property(ctx, this_obj, prop, val)
+
+## Set the property named `prop` of `this_obj`, taking ownership of `val`
+## (JS_SetPropertyStr).
+pub func js_set_property_str(ctx: Context*, this_obj: Value, prop: str, val: Value) -> bool!:
+    let atom = js_new_atom(ctx, prop) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    defer js_free_atom(ctx, atom)
+    return try js_set_property_internal(ctx, this_obj, atom, val, this_obj, prop_throw)

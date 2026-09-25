@@ -70,7 +70,7 @@ func js_set_prototype_internal(ctx: Context*, obj: Value, proto_val: Value,
             p1 = o.shape.proto
         discard(js_dup_value(ctx, proto_val))
 
-    discard(try js_shape_prepare_update(ctx, p, none))
+    try js_shape_prepare_update(ctx, p, none)
     sh = p.shape
     if let old_proto = sh.proto:
         js_free_value(ctx, js_mkptr(Tag.object, old_proto))

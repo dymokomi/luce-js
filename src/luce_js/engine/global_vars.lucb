@@ -107,7 +107,7 @@ pub func js_delete_property(ctx: Context*, obj: Value, prop: Atom, flags: i32) -
         js_free_value(ctx, obj1)
         error(failure.code, failure.message)
     js_free_value(ctx, obj1)
-    if res != 0:
+    if res:
         return true
     if (flags & prop_throw) != 0 or ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx)):
         try js_throw_type_error(ctx, "could not delete property")
