@@ -7,10 +7,10 @@
 #       and QuickJS's own tests: the global helpers (print, console.log, scriptArgs), the
 #       default module loader reading files, the job and timer loop, and the `std` and `os`
 #       modules on POSIX targets (macOS and Linux), with their processes, pipes, signals,
-#       read/write handlers and ttys. Workers and their message ports, shared-library
-#       modules and bytecode loading are not ported. This fragment holds the module's
-#       imports and the per-runtime state (JSThreadState); the C library bindings are in
-#       `libc` and `libc_process`.
+#       read/write handlers and ttys, and the running of precompiled bytecode. Workers and
+#       their message ports and shared-library modules are not ported. This fragment holds
+#       the module's imports and the per-runtime state (JSThreadState); the C library
+#       bindings are in `libc` and `libc_process`.
 #
 #       QuickJS C library
 #

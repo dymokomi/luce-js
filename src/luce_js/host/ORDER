@@ -12,4 +12,5 @@ os_files.lucb
 os_process.lucb
 os_tables.lucb
 helpers.lucb
+eval_binary.lucb
 tests.lucb
