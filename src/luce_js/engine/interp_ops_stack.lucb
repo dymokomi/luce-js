@@ -1,0 +1,497 @@
+#==============================================================================================
+#
+#   interp_ops_stack - Opcodes: constants, the stack, closures, calls, constructors and eval
+#
+#   DESCRIPTION:
+#       Port of the opcode bodies of JS_CallInternal, quickjs.c lines 17879-18460: OP_push_i32
+#       to OP_import (the call opcodes themselves are in interpreter.lucb). Each body is a
+#       function taking the interpreter state (InterpState, see interpreter.lucb); the
+#       dispatch loop calls it from its arm. A body that can raise answers false with the
+#       exception pending, which the loop treats as C's `goto exception`; one that cannot
+#       raise answers nothing.
+#
+#==============================================================================================
+
+# mark: Constants and the stack ===============================================================
+
+## The body of OP_push_i32 in JS_CallInternal.
+noinline func interp_push_i32(st: InterpState*):
+    *st.sp = js_new_int32((i32)cutils.get_u32(st.pc))
+    st.sp = st.sp + 1
+    st.pc = st.pc + 4
+
+## The body of OP_push_bigint_i32 in JS_CallInternal.
+noinline func interp_push_bigint_i32(st: InterpState*):
+    *st.sp = js_new_short_big_int_raw((i32)cutils.get_u32(st.pc))
+    st.sp = st.sp + 1
+    st.pc = st.pc + 4
+
+## The body of OP_push_const in JS_CallInternal.
+noinline func interp_push_const(st: InterpState*):
+    *st.sp = js_dup_value(st.ctx, cpool_at(st.b, cutils.get_u32(st.pc)))
+    st.sp = st.sp + 1
+    st.pc = st.pc + 4
+
+## The body of OP_push_minus1, OP_push_0, OP_push_1, OP_push_2, OP_push_3, OP_push_4, OP_push_5, OP_push_6, OP_push_7 in JS_CallInternal.
+noinline func interp_push_minus1(st: InterpState*):
+    *st.sp = js_new_int32((i32)(u8)st.opcode - (i32)(u8)Op.push_0)
+    st.sp = st.sp + 1
+
+## The body of OP_push_i8 in JS_CallInternal.
+noinline func interp_push_i8(st: InterpState*):
+    *st.sp = js_new_int32(cutils.get_i8(st.pc))
+    st.sp = st.sp + 1
+    st.pc = st.pc + 1
+
+## The body of OP_push_i16 in JS_CallInternal.
+noinline func interp_push_i16(st: InterpState*):
+    *st.sp = js_new_int32(cutils.get_i16(st.pc))
+    st.sp = st.sp + 1
+    st.pc = st.pc + 2
+
+## The body of OP_push_const8 in JS_CallInternal.
+noinline func interp_push_const8(st: InterpState*):
+    *st.sp = js_dup_value(st.ctx, cpool_at(st.b, (u32)*st.pc))
+    st.sp = st.sp + 1
+    st.pc = st.pc + 1
+
+## The body of OP_fclosure8 in JS_CallInternal.
+noinline func interp_fclosure8(st: InterpState*) -> bool:
+    let bfunc = js_dup_value(st.ctx, cpool_at(st.b, (u32)*st.pc))
+    st.pc = st.pc + 1
+    *st.sp = js_closure(st.ctx, bfunc, st.var_refs, st.sf, false) catch: return false
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_push_empty_string in JS_CallInternal.
+noinline func interp_push_empty_string(st: InterpState*) -> bool:
+    *st.sp = js_atom_to_string(st.ctx, atom_empty_string) catch: return false
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_push_atom_value in JS_CallInternal.
+noinline func interp_push_atom_value(st: InterpState*) -> bool:
+    *st.sp = js_atom_to_value(st.ctx, cutils.get_u32(st.pc)) catch: return false
+    st.sp = st.sp + 1
+    st.pc = st.pc + 4
+    return true
+
+## The body of OP_undefined in JS_CallInternal.
+noinline func interp_undefined(st: InterpState*):
+    *st.sp = js_undefined()
+    st.sp = st.sp + 1
+
+## The body of OP_null in JS_CallInternal.
+noinline func interp_null(st: InterpState*):
+    *st.sp = js_null()
+    st.sp = st.sp + 1
+
+## The body of OP_push_this in JS_CallInternal.
+noinline func interp_push_this(st: InterpState*) -> bool:
+    # OP_push_this is only called at the start of a function
+    var val = js_undefined()
+    if ((i32)st.b.js_mode & js_mode_strict) == 0 and st.this_obj.tag != Tag.object:
+        let tag = st.this_obj.tag
+        if tag == Tag.null or tag == Tag.undefined:
+            val = js_dup_value(st.ctx, st.ctx.global_obj)
+        else:
+            val = js_to_object(st.ctx, st.this_obj) catch: return false
+    else:
+        # normal_this
+        val = js_dup_value(st.ctx, st.this_obj)
+    *st.sp = val
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_push_false in JS_CallInternal.
+noinline func interp_push_false(st: InterpState*):
+    *st.sp = js_false()
+    st.sp = st.sp + 1
+
+## The body of OP_push_true in JS_CallInternal.
+noinline func interp_push_true(st: InterpState*):
+    *st.sp = js_true()
+    st.sp = st.sp + 1
+
+## The body of OP_object in JS_CallInternal.
+noinline func interp_object(st: InterpState*) -> bool:
+    *st.sp = js_new_object(st.ctx) catch: return false
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_special_object in JS_CallInternal.
+noinline func interp_special_object(st: InterpState*) -> bool:
+    let arg = (OpSpecialObject)*st.pc
+    st.pc = st.pc + 1
+    match arg:
+        .arguments:
+            *st.sp = js_build_arguments(st.ctx, st.argc, st.argv) catch: return false
+            st.sp = st.sp + 1
+        .mapped_arguments:
+            *st.sp = js_build_mapped_arguments(st.ctx, st.argc, st.argv, st.sf, cutils.min_int(st.argc, (i32)st.b.arg_count)) catch: return false
+            st.sp = st.sp + 1
+        .this_func:
+            *st.sp = js_dup_value(st.ctx, st.sf.cur_func)
+            st.sp = st.sp + 1
+        .new_target:
+            *st.sp = js_dup_value(st.ctx, st.new_target)
+            st.sp = st.sp + 1
+        .home_object:
+            if let p1 = st.p.u.func_.home_object:
+                *st.sp = js_dup_value(st.ctx, js_mkptr(Tag.object, p1))
+            else:
+                *st.sp = js_undefined()
+            st.sp = st.sp + 1
+        .var_object:
+            *st.sp = js_new_object_proto(st.ctx, js_null()) catch: return false
+            st.sp = st.sp + 1
+        .import_meta:
+            *st.sp = js_import_meta(st.ctx) catch: return false
+            st.sp = st.sp + 1
+        _:
+            trap("invalid OP_special_object argument")
+    return true
+
+## The body of OP_rest in JS_CallInternal.
+noinline func interp_rest(st: InterpState*) -> bool:
+    var first = (i32)cutils.get_u16(st.pc)
+    st.pc = st.pc + 2
+    first = cutils.min_int(first, st.argc)
+    *st.sp = js_create_array(st.ctx, st.argc - first, st.argv + (usize)first) catch: return false
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_drop in JS_CallInternal.
+noinline func interp_drop(st: InterpState*):
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp - 1
+
+## The body of OP_nip in JS_CallInternal.
+noinline func interp_nip(st: InterpState*):
+    js_free_value(st.ctx, st.sp[(isize)-2])
+    st.sp[(isize)-2] = st.sp[(isize)-1]
+    st.sp = st.sp - 1
+
+## The body of OP_nip1 in JS_CallInternal.
+# a b c -> b c
+noinline func interp_nip1(st: InterpState*):
+    js_free_value(st.ctx, st.sp[(isize)-3])
+    st.sp[(isize)-3] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-1]
+    st.sp = st.sp - 1
+
+## The body of OP_dup in JS_CallInternal.
+noinline func interp_dup(st: InterpState*):
+    st.sp[0] = js_dup_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp + 1
+
+## The body of OP_dup2 in JS_CallInternal.
+# a b -> a b a b
+noinline func interp_dup2(st: InterpState*):
+    st.sp[0] = js_dup_value(st.ctx, st.sp[(isize)-2])
+    st.sp[1] = js_dup_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp + 2
+
+## The body of OP_dup3 in JS_CallInternal.
+# a b c -> a b c a b c
+noinline func interp_dup3(st: InterpState*):
+    st.sp[0] = js_dup_value(st.ctx, st.sp[(isize)-3])
+    st.sp[1] = js_dup_value(st.ctx, st.sp[(isize)-2])
+    st.sp[2] = js_dup_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp + 3
+
+## The body of OP_dup1 in JS_CallInternal.
+# a b -> a a b
+noinline func interp_dup1(st: InterpState*):
+    st.sp[0] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = js_dup_value(st.ctx, st.sp[(isize)-2])
+    st.sp = st.sp + 1
+
+## The body of OP_insert2 in JS_CallInternal.
+# obj a -> a obj a (dup_x1)
+noinline func interp_insert2(st: InterpState*):
+    st.sp[0] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = js_dup_value(st.ctx, st.sp[0])
+    st.sp = st.sp + 1
+
+## The body of OP_insert3 in JS_CallInternal.
+# obj prop a -> a obj prop a (dup_x2)
+noinline func interp_insert3(st: InterpState*):
+    st.sp[0] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = js_dup_value(st.ctx, st.sp[0])
+    st.sp = st.sp + 1
+
+## The body of OP_insert4 in JS_CallInternal.
+# this obj prop a -> a this obj prop a
+noinline func interp_insert4(st: InterpState*):
+    st.sp[0] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = st.sp[(isize)-4]
+    st.sp[(isize)-4] = js_dup_value(st.ctx, st.sp[0])
+    st.sp = st.sp + 1
+
+## The body of OP_perm3 in JS_CallInternal.
+# obj a b -> a obj b (213)
+noinline func interp_perm3(st: InterpState*):
+    let tmp = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = tmp
+
+## The body of OP_rot3l in JS_CallInternal.
+# x a b -> a b x (231)
+noinline func interp_rot3l(st: InterpState*):
+    let tmp = st.sp[(isize)-3]
+    st.sp[(isize)-3] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = tmp
+
+## The body of OP_rot4l in JS_CallInternal.
+# x a b c -> a b c x
+noinline func interp_rot4l(st: InterpState*):
+    let tmp = st.sp[(isize)-4]
+    st.sp[(isize)-4] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = tmp
+
+## The body of OP_rot5l in JS_CallInternal.
+# x a b c d -> a b c d x
+noinline func interp_rot5l(st: InterpState*):
+    let tmp = st.sp[(isize)-5]
+    st.sp[(isize)-5] = st.sp[(isize)-4]
+    st.sp[(isize)-4] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = tmp
+
+## The body of OP_rot3r in JS_CallInternal.
+# a b x -> x a b (312)
+noinline func interp_rot3r(st: InterpState*):
+    let tmp = st.sp[(isize)-1]
+    st.sp[(isize)-1] = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = tmp
+
+## The body of OP_perm4 in JS_CallInternal.
+# obj prop a b -> a obj prop b
+noinline func interp_perm4(st: InterpState*):
+    let tmp = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = st.sp[(isize)-4]
+    st.sp[(isize)-4] = tmp
+
+## The body of OP_perm5 in JS_CallInternal.
+# this obj prop a b -> a this obj prop b
+noinline func interp_perm5(st: InterpState*):
+    let tmp = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-3]
+    st.sp[(isize)-3] = st.sp[(isize)-4]
+    st.sp[(isize)-4] = st.sp[(isize)-5]
+    st.sp[(isize)-5] = tmp
+
+## The body of OP_swap in JS_CallInternal.
+# a b -> b a
+noinline func interp_swap(st: InterpState*):
+    let tmp = st.sp[(isize)-2]
+    st.sp[(isize)-2] = st.sp[(isize)-1]
+    st.sp[(isize)-1] = tmp
+
+## The body of OP_swap2 in JS_CallInternal.
+# a b c d -> c d a b
+noinline func interp_swap2(st: InterpState*):
+    let tmp1 = st.sp[(isize)-4]
+    let tmp2 = st.sp[(isize)-3]
+    st.sp[(isize)-4] = st.sp[(isize)-2]
+    st.sp[(isize)-3] = st.sp[(isize)-1]
+    st.sp[(isize)-2] = tmp1
+    st.sp[(isize)-1] = tmp2
+
+# mark: Closures, calls and constructors ======================================================
+
+## The body of OP_fclosure in JS_CallInternal.
+noinline func interp_fclosure(st: InterpState*) -> bool:
+    let bfunc = js_dup_value(st.ctx, cpool_at(st.b, cutils.get_u32(st.pc)))
+    st.pc = st.pc + 4
+    *st.sp = js_closure(st.ctx, bfunc, st.var_refs, st.sf, false) catch: return false
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_array_from in JS_CallInternal.
+noinline func interp_array_from(st: InterpState*) -> bool:
+    let call_argc = (i32)cutils.get_u16(st.pc)
+    st.pc = st.pc + 2
+    st.ret_val = js_create_array_free(st.ctx, call_argc, st.sp - (usize)call_argc) catch:
+        st.sp = st.sp - (usize)call_argc
+        return false
+    st.sp = st.sp - (usize)call_argc
+    *st.sp = st.ret_val
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_apply in JS_CallInternal.
+noinline func interp_apply(st: InterpState*) -> bool:
+    let magic = (i32)cutils.get_u16(st.pc)
+    st.pc = st.pc + 2
+    st.sf.cur_pc = st.pc
+
+    st.ret_val = js_function_apply(st.ctx, st.sp[(isize)-3], 2, st.sp - 2, magic) catch: return false
+    js_free_value(st.ctx, st.sp[(isize)-3])
+    js_free_value(st.ctx, st.sp[(isize)-2])
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp - 3
+    *st.sp = st.ret_val
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_check_ctor_return in JS_CallInternal.
+noinline func interp_check_ctor_return(st: InterpState*) -> bool:
+    # return TRUE if 'this' should be returned
+    if not js_is_object(st.sp[(isize)-1]):
+        if not js_is_undefined(st.sp[(isize)-1]):
+            js_throw_type_error(st.caller_ctx, "derived class constructor must return an object or undefined") catch: return false
+        st.sp[0] = js_true()
+    else:
+        st.sp[0] = js_false()
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_check_ctor in JS_CallInternal.
+noinline func interp_check_ctor(st: InterpState*) -> bool:
+    if js_is_undefined(st.new_target):
+        # non_ctor_call
+        js_throw_type_error(st.ctx, "class constructors must be invoked with 'new'") catch: return false
+    return true
+
+## The body of OP_init_ctor in JS_CallInternal.
+noinline func interp_init_ctor(st: InterpState*) -> bool:
+    st.sf.cur_pc = st.pc
+    if js_is_undefined(st.new_target):
+        # non_ctor_call
+        js_throw_type_error(st.ctx, "class constructors must be invoked with 'new'") catch: return false
+    let super_ = js_get_prototype(st.ctx, st.func_obj) catch: return false
+    let ret = js_call_constructor2(st.ctx, super_, st.new_target, st.argc, st.argv) catch: recover js_exception()
+    js_free_value(st.ctx, super_)
+    if js_is_exception(ret):
+        return false
+    *st.sp = ret
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_check_brand in JS_CallInternal.
+noinline func interp_check_brand(st: InterpState*) -> bool:
+    let ret = js_check_brand(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: return false
+    if not ret:
+        js_throw_type_error(st.ctx, "invalid brand on object") catch: return false
+    return true
+
+## The body of OP_add_brand in JS_CallInternal.
+noinline func interp_add_brand(st: InterpState*) -> bool:
+    js_add_brand(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: return false
+    js_free_value(st.ctx, st.sp[(isize)-2])
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp - 2
+    return true
+
+# mark: Throw, eval, regexp, super and import =================================================
+
+## The body of OP_throw in JS_CallInternal.
+noinline func interp_throw(st: InterpState*) -> bool:
+    st.sp = st.sp - 1
+    js_throw(st.ctx, *st.sp) catch: return false
+    return true
+
+## The body of OP_throw_error in JS_CallInternal.
+noinline func interp_throw_error(st: InterpState*) -> bool:
+    let atom = cutils.get_u32(st.pc)
+    let type_ = (i32)st.pc[4]
+    st.pc = st.pc + 5
+    if type_ == throw_var_ro:
+        discard(js_throw_type_error_read_only(st.ctx, prop_throw, atom) catch: return false)
+    elif type_ == throw_var_redecl:
+        js_throw_syntax_error_var_redeclaration(st.ctx, atom) catch: return false
+    elif type_ == throw_var_uninitialized:
+        js_throw_reference_error_uninitialized(st.ctx, atom) catch: return false
+    elif type_ == throw_error_delete_super:
+        js_throw_reference_error(st.ctx, "unsupported reference to 'super'") catch: return false
+    elif type_ == throw_error_iterator_throw:
+        js_throw_type_error(st.ctx, "iterator does not have a throw method") catch: return false
+    else:
+        js_throw_internal_error(st.ctx, f"invalid throw var type {type_}") catch: return false
+    return false
+
+## The body of OP_eval in JS_CallInternal.
+noinline func interp_eval(st: InterpState*) -> bool:
+    let call_argc = (i32)cutils.get_u16(st.pc)
+    let scope_idx = (i32)cutils.get_u16(st.pc + 2) + arg_scope_end
+    st.pc = st.pc + 4
+    let call_argv = st.sp - (usize)call_argc
+    st.sf.cur_pc = st.pc
+    if js_same_value_internal(st.ctx, call_argv[(isize)-1], st.ctx.eval_obj):
+        var obj = js_undefined()
+        if call_argc >= 1:
+            obj = call_argv[0]
+        st.ret_val = js_eval_object(st.ctx, js_undefined(), obj, eval_type_direct, scope_idx) catch: return false
+    else:
+        st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: return false
+    var i: isize = -1
+    while i < (isize)call_argc:
+        js_free_value(st.ctx, call_argv[i])
+        i += 1
+    st.sp = st.sp - (usize)(call_argc + 1)
+    *st.sp = st.ret_val
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_apply_eval in JS_CallInternal.
+noinline func interp_apply_eval(st: InterpState*) -> bool:
+    let scope_idx = (i32)cutils.get_u16(st.pc) + arg_scope_end
+    st.pc = st.pc + 2
+    st.sf.cur_pc = st.pc
+    var len: u32 = 0
+    let tab = build_arg_list(st.ctx, &len, st.sp[(isize)-1]) catch: return false
+    if js_same_value_internal(st.ctx, st.sp[(isize)-2], st.ctx.eval_obj):
+        var obj = js_undefined()
+        if len >= 1:
+            obj = tab[0]
+        st.ret_val = js_eval_object(st.ctx, js_undefined(), obj, eval_type_direct, scope_idx) catch: recover js_exception()
+    else:
+        st.ret_val = js_call(st.ctx, st.sp[(isize)-2], js_undefined(), (i32)len, tab) catch: recover js_exception()
+    free_arg_list(st.ctx, tab, len)
+    if js_is_exception(st.ret_val):
+        return false
+    js_free_value(st.ctx, st.sp[(isize)-2])
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp - 2
+    *st.sp = st.ret_val
+    st.sp = st.sp + 1
+    return true
+
+## The body of OP_regexp in JS_CallInternal.
+noinline func interp_regexp(st: InterpState*) -> bool:
+    st.sp[(isize)-2] = js_new_regexp(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: recover js_exception()
+    st.sp = st.sp - 1
+    if js_is_exception(st.sp[(isize)-1]):
+        return false
+    return true
+
+## The body of OP_get_super in JS_CallInternal.
+noinline func interp_get_super(st: InterpState*) -> bool:
+    st.sf.cur_pc = st.pc
+    let proto = js_get_prototype(st.ctx, st.sp[(isize)-1]) catch: return false
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp[(isize)-1] = proto
+    return true
+
+## The body of OP_import in JS_CallInternal.
+noinline func interp_import(st: InterpState*) -> bool:
+    st.sf.cur_pc = st.pc
+    let val = js_dynamic_import(st.ctx, st.sp[(isize)-2], st.sp[(isize)-1]) catch: return false
+    js_free_value(st.ctx, st.sp[(isize)-2])
+    js_free_value(st.ctx, st.sp[(isize)-1])
+    st.sp = st.sp - 1
+    st.sp[(isize)-1] = val
+    return true

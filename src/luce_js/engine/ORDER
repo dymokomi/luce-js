@@ -62,6 +62,12 @@ closures.lucb
 calls.lucb
 interpreter_support.lucb
 interpreter.lucb
+interp_ops_stack.lucb
+interp_ops_variables.lucb
+interp_ops_control.lucb
+interp_ops_properties.lucb
+interp_ops_arith.lucb
+interp_ops_compare.lucb
 call_entry.lucb
 stub_r15_async_generators.lucb
 tokenizer.lucb
