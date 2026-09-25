@@ -37,11 +37,13 @@ TESTS = [
 # file -> why it cannot pass yet. Keep the classification: (a) needs an unported region,
 # (b) a port bug, (c) a compiler bug, (d) a host feature deliberately not ported.
 KNOWN_FAILURES = {
-    "test_language.js": "(a) regular expression literals need RegExp (region r25)",
-    "test_builtin.js": "(a) string escapes need lre_parse_escape (luce_js.regexp), RegExp and JSON (r25)",
+    "test_language.js": "(a) a regular expression literal needs RegExp (r25); "
+                        "test_object_literal and test_optional_chaining need JSON (r25)",
+    "test_builtin.js": "(a) string escapes need lre_parse_escape (luce_js.regexp); test_function "
+                       "needs Reflect, test_json JSON and test_regexp RegExp (r25)",
     "test_bigint.js": "(a) string escapes need lre_parse_escape (luce_js.regexp)",
-    "test_std.js": "(a) string escapes need lre_parse_escape (luce_js.regexp); "
-                   "(d) test_os and test_os_exec need os.exec, os.pipe, os.waitpid and os.kill",
+    "test_std.js": "(a) string escapes need lre_parse_escape (luce_js.regexp), test_ext_json needs "
+                   "JSON (r25); (d) test_os and test_os_exec need os.exec, os.pipe, os.waitpid, os.kill",
 }
 
 
