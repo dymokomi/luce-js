@@ -1,0 +1,369 @@
+#==============================================================================================
+#
+#   map_records - Map, Set, WeakMap and WeakSet: weak references, hashing and records
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Set/Map/WeakSet/WeakMap" (lines 51688-52129): the weak
+#       reference counts of objects and symbols, the Map/Set/WeakMap/WeakSet constructor,
+#       the key hash, and the records of a MapState: finding, adding, resizing the hash
+#       table and deleting (a record an iterator holds stays as an empty "zombie" until
+#       released). The key of a weak map record holds a weak reference; map_delete_weakrefs
+#       drops the records whose key died.
+#
+#==============================================================================================
+
+# mark: Weak references =========================================================================
+
+## Whether `val` can be held weakly: an object or a symbol that is not registered and not
+## private (js_weakref_is_target).
+func js_weakref_is_target(val: Value) -> bool:
+    if val.tag == Tag.object:
+        return true
+    elif val.tag == Tag.symbol:
+        let p: AtomStruct* = val.u.string
+        if p.atom_type == js_atom_type_symbol and p.hash != js_atom_hash_private:
+            return true
+    return false
+
+# JS_UNDEFINED is considered as a live weakref
+# XXX: add a specific JSWeakRef value type ?
+## Whether the weakly held `val` is still alive (js_weakref_is_live).
+func js_weakref_is_live(val: Value) -> bool:
+    if js_is_undefined(val):
+        return true
+    return js_rc(val.u.ptr).ref_count != 0
+
+## Release a weak reference to `val`, which can be undefined; the structure of a dead
+## object or symbol is freed with its last weak reference (js_weakref_free).
+func js_weakref_free(rt: Runtime*, val: Value):
+    if val.tag == Tag.object:
+        let p = val.u.obj
+        assert(p.weakref_count >= 1)
+        p.weakref_count -= 1
+        # 'mark' is tested to avoid freeing the object structure when it is about to be freed
+        # in a cycle or in free_zero_refcount()
+        if p.weakref_count == 0 and js_rc(p).ref_count == 0 and js_rc(p).mark() == 0:
+            js_free_rt(rt, p)
+    elif val.tag == Tag.symbol:
+        let p = val.u.string
+        assert(p.hash >= 1)
+        p.hash -= 1
+        if p.hash == 0 and js_rc(p).ref_count == 0:
+            # can remove the dummy structure
+            js_free_rt(rt, p)
+
+## A weak reference to `val`, which must be an object, a symbol or undefined (see
+## js_weakref_is_target) (js_weakref_new).
+func js_weakref_new(ctx: Context*, val: Value) -> Value:
+    if val.tag == Tag.object:
+        let p = val.u.obj
+        p.weakref_count += 1
+    elif val.tag == Tag.symbol:
+        let p = val.u.string
+        # XXX: could return an exception if too many references
+        assert(p.hash < js_atom_hash_mask - 2)
+        p.hash += 1
+    else:
+        assert(js_is_undefined(val))
+    return val
+
+# mark: The constructor =========================================================================
+
+## The magic of the Map/Set builtins: bit 0 for a Set, bit 1 for a weak one; ClassId.map
+## plus the magic is the class (MAGIC_SET, MAGIC_WEAK).
+let magic_set: i32 = 1 << 0
+let magic_weak: i32 = 1 << 1
+
+## Free the value `*pv`. A `defer` target: the pointer is captured when the defer is
+## registered and the value is read when it runs, as C's `goto fail` cleanup reads it.
+func js_free_value_at(ctx: Context*, pv: const Value*):
+    js_free_value(ctx, *pv)
+
+## One step of the constructor's loop: call `adder` on `obj` with `item` (a Set) or with its
+## elements 0 and 1 (a Map). Takes ownership of `item`.
+func js_map_constructor_add(ctx: Context*, adder: Value, obj: Value, item: Value, is_set: bool) -> !:
+    defer js_free_value(ctx, item)
+    if is_set:
+        var arg = item
+        let ret = try js_call(ctx, adder, obj, 1, &arg)
+        js_free_value(ctx, ret)
+    else:
+        if not js_is_object(item):
+            try js_throw_type_error_not_an_object(ctx)
+        let key = try js_get_property_uint32(ctx, item, 0)
+        defer js_free_value(ctx, key)
+        let value = try js_get_property_uint32(ctx, item, 1)
+        defer js_free_value(ctx, value)
+        var args: Value[2] = [key, value]
+        let ret = try js_call(ctx, adder, obj, 2, &args[0])
+        js_free_value(ctx, ret)
+
+## Add the entries of the iterable `arr` to the new Map or Set `obj` through its own
+## `set` or `add` method.
+func js_map_constructor_fill(ctx: Context*, obj: Value, arr: Value, is_set: bool) -> !:
+    var adder = js_undefined()
+    var iter = js_undefined()
+    var next_method = js_undefined()
+    defer js_free_value_at(ctx, &adder)
+    defer js_free_value_at(ctx, &iter)
+    defer js_free_value_at(ctx, &next_method)
+
+    adder = try js_get_property(ctx, obj, atom_add if is_set else atom_set)
+    if not js_is_function(ctx, adder):
+        try js_throw_type_error(ctx, "set/add is not a function")
+
+    iter = try js_get_iterator(ctx, arr, false)
+    next_method = try js_get_property(ctx, iter, atom_next)
+
+    while true:
+        var done = false
+        var no_args = js_undefined()
+        let item = try js_iterator_next(ctx, iter, next_method, 0, &no_args, &done)
+        if done:
+            break
+        js_map_constructor_add(ctx, adder, obj, item, is_set) catch failure:
+            # close the iterator object, preserving pending exception
+            js_close_iterator_on_failure(ctx, iter)
+            error(failure.code, failure.message)
+
+## new Map/Set/WeakMap/WeakSet(iterable); `magic` holds magic_set and magic_weak
+## (js_map_constructor).
+func js_map_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let is_set = (magic & magic_set) != 0
+    let is_weak = (magic & magic_weak) != 0
+    let obj = try js_create_from_ctor(ctx, new_target, (u32)((i32)ClassId.map + magic))
+    errdefer js_free_value(ctx, obj)
+    let raw = try js_mallocz(ctx, sizeof(MapState))
+    let s = (MapState*)raw
+    cutils.init_list_head(&s.records)
+    s.is_weak = is_weak
+    if is_weak:
+        s.weakref_header.weakref_type = WeakRefHeaderType.map
+        cutils.list_add_tail(&s.weakref_header.link, &ctx.rt.weakref_list)
+    js_set_opaque(obj, s)
+    s.hash_bits = 1
+    s.hash_size = (u32)1 << (u32)s.hash_bits
+    let table = try js_mallocz(ctx, sizeof(MapRecord*?) * (usize)s.hash_size)
+    s.hash_table = (MapRecord*?*)table
+    s.record_count_threshold = 4
+
+    var arr = js_undefined()
+    if argc > 0:
+        arr = argv[0]
+    if not js_is_undefined(arr) and not js_is_null(arr):
+        try js_map_constructor_fill(ctx, obj, arr, is_set)
+    return obj
+
+# mark: Hashing =================================================================================
+
+# XXX: could normalize strings to speed up comparison
+## The key a record is stored under: -0.0 becomes +0 (map_normalize_key).
+func map_normalize_key(ctx: Context*, key: Value) -> Value:
+    # convert -0.0 to +0.0
+    if js_tag_is_float64(key.tag) and js_value_get_float64(key) == 0.0:
+        return js_new_int32(0)
+    return key
+
+## map_normalize_key of a borrowed key (map_normalize_key_const).
+func map_normalize_key_const(ctx: Context*, key: Value) -> Value:
+    return map_normalize_key(ctx, key)
+
+# hash multipliers, same as the Linux kernel (see Knuth vol 3, section 6.4, exercise 9)
+let hash_mul32: u32 = 0x61C88647
+let hash_mul64: u64 = 0x61C8864680B583EB
+
+## The top `hash_bits` bits of `a` times the 32-bit multiplier (map_hash32).
+func map_hash32(a: u32, hash_bits: i32) -> u32:
+    return (a *% hash_mul32) >> (u32)(32 - hash_bits)
+
+## The top `hash_bits` bits of `a` times the 64-bit multiplier (map_hash64).
+func map_hash64(a: u64, hash_bits: i32) -> u32:
+    return (u32)((a *% hash_mul64) >> (u64)(64 - hash_bits))
+
+## The hash of an address; pointers are 64 bits wide on the port's targets
+## (map_hash_pointer).
+func map_hash_pointer(a: usize, hash_bits: i32) -> u32:
+    return map_hash64((u64)a, hash_bits)
+
+## A tag as the unsigned 32-bit number C's JS_VALUE_GET_NORM_TAG gives when hashed.
+func map_tag_bits(tag: Tag) -> u32:
+    return (u32)(i64)tag
+
+## The hash of a number: of its float64 bits, so that 1 and 1.0 agree.
+func map_hash_float64(d: f64, hash_bits: i32) -> u32:
+    return map_hash64(cutils.float64_as_uint64(d) ^ (u64)map_tag_bits(Tag.float64), hash_bits)
+
+## The hash of a big integer's limbs.
+func map_hash_bigint(p: const BigInt*, hash_bits: i32) -> u32:
+    let tab = js_bigint_tab(p)
+    var h: u32 = 1
+    var i = (i32)p.len - 1
+    while i >= 0:
+        h = h *% 263 +% tab[(usize)i]
+        i -= 1
+    # the final step is necessary otherwise h mod n only depends of p->tab[i] mod n
+    return map_hash32(h ^ map_tag_bits(Tag.big_int), hash_bits)
+
+# XXX: better hash ?
+## The hash of `key` on `hash_bits` bits; precondition: 1 <= hash_bits <= 32
+## (map_hash_key).
+func map_hash_key(key: Value, hash_bits: i32) -> u32:
+    var h: u32 = 0
+    match key.tag:
+        .boolean:
+            h = map_hash32((u32)js_value_get_int(key) ^ map_tag_bits(Tag.boolean), hash_bits)
+        .string:
+            h = map_hash32(hash_string(key.u.string, 0) ^ map_tag_bits(Tag.string), hash_bits)
+        .string_rope:
+            h = map_hash32(hash_string_rope(key, 0) ^ map_tag_bits(Tag.string), hash_bits)
+        .object, .symbol:
+            h = map_hash_pointer((usize)key.u.ptr ^ (usize)map_tag_bits(key.tag), hash_bits)
+        .int:
+            h = map_hash_float64(f64(js_value_get_int(key)), hash_bits)
+        .float64:
+            var d = js_value_get_float64(key)
+            # normalize the NaN
+            if d != d:
+                d = f64.bits(0x7ff8000000000000)
+            h = map_hash_float64(d, hash_bits)
+        .short_big_int:
+            var buf: BigIntBuf = ---
+            h = map_hash_bigint(js_bigint_set_short(&buf, key), hash_bits)
+        .big_int:
+            h = map_hash_bigint(key.u.big_int, hash_bits)
+        _:
+            h = 0
+    return h
+
+# mark: Records =================================================================================
+
+## The hash table of `s`, allocated by the constructor.
+func map_hash_table(s: MapState*) -> MapRecord*?*:
+    return s.hash_table else trap("map without a hash table")
+
+## The record of the list link `el` (list_entry(el, JSMapRecord, link)).
+func map_record_of(el: cutils.ListHead*) -> MapRecord*:
+    return (MapRecord*)((u8*)el - offsetof(MapRecord, link))
+
+## The link after `el` in a record list.
+func map_next_link(el: cutils.ListHead*) -> cutils.ListHead*:
+    return el.next else trap("map records: unlinked list")
+
+## Whether the record can no longer match a key: deleted, or its weak key died.
+func map_record_is_dead(s: MapState*, mr: MapRecord*) -> bool:
+    return mr.empty or (s.is_weak and not js_weakref_is_live(mr.key))
+
+## The live record of `key` in `s`, or none (map_find_record).
+func map_find_record(ctx: Context*, s: MapState*, key: Value) -> MapRecord*?:
+    let h = map_hash_key(key, s.hash_bits)
+    var cur = map_hash_table(s)[(usize)h]
+    while let mr = cur:
+        # a dead record cannot match
+        if not map_record_is_dead(s, mr) and js_same_value_zero(ctx, mr.key, key):
+            return mr
+        cur = mr.hash_next
+    return none
+
+## Double the hash table of `s` (up to 2^31 entries) and rehash the live records
+## (map_hash_resize). An allocation failure leaves the table as it was.
+func map_hash_resize(ctx: Context*, s: MapState*):
+    # XXX: no reporting of memory allocation failure
+    let new_hash_bits = cutils.min_int(s.hash_bits + 1, 31)
+    let new_hash_size: u32 = (u32)1 << (u32)new_hash_bits
+    let raw = js_realloc(ctx, map_hash_table(s), sizeof(MapRecord*?) * (usize)new_hash_size) catch: return
+    let new_hash_table = (MapRecord*?*)(raw else return)
+
+    discard(cutils.memset(new_hash_table, 0, sizeof(MapRecord*?) * (usize)new_hash_size))
+
+    var el = map_next_link(&s.records)
+    while el != &s.records:
+        let mr = map_record_of(el)
+        if not map_record_is_dead(s, mr):
+            let h = map_hash_key(mr.key, new_hash_bits)
+            mr.hash_next = new_hash_table[(usize)h]
+            new_hash_table[(usize)h] = mr
+        el = map_next_link(el)
+    s.hash_table = new_hash_table
+    s.hash_bits = new_hash_bits
+    s.hash_size = new_hash_size
+    s.record_count_threshold = new_hash_size *% 2
+
+## A new record of `key` in `s`, its value to be set by the caller; the key is held weakly
+## in a weak map (map_add_record).
+func map_add_record(ctx: Context*, s: MapState*, key: Value) -> MapRecord*!:
+    let raw = try js_malloc(ctx, sizeof(MapRecord))
+    let mr = (MapRecord*)raw
+    mr.ref_count = 1
+    mr.empty = false
+    if s.is_weak:
+        mr.key = js_weakref_new(ctx, key)
+    else:
+        mr.key = js_dup_value(ctx, key)
+    let h = map_hash_key(key, s.hash_bits)
+    let table = map_hash_table(s)
+    mr.hash_next = table[(usize)h]
+    table[(usize)h] = mr
+    cutils.list_add_tail(&mr.link, &s.records)
+    s.record_count += 1
+    if s.record_count >= s.record_count_threshold:
+        map_hash_resize(ctx, s)
+    return mr
+
+## A new record of `key` with the value undefined, as a Set holds (set_add_record).
+func set_add_record(ctx: Context*, s: MapState*, key: Value) -> MapRecord*!:
+    let mr = try map_add_record(ctx, s, key)
+    mr.value = js_undefined()
+    return mr
+
+# warning: the record must be removed from the hash table before
+## Delete the record `mr` of `s`: release its key and value, and free it unless an
+## iterator holds it (map_delete_record_internal).
+func map_delete_record_internal(rt: Runtime*, s: MapState*, mr: MapRecord*):
+    if mr.empty:
+        return
+
+    if s.is_weak:
+        js_weakref_free(rt, mr.key)
+    else:
+        js_free_value_rt(rt, mr.key)
+    js_free_value_rt(rt, mr.value)
+    mr.ref_count -= 1
+    if mr.ref_count == 0:
+        cutils.list_del(&mr.link)
+        js_free_rt(rt, mr)
+    else:
+        # keep a zombie record for iterators
+        mr.empty = true
+        mr.key = js_undefined()
+        mr.value = js_undefined()
+    s.record_count -= 1
+
+## Release a reference an iterator held on the deleted record `mr` (map_decref_record).
+func map_decref_record(rt: Runtime*, mr: MapRecord*):
+    mr.ref_count -= 1
+    if mr.ref_count == 0:
+        # the record can be safely removed
+        assert(mr.empty)
+        cutils.list_del(&mr.link)
+        js_free_rt(rt, mr)
+
+## Delete the records of the weak map of `wh` whose key died (map_delete_weakrefs).
+func map_delete_weakrefs(rt: Runtime*, wh: WeakRefHeader*):
+    let s = (MapState*)((u8*)wh - offsetof(MapState, weakref_header))
+    var el = map_next_link(&s.records)
+    while el != &s.records:
+        let el1 = map_next_link(el)
+        let mr = map_record_of(el)
+        if not js_weakref_is_live(mr.key):
+            # even if key is not live it can be hashed as a pointer
+            let h = map_hash_key(mr.key, s.hash_bits)
+            var pmr: MapRecord*?* = &map_hash_table(s)[(usize)h]
+            while let mr1 = *pmr:
+                if mr1 == mr:
+                    # remove from the hash table
+                    *pmr = mr1.hash_next
+                    break
+                pmr = &mr1.hash_next
+            # the entry may already be removed from the hash table if the map was resized
+            map_delete_record_internal(rt, s, mr)
+        el = el1

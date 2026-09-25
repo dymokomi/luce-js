@@ -32,7 +32,7 @@ func js_array_join(ctx: Context*, this_val: Value, argc: i32, argv: Value*, to_l
 
     var c: i32 = (i32)','    # default separator
     var sep = js_undefined()
-    defer free_value_at(ctx, &sep)
+    defer js_free_value_at(ctx, &sep)
     var p: String*? = none
     if to_locale_string == 0 and argc > 0 and not js_is_undefined(argv[0]):
         sep = try js_to_string(ctx, argv[0])
@@ -65,7 +65,7 @@ func js_array_join(ctx: Context*, this_val: Value, argc: i32, argv: Value*, to_l
 ## Array.prototype.pop(), and shift() when `shift` is 1.
 func js_array_pop(ctx: Context*, this_val: Value, argc: i32, argv: Value*, shift: i32) -> Value!:
     var res = js_undefined()
-    errdefer free_value_at(ctx, &res)
+    errdefer js_free_value_at(ctx, &res)
     let obj = try js_to_object(ctx, this_val)
     defer js_free_value(ctx, obj)
     var len: i64 = 0
@@ -136,7 +136,7 @@ func js_array_push(ctx: Context*, this_val: Value, argc: i32, argv: Value*, unsh
 ## Array.prototype.reverse().
 func js_array_reverse(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var lval = js_undefined()
-    errdefer free_value_at(ctx, &lval)
+    errdefer js_free_value_at(ctx, &lval)
     let obj = try js_to_object(ctx, this_val)
     errdefer js_free_value(ctx, obj)
     var len: i64 = 0

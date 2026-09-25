@@ -1,0 +1,308 @@
+#==============================================================================================
+#
+#   proxy - Proxy objects: deleting, own keys, calls, the Proxy constructor and revocation
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Proxy" (lines 51157-51564): the deleteProperty and ownKeys
+#       traps, calling and constructing through a proxy, js_resolve_proxy, the exotic
+#       method table of ClassId.proxy, the Proxy constructor, Proxy.revocable and
+#       JS_AddIntrinsicProxy.
+#
+#==============================================================================================
+
+# mark: Deleting and own keys ===================================================================
+
+## The deleteProperty trap (exotic delete_property).
+func js_proxy_delete_property(ctx: Context*, obj: Value, atom: Atom) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_deleteProperty)
+    if js_is_undefined(method):
+        return try js_delete_property(ctx, s.target, atom, 0)
+    let atom_val = js_atom_to_value(ctx, atom) catch failure:
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    var args: Value[2] = [s.target, atom_val]
+    let ret = js_call_free(ctx, method, s.handler, 2, &args[0]) catch failure:
+        js_free_value(ctx, atom_val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, atom_val)
+    let res = try js_to_bool_free(ctx, ret)
+    if res:
+        var desc: PropertyDescriptor = ---
+        let res2 = try js_get_own_property_internal(ctx, &desc, s.target.u.obj, atom)
+        if res2:
+            errdefer js_free_desc(ctx, &desc)
+            if (desc.flags & prop_configurable) == 0:
+                try js_throw_type_error(ctx, "proxy: inconsistent deleteProperty")
+            let is_extensible = try js_is_extensible(ctx, s.target)
+            if not is_extensible:
+                # proxy-missing-checks
+                try js_throw_type_error(ctx, "proxy: inconsistent deleteProperty")
+            js_free_desc(ctx, &desc)
+    return res
+
+# workaround: compiler-issues/nullable_pointer_cast (`tab` is not `const`: a `T*?` does not
+# convert to `const T*?`, neither implicitly nor by a cast)
+
+## The index of the property `atom` in the `n` entries of `tab`, or -1 if not found
+## (find_prop_key). `tab` is none only when `n` is 0.
+func find_prop_key(tab: PropertyEnum*?, n: i32, atom: Atom) -> i32:
+    let t = tab else return -1
+    for i in 0..<(usize)n:
+        if t[i].atom == atom:
+            return (i32)i
+    return -1
+
+## The body of js_proxy_get_own_property_names after the ownKeys trap answered
+## `prop_array`: read its keys into `*ptab` and `*plen` and check them against the target's
+## own keys, which land in `*ptab2` and `*plen2`. The caller frees all of them on failure.
+func js_proxy_own_keys(ctx: Context*, s: ProxyData*, prop_array: Value, ptab: PropertyEnum*?*,
+                       plen: u32*, ptab2: PropertyEnum*?*, plen2: u32*) -> !:
+    var len: u32 = 0
+    try js_get_length32(ctx, &len, prop_array)
+    if len > 0:
+        let raw = try js_mallocz(ctx, sizeof(PropertyEnum) * (usize)len)
+        let t = (PropertyEnum*)raw
+        *ptab = t
+        *plen = len
+        for i: u32 in 0..<len:
+            let val = try js_get_property_uint32(ctx, prop_array, i)
+            if not js_is_string(val) and not js_is_symbol(val):
+                js_free_value(ctx, val)
+                try js_throw_type_error(ctx, "proxy: properties must be strings or symbols")
+            let atom = js_value_to_atom(ctx, val) catch failure:
+                js_free_value(ctx, val)
+                error(failure.code, failure.message)
+            js_free_value(ctx, val)
+            t[(usize)i].atom = atom
+            t[(usize)i].is_enumerable = false     # XXX: redundant?
+
+        # check duplicate properties (XXX: inefficient, could store the properties an a
+        # temporary object to use the hash)
+        for i: u32 in 1..<len:
+            if find_prop_key(t, (i32)i, t[(usize)i].atom) >= 0:
+                try js_throw_type_error(ctx, "proxy: duplicate property")
+    let tab = *ptab
+
+    let is_extensible = try js_is_extensible(ctx, s.target)
+
+    # check if there are non configurable properties
+    if s.is_revoked != 0:
+        try js_throw_type_error_revoked_proxy(ctx)
+    try js_get_own_property_names_internal(ctx, ptab2, plen2, s.target.u.obj,
+                                           gpn_string_mask | gpn_symbol_mask)
+    let len2 = *plen2
+    for i in 0..<(usize)len2:
+        if s.is_revoked != 0:
+            try js_throw_type_error_revoked_proxy(ctx)
+        let tab2 = *ptab2 else trap("js_proxy_own_keys: keys without a table")
+        var desc: PropertyDescriptor = ---
+        let res = try js_get_own_property_internal(ctx, &desc, s.target.u.obj, tab2[i].atom)
+        if res:     # safety, property should be found
+            js_free_desc(ctx, &desc)
+            if (desc.flags & prop_configurable) == 0 or not is_extensible:
+                let idx = find_prop_key(tab, (i32)len, tab2[i].atom)
+                if idx < 0:
+                    try js_throw_type_error(ctx, "proxy: target property must be present in proxy ownKeys")
+                # mark the property as found
+                if not is_extensible:
+                    let t = tab else trap("js_proxy_own_keys: key found in no table")
+                    t[(usize)idx].is_enumerable = true
+    if not is_extensible:
+        # check that all property in 'tab' were checked
+        if let t = tab:
+            for i in 0..<(usize)len:
+                if not t[i].is_enumerable:
+                    try js_throw_type_error(ctx, "proxy: property not present in target were returned by non extensible proxy")
+
+## The ownKeys trap (exotic get_own_property_names): the proxy's own keys in `*ptab`
+## (js_malloc'ed, with a reference to each atom) and their count in `*plen`.
+func js_proxy_get_own_property_names(ctx: Context*, ptab: PropertyEnum*?*, plen: u32*, obj: Value) -> !:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_ownKeys)
+    if js_is_undefined(method):
+        try js_get_own_property_names_internal(ctx, ptab, plen, s.target.u.obj,
+                                               gpn_string_mask | gpn_symbol_mask)
+        return
+    let prop_array = try js_call_free(ctx, method, s.handler, 1, &s.target)
+    var tab: PropertyEnum*? = none
+    var len: u32 = 0
+    var tab2: PropertyEnum*? = none
+    var len2: u32 = 0
+    js_proxy_own_keys(ctx, s, prop_array, &tab, &len, &tab2, &len2) catch failure:
+        js_free_property_enum(ctx, tab2, len2)
+        js_free_property_enum(ctx, tab, len)
+        js_free_value(ctx, prop_array)
+        error(failure.code, failure.message)
+    js_free_property_enum(ctx, tab2, len2)
+    js_free_value(ctx, prop_array)
+    *ptab = tab
+    *plen = len
+
+# mark: Calls ===================================================================================
+
+## The construct trap: `new` on a proxy (js_proxy_call_constructor).
+func js_proxy_call_constructor(ctx: Context*, func_obj: Value, new_target: Value, argc: i32,
+                               argv: Value*) -> Value!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, func_obj, atom_construct)
+    if not js_is_constructor(ctx, s.target):
+        # as upstream, `method` is not freed here
+        try js_throw_type_error_not_a_constructor(ctx, s.target)
+    if js_is_undefined(method):
+        return try js_call_constructor2(ctx, s.target, new_target, argc, argv)
+    defer js_free_value(ctx, method)
+    let arg_array = try js_create_array(ctx, argc, argv)
+    defer js_free_value(ctx, arg_array)
+    var args: Value[3] = [s.target, arg_array, new_target]
+    let ret = try js_call(ctx, method, s.handler, 3, &args[0])
+    if ret.tag != Tag.object:
+        js_free_value(ctx, ret)
+        try js_throw_type_error_not_an_object(ctx)
+    return ret
+
+## The call behaviour of ClassId.proxy: the apply trap, or the construct trap when `flags`
+## has call_flag_constructor (js_proxy_call).
+func js_proxy_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*,
+                   flags: i32) -> Value!:
+    if (flags & call_flag_constructor) != 0:
+        return try js_proxy_call_constructor(ctx, func_obj, this_obj, argc, argv)
+
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, func_obj, atom_apply)
+    if s.is_func == 0:
+        js_free_value(ctx, method)
+        try js_throw_type_error(ctx, "not a function")
+    if js_is_undefined(method):
+        return try js_call(ctx, s.target, this_obj, argc, argv)
+    defer js_free_value(ctx, method)
+    let arg_array = try js_create_array(ctx, argc, argv)
+    defer js_free_value(ctx, arg_array)
+    var args: Value[3] = [s.target, this_obj, arg_array]
+    return try js_call(ctx, method, s.handler, 3, &args[0])
+
+## Resolve the proxy chain: `*pval` is updated to the ultimate proxy target
+## (js_resolve_proxy). Fails on a revoked proxy or a chain deeper than 1000. With
+## `throw_exception` the failure is a thrown JavaScript exception (a TypeError or a
+## stack overflow); without it nothing is thrown or left pending, and the failure's
+## message says why (QuickJS returns -1 with no exception).
+func js_resolve_proxy(ctx: Context*, pval: Value*, throw_exception: bool) -> !:
+    var depth: i32 = 0
+    while (*pval).tag == Tag.object:
+        let p = (*pval).u.obj
+        if p.class_id != ClassId.proxy:
+            break
+        if depth > 1000:
+            if throw_exception:
+                try js_throw_stack_overflow(ctx)
+            error(exception, "proxy chain too deep")
+        depth += 1
+        let raw = p.u.opaque else trap("js_resolve_proxy: proxy without data")
+        let s = (ProxyData*)raw
+        if s.is_revoked != 0:
+            if throw_exception:
+                try js_throw_type_error_revoked_proxy(ctx)
+            error(exception, "revoked proxy")
+        *pval = s.target
+
+# mark: The Proxy constructor ===================================================================
+
+## The exotic methods of ClassId.proxy.
+let js_proxy_exotic_methods: ClassExoticMethods = ClassExoticMethods(
+    get_own_property = js_proxy_get_own_property,
+    get_own_property_names = js_proxy_get_own_property_names,
+    delete_property = js_proxy_delete_property,
+    define_own_property = js_proxy_define_own_property,
+    has_property = js_proxy_has,
+    get_property = js_proxy_get,
+    set_property = js_proxy_set,
+    get_prototype = js_proxy_get_prototype,
+    set_prototype = js_proxy_set_prototype,
+    is_extensible = js_proxy_is_extensible,
+    prevent_extensions = js_proxy_prevent_extensions,
+)
+
+## `new Proxy(target, handler)` (js_proxy_constructor).
+func js_proxy_constructor(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let target = argv[0]
+    let handler = argv[1]
+    if target.tag != Tag.object or handler.tag != Tag.object:
+        try js_throw_type_error_not_an_object(ctx)
+
+    let obj = try js_new_object_proto_class(ctx, js_null(), (u32)ClassId.proxy)
+    let raw = js_malloc(ctx, sizeof(ProxyData)) catch failure:
+        js_free_value(ctx, obj)
+        error(failure.code, failure.message)
+    let s = (ProxyData*)raw
+    s.target = js_dup_value(ctx, target)
+    s.handler = js_dup_value(ctx, handler)
+    s.is_func = (u8)js_is_function(ctx, target)
+    s.is_revoked = 0
+    js_set_opaque(obj, s)
+    discard(js_set_constructor_bit(ctx, obj, js_is_constructor(ctx, target)))
+    return obj
+
+## The revoke function of Proxy.revocable; `func_data[0]` is the proxy (js_proxy_revoke).
+func js_proxy_revoke(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32,
+                     func_data: Value*) -> Value!:
+    if let raw = js_get_opaque(func_data[0], (u32)ClassId.proxy):
+        let s = (ProxyData*)raw
+        # We do not free the handler and target in case they are referenced as constants in
+        # the C call stack
+        s.is_revoked = 1
+        js_free_value(ctx, func_data[0])
+        func_data[0] = js_null()
+    return js_undefined()
+
+## A revoke function bound to `proxy_obj` (js_proxy_revoke_constructor).
+func js_proxy_revoke_constructor(ctx: Context*, proxy_obj: Value) -> Value!:
+    var data = proxy_obj
+    return try js_new_c_function_data(ctx, js_proxy_revoke, 0, 0, 1, &data)
+
+## Proxy.revocable(target, handler): `{ proxy, revoke }` (js_proxy_revocable).
+func js_proxy_revocable(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let proxy_obj = try js_proxy_constructor(ctx, js_undefined(), argc, argv)
+    let revoke_obj = js_proxy_revoke_constructor(ctx, proxy_obj) catch failure:
+        js_free_value(ctx, proxy_obj)
+        error(failure.code, failure.message)
+    let obj = js_new_object(ctx) catch failure:
+        js_free_value(ctx, proxy_obj)
+        js_free_value(ctx, revoke_obj)
+        error(failure.code, failure.message)
+    # XXX: exceptions?
+    discard(js_define_property_value(ctx, obj, atom_proxy, proxy_obj, prop_c_w_e) catch: recover false)
+    discard(js_define_property_value(ctx, obj, atom_revoke, revoke_obj, prop_c_w_e) catch: recover false)
+    return obj
+
+## The static methods of Proxy.
+let js_proxy_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "revocable", def_type = def_cfunc, length = 2, generic = js_proxy_revocable),
+]
+
+## The class ClassId.proxy.
+let js_proxy_class_def: ClassShortDef[1] = [
+    ClassShortDef(atom_Object, js_proxy_finalizer, js_proxy_mark),    # ClassId.proxy
+]
+
+## Add the Proxy class and constructor to the context (JS_AddIntrinsicProxy). A failure to
+## register the class leaves no exception pending, as upstream.
+pub func js_add_intrinsic_proxy(ctx: Context*) -> !:
+    let rt = ctx.rt
+    if not js_is_registered_class(rt, (u32)ClassId.proxy):
+        if init_class_range(rt, js_proxy_class_def, (i32)ClassId.proxy) != 0:
+            error(exception, "cannot register the Proxy class")
+        let class_array = rt.class_array else trap("js_add_intrinsic_proxy: no class array")
+        class_array[(usize)ClassId.proxy].exotic = &js_proxy_exotic_methods
+        class_array[(usize)ClassId.proxy].call = js_proxy_call
+
+    # additional fields: name, length
+    let obj1 = try js_new_c_function3(ctx, js_proxy_constructor, "Proxy".bytes.data, 2,
+                                      CFunctionEnum.constructor, 0, ctx.function_proto,
+                                      (i32)js_proxy_funcs.length + 2)
+    discard(js_set_constructor_bit(ctx, obj1, true))
+    js_set_property_function_list(ctx, obj1, js_proxy_funcs) catch failure:
+        js_free_value(ctx, obj1)
+        error(failure.code, failure.message)
+    # takes ownership of obj1, also on failure (upstream frees it a second time then)
+    discard(try js_define_property_value_str(ctx, ctx.global_obj, "Proxy", obj1,
+                                             prop_writable | prop_configurable))

@@ -13,12 +13,6 @@
 
 # mark: Helpers =================================================================================
 
-# Release the value `*pval` holds when the cleanup runs: `errdefer` and `defer` capture
-# their arguments when they are registered, so a local that is reassigned later (QuickJS's
-# `JS_FreeValue(ctx, ret)` at an exception label) is released through its address.
-func free_value_at(ctx: Context*, pval: const Value*):
-    js_free_value(ctx, *pval)
-
 # mark: The constructor =========================================================================
 
 ## `new Array(...)` and `Array(...)`: an array of the arguments, or of the length given as
@@ -53,7 +47,7 @@ func js_array_from(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
     let iter = try js_get_property(ctx, items, atom_Symbol_iterator)
     defer js_free_value(ctx, iter)
     var r = js_undefined()
-    errdefer free_value_at(ctx, &r)
+    errdefer js_free_value_at(ctx, &r)
     var k: i64 = 0
     if not js_is_undefined(iter) and not js_is_null(iter):
         if not js_is_function(ctx, iter):

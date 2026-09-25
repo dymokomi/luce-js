@@ -123,7 +123,15 @@ iterator_helper_next.lucb
 array_iterator_tables.lucb
 number_constructor.lucb
 stub_r25_regexp_json_reflect.lucb
-stub_r26_proxy_symbol_map.lucb
+proxy_traps.lucb
+proxy.lucb
+symbol.lucb
+map_records.lucb
+map_methods.lucb
+map_iterator.lucb
+set_methods.lucb
+map_tables.lucb
+promise_reactions.lucb
 stub_r27_promise_date.lucb
 stub_r28_typed_arrays.lucb
 atomics_wait.lucb
@@ -152,3 +160,4 @@ tests_r17b.lucb
 tests_r17a.lucb
 tests_r24.lucb
 tests_r23.lucb
+tests_r26.lucb

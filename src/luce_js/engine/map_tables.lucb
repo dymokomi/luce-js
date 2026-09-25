@@ -1,0 +1,206 @@
+#==============================================================================================
+#
+#   map_tables - The function lists of Map, Set, WeakMap, WeakSet and generators
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 53201-53331: the builtin tables of the four map classes
+#       and their iterators, JS_AddIntrinsicMapSet, and the tables of GeneratorFunction and
+#       Generator prototypes (installed by JS_AddIntrinsicBaseObjects).
+#
+#==============================================================================================
+
+# mark: Map and Set =============================================================================
+
+## The static members of Map and Set.
+let js_map_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "groupBy", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_object_group_by, magic = 1),
+    CFunctionListEntry(name = "[Symbol.species]", prop_flags = (u8)prop_configurable, def_type = def_cgetset,
+                       getter = js_get_this),
+]
+
+## The methods of Map.prototype.
+let js_map_proto_funcs: CFunctionListEntry[14] = [
+    CFunctionListEntry(name = "set", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_set, magic = 0),
+    CFunctionListEntry(name = "get", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_get, magic = 0),
+    CFunctionListEntry(name = "getOrInsert", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_get_or_insert,
+                       magic = (i16)(((i32)ClassId.map << 1) | 0)),    # computed: false
+    CFunctionListEntry(name = "getOrInsertComputed", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_get_or_insert,
+                       magic = (i16)(((i32)ClassId.map << 1) | 1)),    # computed: true
+    CFunctionListEntry(name = "has", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_has, magic = 0),
+    CFunctionListEntry(name = "delete", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_delete, magic = 0),
+    CFunctionListEntry(name = "clear", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_clear, magic = 0),
+    CFunctionListEntry(name = "size", prop_flags = (u8)prop_configurable, def_type = def_cgetset_magic,
+                       getter_magic = js_map_get_size, magic = 0),
+    CFunctionListEntry(name = "forEach", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_for_each, magic = 0),
+    CFunctionListEntry(name = "values", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_create_map_iterator,
+                       magic = (i16)(((i32)IteratorKind.value << 2) | 0)),
+    CFunctionListEntry(name = "keys", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_create_map_iterator,
+                       magic = (i16)(((i32)IteratorKind.key << 2) | 0)),
+    CFunctionListEntry(name = "entries", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_create_map_iterator,
+                       magic = (i16)(((i32)IteratorKind.key_and_value << 2) | 0)),
+    CFunctionListEntry(name = "[Symbol.iterator]", def_type = def_alias, alias_name = "entries"),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "Map"),
+]
+
+## The methods of %MapIteratorPrototype%.
+let js_map_iterator_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.iterator_next, iterator_next = js_map_iterator_next, magic = 0),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "Map Iterator"),
+]
+
+## The methods of Set.prototype.
+let js_set_proto_funcs: CFunctionListEntry[18] = [
+    CFunctionListEntry(name = "add", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_set, magic = (i16)magic_set),
+    CFunctionListEntry(name = "has", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_has, magic = (i16)magic_set),
+    CFunctionListEntry(name = "delete", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_delete, magic = (i16)magic_set),
+    CFunctionListEntry(name = "clear", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_clear, magic = (i16)magic_set),
+    CFunctionListEntry(name = "size", prop_flags = (u8)prop_configurable, def_type = def_cgetset_magic,
+                       getter_magic = js_map_get_size, magic = (i16)magic_set),
+    CFunctionListEntry(name = "forEach", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_for_each, magic = (i16)magic_set),
+    CFunctionListEntry(name = "isDisjointFrom", def_type = def_cfunc, length = 1, generic = js_set_is_disjoint_from),
+    CFunctionListEntry(name = "isSubsetOf", def_type = def_cfunc, length = 1, generic = js_set_is_subset_of),
+    CFunctionListEntry(name = "isSupersetOf", def_type = def_cfunc, length = 1, generic = js_set_is_superset_of),
+    CFunctionListEntry(name = "intersection", def_type = def_cfunc, length = 1, generic = js_set_intersection),
+    CFunctionListEntry(name = "difference", def_type = def_cfunc, length = 1, generic = js_set_difference),
+    CFunctionListEntry(name = "symmetricDifference", def_type = def_cfunc, length = 1,
+                       generic = js_set_symmetric_difference),
+    CFunctionListEntry(name = "union", def_type = def_cfunc, length = 1, generic = js_set_union),
+    CFunctionListEntry(name = "values", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_create_map_iterator,
+                       magic = (i16)(((i32)IteratorKind.key << 2) | magic_set)),
+    CFunctionListEntry(name = "keys", def_type = def_alias, alias_name = "values"),
+    CFunctionListEntry(name = "[Symbol.iterator]", def_type = def_alias, alias_name = "values"),
+    CFunctionListEntry(name = "entries", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_create_map_iterator,
+                       magic = (i16)(((i32)IteratorKind.key_and_value << 2) | magic_set)),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "Set"),
+]
+
+## The methods of %SetIteratorPrototype%.
+let js_set_iterator_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0,
+                       cproto = CFunctionEnum.iterator_next, iterator_next = js_map_iterator_next,
+                       magic = (i16)magic_set),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "Set Iterator"),
+]
+
+## The methods of WeakMap.prototype.
+let js_weak_map_proto_funcs: CFunctionListEntry[7] = [
+    CFunctionListEntry(name = "set", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_set, magic = (i16)magic_weak),
+    CFunctionListEntry(name = "get", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_get, magic = (i16)magic_weak),
+    CFunctionListEntry(name = "getOrInsert", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_get_or_insert,
+                       magic = (i16)(((i32)ClassId.weakmap << 1) | 0)),    # computed: false
+    CFunctionListEntry(name = "getOrInsertComputed", def_type = def_cfunc, length = 2,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_get_or_insert,
+                       magic = (i16)(((i32)ClassId.weakmap << 1) | 1)),    # computed: true
+    CFunctionListEntry(name = "has", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_has, magic = (i16)magic_weak),
+    CFunctionListEntry(name = "delete", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_delete, magic = (i16)magic_weak),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "WeakMap"),
+]
+
+## The methods of WeakSet.prototype.
+let js_weak_set_proto_funcs: CFunctionListEntry[4] = [
+    CFunctionListEntry(name = "add", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_set,
+                       magic = (i16)(magic_set | magic_weak)),
+    CFunctionListEntry(name = "has", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_has,
+                       magic = (i16)(magic_set | magic_weak)),
+    CFunctionListEntry(name = "delete", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_map_delete,
+                       magic = (i16)(magic_set | magic_weak)),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "WeakSet"),
+]
+
+# The prototype tables of Map, Set, WeakMap, WeakSet, and the Map and Set iterators, in
+# ClassId order from ClassId.map (C's js_map_proto_funcs_ptr and js_map_proto_funcs_count).
+func js_map_proto_funcs_span(i: i32) -> const CFunctionListEntry[]:
+    match i:
+        0:
+            return js_map_proto_funcs
+        1:
+            return js_set_proto_funcs
+        2:
+            return js_weak_map_proto_funcs
+        3:
+            return js_weak_set_proto_funcs
+        4:
+            return js_map_iterator_proto_funcs
+        _:
+            return js_set_iterator_proto_funcs
+
+## Add Map, Set, WeakMap, WeakSet and the Map and Set iterator prototypes to the context
+## (JS_AddIntrinsicMapSet).
+pub func js_add_intrinsic_map_set(ctx: Context*) -> !:
+    var buf: u8[atom_get_str_buf_size] = ---
+
+    for i: i32 in 0..<4:
+        let name = js_atom_get_str(ctx, buf, atom_Map + (u32)i)
+        var ft: CFunctionType = ---
+        ft.constructor_magic = js_map_constructor
+        let n_ctor_fields = js_map_funcs.length if i < 2 else 0
+        let obj1 = try js_new_c_constructor(ctx, (i32)ClassId.map + i, name,
+                                            ft.generic, 0, CFunctionEnum.constructor_magic, i,
+                                            js_undefined(),
+                                            js_map_funcs[0..<n_ctor_fields],
+                                            js_map_proto_funcs_span(i),
+                                            0)
+        js_free_value(ctx, obj1)
+
+    for i: i32 in 0..<2:
+        let class_proto = context_class_proto(ctx)
+        # upstream stores the JS_EXCEPTION marker in the slot on failure; the slot keeps
+        # its previous value here
+        let proto = try js_new_object_proto_list(ctx, class_proto[(usize)ClassId.iterator],
+                                                 js_map_proto_funcs_span(i + 4))
+        class_proto[(usize)((i32)ClassId.map_iterator + i)] = proto
+
+# mark: Generators ==============================================================================
+
+## The members of %GeneratorFunction.prototype%.
+let js_generator_function_proto_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "GeneratorFunction"),
+]
+
+## The methods of %GeneratorPrototype%; the magic is gen_magic_next, gen_magic_return
+## or gen_magic_throw of js_generator_next.
+let js_generator_proto_funcs: CFunctionListEntry[4] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.iterator_next, iterator_next = js_generator_next, magic = (i16)gen_magic_next),
+    CFunctionListEntry(name = "return", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.iterator_next, iterator_next = js_generator_next, magic = (i16)gen_magic_return),
+    CFunctionListEntry(name = "throw", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.iterator_next, iterator_next = js_generator_next, magic = (i16)gen_magic_throw),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "Generator"),
+]

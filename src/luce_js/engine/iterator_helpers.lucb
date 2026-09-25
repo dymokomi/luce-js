@@ -215,7 +215,7 @@ func js_iterator_proto_reduce(ctx: Context*, this_val: Value, argc: i32, argv: V
     if not js_is_object(this_val):
         try js_throw_type_error_not_an_object(ctx)
     var acc = js_undefined()
-    errdefer free_value_at(ctx, &acc)
+    errdefer js_free_value_at(ctx, &acc)
     check_function(ctx, argv[0]) catch:
         try js_iterator_close_fail(ctx, this_val)
     let func_ = js_dup_value(ctx, argv[0])

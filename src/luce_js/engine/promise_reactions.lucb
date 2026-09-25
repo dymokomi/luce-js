@@ -1,0 +1,149 @@
+#==============================================================================================
+#
+#   promise_reactions - Promise records, their state, and settling a promise
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Promise" (lines 53333-53480): the promise records (JSPromiseData
+#       and the data of the resolving functions and of the reactions), JS_PromiseState,
+#       JS_PromiseResult, the reaction job, JS_SetHostPromiseRejectionTracker, and
+#       fulfilling or rejecting a promise, which queues a reaction job per registered
+#       reaction.
+#
+#==============================================================================================
+
+# mark: Promise records =========================================================================
+
+## A promise's state and reactions (JSPromiseData).
+struct PromiseData:
+    var promise_state: PromiseState
+    ## 0=fulfill, 1=reject, list of PromiseReactionData.link.
+    var promise_reactions: cutils.ListHead[2]
+    ## Note: only useful to debug.
+    var is_handled: bool
+    var promise_result: Value
+
+## The "already resolved" flag the two resolving functions of a promise share
+## (JSPromiseFunctionDataResolved).
+struct PromiseFunctionDataResolved:
+    var ref_count: i32
+    var already_resolved: bool
+
+## The data of a resolving function (JSPromiseFunctionData).
+struct PromiseFunctionData:
+    var promise: Value
+    var presolved: PromiseFunctionDataResolved*
+
+## A reaction registered by `then` (JSPromiseReactionData).
+struct PromiseReactionData:
+    ## Not used in promise_reaction_job.
+    var link: cutils.ListHead
+    var resolving_funcs: Value[2]
+    var handler: Value
+
+## The state of `promise`, or none if it is not a promise (JS_PromiseState; QuickJS
+## answers -1 then).
+pub func js_promise_state(ctx: Context*, promise: Value) -> PromiseState?:
+    let raw = js_get_opaque(promise, (u32)ClassId.promise) else return none
+    let s = (PromiseData*)raw
+    return s.promise_state
+
+## A new reference to the result of `promise`, undefined if it is not a promise
+## (JS_PromiseResult).
+pub func js_promise_result(ctx: Context*, promise: Value) -> Value:
+    let raw = js_get_opaque(promise, (u32)ClassId.promise) else return js_undefined()
+    let s = (PromiseData*)raw
+    return js_dup_value(ctx, s.promise_result)
+
+## Free a reaction record (promise_reaction_data_free).
+func promise_reaction_data_free(rt: Runtime*, rd: PromiseReactionData*):
+    js_free_value_rt(rt, rd.resolving_funcs[0])
+    js_free_value_rt(rt, rd.resolving_funcs[1])
+    js_free_value_rt(rt, rd.handler)
+    js_free_rt(rt, rd)
+
+# mark: Reaction jobs ===========================================================================
+
+## The handler step of a reaction: call `handler` on `arg`, or with no handler pass `arg`
+## through (fulfilled) or throw it (rejected).
+func promise_reaction_handler_result(ctx: Context*, handler: Value, is_reject: bool, arg: Value) -> Value!:
+    if js_is_undefined(handler):
+        if is_reject:
+            try js_throw(ctx, js_dup_value(ctx, arg))
+        return js_dup_value(ctx, arg)
+    var a = arg
+    return try js_call(ctx, handler, js_undefined(), 1, &a)
+
+## The job of a reaction: `argv` is the two resolving functions, the handler, whether
+## the promise was rejected, and its result (promise_reaction_job).
+func promise_reaction_job(ctx: Context*, argc: i32, argv: Value*) -> Value!:
+    assert(argc == 5)
+    let handler = argv[2]
+    var is_reject = try js_to_bool(ctx, argv[3])
+    let arg = argv[4]
+
+    var failed = false
+    var res = promise_reaction_handler_result(ctx, handler, is_reject, arg) catch failure:
+        failed = true
+        recover js_undefined()
+    is_reject = failed
+    if is_reject:
+        res = js_get_exception(ctx)
+    defer js_free_value(ctx, res)
+    let func_ = argv[(usize)is_reject]
+    # as an extension, we support undefined as value to avoid creating a dummy promise in
+    # the 'await' implementation of async functions
+    if not js_is_undefined(func_):
+        return try js_call(ctx, func_, js_undefined(), 1, &res)
+    return js_undefined()
+
+## Set the callback called when a promise is rejected with or without a handler
+## (JS_SetHostPromiseRejectionTracker).
+pub func js_set_host_promise_rejection_tracker(rt: Runtime*, cb: HostPromiseRejectionTracker?, opaque: void*?):
+    rt.host_promise_rejection_tracker = cb
+    rt.host_promise_rejection_tracker_opaque = opaque
+
+# mark: Settling ================================================================================
+
+## The reaction record of the list link `el`.
+func promise_reaction_of(el: cutils.ListHead*) -> PromiseReactionData*:
+    return (PromiseReactionData*)((u8*)el - offsetof(PromiseReactionData, link))
+
+## Settle the pending `promise` with `value`: queue a job for each reaction of the outcome
+## and drop the others (fulfill_or_reject_promise).
+func fulfill_or_reject_promise(ctx: Context*, promise: Value, value: Value, is_reject: bool):
+    let raw = js_get_opaque(promise, (u32)ClassId.promise) else return   # should never happen
+    let s = (PromiseData*)raw
+    if s.promise_state != PromiseState.pending:
+        return  # should never happen
+    set_value(ctx, &s.promise_result, js_dup_value(ctx, value))
+    s.promise_state = (PromiseState)((i32)PromiseState.fulfilled + (i32)is_reject)
+    if s.promise_state == PromiseState.rejected and not s.is_handled:
+        let rt = ctx.rt
+        if let tracker = rt.host_promise_rejection_tracker:
+            tracker(ctx, promise, value, false, rt.host_promise_rejection_tracker_opaque)
+
+    let reactions = &s.promise_reactions[(usize)is_reject]
+    var el = reactions.next else trap("fulfill_or_reject_promise: unlinked list")
+    while el != reactions:
+        let el1 = el.next else trap("fulfill_or_reject_promise: unlinked list")
+        let rd = promise_reaction_of(el)
+        var args: Value[5] = [rd.resolving_funcs[0], rd.resolving_funcs[1], rd.handler,
+                              js_new_bool(is_reject), value]
+        # as upstream, a failure to queue the job is not reported
+        js_enqueue_job(ctx, promise_reaction_job, 5, &args[0]) catch: recover ()
+        cutils.list_del(&rd.link)
+        promise_reaction_data_free(ctx.rt, rd)
+        el = el1
+
+    let others = &s.promise_reactions[(usize)(1 - (i32)is_reject)]
+    el = others.next else trap("fulfill_or_reject_promise: unlinked list")
+    while el != others:
+        let el1 = el.next else trap("fulfill_or_reject_promise: unlinked list")
+        let rd = promise_reaction_of(el)
+        cutils.list_del(&rd.link)
+        promise_reaction_data_free(ctx.rt, rd)
+        el = el1
+
+## Reject the pending `promise` with `value` (reject_promise).
+func reject_promise(ctx: Context*, promise: Value, value: Value):
+    fulfill_or_reject_promise(ctx, promise, value, true)

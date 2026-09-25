@@ -13,7 +13,7 @@
 ## Array.prototype.splice(start, deleteCount, ...items).
 func js_array_splice(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var arr = js_undefined()
-    errdefer free_value_at(ctx, &arr)
+    errdefer js_free_value_at(ctx, &arr)
     let obj = try js_to_object(ctx, this_val)
     defer js_free_value(ctx, obj)
     var len: i64 = 0

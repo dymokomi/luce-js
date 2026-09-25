@@ -1,0 +1,400 @@
+#==============================================================================================
+#
+#   proxy_traps - Proxy objects: their data, and the traps of the object operations
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Proxy" (lines 50578-51155): the finalizer and marker of
+#       ClassId.proxy, get_proxy_method, and the exotic methods getPrototypeOf,
+#       setPrototypeOf, isExtensible, preventExtensions, has, get, set,
+#       getOwnPropertyDescriptor and defineProperty. Each calls the handler's trap when
+#       there is one and checks the invariants of the result against the target; with no
+#       trap it forwards the operation to the target. A trap answering "-1 exception /
+#       FALSE / TRUE" in QuickJS answers `bool!` here, as ClassExoticMethods wants.
+#
+#==============================================================================================
+
+# mark: Proxy data ==============================================================================
+
+## Finalizer of ClassId.proxy.
+func js_proxy_finalizer(rt: Runtime*, val: Value):
+    if let raw = js_get_opaque(val, (u32)ClassId.proxy):
+        let s = (ProxyData*)raw
+        js_free_value_rt(rt, s.target)
+        js_free_value_rt(rt, s.handler)
+        js_free_rt(rt, s)
+
+## Marker of ClassId.proxy.
+func js_proxy_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    if let raw = js_get_opaque(val, (u32)ClassId.proxy):
+        let s = (ProxyData*)raw
+        js_mark_value(rt, s.target, mark_func)
+        js_mark_value(rt, s.handler, mark_func)
+
+## Throw the TypeError of an operation on a revoked proxy (JS_ThrowTypeErrorRevokedProxy).
+func js_throw_type_error_revoked_proxy(ctx: Context*) -> never!:
+    try js_throw_type_error(ctx, "revoked proxy")
+
+## The data of the proxy `obj` and, in `*pmethod`, its handler's trap `name` (undefined
+## when the handler has none; null counts as none). Fails on a revoked proxy.
+func get_proxy_method(ctx: Context*, pmethod: Value*, obj: Value, name: Atom) -> ProxyData*!:
+    # 's' should never be NULL
+    let raw = js_get_opaque(obj, (u32)ClassId.proxy) else trap("get_proxy_method: not a proxy")
+    let s = (ProxyData*)raw
+
+    # safer to test recursion in all proxy methods
+    if js_check_stack_overflow(ctx.rt, 0):
+        try js_throw_stack_overflow(ctx)
+
+    if s.is_revoked != 0:
+        try js_throw_type_error_revoked_proxy(ctx)
+    var method = try js_get_property(ctx, s.handler, name)
+    if js_is_null(method):
+        method = js_undefined()
+    *pmethod = method
+    return s
+
+# mark: Prototype and extensibility =============================================================
+
+## The getPrototypeOf trap (exotic get_prototype).
+func js_proxy_get_prototype(ctx: Context*, obj: Value) -> Value!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_getPrototypeOf)
+    if js_is_undefined(method):
+        return try js_get_prototype(ctx, s.target)
+    let ret = try js_call_free(ctx, method, s.handler, 1, &s.target)
+    if ret.tag != Tag.null and ret.tag != Tag.object:
+        js_free_value(ctx, ret)
+        try js_throw_type_error(ctx, "proxy: inconsistent prototype")
+    errdefer js_free_value(ctx, ret)
+    let res = try js_is_extensible(ctx, s.target)
+    if not res:
+        # check invariant
+        let proto1 = try js_get_prototype(ctx, s.target)
+        if not js_same_value(ctx, proto1, ret):
+            js_free_value(ctx, proto1)
+            try js_throw_type_error(ctx, "proxy: inconsistent prototype")
+        js_free_value(ctx, proto1)
+    return ret
+
+## The setPrototypeOf trap (exotic set_prototype).
+func js_proxy_set_prototype(ctx: Context*, obj: Value, proto_val: Value) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_setPrototypeOf)
+    if js_is_undefined(method):
+        return try js_set_prototype_internal(ctx, s.target, proto_val, false)
+    var args: Value[2] = [s.target, proto_val]
+    let ret = try js_call_free(ctx, method, s.handler, 2, &args[0])
+    let res = try js_to_bool_free(ctx, ret)
+    if not res:
+        return false
+    let res2 = try js_is_extensible(ctx, s.target)
+    if not res2:
+        let proto1 = try js_get_prototype(ctx, s.target)
+        if not js_same_value(ctx, proto_val, proto1):
+            js_free_value(ctx, proto1)
+            try js_throw_type_error(ctx, "proxy: inconsistent prototype")
+        js_free_value(ctx, proto1)
+    return true
+
+## The isExtensible trap (exotic is_extensible).
+func js_proxy_is_extensible(ctx: Context*, obj: Value) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_isExtensible)
+    if js_is_undefined(method):
+        return try js_is_extensible(ctx, s.target)
+    let ret = try js_call_free(ctx, method, s.handler, 1, &s.target)
+    let res = try js_to_bool_free(ctx, ret)
+    let res2 = try js_is_extensible(ctx, s.target)
+    if res != res2:
+        try js_throw_type_error(ctx, "proxy: inconsistent isExtensible")
+    return res
+
+## The preventExtensions trap (exotic prevent_extensions).
+func js_proxy_prevent_extensions(ctx: Context*, obj: Value) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_preventExtensions)
+    if js_is_undefined(method):
+        return try js_prevent_extensions(ctx, s.target)
+    let ret = try js_call_free(ctx, method, s.handler, 1, &s.target)
+    let res = try js_to_bool_free(ctx, ret)
+    if res:
+        let res2 = try js_is_extensible(ctx, s.target)
+        if res2:
+            try js_throw_type_error(ctx, "proxy: inconsistent preventExtensions")
+    return res
+
+# mark: Property access =========================================================================
+
+## The has trap (exotic has_property).
+func js_proxy_has(ctx: Context*, obj: Value, atom: Atom) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_has)
+    if js_is_undefined(method):
+        return try js_has_property(ctx, s.target, atom)
+    let atom_val = js_atom_to_value(ctx, atom) catch failure:
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    var args: Value[2] = [s.target, atom_val]
+    let ret1 = js_call_free(ctx, method, s.handler, 2, &args[0]) catch failure:
+        js_free_value(ctx, atom_val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, atom_val)
+    let ret = try js_to_bool_free(ctx, ret1)
+    if not ret:
+        var desc: PropertyDescriptor = ---
+        let p = s.target.u.obj
+        let res = try js_get_own_property_internal(ctx, &desc, p, atom)
+        if res:
+            let res2 = (desc.flags & prop_configurable) == 0
+            js_free_desc(ctx, &desc)
+            if res2 or not p.extensible:
+                try js_throw_type_error(ctx, "proxy: inconsistent has")
+    return ret
+
+## The get trap (exotic get_property).
+func js_proxy_get(ctx: Context*, obj: Value, atom: Atom, receiver: Value) -> Value!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_get)
+    # Note: recursion is possible thru the prototype of s->target
+    if js_is_undefined(method):
+        return try js_get_property_internal(ctx, s.target, atom, receiver, false)
+    let atom_val = js_atom_to_value(ctx, atom) catch failure:
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    var args: Value[3] = [s.target, atom_val, receiver]
+    let ret = js_call_free(ctx, method, s.handler, 3, &args[0]) catch failure:
+        js_free_value(ctx, atom_val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, atom_val)
+    var desc: PropertyDescriptor = ---
+    let res = js_get_own_property_internal(ctx, &desc, s.target.u.obj, atom) catch failure:
+        js_free_value(ctx, ret)
+        error(failure.code, failure.message)
+    if res:
+        var fail = false
+        if (desc.flags & (prop_getset | prop_configurable | prop_writable)) == 0:
+            if not js_same_value(ctx, desc.value, ret):
+                fail = true
+        elif (desc.flags & (prop_getset | prop_configurable)) == prop_getset:
+            if js_is_undefined(desc.getter) and not js_is_undefined(ret):
+                fail = true
+        js_free_desc(ctx, &desc)
+        if fail:
+            js_free_value(ctx, ret)
+            try js_throw_type_error(ctx, "proxy: inconsistent get")
+    return ret
+
+## The set trap (exotic set_property).
+func js_proxy_set(ctx: Context*, obj: Value, atom: Atom, value: Value, receiver: Value, flags: i32) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_set)
+    if js_is_undefined(method):
+        return try js_set_property_internal(ctx, s.target, atom, js_dup_value(ctx, value), receiver,
+                                            flags)
+    let atom_val = js_atom_to_value(ctx, atom) catch failure:
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    var args: Value[4] = [s.target, atom_val, value, receiver]
+    let ret1 = js_call_free(ctx, method, s.handler, 4, &args[0]) catch failure:
+        js_free_value(ctx, atom_val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, atom_val)
+    let ret = try js_to_bool_free(ctx, ret1)
+    if ret:
+        var desc: PropertyDescriptor = ---
+        let res = try js_get_own_property_internal(ctx, &desc, s.target.u.obj, atom)
+        if res:
+            var fail = false
+            if (desc.flags & (prop_getset | prop_configurable | prop_writable)) == 0:
+                if not js_same_value(ctx, desc.value, value):
+                    fail = true
+            elif ((desc.flags & (prop_getset | prop_configurable)) == prop_getset and
+                  js_is_undefined(desc.setter)):
+                fail = true
+            js_free_desc(ctx, &desc)
+            if fail:
+                try js_throw_type_error(ctx, "proxy: inconsistent set")
+    else:
+        if ((flags & prop_throw) != 0 or
+            ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx))):
+            try js_throw_type_error(ctx, "proxy: cannot set property")
+    return ret
+
+# mark: Own property descriptors ================================================================
+
+## Define `prop` of the descriptor object `obj` as `val`; a failure is ignored, as
+## js_create_desc does upstream (the exception stays pending).
+func js_create_desc_field(ctx: Context*, obj: Value, prop: Atom, val: Value):
+    discard(js_define_property_value(ctx, obj, prop, val, prop_c_w_e) catch: recover false)
+
+## A property descriptor object with the fields `flags` has (js_create_desc).
+func js_create_desc(ctx: Context*, val: Value, getter: Value, setter: Value, flags: i32) -> Value!:
+    let ret = try js_new_object(ctx)
+    if (flags & prop_has_get) != 0:
+        js_create_desc_field(ctx, ret, atom_get, js_dup_value(ctx, getter))
+    if (flags & prop_has_set) != 0:
+        js_create_desc_field(ctx, ret, atom_set, js_dup_value(ctx, setter))
+    if (flags & prop_has_value) != 0:
+        js_create_desc_field(ctx, ret, atom_value, js_dup_value(ctx, val))
+    if (flags & prop_has_writable) != 0:
+        js_create_desc_field(ctx, ret, atom_writable, js_new_bool((flags & prop_writable) != 0))
+    if (flags & prop_has_enumerable) != 0:
+        js_create_desc_field(ctx, ret, atom_enumerable,
+                             js_new_bool((flags & prop_enumerable) != 0))
+    if (flags & prop_has_configurable) != 0:
+        js_create_desc_field(ctx, ret, atom_configurable,
+                             js_new_bool((flags & prop_configurable) != 0))
+    return ret
+
+## The getOwnPropertyDescriptor trap (exotic get_own_property): whether the property
+## exists; `*pdesc` receives its descriptor when given.
+func js_proxy_get_own_property(ctx: Context*, pdesc: PropertyDescriptor*?, obj: Value, prop: Atom) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_getOwnPropertyDescriptor)
+    let p = s.target.u.obj
+    if js_is_undefined(method):
+        return try js_get_own_property_internal(ctx, pdesc, p, prop)
+    let prop_val = js_atom_to_value(ctx, prop) catch failure:
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    var args: Value[2] = [s.target, prop_val]
+    let trap_result_obj = js_call_free(ctx, method, s.handler, 2, &args[0]) catch failure:
+        js_free_value(ctx, prop_val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, prop_val)
+    if not js_is_object(trap_result_obj) and not js_is_undefined(trap_result_obj):
+        js_free_value(ctx, trap_result_obj)
+        try js_throw_type_error(ctx, "proxy: inconsistent getOwnPropertyDescriptor")
+    var target_desc: PropertyDescriptor = ---
+    let target_desc_ret = js_get_own_property_internal(ctx, &target_desc, p, prop) catch failure:
+        js_free_value(ctx, trap_result_obj)
+        error(failure.code, failure.message)
+    # only the flags of target_desc are used below
+    if target_desc_ret:
+        js_free_desc(ctx, &target_desc)
+    if js_is_undefined(trap_result_obj):
+        if target_desc_ret:
+            if (target_desc.flags & prop_configurable) == 0 or not p.extensible:
+                try js_throw_type_error(ctx, "proxy: inconsistent getOwnPropertyDescriptor")
+        return false
+
+    let extensible_target = js_is_extensible(ctx, s.target) catch failure:
+        js_free_value(ctx, trap_result_obj)
+        error(failure.code, failure.message)
+    var result_desc: PropertyDescriptor = ---
+    js_obj_to_desc(ctx, &result_desc, trap_result_obj) catch failure:
+        js_free_value(ctx, trap_result_obj)
+        error(failure.code, failure.message)
+    js_free_value(ctx, trap_result_obj)
+
+    # convert the result_desc.flags to property flags
+    if (result_desc.flags & (prop_has_get | prop_has_set)) != 0:
+        result_desc.flags |= prop_getset
+    else:
+        result_desc.flags |= prop_normal
+    result_desc.flags &= (prop_c_w_e | prop_tmask)
+
+    var fail = false
+    if target_desc_ret:
+        # convert result_desc.flags to defineProperty flags
+        var flags1 = result_desc.flags | prop_has_configurable | prop_has_enumerable
+        if (result_desc.flags & prop_getset) != 0:
+            flags1 |= prop_has_get | prop_has_set
+        else:
+            flags1 |= prop_has_value | prop_has_writable
+        # XXX: not complete check: need to compare value & getter/setter as in
+        # defineproperty
+        if not check_define_prop_flags(target_desc.flags, flags1):
+            fail = true
+    else:
+        if not extensible_target:
+            fail = true
+    if not fail and (result_desc.flags & prop_configurable) == 0:
+        if not target_desc_ret or (target_desc.flags & prop_configurable) != 0:
+            fail = true
+        elif ((result_desc.flags & (prop_getset | prop_writable)) == 0 and
+              (target_desc.flags & prop_writable) != 0):
+            # proxy-missing-checks
+            fail = true
+    if fail:
+        js_free_desc(ctx, &result_desc)
+        try js_throw_type_error(ctx, "proxy: inconsistent getOwnPropertyDescriptor")
+    if let d = pdesc:
+        *d = result_desc
+    else:
+        js_free_desc(ctx, &result_desc)
+    return true
+
+# mark: Defining properties =====================================================================
+
+## Whether defining `prop` with `flags` (and `val`, `getter`, `setter`) over the target's
+## own descriptor `desc` breaks an invariant: the checks between js_proxy_define_own_property's
+## `fail1` gotos.
+func js_proxy_define_inconsistent(ctx: Context*, desc: const PropertyDescriptor*, flags: i32,
+                                  val: Value, getter: Value, setter: Value,
+                                  setting_not_configurable: bool) -> bool:
+    if not check_define_prop_flags(desc.flags, flags):
+        return true
+    # do the missing check from check_define_prop_flags()
+    if (desc.flags & prop_configurable) == 0:
+        if (desc.flags & prop_tmask) == prop_getset:
+            if (flags & prop_has_get) != 0 and not js_same_value(ctx, getter, desc.getter):
+                return true
+            if (flags & prop_has_set) != 0 and not js_same_value(ctx, setter, desc.setter):
+                return true
+        elif (desc.flags & prop_writable) == 0:
+            if (flags & prop_has_value) != 0 and not js_same_value(ctx, val, desc.value):
+                return true
+
+    # additional checks
+    if (desc.flags & prop_configurable) != 0 and setting_not_configurable:
+        return true
+
+    if ((desc.flags & prop_tmask) != prop_getset and
+        (desc.flags & (prop_configurable | prop_writable)) == prop_writable and
+        (flags & (prop_has_writable | prop_writable)) == prop_has_writable):
+        return true
+    return false
+
+## The defineProperty trap (exotic define_own_property).
+func js_proxy_define_own_property(ctx: Context*, obj: Value, prop: Atom, val: Value,
+                                  getter: Value, setter: Value, flags: i32) -> bool!:
+    var method = js_undefined()
+    let s = try get_proxy_method(ctx, &method, obj, atom_defineProperty)
+    if js_is_undefined(method):
+        return try js_define_property(ctx, s.target, prop, val, getter, setter, flags)
+    let prop_val = js_atom_to_value(ctx, prop) catch failure:
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    let desc_val = js_create_desc(ctx, val, getter, setter, flags) catch failure:
+        js_free_value(ctx, prop_val)
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    var args: Value[3] = [s.target, prop_val, desc_val]
+    let ret1 = js_call_free(ctx, method, s.handler, 3, &args[0]) catch failure:
+        js_free_value(ctx, prop_val)
+        js_free_value(ctx, desc_val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, prop_val)
+    js_free_value(ctx, desc_val)
+    let ret = try js_to_bool_free(ctx, ret1)
+    if not ret:
+        if (flags & prop_throw) != 0:
+            try js_throw_type_error(ctx, "proxy: defineProperty exception")
+        else:
+            return false
+    let p = s.target.u.obj
+    var desc: PropertyDescriptor = ---
+    let res = try js_get_own_property_internal(ctx, &desc, p, prop)
+    let setting_not_configurable = ((flags & (prop_has_configurable | prop_configurable)) ==
+                                    prop_has_configurable)
+    if not res:
+        if not p.extensible or setting_not_configurable:
+            try js_throw_type_error(ctx, "proxy: inconsistent defineProperty")
+    else:
+        let fail = js_proxy_define_inconsistent(ctx, &desc, flags, val, getter, setter,
+                                                setting_not_configurable)
+        js_free_desc(ctx, &desc)
+        if fail:
+            try js_throw_type_error(ctx, "proxy: inconsistent defineProperty")
+    return true
