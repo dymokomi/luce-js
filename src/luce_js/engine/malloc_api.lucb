@@ -149,10 +149,3 @@ func js_dbuf_bytecode_init(ctx: Context*, s: cutils.DynBuf*):
 func is_digit(c: i32) -> bool:
     return c >= (i32)'0' and c <= (i32)'9'
 
-## The code unit at `idx` of a flat string: its characters follow the String header,
-## 8-bit or 16-bit as `is_wide_char` says.
-func string_get(p: const String*, idx: i32) -> i32:
-    let chars = (const u8*)p + sizeof(String)
-    if p.is_wide_char:
-        return (i32)((const u16*)chars)[(isize)idx]
-    return (i32)chars[(isize)idx]

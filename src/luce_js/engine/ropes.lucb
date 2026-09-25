@@ -1,0 +1,301 @@
+#==============================================================================================
+#
+#   ropes - String ropes: indexing, iteration, comparison, flattening, balancing, and
+#           JS_ConcatString
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 4723-5119. A rope (StringRope) is a lazy concatenation of
+#       two strings or ropes. Concatenations of long strings build ropes; a rope deeper
+#       than js_string_rope_max_depth is rebalanced with the Fibonacci buckets of Boehm,
+#       Atkinson and Plass; a rope is flattened (linearized) when its characters are
+#       needed as one string.
+#
+#==============================================================================================
+
+# mark: Reading ropes ===========================================================================
+
+# Return the character at position 'idx'. 'val' must be a string or rope.
+func string_rope_get(val: Value, idx: u32) -> i32:
+    if val.tag == Tag.string:
+        return string_get(val.u.string, (i32)idx)
+    let r = val.u.rope
+    var len: u32 = 0
+    if r.left.tag == Tag.string:
+        len = r.left.u.string.len
+    else:
+        len = r.left.u.rope.len
+    if idx < len:
+        return string_rope_get(r.left, idx)
+    return string_rope_get(r.right, idx - len)
+
+## An in-order walk over the flat strings of a rope (JSStringRopeIter).
+struct StringRopeIter:
+    var stack: Value[60]
+    var stack_len: i32
+
+assert(js_string_rope_max_depth == 60, "StringRopeIter.stack holds js_string_rope_max_depth")
+
+func string_rope_iter_init(s: StringRopeIter*, val: Value):
+    s.stack_len = 0
+    s.stack[s.stack_len] = val
+    s.stack_len += 1
+
+# iterate thru a rope and return the strings in order
+func string_rope_iter_next(s: StringRopeIter*) -> String*?:
+    if s.stack_len == 0:
+        return none
+    s.stack_len -= 1
+    var val = s.stack[s.stack_len]
+    while val.tag != Tag.string:
+        let r = val.u.rope
+        assert(s.stack_len < js_string_rope_max_depth)
+        s.stack[s.stack_len] = r.right
+        s.stack_len += 1
+        val = r.left
+    return val.u.string
+
+func string_rope_get_len(val: Value) -> u32:
+    if val.tag == Tag.string:
+        return val.u.string.len
+    return val.u.rope.len
+
+# Compare two strings or ropes: < 0, 0 or > 0. With `eq_only`, only whether the result is
+# 0 is meaningful.
+func js_string_rope_compare(ctx: Context*, op1: Value, op2: Value, eq_only: bool) -> i32:
+    let len1 = string_rope_get_len(op1)
+    let len2 = string_rope_get_len(op2)
+    # no need to go further for equality test if different length
+    if eq_only and len1 != len2:
+        return 1
+    var len = cutils.min_uint32(len1, len2)
+    var it1: StringRopeIter = ---
+    var it2: StringRopeIter = ---
+    string_rope_iter_init(&it1, op1)
+    string_rope_iter_init(&it2, op2)
+    var p1 = string_rope_iter_next(&it1)
+    var p2 = string_rope_iter_next(&it2)
+    var pos1: u32 = 0
+    var pos2: u32 = 0
+    while len != 0:
+        # Both walks hold at least `len` more characters.
+        let s1 = p1 else trap("rope shorter than its length")
+        let s2 = p2 else trap("rope shorter than its length")
+        var l = cutils.min_uint32(s1.len - pos1, s2.len - pos2)
+        l = cutils.min_uint32(l, len)
+        let res = js_string_memcmp(s1, (i32)pos1, s2, (i32)pos2, (i32)l)
+        if res != 0:
+            return res
+        len -= l
+        pos1 += l
+        if pos1 >= s1.len:
+            p1 = string_rope_iter_next(&it1)
+            pos1 = 0
+        pos2 += l
+        if pos2 >= s2.len:
+            p2 = string_rope_iter_next(&it2)
+            pos2 = 0
+
+    if len1 == len2:
+        return 0
+    if len1 < len2:
+        return -1
+    return 1
+
+# mark: Building ropes ==========================================================================
+
+# 'rope' must be a rope. return a string and modify the rope so that it won't need to be
+# linearized again. Takes ownership of `rope`.
+func js_linearize_string_rope(ctx: Context*, rope: Value) -> Value!:
+    let r = rope.u.rope
+    defer js_free_value(ctx, rope)
+
+    # check whether it is already linearized
+    if r.right.tag == Tag.string and r.right.u.string.len == 0:
+        return js_dup_value(ctx, r.left)
+    var b: StringBuffer = ---
+    try string_buffer_init2(ctx, &b, (i32)r.len, r.is_wide_char != 0)
+    try string_buffer_concat_value(&b, rope)
+    let ret = try string_buffer_end(&b)
+    if js_rc(r).ref_count > 1:
+        # update the rope so that it won't need to be linearized again
+        js_free_value(ctx, r.left)
+        js_free_value(ctx, r.right)
+        r.left = js_dup_value(ctx, ret)
+        r.right = js_atom_to_string(ctx, atom_empty_string) catch: trap("the empty string atom")
+    return ret
+
+# op1 and op2 must be strings or string ropes; takes ownership of both.
+func js_new_string_rope(ctx: Context*, op1: Value, op2: Value) -> Value!:
+    var len: u32 = 0
+    var is_wide_char = false
+    var depth: i32 = 0
+    if op1.tag == Tag.string:
+        let p1 = op1.u.string
+        len = p1.len
+        is_wide_char = p1.is_wide_char
+        depth = 0
+    else:
+        let r1 = op1.u.rope
+        len = r1.len
+        is_wide_char = r1.is_wide_char != 0
+        depth = (i32)r1.depth
+
+    if op2.tag == Tag.string:
+        let p2 = op2.u.string
+        len += p2.len
+        is_wide_char = is_wide_char or p2.is_wide_char
+    else:
+        let r2 = op2.u.rope
+        len += r2.len
+        is_wide_char = is_wide_char or r2.is_wide_char != 0
+        depth = cutils.max_int(depth, (i32)r2.depth)
+    if len > (u32)js_string_len_max:
+        js_throw_internal_error(ctx, "string too long") catch failure:
+            js_free_value(ctx, op1)
+            js_free_value(ctx, op2)
+            error(failure.code, failure.message)
+    let mem = js_malloc(ctx, sizeof(StringRope)) catch failure:
+        js_free_value(ctx, op1)
+        js_free_value(ctx, op2)
+        error(failure.code, failure.message)
+    let r = (StringRope*)mem
+    js_rc(r).ref_count = 1
+    r.len = len
+    r.is_wide_char = (u8)is_wide_char
+    r.depth = (u8)(depth + 1)
+    r.left = op1
+    r.right = op2
+    let res = js_mkptr(Tag.string_rope, r)
+    if (i32)r.depth > js_string_rope_max_depth:
+        let res2 = js_rebalancee_string_rope(ctx, res) catch failure:
+            js_free_value(ctx, res)
+            error(failure.code, failure.message)
+        js_free_value(ctx, res)
+        return res2
+    return res
+
+let rope_n_buckets: usize = 44
+
+# Fibonacci numbers starting from F_2
+let rope_bucket_len: u32[44] = [
+    1, 2, 3, 5,
+    8, 13, 21, 34,
+    55, 89, 144, 233,
+    377, 610, 987, 1597,
+    2584, 4181, 6765, 10946,
+    17711, 28657, 46368, 75025,
+    121393, 196418, 317811, 514229,
+    832040, 1346269, 2178309, 3524578,
+    5702887, 9227465, 14930352, 24157817,
+    39088169, 63245986, 102334155, 165580141,
+    267914296, 433494437, 701408733, 1134903170, # > JS_STRING_LEN_MAX
+]
+
+# Add the flat strings of `val` to the buckets: bucket i holds a rope whose length is at
+# least rope_bucket_len[i], or null.
+func js_rebalancee_string_rope_rec(ctx: Context*, buckets: Value[], val: Value) -> !:
+    if val.tag == Tag.string:
+        let p = val.u.string
+        let len = p.len
+        if len == 0:
+            return # nothing to do
+        # find the bucket i so that rope_bucket_len[i] <= len < rope_bucket_len[i + 1] and
+        # concatenate the ropes in the buckets before
+        var a = js_null()
+        var i: usize = 0
+        while len >= rope_bucket_len[i + 1]:
+            let b = buckets[i]
+            if not js_is_null(b):
+                buckets[i] = js_null()
+                if js_is_null(a):
+                    a = b
+                else:
+                    a = try js_new_string_rope(ctx, b, a)
+            i += 1
+        if not js_is_null(a):
+            a = try js_new_string_rope(ctx, a, js_dup_value(ctx, val))
+        else:
+            a = js_dup_value(ctx, val)
+        while not js_is_null(buckets[i]):
+            let b = buckets[i]
+            buckets[i] = js_null()
+            a = try js_new_string_rope(ctx, b, a)
+            i += 1
+        buckets[i] = a
+    else:
+        let r = val.u.rope
+        # QuickJS ignores a failure of these two calls; it is propagated here.
+        try js_rebalancee_string_rope_rec(ctx, buckets, r.left)
+        try js_rebalancee_string_rope_rec(ctx, buckets, r.right)
+
+func free_rope_buckets(ctx: Context*, buckets: Value[]):
+    for i in 0..<rope_n_buckets:
+        js_free_value(ctx, buckets[i])
+
+# Return a new rope which is balanced. Algorithm from "Ropes: an Alternative to Strings",
+# Hans-J. Boehm, Russ Atkinson and Michael Plass.
+func js_rebalancee_string_rope(ctx: Context*, rope: Value) -> Value!:
+    var buckets: Value[44] = ---
+    for i in 0..<rope_n_buckets:
+        buckets[i] = js_null()
+    errdefer free_rope_buckets(ctx, buckets)
+    try js_rebalancee_string_rope_rec(ctx, buckets, rope)
+    var a = js_null()
+    for i in 0..<rope_n_buckets:
+        let b = buckets[i]
+        if not js_is_null(b):
+            buckets[i] = js_null()
+            if js_is_null(a):
+                a = b
+            else:
+                a = try js_new_string_rope(ctx, b, a)
+    # fail safe
+    if js_is_null(a):
+        return try js_atom_to_string(ctx, atom_empty_string)
+    return a
+
+# mark: Concatenation ===========================================================================
+
+# op1 and op2 are converted to strings; takes ownership of both.
+func js_concat_string(ctx: Context*, op1: Value, op2: Value) -> Value!:
+    var v1 = op1
+    var v2 = op2
+    if v1.tag != Tag.string and v1.tag != Tag.string_rope:
+        v1 = js_to_string_free(ctx, v1) catch failure:
+            js_free_value(ctx, v2)
+            error(failure.code, failure.message)
+    if v2.tag != Tag.string and v2.tag != Tag.string_rope:
+        v2 = js_to_string_free(ctx, v2) catch failure:
+            js_free_value(ctx, v1)
+            error(failure.code, failure.message)
+
+    # normal concatenation for short strings
+    if v2.tag == Tag.string:
+        let p2 = v2.u.string
+        if p2.len == 0:
+            js_free_value(ctx, v2)
+            return v1
+        if p2.len <= (u32)js_string_rope_short_len:
+            if v1.tag == Tag.string:
+                let p1 = v1.u.string
+                if p1.len <= (u32)js_string_rope_short2_len:
+                    return try js_concat_string2(ctx, v1, v2)
+                return try js_new_string_rope(ctx, v1, v2)
+            let r1 = v1.u.rope
+            if (r1.right.tag == Tag.string and
+                    r1.right.u.string.len <= (u32)js_string_rope_short_len):
+                defer js_free_value(ctx, v1)
+                let val = try js_concat_string2(ctx, js_dup_value(ctx, r1.right), v2)
+                return try js_new_string_rope(ctx, js_dup_value(ctx, r1.left), val)
+    elif v1.tag == Tag.string:
+        let p1 = v1.u.string
+        if p1.len == 0:
+            js_free_value(ctx, v1)
+            return v2
+        let r2 = v2.u.rope
+        if (r2.left.tag == Tag.string and
+                r2.left.u.string.len <= (u32)js_string_rope_short_len):
+            defer js_free_value(ctx, v2)
+            let val = try js_concat_string2(ctx, v1, js_dup_value(ctx, r2.left))
+            return try js_new_string_rope(ctx, val, js_dup_value(ctx, r2.right))
+    return try js_new_string_rope(ctx, v1, v2)

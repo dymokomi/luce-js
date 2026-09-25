@@ -1,0 +1,187 @@
+#==============================================================================================
+#
+#   strings_utf8 - Strings from and to UTF-8 (and CESU-8) C text
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 4356-4562: JS_NewStringLen (UTF-8 in), JS_ConcatString3,
+#       JS_NewAtomString, JS_ToCStringLen2 (UTF-8 or CESU-8 out) and JS_FreeCString, plus
+#       quickjs.h's JS_ToCStringLen and JS_ToCString wrappers.
+#
+#==============================================================================================
+
+# mark: From C text =============================================================================
+
+## A string from the UTF-8 text `buf[0..<buf_len]`; invalid sequences become U+FFFD
+## (JS_NewStringLen).
+pub func js_new_string_len(ctx: Context*, buf: const u8*, buf_len: usize) -> Value!:
+    # workaround: compiler-issues/pointer_compound_assign (`p = p + 1` for `p++`)
+    let p_start = buf
+    let p_end = p_start + buf_len
+    let len1 = count_ascii(p_start, buf_len)
+    var p = p_start + len1
+    if len1 > (usize)js_string_len_max:
+        try js_throw_internal_error(ctx, "string too long")
+    if p == p_end:
+        # ASCII string
+        return try js_new_string8_len(ctx, buf, (i32)buf_len)
+
+    var b: StringBuffer = ---
+    string_buffer_init(ctx, &b, (i32)buf_len) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    # A failed write marks the buffer; string_buffer_end reports it.
+    string_buffer_write8(&b, p_start, (i32)len1) catch: recover ()
+    while p < p_end:
+        if *p < 128:
+            string_buffer_putc8(&b, *p) catch: recover ()
+            p = p + 1
+        else:
+            # parse utf-8 sequence, return 0xFFFFFFFF for error
+            var p_next = p
+            var c = (u32)cutils.unicode_from_utf8(p, (i32)(p_end - p), &p_next)
+            if c < 0x10000:
+                p = p_next
+            elif c <= 0x10ffff:
+                p = p_next
+                # surrogate pair
+                string_buffer_putc16(&b, cutils.get_hi_surrogate(c)) catch: recover ()
+                c = cutils.get_lo_surrogate(c)
+            else:
+                # invalid char
+                c = 0xfffd
+                # skip the invalid chars
+                # XXX: seems incorrect. Why not just use c = *p++; ?
+                while p < p_end and (*p >= 0x80 and *p < 0xc0):
+                    p = p + 1
+                if p < p_end:
+                    p = p + 1
+                    while p < p_end and (*p >= 0x80 and *p < 0xc0):
+                        p = p + 1
+            string_buffer_putc16(&b, c) catch: recover ()
+    return try string_buffer_end(&b)
+
+# `str1`, the string `str2` (converted if needed; ownership is taken) and `str3`,
+# concatenated.
+func js_concat_string3(ctx: Context*, str1: const u8*, str2: Value, str3: const u8*) -> Value!:
+    var v2 = str2
+    if v2.tag != Tag.string:
+        v2 = try js_to_string_free(ctx, v2)
+    defer js_free_value(ctx, v2)
+    let p = v2.u.string
+    let len1 = (i32)cutils.strlen(str1)
+    let len3 = (i32)cutils.strlen(str3)
+
+    var b: StringBuffer = ---
+    try string_buffer_init2(ctx, &b, len1 + (i32)p.len + len3, p.is_wide_char)
+
+    # A failed write marks the buffer; string_buffer_end reports it.
+    string_buffer_write8(&b, str1, len1) catch: recover ()
+    string_buffer_concat(&b, p, 0, p.len) catch: recover ()
+    string_buffer_write8(&b, str3, len3) catch: recover ()
+
+    return try string_buffer_end(&b)
+
+## The string of the atom named by the NUL-terminated UTF-8 text `text`
+## (JS_NewAtomString).
+pub func js_new_atom_string(ctx: Context*, text: const u8*) -> Value!:
+    let atom = try js_new_atom_len(ctx, text, cutils.strlen(text))
+    defer js_free_atom(ctx, atom)
+    return try js_atom_to_string(ctx, atom)
+
+# mark: To C text ===============================================================================
+
+# Report an empty result through the optional length pointer.
+func clear_c_string_len(plen: usize*?):
+    if let len_out = plen:
+        *len_out = 0
+
+## `val1` as NUL-terminated UTF-8 text, its byte length in `*plen` (0 on failure). The text
+## points into a string with a live reference count: release it with js_free_c_string.
+## `cesu8` determines if non-BMP1 code points are encoded as 1 or 2 UTF-8 sequences
+## (JS_ToCStringLen2).
+pub func js_to_c_string_len2(ctx: Context*, plen: usize*?, val1: Value, cesu8: bool) -> const u8*!:
+    errdefer clear_c_string_len(plen)
+    var val = js_undefined()
+    if val1.tag != Tag.string:
+        val = try js_to_string(ctx, val1)
+    else:
+        val = js_dup_value(ctx, val1)
+
+    let text = val.u.string
+    let len = (i32)text.len
+    var str_new: String* = ---
+    # workaround: compiler-issues/pointer_compound_assign (`q = q + 1` for `q++`)
+    var q: u8* = ---
+    if not text.is_wide_char:
+        let src = str8(text)
+
+        # count the number of non-ASCII characters
+        # Scanning the whole string is required for ASCII strings, and computing the
+        # number of non-ASCII bytes is less expensive than testing each byte, hence this
+        # method is faster for ASCII strings, which is the most common case.
+        var count: i32 = 0
+        for pos in 0..<len:
+            count += (i32)(src[pos] >> 7)
+        if count == 0:
+            if let len_out = plen:
+                *len_out = (usize)len
+            return src
+        # XXX: as in QuickJS, `val` is not released if this allocation fails.
+        str_new = try js_alloc_string(ctx, len + count, false)
+        q = str8(str_new)
+        for pos in 0..<len:
+            let c = src[pos]
+            if c < 0x80:
+                *q = c
+                q = q + 1
+            else:
+                *q = (c >> 6) | 0xc0
+                q = q + 1
+                *q = (c & 0x3f) | 0x80
+                q = q + 1
+    else:
+        let src = str16(text)
+        # Allocate 3 bytes per 16 bit code point. Surrogate pairs may produce 4 bytes
+        # but use 2 code points.
+        str_new = try js_alloc_string(ctx, len * 3, false)
+        q = str8(str_new)
+        var pos: i32 = 0
+        while pos < len:
+            var c = (u32)src[pos]
+            pos += 1
+            if c < 0x80:
+                *q = (u8)c
+                q = q + 1
+            else:
+                if cutils.is_hi_surrogate(c):
+                    if pos < len and not cesu8:
+                        let c1 = (u32)src[pos]
+                        if cutils.is_lo_surrogate(c1):
+                            pos += 1
+                            c = cutils.from_surrogate(c, c1)
+                        # else: keep unmatched surrogate code points (c = 0xfffd would
+                        # be an error)
+                    # else: keep unmatched surrogate code points
+                q = q + cutils.unicode_to_utf8(q, c)
+
+    *q = 0
+    str_new.len = (u32)(q - str8(str_new))
+    js_free_value(ctx, val)
+    if let len_out = plen:
+        *len_out = (usize)str_new.len
+    return str8(str_new)
+
+## `val1` as UTF-8 text, its byte length in `*plen` (JS_ToCStringLen).
+pub func js_to_c_string_len(ctx: Context*, plen: usize*?, val1: Value) -> const u8*!:
+    return try js_to_c_string_len2(ctx, plen, val1, false)
+
+## `val1` as NUL-terminated UTF-8 text (JS_ToCString).
+pub func js_to_c_string(ctx: Context*, val1: Value) -> const u8*!:
+    return try js_to_c_string_len2(ctx, none, val1, false)
+
+## Release text from js_to_c_string_len2; `none` is ignored (JS_FreeCString).
+pub func js_free_c_string(ctx: Context*, ptr: const u8*?):
+    let text = ptr else return
+    # purposely removing constness
+    let p = (String*)((u8*)text - sizeof(String))
+    js_free_value(ctx, js_mkptr(Tag.string, p))

@@ -1,0 +1,345 @@
+#==============================================================================================
+#
+#   strings - String characters, small string constructors and the StringBuffer builder
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 3923-4355: making strings from 8-bit and 16-bit
+#       characters, substrings, and StringBuffer, the growable builder most of the engine
+#       writes strings with. A string's characters follow its header (`str8`, `str16`).
+#       Also quickjs.c's inline `string_get` (line 1961).
+#
+#==============================================================================================
+
+# mark: Characters ==============================================================================
+
+## The 8-bit characters of `p` (JSString.u.str8): `len` bytes and a NUL.
+func str8(p: const String*) -> u8*:
+    return (u8*)p + sizeof(String)
+
+## The 16-bit characters of `p` (JSString.u.str16): `len` UTF-16 code units.
+func str16(p: const String*) -> u16*:
+    return (u16*)((u8*)p + sizeof(String))
+
+## The code unit at `idx` of `p`.
+func string_get(p: const String*, idx: i32) -> i32:
+    if p.is_wide_char:
+        return (i32)str16(p)[idx]
+    return (i32)str8(p)[idx]
+
+# mark: Making strings ==========================================================================
+
+func js_new_string8_len(ctx: Context*, buf: const u8*, len: i32) -> Value!:
+    if len <= 0:
+        return try js_atom_to_string(ctx, atom_empty_string)
+    let text = try js_alloc_string(ctx, len, false)
+    discard(cutils.memcpy(str8(text), buf, (usize)len))
+    str8(text)[len] = 0
+    return js_mkptr(Tag.string, text)
+
+func js_new_string8(ctx: Context*, buf: const u8*) -> Value!:
+    return try js_new_string8_len(ctx, buf, (i32)cutils.strlen(buf))
+
+func js_new_string16_len(ctx: Context*, buf: const u16*, len: i32) -> Value!:
+    let text = try js_alloc_string(ctx, len, true)
+    discard(cutils.memcpy(str16(text), buf, (usize)len * 2))
+    return js_mkptr(Tag.string, text)
+
+func js_new_string_char(ctx: Context*, c: u16) -> Value!:
+    if c < 0x100:
+        var ch8 = (u8)c
+        return try js_new_string8_len(ctx, &ch8, 1)
+    var ch16 = c
+    return try js_new_string16_len(ctx, &ch16, 1)
+
+func js_sub_string(ctx: Context*, p: String*, start: i32, end: i32) -> Value!:
+    let len = end - start
+    if start == 0 and end == (i32)p.len:
+        return js_dup_value(ctx, js_mkptr(Tag.string, p))
+    if p.is_wide_char and len > 0:
+        var c: u16 = 0
+        for i in start..<end:
+            c |= str16(p)[i]
+        if c > 0xff:
+            return try js_new_string16_len(ctx, str16(p) + start, len)
+
+        let text = try js_alloc_string(ctx, len, false)
+        for i in 0..<len:
+            str8(text)[i] = (u8)str16(p)[start + i]
+        str8(text)[len] = 0
+        return js_mkptr(Tag.string, text)
+    return try js_new_string8_len(ctx, str8(p) + start, len)
+
+# mark: StringBuffer ============================================================================
+
+## A growable string being built (StringBuffer). It starts 8-bit and widens to 16-bit
+## characters when a character above 0xff is written. `str` is allocated for `size`
+## characters, of which `len` are written.
+##
+## It is valid to call string_buffer_end() and all string_buffer functions even if
+## string_buffer_init() or another string_buffer function fails. If `error_status` is
+## set, every function fails at once and string_buffer_end() fails.
+struct StringBuffer:
+    var ctx: Context*
+    var str: String*?
+    var len: i32
+    var size: i32
+    var is_wide_char: bool
+    var error_status: i32
+
+# The storage of a buffer with no error: it exists whenever error_status is 0.
+func string_buffer_str(s: const StringBuffer*) -> String*:
+    return s.str else trap("StringBuffer without storage")
+
+func string_buffer_init2(ctx: Context*, s: StringBuffer*, size: i32, is_wide: bool) -> !:
+    s.ctx = ctx
+    s.size = size
+    s.len = 0
+    s.is_wide_char = is_wide
+    s.error_status = 0
+    s.str = none
+    s.str = js_alloc_string(ctx, size, is_wide) catch failure:
+        s.size = 0
+        s.error_status = -1
+        error(failure.code, failure.message)
+
+func string_buffer_init(ctx: Context*, s: StringBuffer*, size: i32) -> !:
+    try string_buffer_init2(ctx, s, size, false)
+
+func string_buffer_free(s: StringBuffer*):
+    if let text = s.str:
+        js_free(s.ctx, text)
+    s.str = none
+
+# Drop the storage and make every later call fail; the exception is already pending.
+func string_buffer_set_error(s: StringBuffer*) -> never!:
+    if let text = s.str:
+        js_free(s.ctx, text)
+    s.str = none
+    s.size = 0
+    s.len = 0
+    s.error_status = -1
+    error(exception, "")
+
+noinline func string_buffer_widen(s: StringBuffer*, size: i32) -> !:
+    if s.error_status != 0:
+        error(exception, "")
+
+    var slack: usize = 0
+    let old = string_buffer_str(s)
+    let raw = js_realloc2(s.ctx, old, sizeof(String) + ((usize)size << 1), &slack) catch:
+        try string_buffer_set_error(s)
+    # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+    let text = (String*)(raw else trap("js_realloc2 answered none"))
+    var i = s.len
+    while i > 0:
+        i -= 1
+        str16(text)[i] = (u16)str8(text)[i]
+    s.is_wide_char = true
+    s.size = size + (i32)(slack >> 1)
+    s.str = text
+
+noinline func string_buffer_realloc(s: StringBuffer*, new_len: i32, c: i32) -> !:
+    if s.error_status != 0:
+        error(exception, "")
+
+    if new_len > js_string_len_max:
+        js_throw_internal_error(s.ctx, "string too long") catch:
+            try string_buffer_set_error(s)
+    # size * 3 / 2 is computed in i64: C's int would overflow for sizes above 2^30 * 2 / 3.
+    var new_size = cutils.min_int(cutils.max_int(new_len, (i32)((i64)s.size * 3 // 2)),
+                                  js_string_len_max)
+    if not s.is_wide_char and c >= 0x100:
+        return try string_buffer_widen(s, new_size)
+    let wide = (usize)(i32)s.is_wide_char
+    let new_size_bytes = sizeof(String) + ((usize)new_size << wide) + 1 - wide
+    var slack: usize = 0
+    let raw = js_realloc2(s.ctx, string_buffer_str(s), new_size_bytes, &slack) catch:
+        try string_buffer_set_error(s)
+    new_size = cutils.min_int(new_size + (i32)(slack >> wide), js_string_len_max)
+    s.size = new_size
+    # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+    s.str = (String*)(raw else trap("js_realloc2 answered none"))
+
+noinline func string_buffer_putc16_slow(s: StringBuffer*, c: u32) -> !:
+    if s.len >= s.size:
+        try string_buffer_realloc(s, s.len + 1, (i32)c)
+    if s.is_wide_char:
+        str16(string_buffer_str(s))[s.len] = (u16)c
+        s.len += 1
+    elif c < 0x100:
+        str8(string_buffer_str(s))[s.len] = (u8)c
+        s.len += 1
+    else:
+        try string_buffer_widen(s, s.size)
+        str16(string_buffer_str(s))[s.len] = (u16)c
+        s.len += 1
+
+# 0 <= c <= 0xff
+func string_buffer_putc8(s: StringBuffer*, c: u32) -> !:
+    if s.len >= s.size:
+        try string_buffer_realloc(s, s.len + 1, (i32)c)
+    if s.is_wide_char:
+        str16(string_buffer_str(s))[s.len] = (u16)c
+    else:
+        str8(string_buffer_str(s))[s.len] = (u8)c
+    s.len += 1
+
+# 0 <= c <= 0xffff
+func string_buffer_putc16(s: StringBuffer*, c: u32) -> !:
+    if s.len < s.size:
+        if s.is_wide_char:
+            str16(string_buffer_str(s))[s.len] = (u16)c
+            s.len += 1
+            return
+        elif c < 0x100:
+            str8(string_buffer_str(s))[s.len] = (u8)c
+            s.len += 1
+            return
+    try string_buffer_putc16_slow(s, c)
+
+func string_buffer_putc_slow(s: StringBuffer*, c: u32) -> !:
+    var c1 = c
+    if c1 >= 0x10000:
+        # surrogate pair
+        try string_buffer_putc16(s, cutils.get_hi_surrogate(c1))
+        c1 = cutils.get_lo_surrogate(c1)
+    try string_buffer_putc16(s, c1)
+
+# 0 <= c <= 0x10ffff
+inline func string_buffer_putc(s: StringBuffer*, c: u32) -> !:
+    if s.len < s.size:
+        if s.is_wide_char:
+            if c < 0x10000:
+                str16(string_buffer_str(s))[s.len] = (u16)c
+                s.len += 1
+                return
+            elif s.len + 1 < s.size:
+                let text = string_buffer_str(s)
+                str16(text)[s.len] = (u16)cutils.get_hi_surrogate(c)
+                str16(text)[s.len + 1] = (u16)cutils.get_lo_surrogate(c)
+                s.len += 2
+                return
+        elif c < 0x100:
+            str8(string_buffer_str(s))[s.len] = (u8)c
+            s.len += 1
+            return
+    try string_buffer_putc_slow(s, c)
+
+## The code point at `*pidx` of `p`, combining a surrogate pair; advances `*pidx` past it.
+func string_getc(p: const String*, pidx: i32*) -> i32:
+    var idx = *pidx
+    var c: i32 = 0
+    if p.is_wide_char:
+        c = (i32)str16(p)[idx]
+        idx += 1
+        if cutils.is_hi_surrogate((u32)c) and idx < (i32)p.len:
+            let c1 = (i32)str16(p)[idx]
+            if cutils.is_lo_surrogate((u32)c1):
+                c = (i32)cutils.from_surrogate((u32)c, (u32)c1)
+                idx += 1
+    else:
+        c = (i32)str8(p)[idx]
+        idx += 1
+    *pidx = idx
+    return c
+
+func string_buffer_write8(s: StringBuffer*, p: const u8*, len: i32) -> !:
+    if s.len + len > s.size:
+        try string_buffer_realloc(s, s.len + len, 0)
+    let text = string_buffer_str(s)
+    if s.is_wide_char:
+        for i in 0..<len:
+            str16(text)[s.len + i] = (u16)p[i]
+    else:
+        discard(cutils.memcpy(str8(text) + s.len, p, (usize)len))
+    s.len += len
+
+func string_buffer_write16(s: StringBuffer*, p: const u16*, len: i32) -> !:
+    var c: i32 = 0
+    for i in 0..<len:
+        c |= (i32)p[i]
+    if s.len + len > s.size:
+        try string_buffer_realloc(s, s.len + len, c)
+    elif not s.is_wide_char and c >= 0x100:
+        try string_buffer_widen(s, s.size)
+    let text = string_buffer_str(s)
+    if s.is_wide_char:
+        discard(cutils.memcpy(str16(text) + s.len, p, (usize)len << 1))
+    else:
+        for i in 0..<len:
+            str8(text)[s.len + i] = (u8)p[i]
+    s.len += len
+
+# appending an ASCII string
+func string_buffer_puts8(s: StringBuffer*, text: const u8*) -> !:
+    try string_buffer_write8(s, text, (i32)cutils.strlen(text))
+
+func string_buffer_concat(s: StringBuffer*, p: const String*, from_: u32, to: u32) -> !:
+    if to <= from_:
+        return
+    if p.is_wide_char:
+        try string_buffer_write16(s, str16(p) + from_, (i32)(to - from_))
+    else:
+        try string_buffer_write8(s, str8(p) + from_, (i32)(to - from_))
+
+func string_buffer_concat_value(s: StringBuffer*, v: Value) -> !:
+    if s.error_status != 0:
+        # prevent exception overload
+        error(exception, "")
+    if v.tag != Tag.string:
+        if v.tag == Tag.string_rope:
+            let r = v.u.rope
+            # recursion is acceptable because the rope depth is bounded
+            try string_buffer_concat_value(s, r.left)
+            return try string_buffer_concat_value(s, r.right)
+        let v1 = js_to_string(s.ctx, v) catch:
+            try string_buffer_set_error(s)
+        defer js_free_value(s.ctx, v1)
+        let p1 = v1.u.string
+        return try string_buffer_concat(s, p1, 0, p1.len)
+    let p = v.u.string
+    try string_buffer_concat(s, p, 0, p.len)
+
+func string_buffer_concat_value_free(s: StringBuffer*, v: Value) -> !:
+    if s.error_status != 0:
+        # prevent exception overload
+        js_free_value(s.ctx, v)
+        error(exception, "")
+    var v1 = v
+    if v1.tag != Tag.string:
+        v1 = js_to_string_free(s.ctx, v1) catch:
+            try string_buffer_set_error(s)
+    defer js_free_value(s.ctx, v1)
+    let p = v1.u.string
+    try string_buffer_concat(s, p, 0, p.len)
+
+func string_buffer_fill(s: StringBuffer*, c: i32, count: i32) -> !:
+    # XXX: optimize
+    if s.len + count > s.size:
+        try string_buffer_realloc(s, s.len + count, c)
+    for _i in 0..<count:
+        try string_buffer_putc16(s, (u32)c)
+
+func string_buffer_end(s: StringBuffer*) -> Value!:
+    if s.error_status != 0:
+        error(exception, "")
+    var text = string_buffer_str(s)
+    if s.len == 0:
+        js_free(s.ctx, text)
+        s.str = none
+        return try js_atom_to_string(s.ctx, atom_empty_string)
+    if s.len < s.size:
+        # smaller size so js_realloc should not fail, but OK if it does
+        # XXX: should add some slack to avoid unnecessary calls
+        # XXX: might need to use malloc+free to ensure smaller size
+        let wide = (usize)(i32)s.is_wide_char
+        let smaller = js_realloc_rt(s.ctx.rt, text, sizeof(String) + ((usize)s.len << wide) + 1 - wide)
+        if let p = smaller:
+            text = (String*)p
+        s.str = text
+    if not s.is_wide_char:
+        str8(text)[s.len] = 0
+    text.is_wide_char = s.is_wide_char
+    text.len = (u32)s.len
+    s.str = none
+    return js_mkptr(Tag.string, text)

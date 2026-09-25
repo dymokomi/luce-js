@@ -1,0 +1,140 @@
+#==============================================================================================
+#
+#   tests_r04 - Tests of the string helpers that need no runtime
+#
+#   DESCRIPTION:
+#       Character access, code point decoding, code unit comparison, 16-bit copies and
+#       rope indexing and iteration, on strings built by hand with the C allocator (no
+#       reference counting is involved), and the rope bucket table.
+#
+#==============================================================================================
+
+# A flat 8-bit string holding `text`, as js_alloc_string lays it out.
+func test_string8(text: str) -> String*:
+    let len = text.bytes.length
+    let mem = cutils.malloc(sizeof(String) + len + 1) else trap("out of memory")
+    let p = (String*)mem
+    p.len = (u32)len
+    p.hash = 0
+    p.hash_next = 0
+    p.is_wide_char = false
+    p.atom_type = 0
+    for i in 0..<len:
+        str8(p)[i] = text.bytes[i]
+    str8(p)[len] = 0
+    return p
+
+# A flat 16-bit string holding `units`.
+func test_string16(units: const u16[]) -> String*:
+    let len = units.length
+    let mem = cutils.malloc(sizeof(String) + len * 2) else trap("out of memory")
+    let p = (String*)mem
+    p.len = (u32)len
+    p.hash = 0
+    p.hash_next = 0
+    p.is_wide_char = true
+    p.atom_type = 0
+    for i in 0..<len:
+        str16(p)[i] = units[i]
+    return p
+
+func test_rope(left: Value, right: Value) -> StringRope:
+    return StringRope(len = string_rope_get_len(left) + string_rope_get_len(right),
+                      is_wide_char = 0, depth = 1, left = left, right = right)
+
+test "characters follow the string header":
+    let a = test_string8("abc")
+    defer cutils.c_free(a)
+    assert((usize)str8(a) - (usize)a == sizeof(String))
+    assert(string_get(a, 0) == 0x61 and string_get(a, 2) == 0x63)
+    assert(str8(a)[3] == 0)
+    let units: u16[3] = [0x41, 0x3b1, 0xffff]
+    let w = test_string16(units)
+    defer cutils.c_free(w)
+    assert(string_get(w, 1) == 0x3b1 and string_get(w, 2) == 0xffff)
+
+test "string_getc combines surrogate pairs":
+    # "a", U+1F600 as a pair, a lone high surrogate at the end
+    let units: u16[4] = [0x61, 0xd83d, 0xde00, 0xd800]
+    let w = test_string16(units)
+    defer cutils.c_free(w)
+    var idx: i32 = 0
+    assert(string_getc(w, &idx) == 0x61 and idx == 1)
+    assert(string_getc(w, &idx) == 0x1f600 and idx == 3)
+    assert(string_getc(w, &idx) == 0xd800 and idx == 4)
+    let a = test_string8("\u{e9}")
+    defer cutils.c_free(a)
+    idx = 0
+    assert(string_getc(a, &idx) == 0xc3 and idx == 1)
+
+test "code unit comparison across widths":
+    let a = test_string8("abcd")
+    defer cutils.c_free(a)
+    let b = test_string8("abce")
+    defer cutils.c_free(b)
+    let units: u16[4] = [0x61, 0x62, 0x63, 0x64]
+    let w = test_string16(units)
+    defer cutils.c_free(w)
+    let units2: u16[4] = [0x61, 0x62, 0x100, 0x64]
+    let w2 = test_string16(units2)
+    defer cutils.c_free(w2)
+
+    assert(js_string_memcmp(a, 0, a, 0, 4) == 0)
+    assert(js_string_memcmp(a, 0, b, 0, 4) < 0)
+    assert(js_string_memcmp(b, 0, a, 0, 4) > 0)
+    assert(js_string_memcmp(a, 0, b, 0, 3) == 0)
+    assert(js_string_memcmp(a, 0, w, 0, 4) == 0)
+    assert(js_string_memcmp(w, 0, a, 0, 4) == 0)
+    assert(js_string_memcmp(w, 1, a, 1, 3) == 0)
+    assert(js_string_memcmp(a, 0, w2, 0, 4) < 0)
+    assert(js_string_memcmp(w2, 0, a, 0, 4) > 0)
+    assert(js_string_memcmp(w2, 0, w, 0, 4) == 0x100 - 0x63)
+    assert(memcmp16_8(str16(w), str8(b), 4) == 0x64 - 0x65)
+    assert(memcmp16(str16(w), str16(w2), 2) == 0)
+
+test "copy_str16 widens 8-bit characters":
+    let a = test_string8("xyz")
+    defer cutils.c_free(a)
+    let units: u16[2] = [0x3b1, 0x3b2]
+    let w = test_string16(units)
+    defer cutils.c_free(w)
+    var dst: u16[4] = [0, 0, 0, 0]
+    copy_str16(&dst[0], a, 1, 2)
+    copy_str16(&dst[2], w, 0, 2)
+    assert(dst[0] == 0x79 and dst[1] == 0x7a and dst[2] == 0x3b1 and dst[3] == 0x3b2)
+
+test "rope indexing and iteration":
+    let a = test_string8("ab")
+    defer cutils.c_free(a)
+    let b = test_string8("")
+    defer cutils.c_free(b)
+    let units: u16[2] = [0x3b1, 0x3b2]
+    let w = test_string16(units)
+    defer cutils.c_free(w)
+    let c = test_string8("cde")
+    defer cutils.c_free(c)
+
+    # ((a . b) . (w . c)) = "ab" "" "αβ" "cde"
+    var left = test_rope(js_mkptr(Tag.string, a), js_mkptr(Tag.string, b))
+    var right = test_rope(js_mkptr(Tag.string, w), js_mkptr(Tag.string, c))
+    var top = test_rope(js_mkptr(Tag.string_rope, &left), js_mkptr(Tag.string_rope, &right))
+    let rope = js_mkptr(Tag.string_rope, &top)
+    assert(string_rope_get_len(rope) == 7)
+    assert(string_rope_get(rope, 0) == 0x61 and string_rope_get(rope, 1) == 0x62)
+    assert(string_rope_get(rope, 2) == 0x3b1 and string_rope_get(rope, 3) == 0x3b2)
+    assert(string_rope_get(rope, 4) == 0x63 and string_rope_get(rope, 6) == 0x65)
+
+    var it: StringRopeIter = ---
+    string_rope_iter_init(&it, rope)
+    assert(string_rope_iter_next(&it) == a)
+    assert(string_rope_iter_next(&it) == b)
+    assert(string_rope_iter_next(&it) == w)
+    assert(string_rope_iter_next(&it) == c)
+    assert(string_rope_iter_next(&it) == none)
+
+test "rope buckets are the Fibonacci numbers":
+    assert(rope_bucket_len[0] == 1 and rope_bucket_len[1] == 2)
+    for i in 2..<rope_n_buckets:
+        assert(rope_bucket_len[i] == rope_bucket_len[i - 1] + rope_bucket_len[i - 2])
+    assert(rope_bucket_len[rope_n_buckets - 1] > (u32)js_string_len_max)
+    assert(rope_bucket_len[rope_n_buckets - 2] <= (u32)js_string_len_max)

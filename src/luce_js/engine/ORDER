@@ -13,7 +13,11 @@ malloc.lucb
 malloc_api.lucb
 runtime.lucb
 context.lucb
-stub_r04_classes_strings.lucb
+classes.lucb
+strings.lucb
+strings_utf8.lucb
+strings_compare.lucb
+ropes.lucb
 stub_r05_shapes_objects.lucb
 stub_r06_gc.lucb
 stub_r07_exceptions.lucb
@@ -41,3 +45,4 @@ stub_r28_typed_arrays.lucb
 stub_r29_atomics_weakref.lucb
 tests_atoms.lucb
 tests_malloc_runtime.lucb
+tests_r04.lucb

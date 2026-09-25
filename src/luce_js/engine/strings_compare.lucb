@@ -1,0 +1,123 @@
+#==============================================================================================
+#
+#   strings_compare - Comparing flat strings, and concatenating two flat strings
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 4564-4722: code unit comparison across 8-bit and 16-bit
+#       strings (js_string_memcmp, js_string_eq, js_string_compare) and the flat
+#       concatenations JS_ConcatString1, JS_ConcatStringInPlace and JS_ConcatString2.
+#
+#==============================================================================================
+
+# mark: Comparison ==============================================================================
+
+func memcmp16_8(src1: const u16*, src2: const u8*, len: i32) -> i32:
+    for i in 0..<len:
+        let c = (i32)src1[i] - (i32)src2[i]
+        if c != 0:
+            return c
+    return 0
+
+func memcmp16(src1: const u16*, src2: const u16*, len: i32) -> i32:
+    for i in 0..<len:
+        let c = (i32)src1[i] - (i32)src2[i]
+        if c != 0:
+            return c
+    return 0
+
+# Compare `len` code units of `p1` from `pos1` with those of `p2` from `pos2`: < 0, 0 or
+# > 0.
+func js_string_memcmp(p1: const String*, pos1: i32, p2: const String*, pos2: i32, len: i32) -> i32:
+    if not p1.is_wide_char:
+        if not p2.is_wide_char:
+            return cutils.memcmp(str8(p1) + pos1, str8(p2) + pos2, (usize)len)
+        return -memcmp16_8(str16(p2) + pos2, str8(p1) + pos1, len)
+    if not p2.is_wide_char:
+        return memcmp16_8(str16(p1) + pos1, str8(p2) + pos2, len)
+    return memcmp16(str16(p1) + pos1, str16(p2) + pos2, len)
+
+func js_string_eq(ctx: Context*, p1: const String*, p2: const String*) -> bool:
+    if p1.len != p2.len:
+        return false
+    if p1 == p2:
+        return true
+    return js_string_memcmp(p1, 0, p2, 0, (i32)p1.len) == 0
+
+# return < 0, 0 or > 0
+func js_string_compare(ctx: Context*, p1: const String*, p2: const String*) -> i32:
+    let len = cutils.min_int((i32)p1.len, (i32)p2.len)
+    let res = js_string_memcmp(p1, 0, p2, 0, len)
+    if res != 0:
+        return res
+    if p1.len == p2.len:
+        return 0
+    if p1.len < p2.len:
+        return -1
+    return 1
+
+# mark: Flat concatenation ======================================================================
+
+# Copy `len` code units of `p` from `offset` to `dst` as 16-bit code units.
+func copy_str16(dst: u16*, p: const String*, offset: i32, len: i32):
+    if p.is_wide_char:
+        discard(cutils.memcpy(dst, str16(p) + offset, (usize)len * 2))
+    else:
+        let src1 = str8(p) + offset
+        for i in 0..<len:
+            dst[i] = (u16)src1[i]
+
+# A new flat string holding `p1` then `p2`.
+func js_concat_string1(ctx: Context*, p1: const String*, p2: const String*) -> Value!:
+    let len = p1.len + p2.len
+    if len > (u32)js_string_len_max:
+        try js_throw_internal_error(ctx, "string too long")
+    let is_wide_char = p1.is_wide_char or p2.is_wide_char
+    let p = try js_alloc_string(ctx, (i32)len, is_wide_char)
+    if not is_wide_char:
+        discard(cutils.memcpy(str8(p), str8(p1), (usize)p1.len))
+        discard(cutils.memcpy(str8(p) + p1.len, str8(p2), (usize)p2.len))
+        str8(p)[len] = 0
+    else:
+        copy_str16(str16(p), p1, 0, (i32)p1.len)
+        copy_str16(str16(p) + p1.len, p2, 0, (i32)p2.len)
+    return js_mkptr(Tag.string, p)
+
+# Append the string `op2` to `p1` in place when `p1` is not shared and its block has room;
+# answer whether it did.
+func js_concat_string_in_place(ctx: Context*, p1: String*, op2: Value) -> bool:
+    if op2.tag == Tag.string:
+        let p2 = op2.u.string
+
+        if p2.len == 0:
+            return true
+        if js_rc(p1).ref_count != 1:
+            return false
+        let size1 = js_malloc_usable_size(ctx, p1)
+        if p1.is_wide_char:
+            if size1 >= sizeof(String) + ((usize)(p1.len + p2.len) << 1):
+                if p2.is_wide_char:
+                    discard(cutils.memcpy(str16(p1) + p1.len, str16(p2), (usize)p2.len << 1))
+                    p1.len += p2.len
+                    return true
+                for i in 0..<p2.len:
+                    str16(p1)[p1.len] = (u16)str8(p2)[i]
+                    p1.len += 1
+                return true
+        elif not p2.is_wide_char:
+            if size1 >= sizeof(String) + (usize)p1.len + (usize)p2.len + 1:
+                discard(cutils.memcpy(str8(p1) + p1.len, str8(p2), (usize)p2.len))
+                p1.len += p2.len
+                str8(p1)[p1.len] = 0
+                return true
+    return false
+
+# `op1` then `op2`, both flat strings; takes ownership of both.
+func js_concat_string2(ctx: Context*, op1: Value, op2: Value) -> Value!:
+    let p1 = op1.u.string
+    if js_concat_string_in_place(ctx, p1, op2):
+        js_free_value(ctx, op2)
+        return op1
+    let p2 = op2.u.string
+    defer js_free_value(ctx, op2)
+    defer js_free_value(ctx, op1)
+    return try js_concat_string1(ctx, p1, p2)
