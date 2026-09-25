@@ -1,0 +1,87 @@
+#==============================================================================================
+#
+#   os_tables - The `os` module's table, js_os_init and js_init_module_os
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 3915-4060 for the functions this port has. The
+#       platform string, whose value depends on the target, is exported beside the table
+#       rather than in it, since a table entry is a constant.
+#
+#==============================================================================================
+
+let js_os_funcs: CFunctionListEntry[47] = [
+    CFunctionListEntry(name = "open", def_type = js.def_cfunc, length = 2, generic = js_os_open),
+    CFunctionListEntry(name = "O_RDONLY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_rdonly),
+    CFunctionListEntry(name = "O_WRONLY", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_wronly),
+    CFunctionListEntry(name = "O_RDWR", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_rdwr),
+    CFunctionListEntry(name = "O_APPEND", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_append),
+    CFunctionListEntry(name = "O_CREAT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_creat),
+    CFunctionListEntry(name = "O_EXCL", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_excl),
+    CFunctionListEntry(name = "O_TRUNC", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = o_trunc),
+    CFunctionListEntry(name = "close", def_type = js.def_cfunc, length = 1, generic = js_os_close),
+    CFunctionListEntry(name = "seek", def_type = js.def_cfunc, length = 3, generic = js_os_seek),
+    CFunctionListEntry(name = "read", def_type = js.def_cfunc, length = 4, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_os_read_write, magic = 0),
+    CFunctionListEntry(name = "write", def_type = js.def_cfunc, length = 4, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_os_read_write, magic = 1),
+    CFunctionListEntry(name = "isatty", def_type = js.def_cfunc, length = 1, generic = js_os_isatty),
+    CFunctionListEntry(name = "remove", def_type = js.def_cfunc, length = 1, generic = js_os_remove),
+    CFunctionListEntry(name = "rename", def_type = js.def_cfunc, length = 2, generic = js_os_rename),
+    CFunctionListEntry(name = "SIGINT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 2),
+    CFunctionListEntry(name = "SIGABRT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 6),
+    CFunctionListEntry(name = "SIGFPE", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 8),
+    CFunctionListEntry(name = "SIGILL", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 4),
+    CFunctionListEntry(name = "SIGSEGV", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 11),
+    CFunctionListEntry(name = "SIGTERM", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = 15),
+    CFunctionListEntry(name = "now", def_type = js.def_cfunc, length = 0, generic = js_os_now),
+    CFunctionListEntry(name = "setTimeout", def_type = js.def_cfunc, length = 2, generic = js_os_set_timeout),
+    CFunctionListEntry(name = "clearTimeout", def_type = js.def_cfunc, length = 1, generic = js_os_clear_timeout),
+    CFunctionListEntry(name = "sleepAsync", def_type = js.def_cfunc, length = 1, generic = js_os_sleep_async),
+    CFunctionListEntry(name = "getcwd", def_type = js.def_cfunc, length = 0, generic = js_os_getcwd),
+    CFunctionListEntry(name = "chdir", def_type = js.def_cfunc, length = 0, generic = js_os_chdir),
+    CFunctionListEntry(name = "mkdir", def_type = js.def_cfunc, length = 1, generic = js_os_mkdir),
+    CFunctionListEntry(name = "readdir", def_type = js.def_cfunc, length = 1, generic = js_os_readdir),
+    # st_mode constants
+    CFunctionListEntry(name = "S_IFMT", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifmt),
+    CFunctionListEntry(name = "S_IFIFO", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ififo),
+    CFunctionListEntry(name = "S_IFCHR", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifchr),
+    CFunctionListEntry(name = "S_IFDIR", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifdir),
+    CFunctionListEntry(name = "S_IFBLK", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifblk),
+    CFunctionListEntry(name = "S_IFREG", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifreg),
+    CFunctionListEntry(name = "S_IFSOCK", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_ifsock),
+    CFunctionListEntry(name = "S_IFLNK", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_iflnk),
+    CFunctionListEntry(name = "S_ISGID", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_isgid),
+    CFunctionListEntry(name = "S_ISUID", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = s_isuid),
+    CFunctionListEntry(name = "stat", def_type = js.def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_os_stat, magic = 0),
+    CFunctionListEntry(name = "utimes", def_type = js.def_cfunc, length = 3, generic = js_os_utimes),
+    CFunctionListEntry(name = "sleep", def_type = js.def_cfunc, length = 1, generic = js_os_sleep),
+    CFunctionListEntry(name = "realpath", def_type = js.def_cfunc, length = 1, generic = js_os_realpath),
+    CFunctionListEntry(name = "lstat", def_type = js.def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_os_stat, magic = 1),
+    CFunctionListEntry(name = "symlink", def_type = js.def_cfunc, length = 2, generic = js_os_symlink),
+    CFunctionListEntry(name = "readlink", def_type = js.def_cfunc, length = 1, generic = js_os_readlink),
+    CFunctionListEntry(name = "getpid", def_type = js.def_cfunc, length = 0, generic = js_os_getpid),
+]
+
+## OS_PLATFORM.
+func os_platform() -> str:
+    if platform.windows:
+        return "win32"
+    if platform.macos:
+        return "darwin"
+    return "linux"
+
+func js_os_init(ctx: Context*, m: ModuleDef*) -> !:
+    os_poll_func = js_os_poll
+    try js.js_set_module_export_list(ctx, m, js_os_funcs)
+    let name = os_platform()
+    discard(try js.js_set_module_export(ctx, m, "platform".bytes.data,
+                                        try js.js_new_string_len(ctx, name.bytes.data, name.length)))
+
+## Register the `os` module under `module_name` (js_init_module_os).
+pub func js_init_module_os(ctx: Context*, module_name: const u8*) -> ModuleDef*!:
+    let m = try js.js_new_c_module(ctx, module_name, js_os_init)
+    try js.js_add_module_export_list(ctx, m, js_os_funcs)
+    try js.js_add_module_export(ctx, m, "platform".bytes.data)
+    return m

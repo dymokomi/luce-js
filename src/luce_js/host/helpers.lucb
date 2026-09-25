@@ -1,0 +1,211 @@
+#==============================================================================================
+#
+#   helpers - Global helpers, the host state, error reports and the event loop
+#
+#   DESCRIPTION:
+#       Port of quickjs-libc.c lines 4061-4351: print and console.log, js_std_add_helpers,
+#       js_std_init_handlers and js_std_free_handlers, js_std_dump_error, the promise
+#       rejection tracker, js_std_loop and js_std_await.
+#
+#==============================================================================================
+
+# mark: Global helpers ==========================================================================
+
+## Write the NUL-free bytes `text` to standard output.
+func put_stdout(buf: const u8*, len: usize):
+    discard(fwrite(buf, 1, len, c.stdout()))
+
+func js_print(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    for i in 0..<(usize)argc:
+        if i != 0:
+            discard(fputc((i32)' ', c.stdout()))
+        let v = argv[i]
+        if js.js_is_string(v):
+            var len: usize = 0
+            let text = try js.js_to_c_string_len(ctx, &len, v)
+            put_stdout(text, len)
+            js.js_free_c_string(ctx, text)
+        else:
+            js.js_print_value(ctx, js_print_value_write, c.stdout(), v, none)
+    discard(fputc((i32)'\n', c.stdout()))
+    return js.js_undefined()
+
+func js_console_log(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let ret = try js_print(ctx, this_val, argc, argv)
+    discard(fflush(c.stdout()))
+    return ret
+
+## Define console.log, performance.now, print, __loadScript and, when `args` is given,
+## scriptArgs on the global object of `ctx` (js_std_add_helpers).
+pub func js_std_add_helpers(ctx: Context*, args: const str[]?) -> !:
+    # XXX: should these global definitions be enumerable?
+    let global_obj = js.js_get_global_object(ctx)
+    defer js.js_free_value(ctx, global_obj)
+
+    let console = try js.js_new_object(ctx)
+    discard(try js.js_set_property_str(ctx, console, "log",
+                                       try js.js_new_c_function(ctx, js_console_log, "log".bytes.data, 1)))
+    discard(try js.js_set_property_str(ctx, global_obj, "console", console))
+
+    let performance = try js.js_new_object(ctx)
+    discard(try js.js_set_property_str(ctx, performance, "now",
+                                       try js.js_new_c_function(ctx, js_os_now, "now".bytes.data, 0)))
+    discard(try js.js_set_property_str(ctx, global_obj, "performance", performance))
+
+    # same methods as the mozilla JS shell
+    if let list = args:
+        let arr = try js.js_new_array(ctx)
+        for (i, arg) in list.indexed():
+            discard(try js.js_set_property_uint32(ctx, arr, (u32)i,
+                                                  try js.js_new_string_len(ctx, arg.bytes.data, arg.length)))
+        discard(try js.js_set_property_str(ctx, global_obj, "scriptArgs", arr))
+
+    discard(try js.js_set_property_str(ctx, global_obj, "print",
+                                       try js.js_new_c_function(ctx, js_print, "print".bytes.data, 1)))
+    discard(try js.js_set_property_str(ctx, global_obj, "__loadScript",
+                                       try js.js_new_c_function(ctx, js_load_script, "__loadScript".bytes.data, 1)))
+
+# mark: Host state ==============================================================================
+
+## Install the host state (timers, rejected promises) as the opaque pointer of `rt`
+## (js_std_init_handlers).
+pub func js_std_init_handlers(rt: Runtime*):
+    let block = cutils.malloc(sizeof(ThreadState))
+    if block == none:
+        let text = "Could not allocate memory for the worker"
+        discard(fwrite(text.bytes.data, 1, text.length, c.stderr()))
+        c_exit(1)
+    let ts = (ThreadState*)(block else c_exit(1))
+    discard(cutils.memset(ts, 0, sizeof(ThreadState)))
+    cutils.init_list_head(&ts.os_timers)
+    cutils.init_list_head(&ts.rejected_promise_list)
+    ts.next_timer_id = 1
+    js.js_set_runtime_opaque(rt, ts)
+
+## The rejected-promise entry whose list link is `el`.
+func rejected_promise_of(el: ListHead*) -> RejectedPromiseEntry*:
+    return (RejectedPromiseEntry*)((u8*)el - offsetof(RejectedPromiseEntry, link))
+
+## Free the host state of `rt` and the timers and promises it holds (js_std_free_handlers).
+pub func js_std_free_handlers(rt: Runtime*):
+    let ts = thread_state(rt)
+    while not cutils.list_empty(&ts.os_timers):
+        let el = ts.os_timers.next else break
+        free_timer(rt, timer_of(el))
+    while not cutils.list_empty(&ts.rejected_promise_list):
+        let el = ts.rejected_promise_list.next else break
+        let rp = rejected_promise_of(el)
+        js.js_free_value_rt(rt, rp.promise)
+        js.js_free_value_rt(rt, rp.reason)
+        cutils.list_del(el)
+        cutils.c_free(rp)
+    cutils.c_free(ts)
+    js.js_set_runtime_opaque(rt, none) # fail safe
+
+# mark: Errors ==================================================================================
+
+func js_std_dump_error1(ctx: Context*, exception_val: Value):
+    js.js_print_value(ctx, js_print_value_write, c.stderr(), exception_val, none)
+    discard(fputc((i32)'\n', c.stderr()))
+
+## Print the pending exception of `ctx` to standard error and clear it (js_std_dump_error).
+pub func js_std_dump_error(ctx: Context*):
+    let exception_val = js.js_get_exception(ctx)
+    js_std_dump_error1(ctx, exception_val)
+    js.js_free_value(ctx, exception_val)
+
+# mark: Promise rejections ======================================================================
+
+func find_rejected_promise(ctx: Context*, ts: ThreadState*, promise: Value) -> RejectedPromiseEntry*?:
+    var el = ts.rejected_promise_list.next else return none
+    while el != &ts.rejected_promise_list:
+        let rp = rejected_promise_of(el)
+        if js.js_same_value(ctx, rp.promise, promise):
+            return rp
+        el = el.next else return none
+    return none
+
+## Track the promises rejected without a handler, to report the ones still unhandled when
+## the loop runs out of jobs (js_std_promise_rejection_tracker).
+pub func js_std_promise_rejection_tracker(ctx: Context*, promise: Value, reason: Value, is_handled: bool,
+                                          opaque: void*?):
+    let ts = thread_state(js.js_get_runtime(ctx))
+    if not is_handled:
+        # add a new entry if needed
+        if find_rejected_promise(ctx, ts, promise) == none:
+            if let block = cutils.malloc(sizeof(RejectedPromiseEntry)):
+                let rp = (RejectedPromiseEntry*)block
+                rp.promise = js.js_dup_value(ctx, promise)
+                rp.reason = js.js_dup_value(ctx, reason)
+                cutils.list_add_tail(&rp.link, &ts.rejected_promise_list)
+    else:
+        # the rejection is handled, so the entry can be removed if present
+        if let rp = find_rejected_promise(ctx, ts, promise):
+            js.js_free_value(ctx, rp.promise)
+            js.js_free_value(ctx, rp.reason)
+            cutils.list_del(&rp.link)
+            cutils.c_free(rp)
+
+# check if there are pending promise rejections. It must be done asynchrously in case a
+# rejected promise is handled later. Currently we do it once the application is about to
+# sleep. It could be done more often if needed.
+func js_std_promise_rejection_check(ctx: Context*):
+    let ts = thread_state(js.js_get_runtime(ctx))
+    if cutils.list_empty(&ts.rejected_promise_list):
+        return
+    var el = ts.rejected_promise_list.next else return
+    while el != &ts.rejected_promise_list:
+        let rp = rejected_promise_of(el)
+        let text = "Possibly unhandled promise rejection: "
+        discard(fwrite(text.bytes.data, 1, text.length, c.stderr()))
+        js_std_dump_error1(ctx, rp.reason)
+        el = el.next else break
+    c_exit(1)
+
+# mark: The event loop ==========================================================================
+
+## main loop which calls the user JS callbacks
+pub func js_std_loop(ctx: Context*):
+    while true:
+        # execute the pending jobs
+        while true:
+            let ran = js.js_execute_pending_job(js.js_get_runtime(ctx), none) catch:
+                js_std_dump_error(ctx)
+                recover false
+            if not ran:
+                break
+
+        js_std_promise_rejection_check(ctx)
+
+        let poll = os_poll_func else break
+        if poll(ctx) != 0:
+            break
+
+## Wait for a promise and execute pending jobs while waiting for it. Return the promise
+## result or fail with its reason thrown in case of promise rejection. Takes `obj`.
+pub func js_std_await(ctx: Context*, obj: Value) -> Value!:
+    while true:
+        let state = js.js_promise_state(ctx, obj) else return obj  # not a promise
+        match state:
+            .fulfilled:
+                let ret = js.js_promise_result(ctx, obj)
+                js.js_free_value(ctx, obj)
+                return ret
+            .rejected:
+                let reason = js.js_promise_result(ctx, obj)
+                js.js_free_value(ctx, obj)
+                try js.js_throw(ctx, reason)
+            .pending:
+                var failed = false
+                let ran = js.js_execute_pending_job(js.js_get_runtime(ctx), none) catch:
+                    failed = true
+                    recover false
+                if failed:
+                    js_std_dump_error(ctx)
+                elif not ran:
+                    js_std_promise_rejection_check(ctx)
+                    if let poll = os_poll_func:
+                        discard(poll(ctx))
+            _:
+                trap("js_std_await: unknown promise state")
+    return obj

@@ -1,0 +1,208 @@
+#==============================================================================================
+#
+#   libc - The C library calls and target constants the host module uses
+#
+#   DESCRIPTION:
+#       The host reaches files, directories, the environment and the clock through the C
+#       library, as quickjs-libc.c does: the `std` module's FILE objects are C streams, so
+#       binding stdio directly keeps their semantics (buffering, ungetc, popen) exactly.
+#       Time comes from the standard `time` module and sleeping from `thread`. Where a
+#       constant or a layout differs between the supported targets (macOS on arm64, Linux
+#       on x86-64 and arm64) it is chosen with the `platform` constants; Windows is not
+#       supported.
+#
+#==============================================================================================
+
+# mark: stdio ===================================================================================
+
+# A C `FILE *` is a `void*`, as c.stdout() answers it.
+extern func fopen(path: const u8*, mode: const u8*) -> void*?
+extern func fclose(f: void*) -> i32
+extern func fread(ptr: void*, size: usize, n: usize, f: void*) -> usize
+extern func fwrite(ptr: const void*, size: usize, n: usize, f: void*) -> usize
+extern func fseeko(f: void*, offset: i64, whence: i32) -> i32
+extern func ftello(f: void*) -> i64
+extern func fflush(f: void*?) -> i32
+extern func feof(f: void*) -> i32
+extern func ferror(f: void*) -> i32
+extern func clearerr(f: void*)
+extern func fileno(f: void*) -> i32
+extern func fgetc(f: void*) -> i32
+extern func fputc(ch: i32, f: void*) -> i32
+extern func tmpfile() -> void*?
+extern func fdopen(fd: i32, mode: const u8*) -> void*?
+extern func popen(command: const u8*, mode: const u8*) -> void*?
+extern func pclose(f: void*) -> i32
+extern func snprintf(buf: u8*?, size: usize, cformat: const u8*, ...) -> i32
+
+## C's EOF.
+let eof: i32 = -1
+
+# mark: Process and environment =================================================================
+
+extern func c_exit as "exit"(status: i32) -> never
+extern func getenv(name: const u8*) -> const u8*?
+extern func setenv(name: const u8*, value: const u8*, overwrite: i32) -> i32
+extern func unsetenv(name: const u8*) -> i32
+extern func strerror(errnum: i32) -> const u8*
+extern func strchr(s: const u8*, ch: i32) -> const u8*?
+extern func strspn(s: const u8*, accept: const u8*) -> usize
+extern func getpid() -> i32
+
+# mark: Files and directories ===================================================================
+
+extern func c_open as "open"(path: const u8*, flags: i32, ...) -> i32
+extern func close(fd: i32) -> i32
+extern func lseek(fd: i32, offset: i64, whence: i32) -> i64
+extern func read(fd: i32, buf: void*, count: usize) -> isize
+extern func write(fd: i32, buf: const void*, count: usize) -> isize
+extern func isatty(fd: i32) -> i32
+extern func remove(path: const u8*) -> i32
+extern func rename(oldpath: const u8*, newpath: const u8*) -> i32
+extern func getcwd(buf: u8*, size: usize) -> u8*?
+extern func chdir(path: const u8*) -> i32
+extern func mkdir(path: const u8*, mode: u32) -> i32
+extern func opendir(path: const u8*) -> void*?
+extern func readdir(dir: void*) -> void*?
+extern func closedir(dir: void*) -> i32
+extern func stat(path: const u8*, buf: void*) -> i32
+extern func lstat(path: const u8*, buf: void*) -> i32
+extern func utimes(path: const u8*, times: const Timeval*) -> i32
+extern func realpath(path: const u8*, resolved: u8*) -> u8*?
+extern func symlink(target: const u8*, linkpath: const u8*) -> i32
+extern func readlink(path: const u8*, buf: u8*, size: usize) -> isize
+
+## struct timeval. `tv_usec` is 32 bits on macOS followed by padding; as the targets are
+## little-endian, writing it as 64 bits stores the same value.
+extern struct Timeval:
+    tv_sec: i64
+    tv_usec: i64
+
+## PATH_MAX, the larger of the targets' values.
+let path_max: usize = 4096
+
+## The size of a buffer that holds any target's `struct stat` (144 bytes on macOS arm64 and
+## Linux x86-64, 128 on Linux arm64).
+let stat_buf_size: usize = 256
+
+# mark: Target constants ========================================================================
+
+# A constant that differs between macOS and Linux, spelled as arithmetic on the platform
+# booleans so that it stays a constant expression.
+let is_mac: i32 = (i32)platform.macos
+let is_linux: i32 = (i32)platform.linux
+
+let o_rdonly: i32 = 0
+let o_wronly: i32 = 1
+let o_rdwr: i32 = 2
+let o_append: i32 = is_mac * 0x8 + is_linux * 0x400
+let o_creat: i32 = is_mac * 0x200 + is_linux * 0x40
+let o_excl: i32 = is_mac * 0x800 + is_linux * 0x80
+let o_trunc: i32 = is_mac * 0x400 + is_linux * 0x200
+
+let seek_set: i32 = 0
+let seek_cur: i32 = 1
+let seek_end: i32 = 2
+
+let e_perm: i32 = 1
+let e_noent: i32 = 2
+let e_io: i32 = 5
+let e_badf: i32 = 9
+let e_acces: i32 = 13
+let e_busy: i32 = 16
+let e_exist: i32 = 17
+let e_inval: i32 = 22
+let e_nospc: i32 = 28
+let e_pipe: i32 = 32
+let e_nosys: i32 = is_mac * 78 + is_linux * 38
+let e_isdir: i32 = 21
+
+let s_ifmt: i32 = 0o170000
+let s_ififo: i32 = 0o010000
+let s_ifchr: i32 = 0o020000
+let s_ifdir: i32 = 0o040000
+let s_ifblk: i32 = 0o060000
+let s_ifreg: i32 = 0o100000
+let s_ifsock: i32 = 0o140000
+let s_iflnk: i32 = 0o120000
+let s_isgid: i32 = 0o2000
+let s_isuid: i32 = 0o4000
+
+# mark: struct stat and struct dirent ===========================================================
+
+## The fields of a `struct stat` the `os.stat` result carries, times in milliseconds.
+struct StatInfo:
+    var dev: i64
+    var ino: i64
+    var mode: i32
+    var nlink: i64
+    var uid: i64
+    var gid: i64
+    var rdev: i64
+    var size: i64
+    var blocks: i64
+    var atime: i64
+    var mtime: i64
+    var ctime: i64
+
+func read_i64(buf: const u8*, offset: usize) -> i64:
+    return cutils.get_i64(buf + offset)
+
+func read_u32(buf: const u8*, offset: usize) -> i64:
+    return (i64)cutils.get_u32(buf + offset)
+
+func read_u16(buf: const u8*, offset: usize) -> i64:
+    return (i64)cutils.get_u16(buf + offset)
+
+## A `struct timespec` at `offset` in milliseconds (timespec_to_ms).
+func read_timespec_ms(buf: const u8*, offset: usize) -> i64:
+    return read_i64(buf, offset) * 1000 + read_i64(buf, offset + 8) // 1000000
+
+## Decode the `struct stat` that stat() or lstat() wrote into `buf`.
+func stat_info(buf: const u8*) -> StatInfo:
+    if platform.macos:
+        # dev i32, mode u16, nlink u16, ino u64, uid, gid, rdev i32, timespecs, size, blocks
+        return StatInfo(dev = (i64)cutils.get_i32(buf), ino = read_i64(buf, 8),
+                        mode = (i32)read_u16(buf, 4), nlink = read_u16(buf, 6),
+                        uid = read_u32(buf, 16), gid = read_u32(buf, 20),
+                        rdev = (i64)cutils.get_i32(buf + 24), size = read_i64(buf, 96),
+                        blocks = read_i64(buf, 104), atime = read_timespec_ms(buf, 32),
+                        mtime = read_timespec_ms(buf, 48), ctime = read_timespec_ms(buf, 64))
+    if platform.x86_64:
+        # dev, ino, nlink u64, mode, uid, gid u32, pad, rdev, size, blksize, blocks, timespecs
+        return StatInfo(dev = read_i64(buf, 0), ino = read_i64(buf, 8),
+                        mode = (i32)read_u32(buf, 24), nlink = read_i64(buf, 16),
+                        uid = read_u32(buf, 28), gid = read_u32(buf, 32),
+                        rdev = read_i64(buf, 40), size = read_i64(buf, 48),
+                        blocks = read_i64(buf, 64), atime = read_timespec_ms(buf, 72),
+                        mtime = read_timespec_ms(buf, 88), ctime = read_timespec_ms(buf, 104))
+    # Linux's generic layout (arm64): dev, ino u64, mode, nlink, uid, gid u32, rdev, pad,
+    # size, blksize i32, pad, blocks, timespecs
+    return StatInfo(dev = read_i64(buf, 0), ino = read_i64(buf, 8),
+                    mode = (i32)read_u32(buf, 16), nlink = read_u32(buf, 20),
+                    uid = read_u32(buf, 24), gid = read_u32(buf, 28),
+                    rdev = read_i64(buf, 32), size = read_i64(buf, 48),
+                    blocks = read_i64(buf, 64), atime = read_timespec_ms(buf, 72),
+                    mtime = read_timespec_ms(buf, 88), ctime = read_timespec_ms(buf, 104))
+
+## The NUL-terminated `d_name` of the `struct dirent` readdir() answered.
+func dirent_name(d: void*) -> const u8*:
+    if platform.macos:
+        return (const u8*)d + 21    # d_ino, d_seekoff, d_reclen, d_namlen, d_type
+    return (const u8*)d + 19        # d_ino, d_off, d_reclen, d_type
+
+# mark: Time ====================================================================================
+
+## Milliseconds of the monotonic clock (get_time_ms).
+func get_time_ms() -> i64:
+    return (i64)(time.now() // 1000000)
+
+## Nanoseconds of the monotonic clock (get_time_ns).
+func get_time_ns() -> i64:
+    return (i64)time.now()
+
+## An `errno` failure as the negative value os functions answer (js_get_errno).
+func js_get_errno(ret: i64) -> i64:
+    if ret == -1:
+        return -(i64)c.errno()
+    return ret

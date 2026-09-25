@@ -16,6 +16,12 @@ ported region by region (see `docs/PORTING.md`).
 | `regex` (the luce-regex package) | `libregexp.c` | replaced by luce-regex's ECMAScript dialect |
 | `luce_js.engine` | `quickjs.c` | skeleton: types and typed stubs |
 
-Run the tests of a module with `luce-base test src/luce_js/<module>`.
+| `luce_js.host` | `quickjs-libc.c` (parts) | helpers, module loader, job/timer loop, `std`, `os` |
+
+Run the tests of a module with `luce-base test src/luce_js/<module>`; `./test.sh` runs every
+module's tests and then QuickJS's own JavaScript tests (`tests/run.py`).
+
+`tests/ljs.lucb` is a small `qjs`: `luce-base build tests/ljs.lucb -o build/ljs`, then
+`build/ljs [--std] [-m] file.js [args]` or `build/ljs -e EXPR`.
 
 Licensed under the MIT license, as QuickJS is; see `LICENSE`.
