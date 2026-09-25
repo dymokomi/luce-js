@@ -1,0 +1,329 @@
+#==============================================================================================
+#
+#   promise_statics - The static methods of Promise: resolve, reject, withResolvers,
+#                     try, all, allSettled, any and race
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 53786-54189. Promise.all and its kin keep their shared
+#       state in function data: the values array, and a one-element array holding the
+#       remaining elements count. C's `done:` cleanup of the iteration locals becomes a
+#       PromiseIterLocals record freed by a `defer`, and the `fail_reject:` path (reject
+#       the result promise with the pending exception) wraps the iteration in a helper.
+#
+#==============================================================================================
+
+# mark: resolve, reject, withResolvers, try =====================================================
+
+## Promise.resolve (magic 0) and Promise.reject (magic 1).
+func js_promise_resolve(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let is_reject = magic != 0
+
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    if not is_reject and js_get_opaque(argv[0], (u32)ClassId.promise) != none:
+        let ctor = try js_get_property(ctx, argv[0], atom_constructor)
+        let is_same = js_same_value(ctx, ctor, this_val)
+        js_free_value(ctx, ctor)
+        if is_same:
+            return js_dup_value(ctx, argv[0])
+    var resolving_funcs: Value[2] = ---
+    let result_promise = try js_new_promise_capability_internal(ctx, &resolving_funcs[0], this_val)
+    defer js_free_value(ctx, resolving_funcs[0])
+    defer js_free_value(ctx, resolving_funcs[1])
+    errdefer js_free_value(ctx, result_promise)
+    let ret = try js_call(ctx, resolving_funcs[(usize)magic], js_undefined(), 1, argv)
+    js_free_value(ctx, ret)
+    return result_promise
+
+## Promise.withResolvers.
+func js_promise_with_resolvers(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    var resolving_funcs: Value[2] = ---
+    let result_promise = try js_new_promise_capability_internal(ctx, &resolving_funcs[0], this_val)
+    # The three values are moved into the result object one at a time; on a failure the
+    # ones not moved yet are freed (C's `exception:` label).
+    let owned: Value[3] = [result_promise, resolving_funcs[0], resolving_funcs[1]]
+    let names: Atom[3] = [atom_promise, atom_resolve, atom_reject]
+    let obj = js_new_object(ctx) catch failure:
+        for v in owned:
+            js_free_value(ctx, v)
+        error(failure.code, failure.message)
+    for i: usize in 0..<3:
+        let defined = js_define_property_value(ctx, obj, names[i], owned[i], prop_c_w_e) catch failure:
+            for j in i + 1..<3:
+                js_free_value(ctx, owned[j])
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        discard(defined)
+    return obj
+
+## Promise.try(callbackfn, ...args).
+func js_promise_try(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    var resolving_funcs: Value[2] = ---
+    let result_promise = try js_new_promise_capability_internal(ctx, &resolving_funcs[0], this_val)
+    defer js_free_value(ctx, resolving_funcs[0])
+    defer js_free_value(ctx, resolving_funcs[1])
+    errdefer js_free_value(ctx, result_promise)
+    var is_reject: usize = 0
+    var ret = js_call(ctx, argv[0], js_undefined(), argc - 1, argv + 1) catch:
+        is_reject = 1
+        recover js_get_exception(ctx)
+    let ret2 = js_call(ctx, resolving_funcs[is_reject], js_undefined(), 1, &ret) catch failure:
+        js_free_value(ctx, ret)
+        error(failure.code, failure.message)
+    js_free_value(ctx, ret)
+    js_free_value(ctx, ret2)
+    return result_promise
+
+# mark: all, allSettled, any ====================================================================
+
+## Add `addend` to the remaining elements count kept in element 0 of
+## `resolve_element_env`; answer whether it reached zero.
+func remaining_elements_count_add(ctx: Context*, resolve_element_env: Value, addend: i32) -> bool!:
+    let val = try js_get_property_uint32(ctx, resolve_element_env, 0)
+    var remaining_elements_count: i32 = 0
+    try js_to_int32_free(ctx, &remaining_elements_count, val)
+    remaining_elements_count += addend
+    discard(try js_set_property_uint32(ctx, resolve_element_env, 0,
+                                       js_new_int32(remaining_elements_count)))
+    return remaining_elements_count == 0
+
+let promise_magic_all: i32 = 0
+let promise_magic_all_settled: i32 = 1
+let promise_magic_any: i32 = 2
+
+## The function settling one element of Promise.all, allSettled or any. Its data is
+## alreadyCalled, index, values, resolve and resolve_element_env; `magic` is the
+## resolve type, plus 4 for the reject function of allSettled.
+func js_promise_all_resolve_element(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    let resolve_type = magic & 3
+    let is_reject = (magic & 4) != 0
+    let already_called = try js_to_bool(ctx, func_data[0])
+    var values = func_data[2]
+    let resolve = func_data[3]
+    let resolve_element_env = func_data[4]
+    var index: i32 = 0
+
+    try js_to_int32(ctx, &index, func_data[1])
+    if already_called:
+        return js_undefined()
+    func_data[0] = js_new_bool(true)
+
+    var obj = js_undefined()
+    if resolve_type == promise_magic_all_settled:
+        let o = try js_new_object(ctx)
+        # fail1:
+        errdefer js_free_value(ctx, o)
+        let status = try js_new_string8(ctx, ("rejected" if is_reject else "fulfilled").bytes.data)
+        discard(try js_define_property_value(ctx, o, atom_status, status, prop_c_w_e))
+        discard(try js_define_property_value(ctx, o, atom_reason if is_reject else atom_value,
+                                             js_dup_value(ctx, argv[0]), prop_c_w_e))
+        obj = o
+    else:
+        obj = js_dup_value(ctx, argv[0])
+    discard(try js_define_property_value_uint32(ctx, values, (u32)index, obj, prop_c_w_e))
+
+    let is_zero = try remaining_elements_count_add(ctx, resolve_element_env, -1)
+    if is_zero:
+        var ret = js_undefined()
+        if resolve_type == promise_magic_any:
+            var err = try js_aggregate_error_constructor(ctx, values)
+            ret = js_call(ctx, resolve, js_undefined(), 1, &err) catch failure:
+                js_free_value(ctx, err)
+                error(failure.code, failure.message)
+            js_free_value(ctx, err)
+        else:
+            ret = try js_call(ctx, resolve, js_undefined(), 1, &values)
+        js_free_value(ctx, ret)
+    return js_undefined()
+
+## The locals of Promise.all and Promise.race that C frees at its `done:` label.
+struct PromiseIterLocals:
+    var promise_resolve: Value
+    var iter: Value
+    var next_method: Value
+    var values: Value
+    var resolve_element_env: Value
+
+func promise_iter_locals_free(ctx: Context*, l: PromiseIterLocals*):
+    js_free_value(ctx, l.promise_resolve)
+    js_free_value(ctx, l.resolve_element_env)
+    js_free_value(ctx, l.values)
+    js_free_value(ctx, l.next_method)
+    js_free_value(ctx, l.iter)
+
+# Reject the result promise of a combinator with the pending exception (C's
+# `fail_reject:`); fails if the reject function throws.
+func promise_reject_with_exception(ctx: Context*, reject_func: Value) -> !:
+    var err = js_get_exception(ctx)
+    let ret = js_call(ctx, reject_func, js_undefined(), 1, &err) catch failure:
+        js_free_value(ctx, err)
+        error(failure.code, failure.message)
+    js_free_value(ctx, err)
+    js_free_value(ctx, ret)
+
+# Settle one element `item` (freed) of Promise.all, allSettled or any: resolve it with
+# the constructor's resolve and call its then with the element functions.
+func js_promise_all_element(ctx: Context*, this_val: Value, magic: i32, resolving_funcs: Value*, l: PromiseIterLocals*, item: Value*, index: i32) -> !:
+    let is_promise_any = (usize)(i32)(magic == promise_magic_any)
+    let next_promise = js_call(ctx, l.promise_resolve, this_val, 1, item) catch failure:
+        js_free_value(ctx, *item)
+        error(failure.code, failure.message)
+    js_free_value(ctx, *item)
+    var resolve_element_data: Value[5] = [
+        js_new_bool(false),
+        js_new_int32(index),
+        l.values,
+        resolving_funcs[is_promise_any],
+        l.resolve_element_env,
+    ]
+    var resolve_element = js_new_c_function_data(ctx, js_promise_all_resolve_element, 1,
+                                                 magic, 5, &resolve_element_data[0]) catch failure:
+        js_free_value(ctx, next_promise)
+        error(failure.code, failure.message)
+
+    var reject_element = js_undefined()
+    if magic == promise_magic_all_settled:
+        # as upstream, resolve_element is not freed if this fails
+        reject_element = js_new_c_function_data(ctx, js_promise_all_resolve_element, 1,
+                                                magic | 4, 5, &resolve_element_data[0]) catch failure:
+            js_free_value(ctx, next_promise)
+            error(failure.code, failure.message)
+    elif magic == promise_magic_any:
+        # as upstream, next_promise and resolve_element are not freed if this fails
+        discard(try js_define_property_value_uint32(ctx, l.values, (u32)index, js_undefined(),
+                                                    prop_c_w_e))
+        reject_element = resolve_element
+        resolve_element = js_dup_value(ctx, resolving_funcs[0])
+    else:
+        reject_element = js_dup_value(ctx, resolving_funcs[1])
+
+    let counted = remaining_elements_count_add(ctx, l.resolve_element_env, 1) catch failure:
+        js_free_value(ctx, next_promise)
+        js_free_value(ctx, resolve_element)
+        js_free_value(ctx, reject_element)
+        error(failure.code, failure.message)
+    discard(counted)
+
+    var then_args: Value[2] = [resolve_element, reject_element]
+    let ret = js_invoke_free(ctx, next_promise, atom_then, 2, &then_args[0]) catch failure:
+        js_free_value(ctx, resolve_element)
+        js_free_value(ctx, reject_element)
+        error(failure.code, failure.message)
+    js_free_value(ctx, resolve_element)
+    js_free_value(ctx, reject_element)
+    js_free_value(ctx, ret)
+
+# The body of Promise.all and its kin, up to its `fail_reject:` label: every failure
+# rejects the result promise.
+func js_promise_all_iterate(ctx: Context*, this_val: Value, iterable: Value, magic: i32, resolving_funcs: Value*, l: PromiseIterLocals*) -> !:
+    let is_promise_any = (usize)(i32)(magic == promise_magic_any)
+    l.promise_resolve = try js_get_property(ctx, this_val, atom_resolve)
+    try check_function(ctx, l.promise_resolve)
+    l.iter = try js_get_iterator(ctx, iterable, false)
+    l.next_method = try js_get_property(ctx, l.iter, atom_next)
+    l.values = try js_new_array(ctx)
+    l.resolve_element_env = try js_new_array(ctx)
+    # remainingElementsCount field
+    discard(try js_define_property_value_uint32(ctx, l.resolve_element_env, 0, js_new_int32(1),
+                                                prop_configurable | prop_enumerable | prop_writable))
+
+    var index: i32 = 0
+    while true:
+        # XXX: conformance: should close the iterator if error on 'done'
+        # access, but not on 'value' access
+        var done = false
+        var no_args = js_undefined()
+        var item = try js_iterator_next(ctx, l.iter, l.next_method, 0, &no_args, &done)
+        if done:
+            break
+        js_promise_all_element(ctx, this_val, magic, resolving_funcs, l, &item, index) catch failure:
+            # fail_reject1:
+            js_iterator_close(ctx, l.iter, true) catch: recover ()
+            error(failure.code, failure.message)
+        index += 1
+
+    let is_zero = try remaining_elements_count_add(ctx, l.resolve_element_env, -1)
+    if is_zero:
+        if magic == promise_magic_any:
+            let err = try js_aggregate_error_constructor(ctx, l.values)
+            js_free_value(ctx, l.values)
+            l.values = err
+        let ret = try js_call(ctx, resolving_funcs[is_promise_any], js_undefined(), 1, &l.values)
+        js_free_value(ctx, ret)
+
+## Promise.all (magic 0), Promise.allSettled (1) and Promise.any (2).
+func js_promise_all(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    var resolving_funcs: Value[2] = ---
+    let result_promise = try js_new_promise_capability_internal(ctx, &resolving_funcs[0], this_val)
+    # done:
+    defer js_free_value(ctx, resolving_funcs[1])
+    defer js_free_value(ctx, resolving_funcs[0])
+    var l = PromiseIterLocals(promise_resolve = js_undefined(), iter = js_undefined(),
+                              next_method = js_undefined(), values = js_undefined(),
+                              resolve_element_env = js_undefined())
+    defer promise_iter_locals_free(ctx, &l)
+    # fail:
+    errdefer js_free_value(ctx, result_promise)
+    js_promise_all_iterate(ctx, this_val, argv[0], magic, &resolving_funcs[0], &l) catch:
+        # fail_reject:
+        try promise_reject_with_exception(ctx, resolving_funcs[1])
+        recover ()
+    return result_promise
+
+# mark: race ====================================================================================
+
+# The body of Promise.race, up to its `fail_reject:` label.
+func js_promise_race_iterate(ctx: Context*, this_val: Value, iterable: Value, resolving_funcs: Value*, l: PromiseIterLocals*) -> !:
+    l.promise_resolve = try js_get_property(ctx, this_val, atom_resolve)
+    try check_function(ctx, l.promise_resolve)
+    l.iter = try js_get_iterator(ctx, iterable, false)
+    l.next_method = try js_get_property(ctx, l.iter, atom_next)
+    while true:
+        # XXX: conformance: should close the iterator if error on 'done'
+        # access, but not on 'value' access
+        var done = false
+        var no_args = js_undefined()
+        var item = try js_iterator_next(ctx, l.iter, l.next_method, 0, &no_args, &done)
+        if done:
+            break
+        js_promise_race_element(ctx, this_val, resolving_funcs, l, &item) catch failure:
+            # fail_reject1:
+            js_iterator_close(ctx, l.iter, true) catch: recover ()
+            error(failure.code, failure.message)
+
+# Resolve one element `item` (freed) of Promise.race and call its then with the result
+# promise's resolving functions.
+func js_promise_race_element(ctx: Context*, this_val: Value, resolving_funcs: Value*, l: PromiseIterLocals*, item: Value*) -> !:
+    let next_promise = js_call(ctx, l.promise_resolve, this_val, 1, item) catch failure:
+        js_free_value(ctx, *item)
+        error(failure.code, failure.message)
+    js_free_value(ctx, *item)
+    let ret = try js_invoke_free(ctx, next_promise, atom_then, 2, resolving_funcs)
+    js_free_value(ctx, ret)
+
+## Promise.race.
+func js_promise_race(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    var resolving_funcs: Value[2] = ---
+    let result_promise = try js_new_promise_capability_internal(ctx, &resolving_funcs[0], this_val)
+    # done:
+    defer js_free_value(ctx, resolving_funcs[1])
+    defer js_free_value(ctx, resolving_funcs[0])
+    var l = PromiseIterLocals(promise_resolve = js_undefined(), iter = js_undefined(),
+                              next_method = js_undefined(), values = js_undefined(),
+                              resolve_element_env = js_undefined())
+    defer promise_iter_locals_free(ctx, &l)
+    # fail:
+    errdefer js_free_value(ctx, result_promise)
+    js_promise_race_iterate(ctx, this_val, argv[0], &resolving_funcs[0], &l) catch:
+        # fail_reject:
+        try promise_reject_with_exception(ctx, resolving_funcs[1])
+        recover ()
+    return result_promise

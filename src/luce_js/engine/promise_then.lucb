@@ -1,0 +1,171 @@
+#==============================================================================================
+#
+#   promise_then - Promise.prototype.then, catch and finally, and the Promise tables
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 54191-54383: perform_promise_then (register a reaction,
+#       or queue its job at once when the promise is settled, telling the host's
+#       rejection tracker that a rejected promise got a handler), then, catch, finally
+#       and its thunks, and the function lists of Promise and Promise.prototype.
+#
+#==============================================================================================
+
+# mark: then ====================================================================================
+
+## Register the reactions `resolve_reject[0]` (on fulfillment) and `resolve_reject[1]`
+## (on rejection) of `promise`, settling the capability `cap_resolving_funcs`; a
+## settled promise queues the reaction's job at once.
+func perform_promise_then(ctx: Context*, promise: Value, resolve_reject: Value*, cap_resolving_funcs: Value*) -> !:
+    let raw = js_get_opaque(promise, (u32)ClassId.promise) else trap("perform_promise_then: not a promise")
+    let s = (PromiseData*)raw
+    var rd_array: PromiseReactionData*[2] = ---
+
+    for i: usize in 0..<2:
+        let rd_raw = js_mallocz(ctx, sizeof(PromiseReactionData)) catch failure:
+            if i == 1:
+                promise_reaction_data_free(ctx.rt, rd_array[0])
+            error(failure.code, failure.message)
+        let rd = (PromiseReactionData*)rd_raw
+        for j: usize in 0..<2:
+            rd.resolving_funcs[j] = js_dup_value(ctx, cap_resolving_funcs[j])
+        var handler = resolve_reject[i]
+        if not js_is_function(ctx, handler):
+            handler = js_undefined()
+        rd.handler = js_dup_value(ctx, handler)
+        rd_array[i] = rd
+
+    if s.promise_state == PromiseState.pending:
+        for i: usize in 0..<2:
+            cutils.list_add_tail(&rd_array[i].link, &s.promise_reactions[i])
+    else:
+        if s.promise_state == PromiseState.rejected and not s.is_handled:
+            let rt = ctx.rt
+            if let tracker = rt.host_promise_rejection_tracker:
+                tracker(ctx, promise, s.promise_result, true, rt.host_promise_rejection_tracker_opaque)
+        let i = (usize)((i32)s.promise_state - (i32)PromiseState.fulfilled)
+        let rd = rd_array[i]
+        var args: Value[5] = [
+            rd.resolving_funcs[0],
+            rd.resolving_funcs[1],
+            rd.handler,
+            js_new_bool(i != 0),
+            s.promise_result,
+        ]
+        # as upstream, a failure to queue the job is ignored
+        js_enqueue_job(ctx, promise_reaction_job, 5, &args[0]) catch: recover ()
+        for k: usize in 0..<2:
+            promise_reaction_data_free(ctx.rt, rd_array[k])
+    s.is_handled = true
+
+## Promise.prototype.then(onFulfilled, onRejected).
+func js_promise_then(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    discard(try js_get_opaque2(ctx, this_val, (u32)ClassId.promise))
+
+    let ctor = try js_species_constructor(ctx, this_val, js_undefined())
+    var resolving_funcs: Value[2] = ---
+    let result_promise = js_new_promise_capability_internal(ctx, &resolving_funcs[0], ctor) catch failure:
+        js_free_value(ctx, ctor)
+        error(failure.code, failure.message)
+    js_free_value(ctx, ctor)
+    defer js_free_value(ctx, resolving_funcs[1])
+    defer js_free_value(ctx, resolving_funcs[0])
+    errdefer js_free_value(ctx, result_promise)
+    try perform_promise_then(ctx, this_val, argv, &resolving_funcs[0])
+    return result_promise
+
+## Promise.prototype.catch(onRejected).
+func js_promise_catch(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var args: Value[2] = [js_undefined(), argv[0]]
+    return try js_invoke(ctx, this_val, atom_then, 2, &args[0])
+
+# mark: finally =================================================================================
+
+## Answers the value in its data (the fulfillment handler finally installs).
+func js_promise_finally_value_thunk(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    return js_dup_value(ctx, func_data[0])
+
+## Throws the value in its data (the rejection handler finally installs).
+func js_promise_finally_thrower(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    try js_throw(ctx, js_dup_value(ctx, func_data[0]))
+
+## The then handlers of finally (magic 0 on fulfillment, 1 on rejection): call
+## onFinally, wait for its result, then pass the original value or reason on. Its data is
+## the constructor and onFinally.
+func js_promise_then_finally_func(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    let ctor = func_data[0]
+    let on_finally = func_data[1]
+
+    var no_args = js_undefined()
+    var res = try js_call(ctx, on_finally, js_undefined(), 0, &no_args)
+    let promise = js_promise_resolve(ctx, ctor, 1, &res, 0) catch failure:
+        js_free_value(ctx, res)
+        error(failure.code, failure.message)
+    js_free_value(ctx, res)
+    var then_func = js_undefined()
+    if magic == 0:
+        then_func = js_new_c_function_data(ctx, js_promise_finally_value_thunk, 0,
+                                           0, 1, argv) catch failure:
+            js_free_value(ctx, promise)
+            error(failure.code, failure.message)
+    else:
+        then_func = js_new_c_function_data(ctx, js_promise_finally_thrower, 0,
+                                           0, 1, argv) catch failure:
+            js_free_value(ctx, promise)
+            error(failure.code, failure.message)
+    defer js_free_value(ctx, then_func)
+    return try js_invoke_free(ctx, promise, atom_then, 1, &then_func)
+
+## Promise.prototype.finally(onFinally).
+func js_promise_finally(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let on_finally = argv[0]
+    var then_funcs: Value[2] = ---
+
+    let ctor = try js_species_constructor(ctx, this_val, js_undefined())
+    if not js_is_function(ctx, on_finally):
+        then_funcs[0] = js_dup_value(ctx, on_finally)
+        then_funcs[1] = js_dup_value(ctx, on_finally)
+    else:
+        var func_data: Value[2] = [ctor, on_finally]
+        for i: usize in 0..<2:
+            then_funcs[i] = js_new_c_function_data(ctx, js_promise_then_finally_func, 1, (i32)i,
+                                                   2, &func_data[0]) catch failure:
+                if i == 1:
+                    js_free_value(ctx, then_funcs[0])
+                js_free_value(ctx, ctor)
+                error(failure.code, failure.message)
+    js_free_value(ctx, ctor)
+    defer js_free_value(ctx, then_funcs[1])
+    defer js_free_value(ctx, then_funcs[0])
+    return try js_invoke(ctx, this_val, atom_then, 2, &then_funcs[0])
+
+# mark: Tables ==================================================================================
+
+let js_promise_funcs: CFunctionListEntry[9] = [
+    CFunctionListEntry(name = "resolve", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_promise_resolve, magic = 0),
+    CFunctionListEntry(name = "reject", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_promise_resolve, magic = 1),
+    CFunctionListEntry(name = "all", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_promise_all,
+                       magic = (i16)promise_magic_all),
+    CFunctionListEntry(name = "allSettled", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_promise_all,
+                       magic = (i16)promise_magic_all_settled),
+    CFunctionListEntry(name = "any", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic, generic_magic = js_promise_all,
+                       magic = (i16)promise_magic_any),
+    CFunctionListEntry(name = "try", def_type = def_cfunc, length = 1, generic = js_promise_try),
+    CFunctionListEntry(name = "race", def_type = def_cfunc, length = 1, generic = js_promise_race),
+    CFunctionListEntry(name = "withResolvers", def_type = def_cfunc, length = 0,
+                       generic = js_promise_with_resolvers),
+    CFunctionListEntry(name = "[Symbol.species]", prop_flags = 1, def_type = def_cgetset,
+                       getter = js_get_this, setter = none),
+]
+
+let js_promise_proto_funcs: CFunctionListEntry[4] = [
+    CFunctionListEntry(name = "then", def_type = def_cfunc, length = 2, generic = js_promise_then),
+    CFunctionListEntry(name = "catch", def_type = def_cfunc, length = 1, generic = js_promise_catch),
+    CFunctionListEntry(name = "finally", def_type = def_cfunc, length = 1, generic = js_promise_finally),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "Promise"),
+]

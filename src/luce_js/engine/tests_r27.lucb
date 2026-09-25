@@ -1,0 +1,194 @@
+#==============================================================================================
+#
+#   tests_r27 - Tests of the pure helpers of the Promise and Date region
+#
+#   DESCRIPTION:
+#       The Date calendar arithmetic, the conversions between time values and fields,
+#       the Date string formats and parsers, and the URI character classes. The
+#       expected time values are those of JavaScript (Date.UTC and Date.parse).
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# The UTC fields of the time value `t`.
+func utc_fields_of(t: i64) -> f64[9]:
+    var fields: f64[9]
+    date_fields_of_time(t, 0, fields)
+    return fields
+
+# The time value of a date string (NUL-terminated bytes) as Date.parse computes it,
+# without the field range check; NaN if neither parser accepts it. `is_local` receives
+# whether the string has no time zone.
+func parse_date_bytes(text: const u8[], is_local: bool*) -> f64:
+    var fields: i32[9]
+    if not (js_date_parse_isostring(text, fields, is_local) or
+            js_date_parse_otherstring(text, fields, is_local)):
+        return math.nan
+    var fields1: f64[9]
+    for k: usize in 0..<7:
+        fields1[k] = f64(fields[k])
+    return set_date_fields(fields1, false) - f64(fields[8]) * 60000.0
+
+# The text format_date_fields writes for the time value `t` with the zone offset `tz`.
+func format_utc(buf: u8[], t: i64, tz: i32, date_fmt: i32, part: i32) -> str:
+    var fields = utc_fields_of(t)
+    fields[8] = f64(tz)
+    let len = format_date_fields(buf, fields, date_fmt, part)
+    return (str)buf[0..<len]
+
+# mark: Calendar ================================================================================
+
+test "math_mod and floor_div round toward negative infinity":
+    assert(math_mod(7, 3) == 1)
+    assert(math_mod(-7, 3) == 2)
+    assert(math_mod(-6, 3) == 0)
+    assert(floor_div(7, 2) == 3)
+    assert(floor_div(-7, 2) == -4)
+    assert(floor_div(-8, 2) == -4)
+
+test "days_from_year and days_in_year follow the Gregorian calendar":
+    assert(days_from_year(1970) == 0)
+    assert(days_from_year(1971) == 365)
+    assert(days_from_year(1969) == -365)
+    assert(days_from_year(2000) == 10957)
+    assert(days_in_year(1900) == 365)
+    assert(days_in_year(2000) == 366)
+    assert(days_in_year(2024) == 366)
+    assert(days_in_year(2023) == 365)
+
+test "year_from_days answers the year and the day in it":
+    var days: i64 = 0
+    assert(year_from_days(&days) == 1970 and days == 0)
+    days = 10957 + 59
+    assert(year_from_days(&days) == 2000 and days == 59)
+    days = -1
+    assert(year_from_days(&days) == 1969 and days == 364)
+
+# mark: Time values and fields ==================================================================
+
+test "fields of a time value":
+    let f = utc_fields_of(1514934176927)
+    assert(f[0] == 2018.0 and f[1] == 0.0 and f[2] == 2.0)
+    assert(f[3] == 23.0 and f[4] == 2.0 and f[5] == 56.0 and f[6] == 927.0)
+    assert(f[7] == 2.0) # Tuesday
+    let epoch = utc_fields_of(0)
+    assert(epoch[0] == 1970.0 and epoch[1] == 0.0 and epoch[2] == 1.0 and epoch[7] == 4.0)
+    let leap = utc_fields_of(951825600000)
+    assert(leap[0] == 2000.0 and leap[1] == 1.0 and leap[2] == 29.0 and leap[3] == 12.0)
+    assert(leap[7] == 2.0)
+    let before = utc_fields_of(-1000)
+    assert(before[0] == 1969.0 and before[1] == 11.0 and before[2] == 31.0)
+    assert(before[3] == 23.0 and before[5] == 59.0 and before[6] == 0.0 and before[7] == 3.0)
+
+test "set_date_fields is MakeDate of the fields":
+    let f: f64[7] = [2018.0, 0.0, 2.0, 23.0, 2.0, 56.0, 927.0]
+    assert(set_date_fields(f, false) == 1514934176927.0)
+    # months and dates out of range carry over
+    let g: f64[7] = [2017.0, 12.0, 2.0, 23.0, 2.0, 56.0, 927.0]
+    assert(set_date_fields(g, false) == 1514934176927.0)
+    let h: f64[7] = [2018.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    assert(set_date_fields(h, false) == f64(1512086400000))
+    let far: f64[7] = [275761.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    assert(math.is_nan(set_date_fields(far, false)))
+
+test "set_date_fields_checked truncates and maps two-digit years":
+    var f: f64[7] = [99.7, 0.0, 1.0, 0.0, 0.0, 0.0, 0.5]
+    assert(set_date_fields_checked(f, false) == f64(915148800000))
+    assert(f[0] == 1999.0 and f[6] == 0.0)
+    var g: f64[7] = [2018.0, math.nan, 1.0, 0.0, 0.0, 0.0, 0.0]
+    assert(math.is_nan(set_date_fields_checked(g, false)))
+
+test "time_clip keeps the valid range and makes -0 +0":
+    assert(time_clip(8.64e15) == 8.64e15)
+    assert(math.is_nan(time_clip(8.64e15 + 1.0)))
+    assert(time_clip(-0.0).bits() == 0)
+    assert(time_clip(1.9) == 1.0)
+    assert(time_clip(-1.9) == -1.0)
+
+test "date_now reads the wall clock in milliseconds":
+    let now = date_now()
+    assert(now > 1600000000000)
+    assert(now < 8640000000000000)
+
+# mark: Formatting ==============================================================================
+
+test "date_put_int pads like printf":
+    var buf: u8[16]
+    var n = date_put_int(buf, 0, 7, 2, false)
+    assert((str)buf[0..<n] == "07")
+    n = date_put_int(buf, 0, -5, 5, false)
+    assert((str)buf[0..<n] == "-0005")
+    n = date_put_int(buf, 0, 2018, 7, true)
+    assert((str)buf[0..<n] == "+002018")
+    n = date_put_int(buf, 0, -271821, 7, true)
+    assert((str)buf[0..<n] == "-271821")
+    n = date_put_int(buf, 0, 123, 2, false)
+    assert((str)buf[0..<n] == "123")
+
+test "the Date string formats":
+    var buf: u8[64]
+    let t: i64 = 1514934176927
+    assert(format_utc(buf, t, 0, 0, 3) == "Tue, 02 Jan 2018 23:02:56 GMT")
+    assert(format_utc(buf, t, 60, 1, 3) == "Tue Jan 02 2018 23:02:56 GMT+0100")
+    assert(format_utc(buf, t, -330, 1, 2) == "23:02:56 GMT-0530")
+    assert(format_utc(buf, t, 0, 1, 1) == "Tue Jan 02 2018")
+    assert(format_utc(buf, t, 0, 2, 3) == "2018-01-02T23:02:56.927Z")
+    assert(format_utc(buf, t, 0, 3, 3) == "01/02/2018, 11:02:56 PM")
+    assert(format_utc(buf, 0, 0, 3, 2) == "12:00:00 AM")
+    # years outside 0-9999 in ISO form
+    let ancient = (i64)set_date_fields([-5.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], false)
+    assert(format_utc(buf, ancient, 0, 2, 3) == "-000005-01-01T00:00:00.000Z")
+    assert(format_utc(buf, ancient, 0, 0, 1) == "Sun, 01 Jan -0005 ")
+
+# mark: Parsing =================================================================================
+
+test "the ISO format":
+    var is_local = true
+    assert(parse_date_bytes(b"2018-01-02T23:02:56.927Z\x00", &is_local) == 1514934176927.0)
+    assert(not is_local)
+    assert(parse_date_bytes(b"2018-01-02T23:02:56.927+01:00\x00", &is_local) == 1514930576927.0)
+    assert(parse_date_bytes(b"2018\x00", &is_local) == 1514764800000.0)
+    assert(not is_local)
+    assert(parse_date_bytes(b"+275760-09-13T00:00:00.000Z\x00", &is_local) == 8.64e15)
+    discard(parse_date_bytes(b"2018-01-02T23:02\x00", &is_local))
+    assert(is_local)
+    # -000000 is not a year
+    assert(math.is_nan(parse_date_bytes(b"-000000-01-01T00:00:00Z\x00", &is_local)))
+
+test "the toString and toUTCString formats":
+    var is_local = true
+    assert(parse_date_bytes(b"Tue, 02 Jan 2018 23:02:56 GMT\x00", &is_local) == 1514934176000.0)
+    assert(not is_local)
+    assert(parse_date_bytes(b"Tue Jan 02 2018 23:02:56 GMT+0100 (CET)\x00", &is_local) == 1514930576000.0)
+    assert(parse_date_bytes(b"12/25/2019 GMT\x00", &is_local) == 1577232000000.0)
+    assert(parse_date_bytes(b"25 dec 2019 10:00 pm UTC\x00", &is_local) == 1577311200000.0)
+    assert(parse_date_bytes(b"Jan 2 2018 EST\x00", &is_local) == 1514869200000.0)
+    assert(math.is_nan(parse_date_bytes(b"not a date\x00", &is_local)))
+    assert(math.is_nan(parse_date_bytes(b"2018) Jan\x00", &is_local)))
+
+test "time zone offsets":
+    var p: i32 = 0
+    var tz: i32 = 0
+    assert(string_get_tzoffset(b"+05:30\x00", &p, &tz, true) and tz == 330 and p == 6)
+    p = 0
+    assert(string_get_tzoffset(b"-0800\x00", &p, &tz, true) and tz == -480)
+    p = 0
+    assert(string_get_tzoffset(b"Z\x00", &p, &tz, true) and tz == 0 and p == 1)
+    p = 0
+    assert(not string_get_tzoffset(b"+05\x00", &p, &tz, true))
+    p = 0
+    assert(string_get_tzoffset(b"+05\x00", &p, &tz, false) and tz == 300)
+    p = 0
+    assert(not string_get_tzoffset(b"+24:00\x00", &p, &tz, false))
+
+# mark: URI =====================================================================================
+
+test "the URI character classes":
+    assert(is_uri_reserved((i32)';') and is_uri_reserved((i32)'#'))
+    assert(not is_uri_reserved((i32)'a') and not is_uri_reserved(0x13b))
+    assert(is_unescaped((i32)'Z') and is_unescaped((i32)'@') and is_unescaped((i32)'/'))
+    assert(not is_unescaped((i32)' ') and not is_unescaped((i32)'!'))
+    assert(is_uri_unescaped((i32)'!', 1) and is_uri_unescaped((i32)'q', 1))
+    assert(is_uri_unescaped((i32)'/', 0) and not is_uri_unescaped((i32)'/', 1))
+    assert(not is_uri_unescaped((i32)'%', 0) and not is_uri_unescaped(0xe9, 0))

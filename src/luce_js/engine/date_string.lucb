@@ -1,0 +1,276 @@
+#==============================================================================================
+#
+#   date_string - Date formatting, the clock, the Date constructor and Date.UTC
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 55290-55490: get_date_string (toString, toUTCString,
+#       toISOString, toLocaleString and their date and time halves), date_now, the Date
+#       constructor and Date.UTC. C formats with snprintf into a 64-byte buffer; here
+#       format_date_fields writes the same text with small helpers for its "%02d",
+#       "%0*d", "%+07d" and "%.3s" conversions. date_now reads the host's
+#       clock_gettime(CLOCK_REALTIME) (C: gettimeofday).
+#
+#==============================================================================================
+
+# mark: Formatting ==============================================================================
+
+# Write `text` at `pos` of `buf`; answer the position after it.
+func date_put_text(buf: u8[], pos: usize, text: const u8[]) -> usize:
+    var p = pos
+    for c in text:
+        buf[p] = c
+        p += 1
+    return p
+
+# Write the byte `c` at `pos` of `buf`; answer the position after it.
+func date_put_char(buf: u8[], pos: usize, c: u8) -> usize:
+    buf[pos] = c
+    return pos + 1
+
+# Write `value` in decimal at `pos` of `buf` as printf's "%0Nd" (N = `width`, zero padding
+# after the sign) or "%+0Nd" (`force_sign`); answer the position after it.
+func date_put_int(buf: u8[], pos: usize, value: i32, width: i32, force_sign: bool) -> usize:
+    var digits: u8[12] = ---
+    var n: i32 = 0
+    var v = (i64)value
+    if v < 0:
+        v = -v
+    while true:
+        digits[(usize)n] = (u8)((i64)'0' + v % 10)
+        n += 1
+        v = v // 10
+        if v == 0:
+            break
+    var p = pos
+    var sign_len: i32 = 0
+    if value < 0:
+        p = date_put_char(buf, p, '-')
+        sign_len = 1
+    elif force_sign:
+        p = date_put_char(buf, p, '+')
+        sign_len = 1
+    var zeros = width - sign_len - n
+    while zeros > 0:
+        p = date_put_char(buf, p, '0')
+        zeros -= 1
+    while n > 0:
+        n -= 1
+        p = date_put_char(buf, p, digits[(usize)n])
+    return p
+
+# The three letters of entry `i` of a name table ("%.3s").
+func date_name3(names: const u8[], i: i32) -> const u8[]:
+    let start = (usize)i * 3
+    return names[start..<start + 3]
+
+# fmt:
+#    0: toUTCString: "Tue, 02 Jan 2018 23:04:46 GMT"
+#    1: toString: "Wed Jan 03 2018 00:05:22 GMT+0100 (CET)"
+#    2: toISOString: "2018-01-02T23:02:56.927Z"
+#    3: toLocaleString: "1/2/2018, 11:40:40 PM"
+#    part: 1=date, 2=time 3=all
+#    XXX: should use a variant of strftime().
+## Write the text of the date `fields` in the format `date_fmt` for the parts `part` into
+## `buf` (at least 64 bytes); answer its length.
+func format_date_fields(buf: u8[], fields: const f64[], date_fmt: i32, part: i32) -> usize:
+    let y = (i32)fields[0]
+    let mon = (i32)fields[1]
+    let d = (i32)fields[2]
+    let h = (i32)fields[3]
+    let m = (i32)fields[4]
+    let s = (i32)fields[5]
+    let ms = (i32)fields[6]
+    let wd = (i32)fields[7]
+    var tz = (i32)fields[8]
+    let year_width = 4 + (i32)(y < 0)
+
+    var pos: usize = 0
+
+    if (part & 1) != 0:
+        # date part
+        match date_fmt:
+            0:
+                # "%.3s, %02d %.3s %0*d "
+                pos = date_put_text(buf, pos, date_name3(day_names, wd))
+                pos = date_put_text(buf, pos, b", ")
+                pos = date_put_int(buf, pos, d, 2, false)
+                pos = date_put_char(buf, pos, ' ')
+                pos = date_put_text(buf, pos, date_name3(month_names, mon))
+                pos = date_put_char(buf, pos, ' ')
+                pos = date_put_int(buf, pos, y, year_width, false)
+                pos = date_put_char(buf, pos, ' ')
+            1:
+                # "%.3s %.3s %02d %0*d"
+                pos = date_put_text(buf, pos, date_name3(day_names, wd))
+                pos = date_put_char(buf, pos, ' ')
+                pos = date_put_text(buf, pos, date_name3(month_names, mon))
+                pos = date_put_char(buf, pos, ' ')
+                pos = date_put_int(buf, pos, d, 2, false)
+                pos = date_put_char(buf, pos, ' ')
+                pos = date_put_int(buf, pos, y, year_width, false)
+                if part == 3:
+                    pos = date_put_char(buf, pos, ' ')
+            2:
+                if y >= 0 and y <= 9999:
+                    pos = date_put_int(buf, pos, y, 4, false)
+                else:
+                    pos = date_put_int(buf, pos, y, 7, true)
+                # "-%02d-%02dT"
+                pos = date_put_char(buf, pos, '-')
+                pos = date_put_int(buf, pos, mon + 1, 2, false)
+                pos = date_put_char(buf, pos, '-')
+                pos = date_put_int(buf, pos, d, 2, false)
+                pos = date_put_char(buf, pos, 'T')
+            3:
+                # "%02d/%02d/%0*d"
+                pos = date_put_int(buf, pos, mon + 1, 2, false)
+                pos = date_put_char(buf, pos, '/')
+                pos = date_put_int(buf, pos, d, 2, false)
+                pos = date_put_char(buf, pos, '/')
+                pos = date_put_int(buf, pos, y, year_width, false)
+                if part == 3:
+                    pos = date_put_char(buf, pos, ',')
+                    pos = date_put_char(buf, pos, ' ')
+            _:
+                discard(0)
+    if (part & 2) != 0:
+        # time part
+        match date_fmt:
+            0, 1:
+                # "%02d:%02d:%02d GMT"
+                pos = date_put_int(buf, pos, h, 2, false)
+                pos = date_put_char(buf, pos, ':')
+                pos = date_put_int(buf, pos, m, 2, false)
+                pos = date_put_char(buf, pos, ':')
+                pos = date_put_int(buf, pos, s, 2, false)
+                pos = date_put_text(buf, pos, b" GMT")
+                if date_fmt == 1:
+                    if tz < 0:
+                        pos = date_put_char(buf, pos, '-')
+                        tz = -tz
+                    else:
+                        pos = date_put_char(buf, pos, '+')
+                    # tz is >= 0, can use %
+                    pos = date_put_int(buf, pos, tz // 60, 2, false)
+                    pos = date_put_int(buf, pos, tz % 60, 2, false)
+                    # XXX: tack the time zone code?
+            2:
+                # "%02d:%02d:%02d.%03dZ"
+                pos = date_put_int(buf, pos, h, 2, false)
+                pos = date_put_char(buf, pos, ':')
+                pos = date_put_int(buf, pos, m, 2, false)
+                pos = date_put_char(buf, pos, ':')
+                pos = date_put_int(buf, pos, s, 2, false)
+                pos = date_put_char(buf, pos, '.')
+                pos = date_put_int(buf, pos, ms, 3, false)
+                pos = date_put_char(buf, pos, 'Z')
+            3:
+                # "%02d:%02d:%02d %cM"
+                pos = date_put_int(buf, pos, (h + 11) % 12 + 1, 2, false)
+                pos = date_put_char(buf, pos, ':')
+                pos = date_put_int(buf, pos, m, 2, false)
+                pos = date_put_char(buf, pos, ':')
+                pos = date_put_int(buf, pos, s, 2, false)
+                pos = date_put_char(buf, pos, ' ')
+                pos = date_put_char(buf, pos, 'A' if h < 12 else 'P')
+                pos = date_put_char(buf, pos, 'M')
+            _:
+                discard(0)
+    return pos
+
+## The Date string methods: `magic` is the format times 0x10 plus the parts.
+func get_date_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    # _string(obj, fmt, part)
+    var buf: u8[64] = ---
+    var fields: f64[9] = ---
+
+    let date_fmt = (magic >> 4) & 0x0F
+    let part = magic & 0x0F
+
+    let res = try get_date_fields(ctx, this_val, fields, (date_fmt & 1) != 0, false)
+    if not res:
+        if date_fmt == 2:
+            try js_throw_range_error(ctx, "Date value is NaN")
+        else:
+            return try js_new_string8(ctx, "Invalid Date".bytes.data)
+
+    let pos = format_date_fields(buf, fields, date_fmt, part)
+    return try js_new_string_len(ctx, &buf[0], pos)
+
+# mark: The clock ===============================================================================
+
+# OS dependent: return the UTC time in ms since 1970. (The clock_gettime binding, TimeSpec,
+# is shared with js_random_init in math.lucb.)
+func date_now() -> i64:
+    var ts = TimeSpec(tv_sec = 0, tv_nsec = 0, tv_nsec_high = 0)
+    discard(c_clock_gettime(clock_realtime, &ts))
+    let nsec = (i64)(u32)ts.tv_nsec
+    return ts.tv_sec * 1000 + (nsec // 1000000)
+
+# mark: Date and Date.UTC =======================================================================
+
+# The time value of `new Date(value)`.
+func js_date_constructor_value(ctx: Context*, value: Value) -> f64!:
+    var val: f64 = 0.0
+    if value.tag == Tag.object:
+        let p = js_value_get_obj(value)
+        if p.class_id == ClassId.date and js_is_number(p.u.object_data):
+            try js_to_float64(ctx, &val, p.u.object_data)
+            return time_clip(val)
+    var v = try js_to_primitive(ctx, value, hint_none)
+    if js_is_string(v):
+        let dv = js_date_parse(ctx, js_undefined(), 1, &v) catch failure:
+            js_free_value(ctx, v)
+            error(failure.code, failure.message)
+        js_free_value(ctx, v)
+        try js_to_float64_free(ctx, &val, dv)
+    else:
+        try js_to_float64_free(ctx, &val, v)
+    return time_clip(val)
+
+## `Date(...)` and `new Date(y, mon, d, h, m, s, ms)`.
+func js_date_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    # Date(y, mon, d, h, m, s, ms)
+    var n = argc
+    var val: f64 = 0.0
+
+    if js_is_undefined(new_target):
+        # invoked as function
+        n = 0
+    if n == 0:
+        val = f64(date_now())
+    elif n == 1:
+        val = try js_date_constructor_value(ctx, argv[0])
+    else:
+        var fields: f64[7] = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        if n > 7:
+            n = 7
+        for i in 0..<n:
+            try js_to_float64(ctx, &fields[(usize)i], argv[(usize)i])
+        val = set_date_fields_checked(fields, true)
+    # has_val:
+    var rv = try js_create_from_ctor(ctx, new_target, (u32)ClassId.date)
+    js_set_object_data(ctx, rv, js_new_float64(val)) catch: recover ()
+    if js_is_undefined(new_target):
+        # invoked as a function, return (new Date()).toString();
+        var no_args = js_undefined()
+        let s = get_date_string(ctx, rv, 0, &no_args, 0x13) catch failure:
+            js_free_value(ctx, rv)
+            error(failure.code, failure.message)
+        js_free_value(ctx, rv)
+        rv = s
+    return rv
+
+## Date.UTC(y, mon, d, h, m, s, ms).
+func js_date_utc(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # UTC(y, mon, d, h, m, s, ms)
+    var fields: f64[7] = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+
+    var n = argc
+    if n == 0:
+        return js_nan()
+    if n > 7:
+        n = 7
+    for i in 0..<n:
+        try js_to_float64(ctx, &fields[(usize)i], argv[(usize)i])
+    return js_new_float64(set_date_fields_checked(fields, false))

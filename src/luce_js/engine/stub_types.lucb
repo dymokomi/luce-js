@@ -8,9 +8,6 @@
 #
 #==============================================================================================
 
-struct AsyncFromSyncIteratorData:
-    var unported: i32
-
 struct AsyncGeneratorData:
     var unported: i32
 

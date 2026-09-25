@@ -1,0 +1,316 @@
+#==============================================================================================
+#
+#   async_from_sync_iterator - The async-from-sync iterator, the async prototypes and
+#                              JS_AddIntrinsicPromise
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 54385-54708: the AsyncFunction and AsyncIterator
+#       prototype tables, the async-from-sync iterator that `for await` wraps around a
+#       sync iterator, the AsyncGeneratorFunction and AsyncGenerator tables, the classes
+#       of the async region and JS_AddIntrinsicPromise, which adds all of them.
+#
+#==============================================================================================
+
+# mark: Async prototypes ========================================================================
+
+# AsyncFunction
+let js_async_function_proto_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "AsyncFunction"),
+]
+
+# AsyncIteratorPrototype
+let js_async_iterator_proto_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "[Symbol.asyncIterator]", def_type = def_cfunc, length = 0,
+                       generic = js_iterator_proto_iterator),
+]
+
+# mark: AsyncFromSyncIteratorPrototype ==========================================================
+
+## The sync iterator an async-from-sync iterator wraps (JSAsyncFromSyncIteratorData).
+struct AsyncFromSyncIteratorData:
+    var sync_iter: Value
+    var next_method: Value
+
+## Finalizer of ClassId.async_from_sync_iterator.
+func js_async_from_sync_iterator_finalizer(rt: Runtime*, val: Value):
+    if let raw = js_get_opaque(val, (u32)ClassId.async_from_sync_iterator):
+        let s = (AsyncFromSyncIteratorData*)raw
+        js_free_value_rt(rt, s.sync_iter)
+        js_free_value_rt(rt, s.next_method)
+        js_free_rt(rt, s)
+
+## Marking function of ClassId.async_from_sync_iterator.
+func js_async_from_sync_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
+    if let raw = js_get_opaque(val, (u32)ClassId.async_from_sync_iterator):
+        let s = (AsyncFromSyncIteratorData*)raw
+        js_mark_value(rt, s.sync_iter, mark_func)
+        js_mark_value(rt, s.next_method, mark_func)
+
+## An async iterator over the sync iterator `sync_iter` (CreateAsyncFromSyncIterator).
+func js_create_async_from_sync_iterator(ctx: Context*, sync_iter: Value) -> Value!:
+    let next_method = try js_get_property(ctx, sync_iter, atom_next)
+    errdefer js_free_value(ctx, next_method)
+    let async_iter = try js_new_object_class(ctx, (i32)(u16)ClassId.async_from_sync_iterator)
+    errdefer js_free_value(ctx, async_iter)
+    let s = (AsyncFromSyncIteratorData*)(try js_mallocz(ctx, sizeof(AsyncFromSyncIteratorData)))
+    s.sync_iter = js_dup_value(ctx, sync_iter)
+    s.next_method = next_method
+    js_set_opaque(async_iter, s)
+    return async_iter
+
+## Wraps a value in an iterator result whose `done` is in its data.
+func js_async_from_sync_iterator_unwrap(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    return try js_create_iterator_result(ctx, js_dup_value(ctx, argv[0]),
+                                         try js_to_bool(ctx, func_data[0]))
+
+func js_async_from_sync_iterator_unwrap_func_create(ctx: Context*, done: bool) -> Value!:
+    var func_data: Value[1] = [js_new_bool(done)]
+    return try js_new_c_function_data(ctx, js_async_from_sync_iterator_unwrap,
+                                      1, 0, 1, &func_data[0])
+
+## Closes the sync iterator in its data and throws the rejection reason again.
+func js_async_from_sync_iterator_close_wrap(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32, func_data: Value*) -> Value!:
+    js_throw(ctx, js_dup_value(ctx, argv[0])) catch failure:
+        js_iterator_close(ctx, func_data[0], true) catch: recover ()
+        error(failure.code, failure.message)
+
+func js_async_from_sync_iterator_close_wrap_func_create(ctx: Context*, sync_iter: Value) -> Value!:
+    var data = sync_iter
+    return try js_new_c_function_data(ctx, js_async_from_sync_iterator_close_wrap,
+                                      1, 0, 1, &data)
+
+# The data of the async-from-sync iterator `this_val`, else a TypeError.
+func js_async_from_sync_iterator_data(ctx: Context*, this_val: Value) -> AsyncFromSyncIteratorData*!:
+    let class_id = (u32)ClassId.async_from_sync_iterator
+    let raw = js_get_opaque(this_val, class_id) else try js_throw_type_error(ctx, "not an Async-from-Sync Iterator")
+    return (AsyncFromSyncIteratorData*)raw
+
+# Step the sync iterator of `s` for next, return or throw (`magic`): true with the
+# iterator result in `*pvalue` when return has no method (C's `done_resolve:` path), else
+# false with the step's value in `*pvalue` and its done flag in `*pdone`. A failure
+# rejects the promise (C's `reject:` path).
+func js_async_from_sync_iterator_step(ctx: Context*, s: AsyncFromSyncIteratorData*, argc: i32, argv: Value*, magic: i32, pvalue: Value*, pdone: i32*) -> bool!:
+    var method = js_undefined()
+    if magic == gen_magic_next:
+        method = js_dup_value(ctx, s.next_method)
+    else:
+        method = try js_get_property(ctx, s.sync_iter,
+                                     atom_return if magic == gen_magic_return else atom_throw)
+        if js_is_undefined(method) or js_is_null(method):
+            if magic == gen_magic_return:
+                # C would resolve with the exception marker if this fails; the promise is
+                # rejected with the pending exception instead.
+                *pvalue = try js_create_iterator_result(ctx, js_dup_value(ctx, argv[0]), true)
+                return true
+            else:
+                try js_iterator_close(ctx, s.sync_iter, false)
+                try js_throw_type_error(ctx, "throw is not a method")
+    var done: i32 = 0
+    var value = js_iterator_next2(ctx, s.sync_iter, method, 1 if argc >= 1 else 0,
+                                  argv, &done) catch failure:
+        js_free_value(ctx, method)
+        error(failure.code, failure.message)
+    js_free_value(ctx, method)
+    if done == 2:
+        let obj = value
+        var done_flag = false
+        value = js_iterator_get_complete_value(ctx, obj, &done_flag) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        done = (i32)done_flag
+        js_free_value(ctx, obj)
+    *pvalue = value
+    *pdone = done
+    return false
+
+# Settle the promise of `resolving_funcs` with `err` (freed): resolve (is_reject 0) or
+# reject (1). Then free the resolving functions (C's `done_resolve:` label). As upstream,
+# an exception thrown by the resolving function is left pending.
+func js_async_from_sync_iterator_settle(ctx: Context*, resolving_funcs: Value*, is_reject: usize, err: Value):
+    var arg = err
+    let res2 = js_call(ctx, resolving_funcs[is_reject], js_undefined(), 1, &arg) catch:
+        recover js_undefined()
+    js_free_value(ctx, arg)
+    js_free_value(ctx, res2)
+    js_free_value(ctx, resolving_funcs[0])
+    js_free_value(ctx, resolving_funcs[1])
+
+## next (magic gen_magic_next), return and throw of an async-from-sync iterator.
+func js_async_from_sync_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    var resolving_funcs: Value[2] = ---
+    let promise = try js_new_promise_capability(ctx, &resolving_funcs[0])
+    let s = js_async_from_sync_iterator_data(ctx, this_val) catch:
+        # reject:
+        js_async_from_sync_iterator_settle(ctx, &resolving_funcs[0], 1, js_get_exception(ctx))
+        return promise
+
+    var value = js_undefined()
+    var done: i32 = 0
+    let resolve_now = js_async_from_sync_iterator_step(ctx, s, argc, argv, magic,
+                                                       &value, &done) catch:
+        # reject:
+        js_async_from_sync_iterator_settle(ctx, &resolving_funcs[0], 1, js_get_exception(ctx))
+        return promise
+    if resolve_now:
+        # done_resolve:
+        js_async_from_sync_iterator_settle(ctx, &resolving_funcs[0], 0, value)
+        return promise
+
+    let value_wrapper_promise = js_promise_resolve(ctx, ctx.promise_ctor,
+                                                   1, &value, 0) catch:
+        js_free_value(ctx, value)
+        if magic != gen_magic_return and done == 0:
+            js_iterator_close(ctx, s.sync_iter, true) catch: recover ()
+        # reject:
+        js_async_from_sync_iterator_settle(ctx, &resolving_funcs[0], 1, js_get_exception(ctx))
+        return promise
+
+    # fail:
+    errdefer js_free_value(ctx, promise)
+    defer js_free_value(ctx, resolving_funcs[1])
+    defer js_free_value(ctx, resolving_funcs[0])
+    var resolve_reject: Value[2] = ---
+    resolve_reject[0] = js_async_from_sync_iterator_unwrap_func_create(ctx, done != 0) catch failure:
+        js_free_value(ctx, value_wrapper_promise)
+        js_free_value(ctx, value)
+        error(failure.code, failure.message)
+    if done != 0 or magic == gen_magic_return:
+        resolve_reject[1] = js_undefined()
+    else:
+        resolve_reject[1] = js_async_from_sync_iterator_close_wrap_func_create(ctx, s.sync_iter) catch failure:
+            js_free_value(ctx, value_wrapper_promise)
+            js_free_value(ctx, resolve_reject[0])
+            js_free_value(ctx, value)
+            error(failure.code, failure.message)
+    js_free_value(ctx, value)
+    defer js_free_value(ctx, value_wrapper_promise)
+    defer js_free_value(ctx, resolve_reject[1])
+    defer js_free_value(ctx, resolve_reject[0])
+    try perform_promise_then(ctx, value_wrapper_promise, &resolve_reject[0], &resolving_funcs[0])
+    return promise
+
+let js_async_from_sync_iterator_proto_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_async_from_sync_iterator_next, magic = (i16)gen_magic_next),
+    CFunctionListEntry(name = "return", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_async_from_sync_iterator_next, magic = (i16)gen_magic_return),
+    CFunctionListEntry(name = "throw", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_async_from_sync_iterator_next, magic = (i16)gen_magic_throw),
+]
+
+# mark: Async generators ========================================================================
+
+# AsyncGeneratorFunction
+let js_async_generator_function_proto_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "AsyncGeneratorFunction"),
+]
+
+# AsyncGenerator prototype
+let js_async_generator_proto_funcs: CFunctionListEntry[4] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_async_generator_next, magic = (i16)gen_magic_next),
+    CFunctionListEntry(name = "return", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_async_generator_next, magic = (i16)gen_magic_return),
+    CFunctionListEntry(name = "throw", def_type = def_cfunc, length = 1,
+                       cproto = CFunctionEnum.generic_magic,
+                       generic_magic = js_async_generator_next, magic = (i16)gen_magic_throw),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable,
+                       def_type = def_prop_string, string_value = "AsyncGenerator"),
+]
+
+# mark: JS_AddIntrinsicPromise ==================================================================
+
+## The classes from ClassId.promise to ClassId.async_generator, in ClassId order.
+let js_async_class_def: ClassShortDef[9] = [
+    # ClassId.promise
+    ClassShortDef(atom_Promise, js_promise_finalizer, js_promise_mark),
+    # ClassId.promise_resolve_function
+    ClassShortDef(atom_PromiseResolveFunction, js_promise_resolve_function_finalizer, js_promise_resolve_function_mark),
+    # ClassId.promise_reject_function
+    ClassShortDef(atom_PromiseRejectFunction, js_promise_resolve_function_finalizer, js_promise_resolve_function_mark),
+    # ClassId.async_function
+    ClassShortDef(atom_AsyncFunction, js_bytecode_function_finalizer, js_bytecode_function_mark),
+    # ClassId.async_function_resolve
+    ClassShortDef(atom_AsyncFunctionResolve, js_async_function_resolve_finalizer, js_async_function_resolve_mark),
+    # ClassId.async_function_reject
+    ClassShortDef(atom_AsyncFunctionReject, js_async_function_resolve_finalizer, js_async_function_resolve_mark),
+    # ClassId.async_from_sync_iterator
+    ClassShortDef(atom_empty_string, js_async_from_sync_iterator_finalizer, js_async_from_sync_iterator_mark),
+    # ClassId.async_generator_function
+    ClassShortDef(atom_AsyncGeneratorFunction, js_bytecode_function_finalizer, js_bytecode_function_mark),
+    # ClassId.async_generator
+    ClassShortDef(atom_AsyncGenerator, js_async_generator_finalizer, js_async_generator_mark),
+]
+
+## Add Promise, AsyncFunction, the async iterator prototypes and AsyncGeneratorFunction
+## to the context (JS_AddIntrinsicPromise).
+pub func js_add_intrinsic_promise(ctx: Context*) -> !:
+    let rt = ctx.rt
+    var no_fields: const CFunctionListEntry[]
+
+    if not js_is_registered_class(rt, (u32)ClassId.promise):
+        if init_class_range(rt, js_async_class_def, (i32)(u16)ClassId.promise) != 0:
+            error(exception, "")
+        let class_array = rt.class_array else trap("the class array is not allocated")
+        class_array[(usize)ClassId.promise_resolve_function].call = js_promise_resolve_function_call
+        class_array[(usize)ClassId.promise_reject_function].call = js_promise_resolve_function_call
+        class_array[(usize)ClassId.async_function].call = js_async_function_call
+        class_array[(usize)ClassId.async_function_resolve].call = js_async_function_resolve_call
+        class_array[(usize)ClassId.async_function_reject].call = js_async_function_resolve_call
+        class_array[(usize)ClassId.async_generator_function].call = js_async_generator_function_call
+
+    # Promise
+    ctx.promise_ctor = try js_new_c_constructor(ctx, (i32)(u16)ClassId.promise, "Promise",
+                                                js_promise_constructor, 1, CFunctionEnum.constructor, 0,
+                                                js_undefined(),
+                                                js_promise_funcs,
+                                                js_promise_proto_funcs,
+                                                0)
+
+    # AsyncFunction
+    var ft: CFunctionType = ---
+    ft.generic_magic = js_function_constructor
+    var obj1 = try js_new_c_constructor(ctx, (i32)(u16)ClassId.async_function, "AsyncFunction",
+                                        ft.generic, 1, CFunctionEnum.constructor_or_func_magic,
+                                        (i32)js_func_async,
+                                        ctx.function_ctor,
+                                        no_fields,
+                                        js_async_function_proto_funcs,
+                                        js_new_ctor_no_global | js_new_ctor_readonly)
+    js_free_value(ctx, obj1)
+
+    let class_proto = context_class_proto(ctx)
+    # AsyncIteratorPrototype
+    ctx.async_iterator_proto = try js_new_object_proto_list(ctx, class_proto[(usize)ClassId.object],
+                                                            js_async_iterator_proto_funcs)
+
+    # AsyncFromSyncIteratorPrototype
+    class_proto[(usize)ClassId.async_from_sync_iterator] = try js_new_object_proto_list(
+        ctx, ctx.async_iterator_proto, js_async_from_sync_iterator_proto_funcs)
+
+    # AsyncGeneratorPrototype
+    class_proto[(usize)ClassId.async_generator] = try js_new_object_proto_list(
+        ctx, ctx.async_iterator_proto, js_async_generator_proto_funcs)
+
+    # AsyncGeneratorFunction
+    ft.generic_magic = js_function_constructor
+    obj1 = try js_new_c_constructor(ctx, (i32)(u16)ClassId.async_generator_function,
+                                    "AsyncGeneratorFunction",
+                                    ft.generic, 1, CFunctionEnum.constructor_or_func_magic,
+                                    (i32)js_func_async_generator,
+                                    ctx.function_ctor,
+                                    no_fields,
+                                    js_async_generator_function_proto_funcs,
+                                    js_new_ctor_no_global | js_new_ctor_readonly)
+    js_free_value(ctx, obj1)
+
+    try js_set_constructor2(ctx, class_proto[(usize)ClassId.async_generator_function],
+                            class_proto[(usize)ClassId.async_generator],
+                            prop_configurable, prop_configurable)

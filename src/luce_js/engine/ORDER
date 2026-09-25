@@ -132,7 +132,15 @@ map_iterator.lucb
 set_methods.lucb
 map_tables.lucb
 promise_reactions.lucb
-stub_r27_promise_date.lucb
+promise_capability.lucb
+promise_statics.lucb
+promise_then.lucb
+async_from_sync_iterator.lucb
+uri.lucb
+date_fields.lucb
+date_string.lucb
+date_parse.lucb
+date_methods.lucb
 stub_r28_typed_arrays.lucb
 atomics_wait.lucb
 typed_arrays_intrinsic.lucb
@@ -161,3 +169,4 @@ tests_r17a.lucb
 tests_r24.lucb
 tests_r23.lucb
 tests_r26.lucb
+tests_r27.lucb
