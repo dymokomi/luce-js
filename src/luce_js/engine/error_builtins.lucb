@@ -1,0 +1,168 @@
+#==============================================================================================
+#
+#   error_builtins - The Error constructors, Error.prototype, AggregateError
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 41400-41598: iterator_to_array (the errors of an
+#       AggregateError), the constructor shared by Error and the native errors (by magic:
+#       -1 for Error, else the ErrorKind), Error.prototype.toString, Error.isError, the
+#       tables js_error_proto_funcs, js_native_error_proto_funcs and js_error_funcs, and
+#       the AggregateError maker used by C code (js_aggregate_error_constructor).
+#
+#==============================================================================================
+
+# mark: Error constructor =======================================================================
+
+# Error class
+
+## The array of the values produced by iterating over `items` (iterator_to_array).
+func iterator_to_array(ctx: Context*, items: Value) -> Value!:
+    let iter = try js_get_iterator(ctx, items, false)
+    defer js_free_value(ctx, iter)
+    let next_method = try js_get_property(ctx, iter, atom_next)
+    defer js_free_value(ctx, next_method)
+    let r = try js_new_array(ctx)
+    errdefer js_free_value(ctx, r)
+    # exception_close:
+    errdefer js_iterator_close_on_failure(ctx, iter)
+    var no_arg = js_undefined()
+    var k: i64 = 0
+    while true:
+        var done = false
+        let v = try js_iterator_next(ctx, iter, next_method, 0, &no_arg, &done)
+        if done:
+            break
+        discard(try js_define_property_value_int64(ctx, r, k, v, prop_c_w_e | prop_throw))
+        k += 1
+    return r
+
+## The constructor of Error (`magic` -1) and of the native errors (`magic` an ErrorKind;
+## AggregateError takes the errors before the message).
+func js_error_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    var target = new_target
+    if js_is_undefined(target):
+        target = js_get_active_function(ctx)
+    var proto = try js_get_property(ctx, target, atom_prototype)
+    if not js_is_object(proto):
+        js_free_value(ctx, proto)
+        let realm = try js_get_function_realm(ctx, target)
+        var proto1 = js_undefined()
+        if magic < 0:
+            proto1 = context_class_proto(realm)[(usize)ClassId.error_]
+        else:
+            proto1 = realm.native_error_proto[(usize)magic]
+        proto = js_dup_value(ctx, proto1)
+    let obj = js_new_object_proto_class(ctx, proto, (u32)ClassId.error_) catch failure:
+        js_free_value(ctx, proto)
+        error(failure.code, failure.message)
+    js_free_value(ctx, proto)
+    errdefer js_free_value(ctx, obj)
+    var arg_index: i32 = 0
+    if magic == (i32)ErrorKind.aggregate_error:
+        arg_index = 1
+
+    let message = argv[(usize)arg_index]
+    arg_index += 1
+    if not js_is_undefined(message):
+        let msg = try js_to_string(ctx, message)
+        js_define_property_value(ctx, obj, atom_message, msg,
+                                 prop_writable | prop_configurable) catch: recover false
+
+    if arg_index < argc:
+        let options = argv[(usize)arg_index]
+        if js_is_object(options):
+            if try js_has_property(ctx, options, atom_cause):
+                let cause = try js_get_property(ctx, options, atom_cause)
+                js_define_property_value(ctx, obj, atom_cause, cause,
+                                         prop_writable | prop_configurable) catch: recover false
+
+    if magic == (i32)ErrorKind.aggregate_error:
+        let error_list = try iterator_to_array(ctx, argv[0])
+        js_define_property_value(ctx, obj, atom_errors, error_list,
+                                 prop_writable | prop_configurable) catch: recover false
+
+    # skip the Error() function in the backtrace
+    build_backtrace(ctx, obj, none, 0, 0, js_backtrace_flag_skip_first_level)
+    return obj
+
+# mark: Error.prototype =========================================================================
+
+## Error.prototype.toString(): "name: message", or the one of them that is not empty.
+func js_error_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if not js_is_object(this_val):
+        try js_throw_type_error_not_an_object(ctx)
+    var name = try js_get_property(ctx, this_val, atom_name)
+    if js_is_undefined(name):
+        name = try js_atom_to_string(ctx, atom_Error)
+    else:
+        name = try js_to_string_free(ctx, name)
+
+    var msg = js_get_property(ctx, this_val, atom_message) catch failure:
+        js_free_value(ctx, name)
+        error(failure.code, failure.message)
+    if js_is_undefined(msg):
+        msg = js_atom_to_string(ctx, atom_empty_string) catch failure:
+            js_free_value(ctx, name)
+            error(failure.code, failure.message)
+    else:
+        msg = js_to_string_free(ctx, msg) catch failure:
+            js_free_value(ctx, name)
+            error(failure.code, failure.message)
+    if not js_is_empty_string(name) and not js_is_empty_string(msg):
+        name = js_concat_string3(ctx, &empty_c_string[0], name, ": ".bytes.data) catch failure:
+            js_free_value(ctx, msg)
+            error(failure.code, failure.message)
+    return try js_concat_string(ctx, name, msg)
+
+## Error.isError(v).
+func js_error_is_error(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return js_new_bool(js_is_error(ctx, argv[0]))
+
+# mark: Tables ==================================================================================
+
+## The methods and properties of Error.prototype.
+let js_error_proto_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_error_to_string),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = "Error"),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+]
+
+# 2 entries for each native error class
+# Note: we use an atom to avoid the autoinit definition which does
+# not work in get_prop_string()
+## The name and message of the prototype of each native error, in ErrorKind order.
+let js_native_error_proto_funcs: CFunctionListEntry[16] = [
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_EvalError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_RangeError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_ReferenceError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_SyntaxError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_TypeError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_URIError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_InternalError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+    CFunctionListEntry(name = "name", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_atom, i32_value = (i32)atom_AggregateError),
+    CFunctionListEntry(name = "message", prop_flags = (u8)(prop_writable | prop_configurable), def_type = def_prop_string, string_value = ""),
+]
+
+## The functions of the Error constructor.
+let js_error_funcs: CFunctionListEntry[1] = [
+    CFunctionListEntry(name = "isError", def_type = def_cfunc, length = 1, generic = js_error_is_error),
+]
+
+# mark: AggregateError ==========================================================================
+
+# used by C code.
+## A new AggregateError holding `errors` (js_aggregate_error_constructor).
+func js_aggregate_error_constructor(ctx: Context*, errors: Value) -> Value!:
+    let obj = try js_new_object_proto_class(ctx,
+                                            ctx.native_error_proto[(usize)ErrorKind.aggregate_error],
+                                            (u32)ClassId.error_)
+    js_define_property_value(ctx, obj, atom_errors, js_dup_value(ctx, errors),
+                             prop_writable | prop_configurable) catch: recover false
+    return obj

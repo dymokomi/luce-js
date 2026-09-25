@@ -95,7 +95,7 @@ func js_function_list_entry_setter(e: const CFunctionListEntry*) -> CFunction?:
 func js_new_object_proto_list(ctx: Context*, proto: Value, fields: const CFunctionListEntry[]) -> Value!:
     let obj = try js_new_object_proto_class_alloc(ctx, proto, (u32)ClassId.object, (i32)fields.length)
     errdefer js_free_value(ctx, obj)
-    discard(try js_set_property_function_list(ctx, obj, fields.data, (i32)fields.length))
+    try js_set_property_function_list(ctx, obj, fields)
     return obj
 
 ## The value of an auto-init property of a table entry (`opaque`), created on first access.

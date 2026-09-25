@@ -1,0 +1,171 @@
+#==============================================================================================
+#
+#   function_lists - Builtin tables to properties, module exports and C constructors
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 39700-39880: JS_SetPropertyFunctionList (one property per
+#       CFunctionListEntry of a table), JS_AddModuleExportList and JS_SetModuleExportList,
+#       JS_SetConstructor(2) linking a constructor and its prototype, and
+#       JS_NewCConstructor, which builds a builtin class from its constructor function and
+#       its two tables. A table is a span of CFunctionListEntry (C passes a pointer and a
+#       count); the entry keeps one field per variant of C's union (see api_types).
+#
+#==============================================================================================
+
+# mark: Table entries ===========================================================================
+
+## The function of a def_cfunc entry as the `generic` member of CFunctionType: C reads
+## `e->u.func.cfunc.generic` whatever the calling shape, and the shape (`cproto`) is
+## stored beside it. JS_CFUNC_SPECIAL_DEF's constructor kinds keep their function in
+## `generic` (or `generic_magic` for the magic kinds).
+func c_function_list_entry_cfunc(e: const CFunctionListEntry*) -> CFunction:
+    var u: CFunctionType = ---
+    match e.cproto:
+        .generic, .constructor, .constructor_or_func:
+            u.generic = e.generic else trap("function list entry without its function")
+        .generic_magic, .constructor_magic, .constructor_or_func_magic:
+            u.generic_magic = e.generic_magic else trap("function list entry without its function")
+        .f_f:
+            u.f_f = e.f_f else trap("function list entry without its function")
+        .f_f_f:
+            u.f_f_f = e.f_f_f else trap("function list entry without its function")
+        .iterator_next:
+            u.iterator_next = e.iterator_next else trap("function list entry without its function")
+        _:
+            trap("function list entry of a getter or setter shape")
+    return u.generic
+
+## A magic C function as a CFunction, the `(JSCFunction *)f` cast C writes when it passes
+## a constructor_magic or generic_magic function to JS_NewCFunction2 or
+## JS_NewCConstructor; the calling shape passed beside it says how it is called.
+func c_function_from_magic(f: CFunctionMagic) -> CFunction:
+    var u: CFunctionType = ---
+    u.generic_magic = f
+    return u.generic
+
+# mark: Property lists ==========================================================================
+
+## Define on `obj` one property per entry of `tab` (JS_SetPropertyFunctionList).
+pub func js_set_property_function_list(ctx: Context*, obj: Value, tab: const CFunctionListEntry[]) -> !:
+    for i in 0..<tab.length:
+        let e = &tab[i]
+        let atom = try find_atom(ctx, e.name)
+        js_instantiate_function_list_item(ctx, obj, atom, e) catch failure:
+            js_free_atom(ctx, atom)
+            error(failure.code, failure.message)
+        js_free_atom(ctx, atom)
+
+## Declare one export of the C module `m` per entry of `tab` (JS_AddModuleExportList).
+pub func js_add_module_export_list(ctx: Context*, m: ModuleDef*, tab: const CFunctionListEntry[]) -> !:
+    for i in 0..<tab.length:
+        try js_add_module_export(ctx, m, tab[i].name.bytes.data)
+
+## Set the exports of the C module `m` from the entries of `tab`: functions, strings,
+## numbers and objects (JS_SetModuleExportList).
+pub func js_set_module_export_list(ctx: Context*, m: ModuleDef*, tab: const CFunctionListEntry[]) -> !:
+    for i in 0..<tab.length:
+        let e = &tab[i]
+        var val = js_undefined()
+        if e.def_type == def_cfunc:
+            val = try js_new_c_function2(ctx, c_function_list_entry_cfunc(e), e.name.bytes.data,
+                                         (i32)e.length, e.cproto, (i32)e.magic)
+        elif e.def_type == def_prop_string:
+            val = try js_new_string_len(ctx, e.string_value.bytes.data, e.string_value.length)
+        elif e.def_type == def_prop_int32:
+            val = js_new_int32(e.i32_value)
+        elif e.def_type == def_prop_int64:
+            val = js_new_int64(e.i64_value)
+        elif e.def_type == def_prop_double:
+            val = js_new_float64_raw(e.f64_value)
+        elif e.def_type == def_object:
+            let fields = e.prop_list else trap("def_object entry without its list")
+            val = try js_new_object_proto_list(ctx, context_class_proto(ctx)[(usize)ClassId.object], fields)
+        else:
+            trap("JS_SetModuleExportList: unexpected entry kind")
+        # QuickJS fails (-1) also when `m` has no such export
+        let found = try js_set_module_export(ctx, m, e.name.bytes.data, val)
+        if not found:
+            error(exception, "")
+
+# mark: Constructors ============================================================================
+
+# Note: 'func_obj' is not necessarily a constructor
+## Define `func_obj.prototype` as `proto` with `proto_flags` and `proto.constructor` as
+## `func_obj` with `ctor_flags` (JS_SetConstructor2).
+func js_set_constructor2(ctx: Context*, func_obj: Value, proto: Value, proto_flags: i32, ctor_flags: i32) -> !:
+    discard(try js_define_property_value(ctx, func_obj, atom_prototype,
+                                         js_dup_value(ctx, proto), proto_flags))
+    discard(try js_define_property_value(ctx, proto, atom_constructor,
+                                         js_dup_value(ctx, func_obj), ctor_flags))
+    set_cycle_flag(ctx, func_obj)
+    set_cycle_flag(ctx, proto)
+
+## Link the constructor `func_obj` and its prototype `proto`: a read-only
+## `func_obj.prototype` and a writable, configurable `proto.constructor`
+## (JS_SetConstructor).
+pub func js_set_constructor(ctx: Context*, func_obj: Value, proto: Value) -> !:
+    try js_set_constructor2(ctx, func_obj, proto, 0, prop_writable | prop_configurable)
+
+## JS_NEW_CTOR_NO_GLOBAL: don't create a global binding.
+let js_new_ctor_no_global: i32 = 1 << 0
+## JS_NEW_CTOR_PROTO_CLASS: the prototype class is 'class_id' instead of ClassId.object.
+let js_new_ctor_proto_class: i32 = 1 << 1
+## JS_NEW_CTOR_PROTO_EXIST: the prototype is already defined.
+let js_new_ctor_proto_exist: i32 = 1 << 2
+## JS_NEW_CTOR_READONLY: read-only constructor field.
+let js_new_ctor_readonly: i32 = 1 << 3
+
+# Return the constructor and. Define it as a global variable unless
+# JS_NEW_CTOR_NO_GLOBAL is set. The new class inherit from
+# parent_ctor if it is not JS_UNDEFINED. if class_id is != -1,
+# class_proto[class_id] is set.
+## A builtin class: the constructor `func_` named `name` with `ctor_fields`, and its
+## prototype with `proto_fields`, inheriting from `parent_ctor` (Object when undefined)
+## (JS_NewCConstructor). A magic constructor is passed through c_function_from_magic.
+func js_new_c_constructor(ctx: Context*, class_id: i32, name: str, func_: CFunction, length: i32,
+                          cproto: CFunctionEnum, magic: i32, parent_ctor: Value,
+                          ctor_fields: const CFunctionListEntry[],
+                          proto_fields: const CFunctionListEntry[], flags: i32) -> Value!:
+    let class_proto = context_class_proto(ctx)
+    let proto_flags: i32 = 0
+    var ctor_flags: i32 = 0
+    if (flags & js_new_ctor_readonly) != 0:
+        ctor_flags = prop_configurable
+    else:
+        ctor_flags = prop_writable | prop_configurable
+
+    var parent = parent_ctor
+    var parent_proto = js_undefined()
+    if js_is_undefined(parent):
+        parent_proto = js_dup_value(ctx, class_proto[(usize)ClassId.object])
+        parent = ctx.function_proto
+    else:
+        parent_proto = try js_get_property(ctx, parent, atom_prototype)
+    defer js_free_value(ctx, parent_proto)
+
+    var proto = js_undefined()
+    if (flags & js_new_ctor_proto_exist) != 0:
+        proto = js_dup_value(ctx, class_proto[(usize)class_id])
+    else:
+        var proto_class_id = (u32)ClassId.object
+        if (flags & js_new_ctor_proto_class) != 0:
+            proto_class_id = (u32)class_id
+        # one additional field: constructor
+        proto = try js_new_object_proto_class_alloc(ctx, parent_proto, proto_class_id,
+                                                    (i32)proto_fields.length + 1)
+        if class_id >= 0:
+            class_proto[(usize)class_id] = js_dup_value(ctx, proto)
+    defer js_free_value(ctx, proto)
+    try js_set_property_function_list(ctx, proto, proto_fields)
+
+    # additional fields: name, length, prototype
+    let ctor = try js_new_c_function3(ctx, func_, name.bytes.data, length, cproto, magic, parent,
+                                      (i32)ctor_fields.length + 3)
+    errdefer js_free_value(ctx, ctor)
+    try js_set_property_function_list(ctx, ctor, ctor_fields)
+    if (flags & js_new_ctor_no_global) == 0:
+        discard(try js_define_property_value_str(ctx, ctx.global_obj, name, js_dup_value(ctx, ctor),
+                                                 prop_writable | prop_configurable))
+    # as in C, a failure here is not reported
+    js_set_constructor2(ctx, ctor, proto, proto_flags, ctor_flags) catch: recover ()
+    return ctor

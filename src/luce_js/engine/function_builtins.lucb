@@ -1,0 +1,283 @@
+#==============================================================================================
+#
+#   function_builtins - The Function constructor, Function.prototype and argument lists
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 41046-41400: Function.prototype itself (a function that
+#       returns undefined), the Function constructor (and the generator, async and async
+#       generator function constructors by magic), js_get_length32/64, the argument lists
+#       of apply (build_arg_list, free_arg_list), Function.prototype.apply, call, bind,
+#       toString and [Symbol.hasInstance], and the table js_function_proto_funcs.
+#
+#==============================================================================================
+
+# mark: Function constructor ====================================================================
+
+# Function class
+
+## Function.prototype, itself a function returning undefined.
+func js_function_proto(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return js_undefined()
+
+## Write the source text "(function anonymous(params\n) {\nbody\n})" of a dynamic
+## function of kind `func_kind` from the arguments of the Function constructor into `b`.
+func js_function_constructor_write(b: StringBuffer*, func_kind: u8, argc: i32, argv: Value*) -> !:
+    # A failed write marks the buffer; string_buffer_end reports it.
+    string_buffer_putc8(b, (u32)'(') catch: recover ()
+
+    if func_kind == js_func_async or func_kind == js_func_async_generator:
+        string_buffer_puts8(b, "async ".bytes.data) catch: recover ()
+    string_buffer_puts8(b, "function".bytes.data) catch: recover ()
+
+    if func_kind == js_func_generator or func_kind == js_func_async_generator:
+        string_buffer_putc8(b, (u32)'*') catch: recover ()
+    string_buffer_puts8(b, " anonymous(".bytes.data) catch: recover ()
+
+    let n = argc - 1
+    for i in 0..<n:
+        if i != 0:
+            string_buffer_putc8(b, (u32)',') catch: recover ()
+        try string_buffer_concat_value(b, argv[(usize)i])
+    string_buffer_puts8(b, "\n) {\n".bytes.data) catch: recover ()
+    if n >= 0:
+        try string_buffer_concat_value(b, argv[(usize)n])
+    string_buffer_puts8(b, "\n})".bytes.data) catch: recover ()
+
+# XXX: add a specific eval mode so that Function("}), ({") is rejected
+## The Function constructor; `magic` is the function kind (js_func_*) of the
+## GeneratorFunction, AsyncFunction and AsyncGeneratorFunction constructors.
+func js_function_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let func_kind = (u8)magic
+
+    var b: StringBuffer = ---
+    # as in C, a failed init marks the buffer and string_buffer_end reports it
+    string_buffer_init(ctx, &b, 0) catch: recover ()
+    js_function_constructor_write(&b, func_kind, argc, argv) catch failure:
+        string_buffer_free(&b)
+        error(failure.code, failure.message)
+    let s = try string_buffer_end(&b)
+    let obj = js_eval_object(ctx, ctx.global_obj, s, eval_type_indirect, -1) catch failure:
+        js_free_value(ctx, s)
+        error(failure.code, failure.message)
+    js_free_value(ctx, s)
+    errdefer js_free_value(ctx, obj)
+    if not js_is_undefined(new_target):
+        # set the prototype
+        var proto = try js_get_property(ctx, new_target, atom_prototype)
+        if not js_is_object(proto):
+            js_free_value(ctx, proto)
+            let realm = try js_get_function_realm(ctx, new_target)
+            let realm_class_proto = context_class_proto(realm)
+            proto = js_dup_value(ctx, realm_class_proto[(usize)(u16)func_kind_to_class_id[(usize)func_kind]])
+        defer js_free_value(ctx, proto)
+        discard(try js_set_prototype_internal(ctx, obj, proto, true))
+    return obj
+
+# mark: Lengths and argument lists ==============================================================
+
+## ToUint32 of `obj.length` into `*pres` (0 on failure) (js_get_length32).
+func js_get_length32(ctx: Context*, pres: u32*, obj: Value) -> !:
+    let len_val = js_get_property(ctx, obj, atom_length) catch failure:
+        *pres = 0
+        error(failure.code, failure.message)
+    discard(try js_to_uint32_free(ctx, pres, len_val))
+
+## ToLength of `obj.length` into `*pres` (0 on failure) (js_get_length64).
+func js_get_length64(ctx: Context*, pres: i64*, obj: Value) -> !:
+    let len_val = js_get_property(ctx, obj, atom_length) catch failure:
+        *pres = 0
+        error(failure.code, failure.message)
+    discard(try js_to_length_free(ctx, pres, len_val))
+
+## Release the `len` values of an argument list and the list (free_arg_list).
+func free_arg_list(ctx: Context*, tab: Value*, len: u32):
+    for i in 0..<(usize)len:
+        js_free_value(ctx, tab[i])
+    js_free(ctx, tab)
+
+# XXX: should use ValueArray
+## The elements of the array-like `array_arg` as a js_malloc'ed list of `*plen` values,
+## released with free_arg_list (build_arg_list).
+func build_arg_list(ctx: Context*, plen: u32*, array_arg: Value) -> Value*!:
+    if array_arg.tag != Tag.object:
+        try js_throw_type_error(ctx, "not a object")
+    var len64: i64 = 0
+    try js_get_length64(ctx, &len64, array_arg)
+    if len64 > (i64)js_max_local_vars:
+        # XXX: check for stack overflow?
+        try js_throw_range_error(ctx, f"too many arguments in function call (only {js_max_local_vars} allowed)")
+    let len = (u32)len64
+    # avoid allocating 0 bytes
+    let tab_raw = try js_mallocz(ctx, sizeof(Value) * (usize)cutils.max_uint32(1, len))
+    let tab = (Value*)tab_raw
+    let p = array_arg.u.obj
+    if ((p.class_id == ClassId.array or p.class_id == ClassId.arguments or
+            p.class_id == ClassId.mapped_arguments) and
+            p.fast_array and len == p.u.array.count):
+        if p.class_id == ClassId.mapped_arguments:
+            for i in 0..<(usize)len:
+                tab[i] = js_dup_value(ctx, *p.u.array.u.var_refs[i].pvalue)
+        else:
+            for i in 0..<(usize)len:
+                tab[i] = js_dup_value(ctx, p.u.array.u.values[i])
+    else:
+        for i: u32 in 0..<len:
+            let ret = js_get_property_uint32(ctx, array_arg, i) catch failure:
+                free_arg_list(ctx, tab, i)
+                error(failure.code, failure.message)
+            tab[(usize)i] = ret
+    *plen = len
+    return tab
+
+# mark: Function.prototype ======================================================================
+
+# magic value: 0 = normal apply, 1 = apply for constructor, 2 =
+# Reflect.apply
+## Function.prototype.apply(this_arg, array); also Reflect.apply and Reflect.construct.
+func js_function_apply(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    discard(try check_function(ctx, this_val))
+    let this_arg = argv[0]
+    let array_arg = argv[1]
+    if (array_arg.tag == Tag.undefined or array_arg.tag == Tag.null) and magic != 2:
+        var no_arg = js_undefined()
+        return try js_call(ctx, this_val, this_arg, 0, &no_arg)
+    var len: u32 = 0
+    let tab = try build_arg_list(ctx, &len, array_arg)
+    defer free_arg_list(ctx, tab, len)
+    if (magic & 1) != 0:
+        return try js_call_constructor2(ctx, this_val, this_arg, (i32)len, tab)
+    else:
+        return try js_call(ctx, this_val, this_arg, (i32)len, tab)
+
+## Function.prototype.call(this_arg, ...args).
+func js_function_call(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    if argc <= 0:
+        var no_arg = js_undefined()
+        return try js_call(ctx, this_val, js_undefined(), 0, &no_arg)
+    else:
+        return try js_call(ctx, this_val, argv[0], argc - 1, argv + 1)
+
+## trunc(d) for a float that is not NaN: rounded toward zero, keeping the sign of zero.
+func float64_trunc(d: f64) -> f64:
+    # 2^52: every float of this magnitude or more (and the infinities) is integral
+    if not (d > -4503599627370496.0 and d < 4503599627370496.0):
+        return d
+    let r = f64((i64)d)
+    if r == 0.0 and d < 0.0:
+        return -0.0
+    return r
+
+## The length of a function bound with `arg_count` arguments, from the target's length
+## `len_val` (released).
+func js_function_bind_length(ctx: Context*, len_val: Value, arg_count: i32) -> Value:
+    if len_val.tag == Tag.int:
+        # most common case
+        var len1 = js_value_get_int(len_val)
+        if len1 <= arg_count:
+            len1 = 0
+        else:
+            len1 -= arg_count
+        return js_new_int32(len1)
+    elif len_val.tag == Tag.float64:
+        var d = js_value_get_float64(len_val)
+        if d != d:
+            d = 0.0
+        else:
+            d = float64_trunc(d)
+            if d <= f64(arg_count):
+                d = 0.0
+            else:
+                d -= f64(arg_count) # also converts -0 to +0
+        return js_new_float64(d)
+    else:
+        js_free_value(ctx, len_val)
+        return js_new_int32(0)
+
+## Function.prototype.bind(this_arg, ...args): a bound function.
+func js_function_bind(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    discard(try check_function(ctx, this_val))
+
+    let func_obj = try js_new_object_proto_class(ctx, ctx.function_proto,
+                                                 (u32)ClassId.bound_function)
+    errdefer js_free_value(ctx, func_obj)
+    let p = func_obj.u.obj
+    p.is_constructor = js_is_constructor(ctx, this_val)
+    let arg_count = cutils.max_int(0, argc - 1)
+    let bf_raw = try js_malloc(ctx, sizeof(BoundFunction) + (usize)arg_count * sizeof(Value))
+    let bf = (BoundFunction*)bf_raw
+    bf.func_obj = js_dup_value(ctx, this_val)
+    bf.this_val = js_dup_value(ctx, argv[0])
+    bf.argc = arg_count
+    let bf_argv = bound_function_argv(bf)
+    for i in 0..<(usize)arg_count:
+        bf_argv[i] = js_dup_value(ctx, argv[i + 1])
+    p.u.bound_function = bf
+
+    # XXX: the spec could be simpler by only using GetOwnProperty
+    var len_val = js_undefined()
+    if not try js_get_own_property(ctx, none, this_val, atom_length):
+        len_val = js_new_int32(0)
+    else:
+        len_val = js_function_bind_length(ctx, try js_get_property(ctx, this_val, atom_length), arg_count)
+    js_define_property_value(ctx, func_obj, atom_length, len_val, prop_configurable) catch: recover false
+
+    var name1 = try js_get_property(ctx, this_val, atom_name)
+    if not js_is_string(name1):
+        js_free_value(ctx, name1)
+        name1 = try js_atom_to_string(ctx, atom_empty_string)
+    name1 = try js_concat_string3(ctx, "bound ".bytes.data, name1, &empty_c_string[0])
+    js_define_property_value(ctx, func_obj, atom_name, name1, prop_configurable) catch: recover false
+    return func_obj
+
+## Function.prototype.toString(): the source text of a bytecode function with debug
+## information, else a "[native code]" text.
+func js_function_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var func_kind = js_func_normal
+
+    discard(try check_function(ctx, this_val))
+
+    let p = this_val.u.obj
+    if js_class_has_bytecode((u32)p.class_id):
+        let b = p.u.func_.function_bytecode
+        if b.has_debug:
+            if let source = b.debug.source:
+                return try js_new_string_len(ctx, source, (usize)b.debug.source_len)
+        func_kind = b.func_kind
+    var pref = "function "
+    match func_kind:
+        1:
+            # js_func_generator
+            pref = "function *"
+        2:
+            # js_func_async
+            pref = "async function "
+        3:
+            # js_func_async_generator
+            pref = "async function *"
+        _:
+            # js_func_normal
+            pref = "function "
+    let suff = "() {\n    [native code]\n}"
+    var name = try js_get_property(ctx, this_val, atom_name)
+    if js_is_undefined(name):
+        name = try js_atom_to_string(ctx, atom_empty_string)
+    return try js_concat_string3(ctx, pref.bytes.data, name, suff.bytes.data)
+
+## Function.prototype[Symbol.hasInstance](v): OrdinaryHasInstance.
+func js_function_has_instance(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let ret = try js_ordinary_is_instance_of(ctx, argv[0], this_val)
+    return js_new_bool(ret)
+
+# mark: Table ===================================================================================
+
+## The methods and accessors of Function.prototype.
+let js_function_proto_funcs: CFunctionListEntry[8] = [
+    CFunctionListEntry(name = "call", def_type = def_cfunc, length = 1, generic = js_function_call),
+    CFunctionListEntry(name = "apply", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_function_apply, magic = 0),
+    CFunctionListEntry(name = "bind", def_type = def_cfunc, length = 1, generic = js_function_bind),
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_function_to_string),
+    CFunctionListEntry(name = "[Symbol.hasInstance]", def_type = def_cfunc, length = 1, generic = js_function_has_instance),
+    CFunctionListEntry(name = "fileName", prop_flags = (u8)prop_configurable, def_type = def_cgetset, getter = js_function_proto_file_name),
+    CFunctionListEntry(name = "lineNumber", prop_flags = (u8)prop_configurable, def_type = def_cgetset_magic, getter_magic = js_function_proto_line_number, magic = 0),
+    CFunctionListEntry(name = "columnNumber", prop_flags = (u8)prop_configurable, def_type = def_cgetset_magic, getter_magic = js_function_proto_line_number, magic = 1),
+]

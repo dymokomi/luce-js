@@ -81,7 +81,12 @@ object_writer.lucb
 bytecode_reader.lucb
 object_reader.lucb
 function_list.lucb
-stub_r22_object_function_error.lucb
+function_lists.lucb
+object_descriptors.lucb
+object_builtins.lucb
+function_builtins.lucb
+error_builtins.lucb
+copy_sub_array.lucb
 stub_r23_array_iterator.lucb
 stub_r24_number_string_math.lucb
 stub_r25_regexp_json_reflect.lucb
@@ -104,3 +109,4 @@ tests_r12.lucb
 tests_r13.lucb
 tests_bytecode_io.lucb
 tests_modules.lucb
+tests_r22.lucb
