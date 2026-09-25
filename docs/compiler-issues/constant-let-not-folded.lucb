@@ -1,0 +1,27 @@
+# A module constant whose initialiser is a constant expression rather than a literal is not
+# folded: `let a: i32 = 3 << 4` becomes a global initialised at startup, and every use
+# loads it (adrp, add, ldr), where `let b: i32 = 48` is an immediate. In a large function
+# the address is also hoisted to the prologue and spilled, so it costs a store on every
+# call even when the use is never reached.
+#
+# Expected: `mov w10, #0x30; and w0, w0, w10` in both `fa` and `fb` (C: an enum or #define).
+# Actual:   with `luce-base build --release` (native backend, arm64 macOS):
+#               _lb_..._fa: adrp x15, ...; add x15, x15, #...; ldrsw x15, [x15]; and ...
+#               _lb_..._fb: mov x10, #0x30; and ...
+#           js_call_internal's prologue computed and spilled the addresses of prop_tmask,
+#           prop_writable and prop_length (the put_field and get_field fast paths).
+# Workaround: the flag constants of luce_js.engine (api_types, types_runtime,
+#           types_bytecode, calls, atoms, module) are written as literals, with the C
+#           expression beside each as a comment.
+
+let a: i32 = 3 << 4
+let b: i32 = 48
+
+noinline func fa(x: i32) -> i32:
+    return x & a
+
+noinline func fb(x: i32) -> i32:
+    return x & b
+
+func main(args: str[]) -> i32:
+    return fa(1) + fb(2)

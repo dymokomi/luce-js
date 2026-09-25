@@ -14,9 +14,9 @@
 #==============================================================================================
 
 ## JS_CALL_FLAG_COPY_ARGV: the callee must copy argv before modifying it.
-let call_flag_copy_argv: i32 = 1 << 1
+let call_flag_copy_argv: i32 = 0x2    # 1 << 1
 ## JS_CALL_FLAG_GENERATOR: the call resumes a generator.
-let call_flag_generator: i32 = 1 << 2
+let call_flag_generator: i32 = 0x4    # 1 << 2
 
 # mark: C functions =============================================================================
 

@@ -9,116 +9,120 @@
 #       the host callbacks. A JavaScript exception is a failure (`!`) everywhere a
 #       QuickJS callback returns JS_EXCEPTION or -1.
 #
+#       The flags are written as literals with quickjs.h's expression beside them: a
+#       constant initialised by an expression is loaded from memory at every use
+#       (workaround: compiler-issues/constant-let-not-folded).
+#
 #==============================================================================================
 
 # mark: Property flags ==========================================================================
 
 ## JS_PROP_CONFIGURABLE.
-pub let prop_configurable: i32 = 1 << 0
+pub let prop_configurable: i32 = 0x1    # 1 << 0
 ## JS_PROP_WRITABLE.
-pub let prop_writable: i32 = 1 << 1
+pub let prop_writable: i32 = 0x2    # 1 << 1
 ## JS_PROP_ENUMERABLE.
-pub let prop_enumerable: i32 = 1 << 2
+pub let prop_enumerable: i32 = 0x4    # 1 << 2
 ## JS_PROP_C_W_E: configurable, writable and enumerable.
-pub let prop_c_w_e: i32 = prop_configurable | prop_writable | prop_enumerable
+pub let prop_c_w_e: i32 = 7    # prop_configurable | prop_writable | prop_enumerable
 ## JS_PROP_LENGTH: used internally in arrays.
-pub let prop_length: i32 = 1 << 3
+pub let prop_length: i32 = 0x8    # 1 << 3
 ## JS_PROP_TMASK: the mask of the property kinds below.
-pub let prop_tmask: i32 = 3 << 4
+pub let prop_tmask: i32 = 0x30    # 3 << 4
 ## JS_PROP_NORMAL: a plain value.
-pub let prop_normal: i32 = 0 << 4
+pub let prop_normal: i32 = 0x0    # 0 << 4
 ## JS_PROP_GETSET: a getter and a setter.
-pub let prop_getset: i32 = 1 << 4
+pub let prop_getset: i32 = 0x10    # 1 << 4
 ## JS_PROP_VARREF: a variable reference, used internally.
-pub let prop_varref: i32 = 2 << 4
+pub let prop_varref: i32 = 0x20    # 2 << 4
 ## JS_PROP_AUTOINIT: created on first access, used internally.
-pub let prop_autoinit: i32 = 3 << 4
+pub let prop_autoinit: i32 = 0x30    # 3 << 4
 
 ## JS_PROP_HAS_SHIFT: flags below are the JS_PROP_HAS_* bits of a descriptor.
 pub let prop_has_shift: i32 = 8
 ## JS_PROP_HAS_CONFIGURABLE.
-pub let prop_has_configurable: i32 = 1 << 8
+pub let prop_has_configurable: i32 = 0x100    # 1 << 8
 ## JS_PROP_HAS_WRITABLE.
-pub let prop_has_writable: i32 = 1 << 9
+pub let prop_has_writable: i32 = 0x200    # 1 << 9
 ## JS_PROP_HAS_ENUMERABLE.
-pub let prop_has_enumerable: i32 = 1 << 10
+pub let prop_has_enumerable: i32 = 0x400    # 1 << 10
 ## JS_PROP_HAS_GET.
-pub let prop_has_get: i32 = 1 << 11
+pub let prop_has_get: i32 = 0x800    # 1 << 11
 ## JS_PROP_HAS_SET.
-pub let prop_has_set: i32 = 1 << 12
+pub let prop_has_set: i32 = 0x1000    # 1 << 12
 ## JS_PROP_HAS_VALUE.
-pub let prop_has_value: i32 = 1 << 13
+pub let prop_has_value: i32 = 0x2000    # 1 << 13
 ## JS_PROP_THROW: throw an exception if false would be returned
 ## (JS_DefineProperty/JS_SetProperty).
-pub let prop_throw: i32 = 1 << 14
+pub let prop_throw: i32 = 0x4000    # 1 << 14
 ## JS_PROP_THROW_STRICT: throw an exception if false would be returned in strict mode
 ## (JS_SetProperty).
-pub let prop_throw_strict: i32 = 1 << 15
+pub let prop_throw_strict: i32 = 0x8000    # 1 << 15
 ## JS_PROP_NO_EXOTIC: internal use.
-pub let prop_no_exotic: i32 = 1 << 16
+pub let prop_no_exotic: i32 = 0x10000    # 1 << 16
 
 # mark: Eval flags ==============================================================================
 
 ## JS_EVAL_TYPE_GLOBAL: global code (the default).
-pub let eval_type_global: i32 = 0 << 0
+pub let eval_type_global: i32 = 0x0    # 0 << 0
 ## JS_EVAL_TYPE_MODULE: module code.
-pub let eval_type_module: i32 = 1 << 0
+pub let eval_type_module: i32 = 0x1    # 1 << 0
 ## JS_EVAL_TYPE_DIRECT: a direct call (internal use).
-pub let eval_type_direct: i32 = 2 << 0
+pub let eval_type_direct: i32 = 0x2    # 2 << 0
 ## JS_EVAL_TYPE_INDIRECT: an indirect call (internal use).
-pub let eval_type_indirect: i32 = 3 << 0
+pub let eval_type_indirect: i32 = 0x3    # 3 << 0
 ## JS_EVAL_TYPE_MASK.
-pub let eval_type_mask: i32 = 3 << 0
+pub let eval_type_mask: i32 = 0x3    # 3 << 0
 ## JS_EVAL_FLAG_STRICT: force strict mode.
-pub let eval_flag_strict: i32 = 1 << 3
+pub let eval_flag_strict: i32 = 0x8    # 1 << 3
 ## JS_EVAL_FLAG_COMPILE_ONLY: compile but do not run. The result is an object with a
 ## function_bytecode or module tag, run with `eval_function`.
-pub let eval_flag_compile_only: i32 = 1 << 5
+pub let eval_flag_compile_only: i32 = 0x20    # 1 << 5
 ## JS_EVAL_FLAG_BACKTRACE_BARRIER: don't include the stack frames before this eval in
 ## the Error() backtraces.
-pub let eval_flag_backtrace_barrier: i32 = 1 << 6
+pub let eval_flag_backtrace_barrier: i32 = 0x40    # 1 << 6
 ## JS_EVAL_FLAG_ASYNC: allow top-level await in normal script; the result is a promise.
 ## Only allowed with eval_type_global.
-pub let eval_flag_async: i32 = 1 << 7
+pub let eval_flag_async: i32 = 0x80    # 1 << 7
 
 ## JS_CALL_FLAG_CONSTRUCTOR: the call is a `new`.
-pub let call_flag_constructor: i32 = 1 << 0
+pub let call_flag_constructor: i32 = 0x1    # 1 << 0
 
 ## JS_GPN_STRING_MASK.
-pub let gpn_string_mask: i32 = 1 << 0
+pub let gpn_string_mask: i32 = 0x1    # 1 << 0
 ## JS_GPN_SYMBOL_MASK.
-pub let gpn_symbol_mask: i32 = 1 << 1
+pub let gpn_symbol_mask: i32 = 0x2    # 1 << 1
 ## JS_GPN_PRIVATE_MASK.
-pub let gpn_private_mask: i32 = 1 << 2
+pub let gpn_private_mask: i32 = 0x4    # 1 << 2
 ## JS_GPN_ENUM_ONLY: only include the enumerable properties.
-pub let gpn_enum_only: i32 = 1 << 4
+pub let gpn_enum_only: i32 = 0x10    # 1 << 4
 ## JS_GPN_SET_ENUM: set the is_enumerable field.
-pub let gpn_set_enum: i32 = 1 << 5
+pub let gpn_set_enum: i32 = 0x20    # 1 << 5
 
 ## JS_PARSE_JSON_EXT: allow extended JSON.
-pub let parse_json_ext: i32 = 1 << 0
+pub let parse_json_ext: i32 = 0x1    # 1 << 0
 
 ## JS_STRIP_SOURCE: strip the source code.
-pub let strip_source: i32 = 1 << 0
+pub let strip_source: i32 = 0x1    # 1 << 0
 ## JS_STRIP_DEBUG: strip all debug info including the source code.
-pub let strip_debug: i32 = 1 << 1
+pub let strip_debug: i32 = 0x2    # 1 << 1
 
 ## JS_WRITE_OBJ_BYTECODE: allow function/module.
-pub let write_obj_bytecode: i32 = 1 << 0
+pub let write_obj_bytecode: i32 = 0x1    # 1 << 0
 ## JS_WRITE_OBJ_BSWAP: byte swapped output.
-pub let write_obj_bswap: i32 = 1 << 1
+pub let write_obj_bswap: i32 = 0x2    # 1 << 1
 ## JS_WRITE_OBJ_SAB: allow SharedArrayBuffer.
-pub let write_obj_sab: i32 = 1 << 2
+pub let write_obj_sab: i32 = 0x4    # 1 << 2
 ## JS_WRITE_OBJ_REFERENCE: allow object references to encode arbitrary object graphs.
-pub let write_obj_reference: i32 = 1 << 3
+pub let write_obj_reference: i32 = 0x8    # 1 << 3
 ## JS_READ_OBJ_BYTECODE: allow function/module.
-pub let read_obj_bytecode: i32 = 1 << 0
+pub let read_obj_bytecode: i32 = 0x1    # 1 << 0
 ## JS_READ_OBJ_ROM_DATA: avoid duplicating 'buf' data.
-pub let read_obj_rom_data: i32 = 1 << 1
+pub let read_obj_rom_data: i32 = 0x2    # 1 << 1
 ## JS_READ_OBJ_SAB: allow SharedArrayBuffer.
-pub let read_obj_sab: i32 = 1 << 2
+pub let read_obj_sab: i32 = 0x4    # 1 << 2
 ## JS_READ_OBJ_REFERENCE: allow object references.
-pub let read_obj_reference: i32 = 1 << 3
+pub let read_obj_reference: i32 = 0x8    # 1 << 3
 
 ## JS_INVALID_CLASS_ID.
 pub let invalid_class_id: u32 = 0
