@@ -1,0 +1,256 @@
+#==============================================================================================
+#
+#   bigint_limbs - BigInt limits and the multi-precision primitives on 32-bit limbs
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "bigint support" lines 11264-11589: the size limits, the ADDC
+#       carry step, and the limb arithmetic (mp_add, mp_sub, mp_neg, mp_mul1, mp_div1,
+#       mp_add_mul1, mp_mul_basecase, mp_sub_mul1, the normalized one-limb division
+#       udiv1norm, mp_div1norm, the base case division mp_divnorm, and the shifts). The
+#       port uses the JS_LIMB_BITS == 32 configuration: a limb is a u32 and a double
+#       limb a u64 (see types_runtime). The functions work on raw limb pointers, as in C:
+#       the callers own the lengths.
+#
+#==============================================================================================
+
+# mark: Limits ==================================================================================
+
+## The largest BigInt, in limbs (JS_BIGINT_MAX_SIZE).
+let bigint_max_size: i32 = (1024 * 1024) // js_limb_bits
+
+# it is currently assumed that JS_SHORT_BIG_INT_BITS = JS_LIMB_BITS
+
+## The smallest short big integer payload (JS_SHORT_BIG_INT_MIN).
+let short_big_int_min: i32 = -2147483648
+## The largest short big integer payload (JS_SHORT_BIG_INT_MAX).
+let short_big_int_max: i32 = 2147483647
+
+# mark: Limb primitives =========================================================================
+
+# The ADDC macro: `op1 + op2 + carry_in`, answering the limb and the carry out (0 or 1).
+func addc(op1: u32, op2: u32, carry_in: u32) -> (u32, u32):
+    let v = op1
+    var a = v +% op2
+    let k1 = (u32)(a < v)
+    let k = carry_in
+    a = a +% k
+    return (a, (u32)(a < k) | k1)
+
+# a != 0
+func js_limb_clz(a: u32) -> u32:
+    return (u32)cutils.clz32(a)
+
+# handle a = 0 too
+func js_limb_safe_clz(a: u32) -> u32:
+    if a == 0:
+        return (u32)js_limb_bits
+    else:
+        return js_limb_clz(a)
+
+# res[] = op1[] + op2[] + carry. Return the carry out.
+func mp_add(res: u32*, op1: const u32*, op2: const u32*, n: u32, carry_in: u32) -> u32:
+    var carry = carry_in
+    for i in 0..<(usize)n:
+        let (v, c) = addc(op1[i], op2[i], carry)
+        res[i] = v
+        carry = c
+    return carry
+
+# res[] = op1[] - op2[] - carry. Return the borrow out.
+func mp_sub(res: u32*, op1: const u32*, op2: const u32*, n: i32, carry: u32) -> u32:
+    var k = carry
+    var i: i32 = 0
+    while i < n:
+        var v = op1[i]
+        let a = v -% op2[i]
+        let k1 = (u32)(a > v)
+        v = a -% k
+        k = (u32)(v > a) | k1
+        res[i] = v
+        i += 1
+    return k
+
+# compute 0 - op2. carry = 0 or 1.
+func mp_neg(res: u32*, op2: const u32*, n: i32) -> u32:
+    var carry: u32 = 1
+    var i: i32 = 0
+    while i < n:
+        let v = ~op2[i] +% carry
+        carry = (u32)(v < carry)
+        res[i] = v
+        i += 1
+    return carry
+
+# tabr[] = taba[] * b + l. Return the high carry
+func mp_mul1(tabr: u32*, taba: const u32*, n: u32, b: u32, l0: u32) -> u32:
+    var l = l0
+    for i in 0..<(usize)n:
+        # cannot overflow: (2^32 - 1)^2 + 2^32 - 1 < 2^64
+        let t = (u64)taba[i] * (u64)b + (u64)l
+        tabr[i] = (u32)t
+        l = (u32)(t >> 32)
+    return l
+
+# tabr[] = (r * B^n + taba[]) / b. Return the remainder.
+func mp_div1(tabr: u32*, taba: const u32*, n: u32, b: u32, r0: u32) -> u32:
+    var r = r0
+    var i = (i32)n - 1
+    while i >= 0:
+        let a1 = ((u64)r << 32) | (u64)taba[i]
+        tabr[i] = (u32)(a1 // (u64)b)
+        r = (u32)(a1 % (u64)b)
+        i -= 1
+    return r
+
+# tabr[] += taba[] * b, return the high word.
+func mp_add_mul1(tabr: u32*, taba: const u32*, n: u32, b: u32) -> u32:
+    var l: u32 = 0
+    for i in 0..<(usize)n:
+        # cannot overflow: (2^32 - 1)^2 + 2 * (2^32 - 1) = 2^64 - 1
+        let t = (u64)taba[i] * (u64)b + (u64)l + (u64)tabr[i]
+        tabr[i] = (u32)t
+        l = (u32)(t >> 32)
+    return l
+
+# size of the result : op1_size + op2_size.
+func mp_mul_basecase(result: u32*, op1: const u32*, op1_size: u32, op2: const u32*,
+                     op2_size: u32):
+    result[op1_size] = mp_mul1(result, op1, op1_size, op2[0], 0)
+    for i in 1..<(usize)op2_size:
+        let r = mp_add_mul1(result + i, op1, op1_size, op2[i])
+        result[i + (usize)op1_size] = r
+
+# tabr[] -= taba[] * b. Return the value to substract to the high word.
+func mp_sub_mul1(tabr: u32*, taba: const u32*, n: u32, b: u32) -> u32:
+    var l: u32 = 0
+    for i in 0..<(usize)n:
+        let t = (u64)tabr[i] -% (u64)taba[i] * (u64)b -% (u64)l
+        tabr[i] = (u32)t
+        l = (u32)(-%(t >> 32))
+    return l
+
+# WARNING: d must be >= 2^(JS_LIMB_BITS-1)
+func udiv1norm_init(d: u32) -> u32:
+    let a1 = -%d -% 1
+    let a0: u32 = 0xffffffff
+    return (u32)((((u64)a1 << 32) | (u64)a0) // (u64)d)
+
+# return the quotient and the remainder in '*pr'of 'a1*2^JS_LIMB_BITS+a0 / d' with
+# 0 <= a1 < d.
+func udiv1norm(pr: u32*, a1: u32, a0: u32, d: u32, d_inv: u32) -> u32:
+    let n1m = (u32)((i32)a0 >> 31)
+    let n_adj = a0 +% (n1m & d)
+    var a = (u64)d_inv *% (u64)(a1 -% n1m) +% (u64)n_adj
+    var q = (u32)(a >> 32) +% a1
+    # compute a - q * r and update q so that the remainder is between 0 and d - 1
+    a = ((u64)a1 << 32) | (u64)a0
+    a = a -% (u64)q *% (u64)d -% (u64)d
+    let ah = (u32)(a >> 32)
+    q = q +% 1 +% ah
+    let r = (u32)a +% (ah & d)
+    *pr = r
+    return q
+
+let udiv1norm_threshold: u32 = 3
+
+# b must be >= 1 << (JS_LIMB_BITS - 1)
+func mp_div1norm(tabr: u32*, taba: const u32*, n: u32, b: u32, r0: u32) -> u32:
+    var r = r0
+    var i = (i32)n - 1
+    if n >= udiv1norm_threshold:
+        let b_inv = udiv1norm_init(b)
+        while i >= 0:
+            tabr[i] = udiv1norm(&r, r, taba[i], b, b_inv)
+            i -= 1
+    else:
+        while i >= 0:
+            let a1 = ((u64)r << 32) | (u64)taba[i]
+            tabr[i] = (u32)(a1 // (u64)b)
+            r = (u32)(a1 % (u64)b)
+            i -= 1
+    return r
+
+# mark: Division and shifts =====================================================================
+
+# base case division: divides taba[0..na-1] by tabb[0..nb-1]. tabb[nb - 1] must be >= 1 <<
+# (JS_LIMB_BITS - 1). na - nb must be >= 0. 'taba' is modified and contains the remainder
+# (nb limbs). tabq[0..na-nb] contains the quotient with tabq[na - nb] <= 1.
+func mp_divnorm(tabq: u32*, taba: u32*, na: u32, tabb: const u32*, nb: u32):
+    let b1 = tabb[nb - 1]
+    if nb == 1:
+        taba[0] = mp_div1norm(tabq, taba, na, b1, 0)
+        return
+    let n = na - nb
+    let nbi = (i32)nb
+
+    var b1_inv: u32 = 0
+    if n >= udiv1norm_threshold:
+        b1_inv = udiv1norm_init(b1)
+
+    # first iteration: the quotient is only 0 or 1
+    var q: u32 = 1
+    var j = nbi - 1
+    while j >= 0:
+        let k = (usize)n + (usize)j
+        if taba[k] != tabb[j]:
+            if taba[k] < tabb[j]:
+                q = 0
+            break
+        j -= 1
+    tabq[n] = q
+    if q != 0:
+        discard(mp_sub(taba + n, taba + n, tabb, nbi, 0))
+
+    var i = (i32)n - 1
+    while i >= 0:
+        let top = (usize)(i + nbi)
+        if taba[top] >= b1:
+            q = 0xffffffff
+        elif b1_inv != 0:
+            var dummy_r: u32 = 0
+            q = udiv1norm(&dummy_r, taba[top], taba[top - 1], b1, b1_inv)
+        else:
+            let al = ((u64)taba[top] << 32) | (u64)taba[top - 1]
+            q = (u32)(al // (u64)b1)
+        let r = mp_sub_mul1(taba + (usize)i, tabb, nb, q)
+
+        let v = taba[top]
+        let a = v -% r
+        var c = (u32)(a > v)
+        taba[top] = a
+
+        if c != 0:
+            # negative result
+            while true:
+                q = q -% 1
+                c = mp_add(taba + (usize)i, taba + (usize)i, tabb, nb, 0)
+                # propagate carry and test if positive result
+                if c != 0:
+                    taba[top] = taba[top] +% 1
+                    if taba[top] == 0:
+                        break
+        tabq[i] = q
+        i -= 1
+
+# 1 <= shift <= JS_LIMB_BITS - 1
+func mp_shl(tabr: u32*, taba: const u32*, n: i32, shift: i32) -> u32:
+    var l: u32 = 0
+    var i: i32 = 0
+    while i < n:
+        let v = taba[i]
+        tabr[i] = (v << (u32)shift) | l
+        l = v >> (u32)(js_limb_bits - shift)
+        i += 1
+    return l
+
+# r = (a + high*B^n) >> shift. Return the remainder r (0 <= r < 2^shift).
+# 1 <= shift <= LIMB_BITS - 1
+func mp_shr(tab_r: u32*, tab: const u32*, n: i32, shift: i32, high: u32) -> u32:
+    var l = high
+    var i = n - 1
+    while i >= 0:
+        let a = tab[i]
+        tab_r[i] = (a >> (u32)shift) | (l << (u32)(js_limb_bits - shift))
+        l = a
+        i -= 1
+    return l & (((u32)1 << (u32)shift) - 1)

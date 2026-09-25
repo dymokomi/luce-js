@@ -278,6 +278,13 @@ let js_mode_async: i32 = 1 << 2
 ## JS_MODE_BACKTRACE_BARRIER: stop the backtrace before this frame.
 let js_mode_backtrace_barrier: i32 = 1 << 3
 
+## The hints of ToPrimitive (HINT_STRING, HINT_NUMBER, HINT_NONE).
+let hint_string: i32 = 0
+let hint_number: i32 = 1
+let hint_none: i32 = 2
+## HINT_FORCE_ORDINARY: don't try Symbol.toPrimitive.
+let hint_force_ordinary: i32 = 1 << 4
+
 ## A call's frame (JSStackFrame).
 struct StackFrame:
     ## None if the first stack frame.

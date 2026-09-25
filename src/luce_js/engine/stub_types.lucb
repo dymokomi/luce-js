@@ -140,9 +140,6 @@ enum ResolveResult as i32:
 enum StrictEqMode as i32:
     unported = 0
 
-enum ToNumberHint as i32:
-    unported = 0
-
 enum VarDefKind as i32:
     unported = 0
 

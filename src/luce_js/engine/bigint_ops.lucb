@@ -1,0 +1,326 @@
+#==============================================================================================
+#
+#   bigint_ops - BigInt arithmetic: add, sub, neg, mul, div, rem, logic, shifts and pow
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "bigint support" lines 11811-12188. Every operation allocates
+#       a new, normalized JSBigInt and leaves its operands alone; the operands may be
+#       stack buffers (JSBigIntBuf). A function that returns NULL in C (a RangeError or
+#       an out-of-memory exception pending) fails here.
+#
+#==============================================================================================
+
+# mark: Addition and multiplication =============================================================
+
+# Compute a + b (b_neg = false) or a - b (b_neg = true).
+# XXX: optimize
+func js_bigint_add(ctx: Context*, a: const BigInt*, b: const BigInt*, b_neg: bool) -> BigInt*!:
+    let n2 = cutils.max_int((i32)a.len, (i32)b.len)
+    let n1 = cutils.min_int((i32)a.len, (i32)b.len)
+    let r = try js_bigint_new(ctx, n2)
+    let r_tab = js_bigint_tab(r)
+    let a_tab = js_bigint_tab(a)
+    let b_tab = js_bigint_tab(b)
+    # -b_neg: all ones when subtracting
+    let b_mask: u32 = 0xffffffff if b_neg else 0
+    # XXX: optimize
+    # common part
+    var carry = (u32)b_neg
+    var i: i32 = 0
+    while i < n1:
+        let op1 = a_tab[i]
+        let op2 = b_tab[i] ^ b_mask
+        let (v, c) = addc(op1, op2, carry)
+        r_tab[i] = v
+        carry = c
+        i += 1
+    let a_sign = -%(u32)js_bigint_sign(a)
+    let b_sign = (-%(u32)js_bigint_sign(b)) ^ b_mask
+    # part with sign extension of one operand
+    if a.len > b.len:
+        i = n1
+        while i < n2:
+            let op1 = a_tab[i]
+            let (v, c) = addc(op1, b_sign, carry)
+            r_tab[i] = v
+            carry = c
+            i += 1
+    elif a.len < b.len:
+        i = n1
+        while i < n2:
+            let op2 = b_tab[i] ^ b_mask
+            let (v, c) = addc(a_sign, op2, carry)
+            r_tab[i] = v
+            carry = c
+            i += 1
+
+    # part with sign extension for both operands. Extend the result if necessary
+    return try js_bigint_extend(ctx, r, a_sign +% b_sign +% carry)
+
+# XXX: optimize
+func js_bigint_neg(ctx: Context*, a: const BigInt*) -> BigInt*!:
+    var buf: BigIntBuf
+    let b = js_bigint_set_si(&buf, 0)
+    return try js_bigint_add(ctx, b, a, true)
+
+func js_bigint_mul(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*!:
+    let r = try js_bigint_new(ctx, (i32)(a.len + b.len))
+    let r_tab = js_bigint_tab(r)
+    let a_tab = js_bigint_tab(a)
+    let b_tab = js_bigint_tab(b)
+    mp_mul_basecase(r_tab, a_tab, a.len, b_tab, b.len)
+    # correct the result if negative operands (no overflow is possible)
+    if js_bigint_sign(a) != 0:
+        discard(mp_sub(r_tab + (usize)a.len, r_tab + (usize)a.len, b_tab, (i32)b.len, 0))
+    if js_bigint_sign(b) != 0:
+        discard(mp_sub(r_tab + (usize)b.len, r_tab + (usize)b.len, a_tab, (i32)a.len, 0))
+    return js_bigint_normalize(ctx, r)
+
+# mark: Division ================================================================================
+
+# return the division or the remainder. 'b' must be != 0. Fails in case of exception
+# (division by zero or memory error)
+func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem: bool) -> BigInt*!:
+    let a_tab = js_bigint_tab(a)
+    let b_tab = js_bigint_tab(b)
+    if b.len == 1 and b_tab[0] == 0:
+        try js_throw_range_error(ctx, "BigInt division by zero")
+
+    let a_sign = js_bigint_sign(a)
+    let b_sign = js_bigint_sign(b)
+    var na = (i32)a.len
+    var nb = (i32)b.len
+
+    let r = try js_bigint_new(ctx, na + 2)
+    let r_tab = js_bigint_tab(r)
+    if a_sign != 0:
+        discard(mp_neg(r_tab, a_tab, na))
+    else:
+        discard(cutils.memcpy(r_tab, a_tab, (usize)na * sizeof(u32)))
+    # normalize
+    while na > 1 and r_tab[na - 1] == 0:
+        na -= 1
+
+    let tabb_block = js_malloc(ctx, (usize)nb * sizeof(u32)) catch failure:
+        js_free(ctx, r)
+        error(failure.code, failure.message)
+    let tabb = (u32*)tabb_block
+    if b_sign != 0:
+        discard(mp_neg(tabb, b_tab, nb))
+    else:
+        discard(cutils.memcpy(tabb, b_tab, (usize)nb * sizeof(u32)))
+    # normalize
+    while nb > 1 and tabb[nb - 1] == 0:
+        nb -= 1
+
+    # trivial case if 'a' is small
+    if na < nb:
+        js_free(ctx, r)
+        js_free(ctx, tabb)
+        if is_rem:
+            # r = a
+            let r1 = try js_bigint_new(ctx, (i32)a.len)
+            discard(cutils.memcpy(js_bigint_tab(r1), a_tab, (usize)a.len * sizeof(u32)))
+            return r1
+        else:
+            # q = 0
+            return try js_bigint_new_si(ctx, 0)
+
+    # normalize 'b'
+    let shift = (i32)js_limb_clz(tabb[nb - 1])
+    if shift != 0:
+        discard(mp_shl(tabb, tabb, nb, shift))
+        let h = mp_shl(r_tab, r_tab, na, shift)
+        if h != 0:
+            r_tab[na] = h
+            na += 1
+
+    # one more limb for the sign
+    let q = js_bigint_new(ctx, na - nb + 2) catch failure:
+        js_free(ctx, r)
+        js_free(ctx, tabb)
+        error(failure.code, failure.message)
+    let q_tab = js_bigint_tab(q)
+
+    mp_divnorm(q_tab, r_tab, (u32)na, tabb, (u32)nb)
+    js_free(ctx, tabb)
+
+    if is_rem:
+        js_free(ctx, q)
+        if shift != 0:
+            discard(mp_shr(r_tab, r_tab, nb, shift, 0))
+        r_tab[nb] = 0
+        nb += 1
+        if a_sign != 0:
+            discard(mp_neg(r_tab, r_tab, nb))
+        return js_bigint_normalize1(ctx, r, nb)
+    else:
+        js_free(ctx, r)
+        q_tab[na - nb + 1] = 0
+        if (a_sign ^ b_sign) != 0:
+            discard(mp_neg(q_tab, q_tab, (i32)q.len))
+        return js_bigint_normalize(ctx, q)
+
+# mark: Bitwise operations ======================================================================
+
+# and, or, xor
+func js_bigint_logic(ctx: Context*, a0: const BigInt*, b0: const BigInt*, op: Op) -> BigInt*!:
+    var a = a0
+    var b = b0
+    if a.len < b.len:
+        let tmp = a
+        a = b
+        b = tmp
+    # a_len >= b_len
+    let a_len = (i32)a.len
+    let b_len = (i32)b.len
+    let a_tab = js_bigint_tab(a)
+    let b_tab = js_bigint_tab(b)
+    let b_sign = -%(u32)js_bigint_sign(b)
+
+    let r = try js_bigint_new(ctx, a_len)
+    let r_tab = js_bigint_tab(r)
+    var i: i32 = 0
+    match op:
+        .or_:
+            while i < b_len:
+                r_tab[i] = a_tab[i] | b_tab[i]
+                i += 1
+            while i < a_len:
+                r_tab[i] = a_tab[i] | b_sign
+                i += 1
+        .and_:
+            while i < b_len:
+                r_tab[i] = a_tab[i] & b_tab[i]
+                i += 1
+            while i < a_len:
+                r_tab[i] = a_tab[i] & b_sign
+                i += 1
+        .xor:
+            while i < b_len:
+                r_tab[i] = a_tab[i] ^ b_tab[i]
+                i += 1
+            while i < a_len:
+                r_tab[i] = a_tab[i] ^ b_sign
+                i += 1
+        _:
+            trap("js_bigint_logic: not a logic opcode")
+    return js_bigint_normalize(ctx, r)
+
+func js_bigint_not(ctx: Context*, a: const BigInt*) -> BigInt*!:
+    let r = try js_bigint_new(ctx, (i32)a.len)
+    let r_tab = js_bigint_tab(r)
+    let a_tab = js_bigint_tab(a)
+    for i in 0..<(usize)a.len:
+        r_tab[i] = ~a_tab[i]
+    # no normalization is needed
+    return r
+
+# mark: Shifts ==================================================================================
+
+func js_bigint_shl(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*!:
+    let a_tab = js_bigint_tab(a)
+    if a.len == 1 and a_tab[0] == 0:
+        return try js_bigint_new_si(ctx, 0) # zero case
+    let d = (i32)(shift1 // (u32)js_limb_bits)
+    let shift = (i32)(shift1 % (u32)js_limb_bits)
+    var r = try js_bigint_new(ctx, (i32)a.len + d)
+    let r_tab = js_bigint_tab(r)
+    var i: i32 = 0
+    while i < d:
+        r_tab[i] = 0
+        i += 1
+    if shift == 0:
+        for j in 0..<(usize)a.len:
+            r_tab[j + (usize)d] = a_tab[j]
+    else:
+        var l = mp_shl(r_tab + (usize)d, a_tab, (i32)a.len, shift)
+        if js_bigint_sign(a) != 0:
+            l |= (u32)0xffffffff << (u32)shift
+        r = try js_bigint_extend(ctx, r, l)
+    return r
+
+func js_bigint_shr(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*!:
+    let d = (i32)(shift1 // (u32)js_limb_bits)
+    let shift = (i32)(shift1 % (u32)js_limb_bits)
+    let a_sign = js_bigint_sign(a)
+    if d >= (i32)a.len:
+        return try js_bigint_new_si(ctx, -a_sign)
+    let n1 = (i32)a.len - d
+    var r = try js_bigint_new(ctx, n1)
+    let r_tab = js_bigint_tab(r)
+    let a_tab = js_bigint_tab(a)
+    if shift == 0:
+        var i: i32 = 0
+        while i < n1:
+            r_tab[i] = a_tab[i + d]
+            i += 1
+        # no normalization is needed
+    else:
+        discard(mp_shr(r_tab, a_tab + (usize)d, n1, shift, -%(u32)a_sign))
+        r = js_bigint_normalize(ctx, r)
+    return r
+
+# mark: Exponentiation ==========================================================================
+
+# Note: as in C, a failing multiplication in the square-and-multiply loop leaks 'r'.
+func js_bigint_pow(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*!:
+    let a_tab = js_bigint_tab(a)
+    let b_tab = js_bigint_tab(b)
+    # b must be >= 0
+    if js_bigint_sign(b) != 0:
+        try js_throw_range_error(ctx, "BigInt negative exponent")
+    if b.len == 1 and b_tab[0] == 0:
+        # a^0 = 1
+        return try js_bigint_new_si(ctx, 1)
+    elif a.len == 1:
+        var v = a_tab[0]
+        if v <= 1:
+            return try js_bigint_new_si(ctx, (i32)v)
+        elif v == 0xffffffff:
+            return try js_bigint_new_si(ctx, 1 - 2 * (i32)(b_tab[0] & 1))
+        var is_neg = (i32)v < 0
+        if is_neg:
+            v = -%v
+        if (v & (v -% 1)) == 0:
+            # v = 2^n
+            let n = js_limb_bits - 1 - (i32)js_limb_clz(v)
+            if b.len > 1:
+                try js_throw_range_error(ctx, "BigInt is too large") # overflow
+            if b_tab[0] > 0x7fffffff:
+                try js_throw_range_error(ctx, "BigInt is too large") # overflow
+            let e1 = (u64)b_tab[0] * (u64)n
+            if e1 > (u64)(bigint_max_size * js_limb_bits):
+                try js_throw_range_error(ctx, "BigInt is too large") # overflow
+            let e = (u32)e1
+            if is_neg:
+                is_neg = (b_tab[0] & 1) != 0
+            let r = try js_bigint_new(ctx,
+                (i32)((e + (u32)js_limb_bits + 1 - (u32)is_neg) // (u32)js_limb_bits))
+            let r_tab = js_bigint_tab(r)
+            discard(cutils.memset(r_tab, 0, sizeof(u32) * (usize)r.len))
+            let top = (u32)(1 - 2 * (i32)is_neg) << (e % (u32)js_limb_bits)
+            r_tab[e // (u32)js_limb_bits] = top
+            return r
+    if b.len > 1:
+        try js_throw_range_error(ctx, "BigInt is too large") # overflow
+    if b_tab[0] > 0x7fffffff:
+        try js_throw_range_error(ctx, "BigInt is too large") # overflow
+    let e = b_tab[0]
+    let n_bits = 32 - cutils.clz32(e)
+
+    var r = try js_bigint_new(ctx, (i32)a.len)
+    # not in QuickJS, which leaks 'r' when a multiplication fails
+    errdefer js_free(ctx, r)
+    discard(cutils.memcpy(js_bigint_tab(r), a_tab, (usize)a.len * sizeof(u32)))
+    var i = n_bits - 2
+    while i >= 0:
+        var r1 = try js_bigint_mul(ctx, r, r)
+        js_free(ctx, r)
+        r = r1
+        if ((e >> (u32)i) & 1) != 0:
+            r1 = try js_bigint_mul(ctx, r, a)
+            js_free(ctx, r)
+            r = r1
+        i -= 1
+    return r

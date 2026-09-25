@@ -1,0 +1,230 @@
+#==============================================================================================
+#
+#   atof - Parsing numeric literals and strings to numbers and BigInts
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 12746-12950 and the rest of JS_ToNumberHintFree: the ATOD_*
+#       flags, js_atof (sign, radix prefixes, Infinity, digit separators, fractions and
+#       exponents, the BigInt suffix; the digits go to dtoa's js_atod or to
+#       js_bigint_from_string), and JS_ToNumberHintFree, ToNumber / ToNumeric on a value
+#       the function takes ownership of.
+#
+#==============================================================================================
+
+# mark: js_atof =================================================================================
+
+## Accept an integer only (ATOD_INT_ONLY).
+let atod_int_only: i32 = 1 << 0
+## Accept Oo and Ob prefixes in addition to 0x prefix if radix = 0 (ATOD_ACCEPT_BIN_OCT).
+let atod_accept_bin_oct: i32 = 1 << 2
+## Accept O prefix as octal if radix == 0 and properly formed (Annex B)
+## (ATOD_ACCEPT_LEGACY_OCTAL).
+let atod_accept_legacy_octal: i32 = 1 << 4
+## Accept _ between digits as a digit separator (ATOD_ACCEPT_UNDERSCORES).
+let atod_accept_underscores: i32 = 1 << 5
+## Allow a suffix to override the type (ATOD_ACCEPT_SUFFIX).
+let atod_accept_suffix: i32 = 1 << 6
+## The default type (ATOD_TYPE_MASK).
+let atod_type_mask: i32 = 3 << 7
+## ATOD_TYPE_FLOAT64.
+let atod_type_float64: i32 = 0 << 7
+## ATOD_TYPE_BIG_INT.
+let atod_type_big_int: i32 = 1 << 7
+## Accept -0x1 (ATOD_ACCEPT_PREFIX_AFTER_SIGN).
+let atod_accept_prefix_after_sign: i32 = 1 << 10
+
+# js_atof's `done:` label, run on every exit through a `defer`: free the digit buffer
+# when it was allocated and report where parsing stopped.
+func js_atof_done(rt: Runtime*, pp: const u8**?, p: const (const u8*)*, buf: const (u8*)*,
+                  buf_allocated: const bool*):
+    if *buf_allocated:
+        js_free_rt(rt, *buf)
+    if let end = pp:
+        *end = *p
+
+# Parse the number at `text`; `*pp` (when given) receives the end of what was parsed.
+# Fails in case of memory error. Return JS_NAN if invalid syntax.
+# XXX: directly use js_atod()
+func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags: i32) -> Value!:
+    var radix = radix0
+    var atod_type = flags & atod_type_mask
+    var buf1: u8[64] = ---
+    var buf: u8* = &buf1[0]
+    var buf_allocated = false
+    var atod_mem: dtoa.ATODTempMem = ---
+
+    # optional separator between digits
+    var sep: i32 = 256
+    if (flags & atod_accept_underscores) != 0:
+        sep = (i32)'_'
+    var has_legacy_octal = false
+
+    var p = text
+    defer js_atof_done(ctx.rt, pp, &p, &buf, &buf_allocated)
+    var is_neg = false
+    # `goto no_radix_prefix` skips the radix prefixes
+    var radix_prefix = true
+    if p[0] == '+':
+        p = p + 1
+        if (flags & atod_accept_prefix_after_sign) == 0:
+            radix_prefix = false
+    elif p[0] == '-':
+        p = p + 1
+        is_neg = true
+        if (flags & atod_accept_prefix_after_sign) == 0:
+            radix_prefix = false
+    if radix_prefix and p[0] == '0':
+        var has_prefix = true # false for `goto no_prefix`
+        if (p[1] == 'x' or p[1] == 'X') and (radix == 0 or radix == 16):
+            p = p + 2
+            radix = 16
+        elif (p[1] == 'o' or p[1] == 'O') and radix == 0 and (flags & atod_accept_bin_oct) != 0:
+            p = p + 2
+            radix = 8
+        elif (p[1] == 'b' or p[1] == 'B') and radix == 0 and (flags & atod_accept_bin_oct) != 0:
+            p = p + 2
+            radix = 2
+        elif ((p[1] >= '0' and p[1] <= '9') and radix == 0 and
+                (flags & atod_accept_legacy_octal) != 0):
+            has_legacy_octal = true
+            sep = 256
+            var i: usize = 1
+            while p[i] >= '0' and p[i] <= '7':
+                i += 1
+            if p[i] == '8' or p[i] == '9':
+                has_prefix = false
+            else:
+                p = p + 1
+                radix = 8
+        else:
+            has_prefix = false
+        if has_prefix:
+            # there must be a digit after the prefix
+            if to_digit((i32)*p) >= radix:
+                return js_nan() # fail
+    else:
+        # no_radix_prefix:
+        if ((flags & atod_int_only) == 0 and atod_type == atod_type_float64 and
+                cutils.strstart(p, "Infinity", &p)):
+            var d = cutils.uint64_as_float64(0x7ff0000000000000) # 1.0 / 0.0
+            if is_neg:
+                d = -d
+            return js_new_float64(d)
+    if radix == 0:
+        radix = 10
+    var is_float = false
+    let p_start = p
+    while (to_digit((i32)*p) < radix or
+            ((i32)*p == sep and (radix != 10 or p != p_start + 1 or *(p - 1) != '0') and
+             to_digit((i32)p[1]) < radix)):
+        p = p + 1
+    if (flags & atod_int_only) == 0 and radix == 10:
+        if *p == '.' and (p > p_start or to_digit((i32)p[1]) < radix):
+            is_float = true
+            p = p + 1
+            if (i32)*p == sep:
+                return js_nan() # fail
+            while to_digit((i32)*p) < radix or ((i32)*p == sep and to_digit((i32)p[1]) < radix):
+                p = p + 1
+        if p > p_start and (*p == 'e' or *p == 'E'):
+            var p1 = p + 1
+            is_float = true
+            if *p1 == '+':
+                p1 = p1 + 1
+            elif *p1 == '-':
+                p1 = p1 + 1
+            if is_digit((i32)*p1):
+                p = p1 + 1
+                while is_digit((i32)*p) or ((i32)*p == sep and is_digit((i32)p[1])):
+                    p = p + 1
+    if p == p_start:
+        return js_nan() # fail
+
+    let len = (usize)(p - p_start)
+    if len + 2 > buf1.length:
+        # no exception raised
+        let b = js_malloc_rt(ctx.rt, len + 2) else try js_throw_out_of_memory(ctx) # mem_error
+        buf = (u8*)b
+        buf_allocated = true
+    # remove the separators and the radix prefixes
+    var j: usize = 0
+    if is_neg:
+        buf[j] = '-'
+        j += 1
+    for i in 0..<len:
+        if p_start[i] != '_':
+            buf[j] = p_start[i]
+            j += 1
+    buf[j] = 0
+
+    if (flags & atod_accept_suffix) != 0 and *p == 'n':
+        p = p + 1
+        atod_type = atod_type_big_int
+
+    if atod_type == atod_type_float64:
+        var atod_flags = dtoa.atod_int_only
+        if is_float:
+            atod_flags = 0
+        let d = dtoa.js_atod(buf, none, radix, atod_flags, &atod_mem)
+        # return int or float64
+        return js_new_float64(d)
+    elif atod_type == atod_type_big_int:
+        if has_legacy_octal or is_float:
+            return js_nan() # fail
+        let r = try js_bigint_from_string(ctx, buf, radix)
+        return js_compact_bigint(ctx, r)
+    else:
+        trap("js_atof: bad type")
+
+# mark: ToNumber ================================================================================
+
+## What JS_ToNumberHintFree converts to (JSToNumberHintEnum).
+enum ToNumberHint as i32:
+    number = 0
+    numeric = 1
+
+# ToNumber (or ToNumeric, which keeps BigInts) of `val0`, which is freed.
+func js_to_number_hint_free(ctx: Context*, val0: Value, flag: ToNumberHint) -> Value!:
+    var val = val0
+    # redo:
+    while true:
+        match val.tag:
+            .big_int, .short_big_int:
+                if flag != ToNumberHint.numeric:
+                    js_free_value(ctx, val)
+                    try js_throw_type_error(ctx, "cannot convert bigint to number")
+                return val
+            .float64, .int, .exception:
+                return val
+            .boolean, .null:
+                return js_new_int32(js_value_get_int(val))
+            .undefined:
+                return js_nan()
+            .object:
+                val = try js_to_primitive_free(ctx, val, hint_number)
+                continue # goto redo
+            .string, .string_rope:
+                var len: usize = 0
+                # JS_ToCStringLen
+                let text = js_to_c_string_len2(ctx, &len, val, false) catch failure:
+                    js_free_value(ctx, val)
+                    error(failure.code, failure.message)
+                js_free_value(ctx, val)
+                defer js_free_c_string(ctx, text)
+                var p = text
+                p = p + (usize)skip_spaces(p)
+                if (usize)(p - text) == len:
+                    return js_new_int32(0)
+                let flags = atod_accept_bin_oct
+                var ret = try js_atof(ctx, p, &p, 0, flags)
+                p = p + (usize)skip_spaces(p)
+                if (usize)(p - text) != len:
+                    js_free_value(ctx, ret)
+                    ret = js_nan()
+                return ret
+            .symbol:
+                js_free_value(ctx, val)
+                try js_throw_type_error(ctx, "cannot convert symbol to number")
+            _:
+                js_free_value(ctx, val)
+                return js_nan()

@@ -1,0 +1,209 @@
+#==============================================================================================
+#
+#   bigint_convert - BigInt to and from float64, and BigInt comparisons
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "bigint support" lines 12190-12420: the mantissa and exponent
+#       of a BigInt, the correctly rounded conversion to float64 (round to nearest, ties
+#       to even), the exact conversion from an integral float64, and the comparisons of
+#       a BigInt with a float64 and with another BigInt. The context parameters are kept
+#       from C; these functions do not use them.
+#
+#==============================================================================================
+
+# mark: To float64 ==============================================================================
+
+# return (mant, exp) so that abs(a) ~ mant*2^(exp - (limb_bits - 1). a must be != 0.
+func js_bigint_get_mant_exp(ctx: Context*, pexp: i32*, a: const BigInt*) -> u64:
+    let a_tab = js_bigint_tab(a)
+    var t: u32[3] = --- # 4 - JS_LIMB_BITS / 32 limbs
+    let n2: i32 = 4 - js_limb_bits // 32
+    let n1 = (i32)a.len - n2
+    let sgn = js_bigint_sign(a)
+    let sgn_mask = -%(u32)sgn
+
+    # low_bits != 0 if there are a non zero low bit in abs(a)
+    var low_bits: u32 = 0
+    var carry = (u32)sgn
+    var i: i32 = 0
+    while i < n1:
+        let v = (a_tab[i] ^ sgn_mask) +% carry
+        carry = (u32)(v < carry)
+        low_bits |= v
+        i += 1
+    # get the n2 high limbs of abs(a)
+    for j in 0..<(usize)n2:
+        i = (i32)j + n1
+        var v: u32 = 0
+        if i >= 0:
+            v = (a_tab[i] ^ sgn_mask) +% carry
+            carry = (u32)(v < carry)
+        t[j] = v
+
+    var a1 = ((u64)t[2] << 32) | (u64)t[1]
+    var a0 = (u64)t[0] << 32
+    a0 |= (u64)(low_bits != 0)
+    # normalize
+    var shift: i32 = 0
+    if a1 == 0:
+        # JS_LIMB_BITS = 64 bit only
+        shift = 64
+        a1 = a0
+        a0 = 0
+    else:
+        shift = cutils.clz64(a1)
+        if shift != 0:
+            a1 = (a1 << (u64)shift) | (a0 >> (u64)(64 - shift))
+            a0 <<= (u64)shift
+    a1 |= (u64)(a0 != 0) # keep the bits for the final rounding
+    # compute the exponent
+    let e = (i32)a.len * js_limb_bits - shift - 1
+    *pexp = e
+    return a1
+
+# shift right with round to nearest, ties to even. n >= 1
+func shr_rndn(a: u64, n: i32) -> u64:
+    let addend = ((a >> (u64)n) & 1) + (((u64)1 << (u64)(n - 1)) - 1)
+    return (a +% addend) >> (u64)n
+
+# convert to float64 with round to nearest, ties to even. Return +/-infinity if too large.
+func js_bigint_to_float64(ctx: Context*, a: const BigInt*) -> f64:
+    if a.len == 1:
+        # fast case, including zero
+        return f64((i32)js_bigint_tab(a)[0])
+
+    let sgn = js_bigint_sign(a)
+    var e: i32 = 0
+    var mant = js_bigint_get_mant_exp(ctx, &e, a)
+    if e > 1023:
+        # overflow: return infinity
+        mant = 0
+        e = 1024
+    else:
+        mant = (mant >> 1) | (mant & 1) # avoid overflow in rounding
+        mant = shr_rndn(mant, 10)
+        # rounding can cause an overflow
+        if mant >= (u64)1 << 53:
+            mant >>= 1
+            e += 1
+        mant &= ((u64)1 << 52) - 1
+    return cutils.uint64_as_float64(((u64)sgn << 63) | ((u64)(e + 1023) << 52) | mant)
+
+# mark: From float64 ============================================================================
+
+# *pres = 1 and none if not an integer, *pres = 2 and none if NaN or Infinity, *pres = 0
+# and the integer otherwise. Fails in case of memory error.
+func js_bigint_from_float64(ctx: Context*, pres: i32*, a1: f64) -> BigInt*?!:
+    let a = cutils.float64_as_uint64(a1)
+    let sgn = (i32)(a >> 63)
+    var e = (i32)((a >> 52) & ((1 << 11) - 1))
+    var mant = a & (((u64)1 << 52) - 1)
+    if e == 2047:
+        # NaN, Infinity
+        *pres = 2
+        return none
+    if e == 0 and mant == 0:
+        # zero
+        *pres = 0
+        return try js_bigint_new_si(ctx, 0)
+    e -= 1023
+    # 0 < a < 1 : not an integer
+    if e < 0:
+        *pres = 1 # not_an_integer
+        return none
+    mant |= (u64)1 << 52
+    if e < 52:
+        let shift = 52 - e
+        # check that there is no fractional part
+        if (mant & (((u64)1 << (u64)shift) - 1)) != 0:
+            *pres = 1 # not_an_integer
+            return none
+        mant >>= (u64)shift
+        e = 0
+    else:
+        e -= 52
+    if sgn != 0:
+        mant = -%mant
+    # the integer is mant*2^e
+    var buf: BigIntBuf
+    let r = js_bigint_set_si64(&buf, (i64)mant)
+    *pres = 0
+    return try js_bigint_shl(ctx, r, (u32)e)
+
+# mark: Comparisons =============================================================================
+
+# return -1, 0, 1 or (2) (unordered)
+func js_bigint_float64_cmp(ctx: Context*, a: const BigInt*, b: f64) -> i32:
+    let a_tab = js_bigint_tab(a)
+    let b1 = cutils.float64_as_uint64(b)
+    let b_sign = (i32)(b1 >> 63)
+    var e = (i32)((b1 >> 52) & ((1 << 11) - 1))
+    var mant = b1 & (((u64)1 << 52) - 1)
+    let a_sign = js_bigint_sign(a)
+    if e == 2047:
+        if mant != 0:
+            # NaN
+            return 2
+        else:
+            # +/- infinity
+            return 2 * b_sign - 1
+    elif e == 0 and mant == 0:
+        # b = +/-0
+        if a.len == 1 and a_tab[0] == 0:
+            return 0
+        else:
+            return 1 - 2 * a_sign
+    elif a.len == 1 and a_tab[0] == 0:
+        # a = 0, b != 0
+        return 2 * b_sign - 1
+    elif a_sign != b_sign:
+        return 1 - 2 * a_sign
+    else:
+        e -= 1023
+        # Note: handling denormals is not necessary because we compare to integers hence
+        # f >= 0
+        # compute f so that 2^f <= abs(a) < 2^(f+1)
+        var f: i32 = 0
+        let a_mant = js_bigint_get_mant_exp(ctx, &f, a)
+        if f != e:
+            if f < e:
+                return -1
+            else:
+                return 1
+        else:
+            mant = (mant | ((u64)1 << 52)) << 11 # align to a_mant
+            if a_mant < mant:
+                return 2 * a_sign - 1
+            elif a_mant > mant:
+                return 1 - 2 * a_sign
+            else:
+                return 0
+
+# return -1, 0 or 1
+func js_bigint_cmp(ctx: Context*, a: const BigInt*, b: const BigInt*) -> i32:
+    let a_sign = js_bigint_sign(a)
+    let b_sign = js_bigint_sign(b)
+    var res: i32 = 0
+    if a_sign != b_sign:
+        res = 1 - 2 * a_sign
+    else:
+        # we assume the numbers are normalized
+        if a.len != b.len:
+            if a.len < b.len:
+                res = 2 * a_sign - 1
+            else:
+                res = 1 - 2 * a_sign
+        else:
+            let a_tab = js_bigint_tab(a)
+            let b_tab = js_bigint_tab(b)
+            res = 0
+            var i = (i32)a.len - 1
+            while i >= 0:
+                if a_tab[i] != b_tab[i]:
+                    if a_tab[i] < b_tab[i]:
+                        res = -1
+                    else:
+                        res = 1
+                    break
+                i -= 1
+    return res

@@ -1,0 +1,279 @@
+#==============================================================================================
+#
+#   bigint_string - BigInt from and to text in any radix, and compaction to short big ints
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "bigint support" lines 12420-12745: js_bigint_from_string
+#       (decimal by nine-digit limb chunks, powers of two by bit placement), the digit
+#       writers that fill a buffer backwards (js_u64toa, limb_to_a), the per-radix chunk
+#       tables for 32-bit limbs, js_bigint_to_string1, and JS_CompactBigInt, which turns
+#       a one-limb BigInt into a short big int.
+#
+#==============================================================================================
+
+# mark: From text ===============================================================================
+
+# contains 10^i
+let js_pow_dec: u32[10] = [
+    1,
+    10,
+    100,
+    1000,
+    10000,
+    100000,
+    1000000,
+    10000000,
+    100000000,
+    1000000000,
+]
+
+# syntax: [-]digits in base radix. Fails if memory error. radix = 10, 2, 8 or 16.
+func js_bigint_from_string(ctx: Context*, text: const u8*, radix: i32) -> BigInt*!:
+    var p = text
+    var is_neg = false
+    if *p == '-':
+        is_neg = true
+        p = p + 1
+    while *p == '0':
+        p = p + 1
+    let n_digits1 = cutils.strlen(p)
+    # the real check for overflox is done js_bigint_new(). Here we just avoid integer
+    # overflow
+    if n_digits1 > (usize)(bigint_max_size * js_limb_bits):
+        try js_throw_range_error(ctx, "BigInt is too large to allocate")
+    let n_digits = (i32)n_digits1
+    let log2_radix = 32 - cutils.clz32((u32)(radix - 1)) # ceil(log2(radix))
+    # compute the maximum number of limbs
+    var n_bits: i32 = 0
+    if radix == 10:
+        n_bits = (n_digits * 27 + 7) // 8 # >= ceil(n_digits * log2(10))
+    else:
+        n_bits = n_digits * log2_radix
+    # we add one extra bit for the sign
+    let n_limbs = cutils.max_int(1, n_bits // js_limb_bits + 1)
+    var r = try js_bigint_new(ctx, n_limbs)
+    let r_tab = js_bigint_tab(r)
+    if radix == 10:
+        let digits_per_limb = js_limb_digits
+        var len: i32 = 1
+        r_tab[0] = 0
+        while true:
+            # XXX: slow
+            var v: u32 = 0
+            var i: i32 = 0
+            while i < digits_per_limb:
+                let c = (u32)to_digit((i32)*p)
+                if c >= (u32)radix:
+                    break
+                p = p + 1
+                v = v * 10 + c
+                i += 1
+            if i == 0:
+                break
+            if len == 1 and r_tab[0] == 0:
+                r_tab[0] = v
+            else:
+                let h = mp_mul1(r_tab, r_tab, (u32)len, js_pow_dec[(usize)i], v)
+                if h != 0:
+                    r_tab[len] = h
+                    len += 1
+        # add one extra limb to have the correct sign
+        if (r_tab[len - 1] >> 31) != 0:
+            r_tab[len] = 0
+            len += 1
+        r.len = (u32)len
+    else:
+        # power of two base: no multiplication is needed
+        r.len = (u32)n_limbs
+        discard(cutils.memset(r_tab, 0, sizeof(u32) * (usize)n_limbs))
+        var i: i32 = 0
+        while i < n_digits:
+            let c = (u32)to_digit((i32)p[n_digits - 1 - i])
+            assert(c < (u32)radix)
+            let bit_pos = (u32)(i * log2_radix)
+            let shift = bit_pos & (u32)(js_limb_bits - 1)
+            let pos = bit_pos // (u32)js_limb_bits
+            r_tab[pos] |= c << shift
+            # if log2_radix does not divide JS_LIMB_BITS, needed an additional op
+            if shift + (u32)log2_radix > (u32)js_limb_bits:
+                r_tab[pos + 1] |= c >> ((u32)js_limb_bits - shift)
+            i += 1
+    r = js_bigint_normalize(ctx, r)
+    # XXX: could do it in place
+    if is_neg:
+        let r1 = js_bigint_neg(ctx, r) catch failure:
+            js_free(ctx, r)
+            error(failure.code, failure.message)
+        js_free(ctx, r)
+        r = r1
+    return r
+
+# mark: Digit writers ===========================================================================
+
+# 2 <= base <= 36 (C `digits`)
+let radix_digits: u8[36] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b',
+    'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
+    'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+]
+
+# special version going backwards: the digits of `n` (read as unsigned) end just before
+# `q`; answers the first digit.
+# XXX: use dtoa.c
+func js_u64toa(q0: u8*, n0: i64, base: u32) -> u8*:
+    var q = q0
+    var n = (u64)n0
+    if base == 10:
+        # division by known base uses multiplication
+        while true:
+            let digit = n % 10
+            n = n // 10
+            q = q - 1
+            *q = '0' + (u8)digit
+            if n == 0:
+                break
+    else:
+        while true:
+            let digit = n % (u64)base
+            n = n // (u64)base
+            q = q - 1
+            *q = radix_digits[digit]
+            if n == 0:
+                break
+    return q
+
+# len >= 1. 2 <= radix <= 36. The `len` low digits of `n`, zero padded, end just before
+# `q`; answers the first digit.
+func limb_to_a(q0: u8*, n0: u32, radix: u32, len: i32) -> u8*:
+    var q = q0
+    var n = n0
+    if radix == 10:
+        # specific case with constant divisor
+        # XXX: optimize
+        for i in 0..<len:
+            let digit = n % 10
+            n = n // 10
+            q = q - 1
+            *q = (u8)digit + '0'
+    else:
+        for i in 0..<len:
+            let digit = n % radix
+            n = n // radix
+            q = q - 1
+            *q = radix_digits[digit]
+    return q
+
+let radix_max: i32 = 36
+
+# The number of digits of radix r that fit in one limb, at index r - 2.
+let digits_per_limb_table: u8[35] = [
+    32, 20, 16, 13, 12, 11, 10, 10, 9, 9, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6,
+]
+
+# radix^digits_per_limb (0 when it is 2^32, for the powers of two), at index radix - 2.
+let radix_base_table: u32[35] = [
+    0x00000000, 0xcfd41b91, 0x00000000, 0x48c27395,
+    0x81bf1000, 0x75db9c97, 0x40000000, 0xcfd41b91,
+    0x3b9aca00, 0x8c8b6d2b, 0x19a10000, 0x309f1021,
+    0x57f6c100, 0x98c29b81, 0x00000000, 0x18754571,
+    0x247dbc80, 0x3547667b, 0x4c4b4000, 0x6b5a6e1d,
+    0x94ace180, 0xcaf18367, 0x0b640000, 0x0e8d4a51,
+    0x1269ae40, 0x17179149, 0x1cb91000, 0x23744899,
+    0x2b73a840, 0x34e63b41, 0x40000000, 0x4cfa3cc1,
+    0x5c13d840, 0x6d91b519, 0x81bf1000,
+]
+
+# mark: To text =================================================================================
+
+# `val` (a BigInt or a short big int) as a string in `radix` (2 to 36).
+func js_bigint_to_string1(ctx: Context*, val: Value, radix: i32) -> Value!:
+    if val.tag == Tag.short_big_int:
+        var buf: u8[66] = ---
+        let len = dtoa.i64toa_radix(&buf[0], (i64)js_value_get_short_big_int(val), (u32)radix)
+        return try js_new_string8_len(ctx, &buf[0], (i32)len)
+    assert(val.tag == Tag.big_int)
+    var r: const BigInt* = val.u.big_int
+    if r.len == 1 and js_bigint_tab(r)[0] == 0:
+        # '0' case
+        return try js_new_string8_len(ctx, "0".bytes.data, 1)
+    var tmp: BigInt*? = none
+    let is_binary_radix = (radix & (radix - 1)) == 0
+    let is_neg = js_bigint_sign(r)
+    if is_neg != 0:
+        let t = try js_bigint_neg(ctx, r)
+        tmp = t
+        r = t
+    elif not is_binary_radix:
+        # need to modify 'r'
+        let t = try js_bigint_new(ctx, (i32)r.len)
+        discard(cutils.memcpy(js_bigint_tab(t), js_bigint_tab(r), (usize)r.len * sizeof(u32)))
+        tmp = t
+        r = t
+    let r_tab = js_bigint_tab(r)
+    let log2_radix = 31 - cutils.clz32((u32)radix) # floor(log2(radix))
+    let n_bits = (i32)r.len * js_limb_bits - (i32)js_limb_safe_clz(r_tab[r.len - 1])
+    # n_digits is exact only if radix is a power of two. Otherwise it is >= the exact
+    # number of digits
+    let n_digits = (n_bits + log2_radix - 1) // log2_radix
+    # XXX: could directly build the JSString
+    let size = (usize)(n_digits + is_neg + 1)
+    let buf_block = js_malloc(ctx, size) catch failure:
+        if let t = tmp:
+            js_free(ctx, t)
+        error(failure.code, failure.message)
+    let buf = (u8*)buf_block
+    var q = buf + size
+    q = q - 1
+    *q = 0
+    let buf_end = q
+    if not is_binary_radix:
+        let radix_base = radix_base_table[radix - 2]
+        var len = (i32)r.len
+        while true:
+            # remove leading zero limbs
+            while len > 1 and r_tab[len - 1] == 0:
+                len -= 1
+            if len == 1 and r_tab[0] < radix_base:
+                let v = r_tab[0]
+                if v != 0:
+                    q = js_u64toa(q, (i64)v, (u32)radix)
+                break
+            else:
+                let v = mp_div1(r_tab, r_tab, (u32)len, radix_base, 0)
+                q = limb_to_a(q, v, (u32)radix, (i32)digits_per_limb_table[radix - 2])
+    else:
+        # radix is a power of two
+        var i: i32 = 0
+        while i < n_digits:
+            let bit_pos = (u32)(i * log2_radix)
+            let pos = bit_pos // (u32)js_limb_bits
+            let shift = bit_pos % (u32)js_limb_bits
+            var c = r_tab[pos] >> shift
+            if shift + (u32)log2_radix > (u32)js_limb_bits and pos + 1 < r.len:
+                c |= r_tab[pos + 1] << ((u32)js_limb_bits - shift)
+            c &= (u32)(radix - 1)
+            q = q - 1
+            *q = radix_digits[c]
+            i += 1
+    if is_neg != 0:
+        q = q - 1
+        *q = '-'
+    if let t = tmp:
+        js_free(ctx, t)
+    let res = js_new_string8_len(ctx, q, (i32)(buf_end - q)) catch failure:
+        js_free(ctx, buf)
+        error(failure.code, failure.message)
+    js_free(ctx, buf)
+    return res
+
+# mark: Compaction ==============================================================================
+
+# if possible transform a BigInt to short big and free it, otherwise return a normal bigint
+func js_compact_bigint(ctx: Context*, p: BigInt*) -> Value:
+    if p.len == 1:
+        let res = js_new_short_big_int_raw((i32)js_bigint_tab(p)[0])
+        js_free(ctx, p)
+        return res
+    else:
+        return js_mkptr(Tag.big_int, p)
