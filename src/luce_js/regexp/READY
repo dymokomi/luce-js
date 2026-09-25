@@ -1,0 +1,45 @@
+luce_js.regexp is ready: `luce-base test src/luce_js/regexp` passes (5 tests over 413 compile
+rows, 601 exec rows and 132 escape rows pinned from upstream libregexp.c).
+Use: `import luce_js.regexp as regexp` in your module's first fragment.
+
+Notes for callers:
+- C's user-provided lre_check_stack_overflow / lre_check_timeout / lre_realloc are callbacks in
+  a `RegExpHost`, passed where C passes `opaque`. Each receives `host.opaque` first, as the C
+  functions receive `opaque`. quickjs.c builds one per call:
+      let host = regexp.RegExpHost(opaque = ctx, check_stack_overflow = ...,
+                                   check_timeout = ..., realloc_func = ...)
+  and passes `&host`. realloc_func has C realloc semantics (size 0 frees, answers none).
+- lre_compile: `buf` must be followed by a NUL byte at buf[buf_len]; the error buffer is a span
+  (C's error_msg + error_msg_size). The bytecode is allocated with host.realloc_func; free it
+  with realloc_func(opaque, bc, 0).
+- lre_exec: `capture` points to lre_get_alloc_count(bc) nullable pointers (`u8*?`); the first
+  2 * lre_get_capture_count(bc) are the group bounds, the rest registers the matcher uses.
+- lre_get_groupnames answers none when the regexp has no named groups.
+
+Pub signatures:
+pub let lre_flag_global: i32 = 1 << 0
+pub let lre_flag_ignorecase: i32 = 1 << 1
+pub let lre_flag_multiline: i32 = 1 << 2
+pub let lre_flag_dotall: i32 = 1 << 3
+pub let lre_flag_unicode: i32 = 1 << 4
+pub let lre_flag_sticky: i32 = 1 << 5
+pub let lre_flag_indices: i32 = 1 << 6
+pub let lre_flag_named_groups: i32 = 1 << 7
+pub let lre_flag_unicode_sets: i32 = 1 << 8
+pub let lre_ret_memory_error: i32 = -1
+pub let lre_ret_timeout: i32 = -2
+pub let lre_group_name_trailer_len: i32 = 2
+pub struct RegExpHost
+    pub var opaque: void*?
+    pub var check_stack_overflow: func(void*?, usize) -> bool
+    pub var check_timeout: func(void*?) -> bool
+    pub var realloc_func: cutils.DynBufReallocFunc
+pub func lre_compile(plen: i32*, error_msg: u8[], buf: const u8*, buf_len: usize, re_flags: i32,
+                     host: const RegExpHost*) -> u8*?
+pub func lre_exec(capture: u8*?*, bc_buf: const u8*, cbuf: const u8*, cindex: i32, clen: i32,
+                  cbuf_type: i32, host: const RegExpHost*) -> i32
+pub func lre_get_alloc_count(bc_buf: const u8*) -> i32
+pub func lre_get_capture_count(bc_buf: const u8*) -> i32
+pub func lre_get_flags(bc_buf: const u8*) -> i32
+pub func lre_get_groupnames(bc_buf: const u8*) -> const u8*?
+pub func lre_parse_escape(pp: const u8**, allow_utf16: i32) -> i32

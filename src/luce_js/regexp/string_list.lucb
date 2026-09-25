@@ -1,0 +1,264 @@
+#==============================================================================================
+#
+#   string_list - String lists: the class sets of the `v` flag, and the class escapes
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 132-460: REString, REStringList (a character range
+#       plus a hash set of strings), their set operations and canonicalization, and the
+#       \d \s \w ranges with cr_init_char_range. The debug dumps (lre_print_char,
+#       re_string_list_dump, lre_dump_bytecode) are not ported.
+#
+#==============================================================================================
+
+# mark: Types ==================================================================================
+
+# One string of a list: `len` code points follow the struct (C's flexible `buf[]`).
+struct REString:
+    var next: REString*?
+    var hash: u32
+    var len: u32
+
+type REStringLink = REString*?
+
+# The code points of `p`.
+func re_string_buf(p: REString*) -> u32*:
+    return (u32*)((u8*)p + sizeof(REString))
+
+struct REStringList:
+    # the string list is the union of 'char_range' and of the strings
+    # in hash_table[]. The strings in hash_table[] have a length !=
+    # 1.
+    var cr: unicode.CharRange
+    var n_strings: u32
+    var hash_size: u32
+    var hash_bits: i32
+    var hash_table: REStringLink*?
+
+# The bucket array of a list that has one.
+func re_hash_table(s: const REStringList*) -> REStringLink*:
+    return s.hash_table else trap("REStringList: no hash table")
+
+func nullable_table(p: REStringLink*?) -> void*?:
+    if let q = p:
+        return q
+    return none
+
+# mark: Hash set ===============================================================================
+
+func re_string_hash(len: i32, buf: const u32*) -> u32:
+    var h: u32 = 1
+    for i: i32 in 0..<len:
+        h = h *% 263 +% buf[(usize)i]
+    return h *% 0x61C88647
+
+func re_string_list_init(s1: const REParseState*, s: REStringList*):
+    unicode.cr_init(&s.cr, s1.opaque, lre_realloc)
+    s.n_strings = 0
+    s.hash_size = 0
+    s.hash_bits = 0
+    s.hash_table = none
+
+func re_string_list_free(s: REStringList*):
+    for i: u32 in 0..<s.hash_size:
+        var p = re_hash_table(s)[(usize)i]
+        while let q = p:
+            let p_next = q.next
+            discard(lre_realloc(s.cr.mem_opaque, q, 0))
+            p = p_next
+    discard(lre_realloc(s.cr.mem_opaque, nullable_table(s.hash_table), 0))
+
+    unicode.cr_free(&s.cr)
+
+func re_string_find2(s: REStringList*, len: i32, buf: const u32*, h0: u32, add_flag: bool) -> i32:
+    var h: u32 = 0 # avoid warning
+    if s.n_strings != 0:
+        h = h0 >> (u32)(32 - s.hash_bits)
+        var p = re_hash_table(s)[(usize)h]
+        while let q = p:
+            if (q.hash == h0 and q.len == (u32)len and
+                cutils.memcmp(re_string_buf(q), buf, (usize)len * sizeof(u32)) == 0):
+                return 1
+            p = q.next
+    # not found
+    if not add_flag:
+        return 0
+    # increase the size of the hash table if needed
+    if (s.n_strings + 1) > s.hash_size:
+        let new_hash_bits = cutils.max_int(s.hash_bits + 1, 4)
+        let new_hash_size: u32 = 1 << (u32)new_hash_bits
+        let new_hash_table = (REStringLink*)(lre_realloc(s.cr.mem_opaque, none,
+                                                         sizeof(REStringLink) * new_hash_size)
+                                             else return -1)
+        discard(cutils.memset(new_hash_table, 0, sizeof(REStringLink) * new_hash_size))
+        for i: u32 in 0..<s.hash_size:
+            var p = re_hash_table(s)[(usize)i]
+            while let q = p:
+                let p_next = q.next
+                h = q.hash >> (u32)(32 - new_hash_bits)
+                q.next = new_hash_table[(usize)h]
+                new_hash_table[(usize)h] = q
+                p = p_next
+        discard(lre_realloc(s.cr.mem_opaque, nullable_table(s.hash_table), 0))
+        s.hash_bits = new_hash_bits
+        s.hash_size = new_hash_size
+        s.hash_table = new_hash_table
+        h = h0 >> (u32)(32 - s.hash_bits)
+
+    let p = (REString*)(lre_realloc(s.cr.mem_opaque, none,
+                                    sizeof(REString) + (usize)len * sizeof(u32)) else return -1)
+    let table = re_hash_table(s)
+    p.next = table[(usize)h]
+    table[(usize)h] = p
+    s.n_strings += 1
+    p.hash = h0
+    p.len = (u32)len
+    discard(cutils.memcpy(re_string_buf(p), buf, sizeof(u32) * (usize)len))
+    return 1
+
+func re_string_find(s: REStringList*, len: i32, buf: const u32*, add_flag: bool) -> i32:
+    let h0 = re_string_hash(len, buf)
+    return re_string_find2(s, len, buf, h0, add_flag)
+
+# return -1 if memory error, 0 if OK
+func re_string_add(s: REStringList*, len: i32, buf: const u32*) -> i32:
+    if len == 1:
+        return unicode.cr_union_interval(&s.cr, buf[0], buf[0])
+    if re_string_find(s, len, buf, true) < 0:
+        return -1
+    return 0
+
+# mark: Set operations =========================================================================
+
+# a = a op b
+func re_string_list_op(a: REStringList*, b: REStringList*, op: i32) -> i32:
+    if unicode.cr_op1(&a.cr, unicode.cr_points(&b.cr), op) != 0:
+        return -1
+
+    if op == unicode.cr_op_union:
+        if b.n_strings != 0:
+            for i: u32 in 0..<b.hash_size:
+                var p = re_hash_table(b)[(usize)i]
+                while let q = p:
+                    if re_string_find2(a, (i32)q.len, re_string_buf(q), q.hash, true) < 0:
+                        return -1
+                    p = q.next
+    elif op == unicode.cr_op_inter or op == unicode.cr_op_sub:
+        for i: u32 in 0..<a.hash_size:
+            var pp: REStringLink* = &re_hash_table(a)[(usize)i]
+            while true:
+                let p = *pp else break
+                var ret = re_string_find2(b, (i32)p.len, re_string_buf(p), p.hash, false)
+                if op == unicode.cr_op_sub:
+                    ret = (i32)(ret == 0)
+                if ret == 0:
+                    # remove it
+                    *pp = p.next
+                    a.n_strings -= 1
+                    discard(lre_realloc(a.cr.mem_opaque, p, 0))
+                else:
+                    # keep it
+                    pp = &p.next
+    else:
+        trap("re_string_list_op: invalid operation")
+    return 0
+
+func re_string_list_canonicalize(s1: const REParseState*, s: REStringList*, is_unicode: bool) -> i32:
+    if unicode.cr_regexp_canonicalize(&s.cr, is_unicode) != 0:
+        return -1
+    if s.n_strings != 0:
+        var a_s: REStringList
+        let a = &a_s
+
+        # XXX: simplify
+        re_string_list_init(s1, a)
+
+        a.n_strings = s.n_strings
+        a.hash_size = s.hash_size
+        a.hash_bits = s.hash_bits
+        a.hash_table = s.hash_table
+
+        s.n_strings = 0
+        s.hash_size = 0
+        s.hash_bits = 0
+        s.hash_table = none
+
+        for i: u32 in 0..<a.hash_size:
+            var p = re_hash_table(a)[(usize)i]
+            while let q = p:
+                let buf = re_string_buf(q)
+                for j: u32 in 0..<q.len:
+                    buf[(usize)j] = (u32)unicode.lre_canonicalize(buf[(usize)j], is_unicode)
+                if re_string_add(s, (i32)q.len, buf) != 0:
+                    re_string_list_free(a)
+                    return -1
+                p = q.next
+        re_string_list_free(a)
+    return 0
+
+# mark: Class escapes ==========================================================================
+
+# Each table is a count of intervals followed by the [low, high + 1) bounds.
+let char_range_d: u16[3] = [
+    1,
+    0x0030, 0x0039 + 1,
+]
+
+# code point ranges for Zs,Zl or Zp property
+let char_range_s: u16[21] = [
+    10,
+    0x0009, 0x000D + 1,
+    0x0020, 0x0020 + 1,
+    0x00A0, 0x00A0 + 1,
+    0x1680, 0x1680 + 1,
+    0x2000, 0x200A + 1,
+    # 2028;LINE SEPARATOR;Zl;0;WS;;;;;N;;;;;
+    # 2029;PARAGRAPH SEPARATOR;Zp;0;B;;;;;N;;;;;
+    0x2028, 0x2029 + 1,
+    0x202F, 0x202F + 1,
+    0x205F, 0x205F + 1,
+    0x3000, 0x3000 + 1,
+    # FEFF;ZERO WIDTH NO-BREAK SPACE;Cf;0;BN;;;;;N;BYTE ORDER MARK;;;;
+    0xFEFF, 0xFEFF + 1,
+]
+
+let char_range_w: u16[9] = [
+    4,
+    0x0030, 0x0039 + 1,
+    0x0041, 0x005A + 1,
+    0x005F, 0x005F + 1,
+    0x0061, 0x007A + 1,
+]
+
+let class_range_base: u32 = 0x40000000
+
+# CharRangeEnum (CHAR_RANGE_d, CHAR_RANGE_D, ...): bit 0 is the inversion, the rest indexes
+# char_range_table. Lower snake case would collide with the tables, hence `class_`.
+let class_d: u32 = 0
+let class_upper_d: u32 = 1
+let class_s: u32 = 2
+let class_upper_s: u32 = 3
+let class_w: u32 = 4
+let class_upper_w: u32 = 5
+
+# char_range_table[i]
+func char_range_table(i: u32) -> const u16[]:
+    if i == 0:
+        return char_range_d
+    elif i == 1:
+        return char_range_s
+    return char_range_w
+
+func cr_init_char_range(s: const REParseState*, cr: REStringList*, c: u32) -> i32:
+    let invert = (c & 1) != 0
+    let c_pt = char_range_table(c >> 1)
+    let len = (i32)c_pt[0]
+    re_string_list_init(s, cr)
+    for i: i32 in 0..<len * 2:
+        if unicode.cr_add_point(&cr.cr, c_pt[(usize)i + 1]) != 0:
+            re_string_list_free(cr)
+            return -1
+    if invert:
+        if unicode.cr_invert(&cr.cr) != 0:
+            re_string_list_free(cr)
+            return -1
+    return 0

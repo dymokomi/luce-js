@@ -1,0 +1,388 @@
+#==============================================================================================
+#
+#   term - Parsing one term: an assertion or an atom and its quantifier
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 1845-2370: re_parse_term. Its C `goto`s are
+#       restructured without changing behaviour: the group forms ('(' ...), the named back
+#       reference (\k<name>) and the quantifier are helpers, and the shared tails
+#       `parse_class_atom` and `normal_char` are selected by a variable.
+#
+#==============================================================================================
+
+# mark: Groups =================================================================================
+
+# The lookahead or lookbehind group at `*pp` (just after its "(?=", "(?!", "(?<=" or "(?<!").
+func re_parse_lookahead(s: REParseState*, pp: const u8**, is_neg: bool,
+                        is_backward_lookahead: bool, plast_atom_start: i32*,
+                        plast_capture_count: i32*) -> i32:
+    var p = *pp
+    # Annex B allows lookahead to be used as an atom for
+    # the quantifiers
+    if not s.is_unicode and not is_backward_lookahead:
+        *plast_atom_start = (i32)s.byte_code.size
+        *plast_capture_count = s.capture_count
+    let pos = re_emit_op_u32(s, re_op(REOp.lookahead, (i32)is_neg), 0)
+    s.buf_ptr = p
+    if re_parse_disjunction(s, is_backward_lookahead) != 0:
+        return -1
+    p = s.buf_ptr
+    if re_parse_expect(s, &p, ')') != 0:
+        return -1
+    re_emit_op(s, re_op(REOp.lookahead_match, (i32)is_neg))
+    # jump after the 'match' after the lookahead is successful
+    if cutils.dbuf_error(&s.byte_code):
+        return -1
+    cutils.put_u32(bc_storage(s) + (usize)pos, (u32)((i32)s.byte_code.size - (pos + 4)))
+    *pp = p
+    return 0
+
+# The modifier group "(?ims-ims:...)" at `*pp` (at its '(').
+func re_parse_modifier_group(s: REParseState*, pp: const u8**, is_backward_dir: bool,
+                             plast_atom_start: i32*, plast_capture_count: i32*) -> i32:
+    var p = *pp + 2
+    var remove_mask: i32 = 0
+    let add_mask = re_parse_modifiers(s, &p)
+    if add_mask < 0:
+        return -1
+    if *p == '-':
+        p = p + 1
+        remove_mask = re_parse_modifiers(s, &p)
+        if remove_mask < 0:
+            return -1
+    if (add_mask == 0 and remove_mask == 0) or (add_mask & remove_mask) != 0:
+        return re_parse_error(s, "invalid modifiers")
+    if re_parse_expect(s, &p, ':') != 0:
+        return -1
+    let saved_ignore_case = s.ignore_case
+    let saved_multi_line = s.multi_line
+    let saved_dotall = s.dotall
+    s.ignore_case = update_modifier(s.ignore_case, add_mask, remove_mask, lre_flag_ignorecase)
+    s.multi_line = update_modifier(s.multi_line, add_mask, remove_mask, lre_flag_multiline)
+    s.dotall = update_modifier(s.dotall, add_mask, remove_mask, lre_flag_dotall)
+
+    *plast_atom_start = (i32)s.byte_code.size
+    *plast_capture_count = s.capture_count
+    s.buf_ptr = p
+    if re_parse_disjunction(s, is_backward_dir) != 0:
+        return -1
+    p = s.buf_ptr
+    if re_parse_expect(s, &p, ')') != 0:
+        return -1
+    s.ignore_case = saved_ignore_case
+    s.multi_line = saved_multi_line
+    s.dotall = saved_dotall
+    *pp = p
+    return 0
+
+# A group at `*pp` (at its '('): "(?:", modifiers, lookarounds, named and plain captures.
+func re_parse_group(s: REParseState*, pp: const u8**, is_backward_dir: bool,
+                    plast_atom_start: i32*, plast_capture_count: i32*) -> i32:
+    var p = *pp
+    if p[1] == '?':
+        if p[2] == ':':
+            p = p + 3
+            *plast_atom_start = (i32)s.byte_code.size
+            *plast_capture_count = s.capture_count
+            s.buf_ptr = p
+            if re_parse_disjunction(s, is_backward_dir) != 0:
+                return -1
+            p = s.buf_ptr
+            if re_parse_expect(s, &p, ')') != 0:
+                return -1
+            *pp = p
+            return 0
+        elif p[2] == 'i' or p[2] == 'm' or p[2] == 's' or p[2] == '-':
+            return re_parse_modifier_group(s, pp, is_backward_dir, plast_atom_start,
+                                           plast_capture_count)
+        elif p[2] == '=' or p[2] == '!':
+            let is_neg = p[2] == '!'
+            p = p + 3
+            if re_parse_lookahead(s, &p, is_neg, false, plast_atom_start,
+                                  plast_capture_count) != 0:
+                return -1
+            *pp = p
+            return 0
+        elif p[2] == '<' and (p[3] == '=' or p[3] == '!'):
+            let is_neg = p[3] == '!'
+            p = p + 4
+            # lookahead
+            if re_parse_lookahead(s, &p, is_neg, true, plast_atom_start,
+                                  plast_capture_count) != 0:
+                return -1
+            *pp = p
+            return 0
+        elif p[2] == '<':
+            p = p + 3
+            if re_parse_group_name(s.u.tmp_buf, &p) != 0:
+                return re_parse_error(s, "invalid group name")
+            # poor's man method to test duplicate group
+            # names.
+            # XXX: this method does not catch all the errors
+            if is_duplicate_group_name(s, &s.u.tmp_buf[0], (i32)s.group_name_scope):
+                return re_parse_error(s, "duplicate group name")
+            # group name with a trailing zero
+            discard(cutils.dbuf_put(&s.group_names, &s.u.tmp_buf[0],
+                                    cutils.strlen(&s.u.tmp_buf[0]) + 1))
+            discard(cutils.dbuf_putc(&s.group_names, s.group_name_scope))
+            s.has_named_captures = 1
+        else:
+            return re_parse_error(s, "invalid group")
+    else:
+        p = p + 1
+        # capture without group name
+        discard(cutils.dbuf_putc(&s.group_names, 0))
+        discard(cutils.dbuf_putc(&s.group_names, 0))
+    # parse_capture:
+    if s.capture_count >= capture_count_max:
+        return re_parse_error(s, "too many captures")
+    *plast_atom_start = (i32)s.byte_code.size
+    *plast_capture_count = s.capture_count
+    let capture_index = s.capture_count
+    s.capture_count += 1
+    re_emit_op_u8(s, re_op(REOp.save_start, (i32)is_backward_dir), (u32)capture_index)
+
+    s.buf_ptr = p
+    if re_parse_disjunction(s, is_backward_dir) != 0:
+        return -1
+    p = s.buf_ptr
+
+    re_emit_op_u8(s, re_op(REOp.save_start, 1 - (i32)is_backward_dir), (u32)capture_index)
+
+    if re_parse_expect(s, &p, ')') != 0:
+        return -1
+    *pp = p
+    return 0
+
+# mark: Escapes ================================================================================
+
+# re_parse_named_back_reference answers this when C does `goto parse_class_atom`.
+let term_class_atom: i32 = 1
+
+# The named back reference "\k<name>" at `*pp` (at its '\'); 0, -1 on error, or
+# term_class_atom when Annex B makes it an ordinary atom.
+func re_parse_named_back_reference(s: REParseState*, pp: const u8**, is_backward_dir: bool,
+                                   plast_atom_start: i32*, plast_capture_count: i32*) -> i32:
+    var p1 = *pp
+    if p1[2] != '<':
+        # annex B: we tolerate invalid group names in non
+        # unicode mode if there is no named capture
+        # definition
+        if s.is_unicode or re_has_named_captures(s):
+            return re_parse_error(s, "expecting group name")
+        else:
+            return term_class_atom
+    p1 = p1 + 3
+    if re_parse_group_name(s.u.tmp_buf, &p1) != 0:
+        if s.is_unicode or re_has_named_captures(s):
+            return re_parse_error(s, "invalid group name")
+        else:
+            return term_class_atom
+    var dummy_res: i32 = 0
+    var is_forward = false
+    var n = find_group_name(s, &s.u.tmp_buf[0], false)
+    if n == 0:
+        # no capture name parsed before, try to look
+        # after (inefficient, but hopefully not common
+        n = re_parse_captures(s, &dummy_res, &s.u.tmp_buf[0], false)
+        if n == 0:
+            if s.is_unicode or re_has_named_captures(s):
+                return re_parse_error(s, "group name not defined")
+            else:
+                return term_class_atom
+        is_forward = true
+    *plast_atom_start = (i32)s.byte_code.size
+    *plast_capture_count = s.capture_count
+
+    # emit back references to all the captures indexes matching the group name
+    re_emit_op_u8(s, re_op(REOp.back_reference, 2 * (i32)is_backward_dir + (i32)s.ignore_case),
+                  (u32)n)
+    if is_forward:
+        discard(re_parse_captures(s, &dummy_res, &s.u.tmp_buf[0], true))
+    else:
+        discard(find_group_name(s, &s.u.tmp_buf[0], true))
+    *pp = p1
+    return 0
+
+# mark: Terms ==================================================================================
+
+# The shared tails of re_parse_term's switch (C's labels).
+let tail_none: i32 = 0
+let tail_class_atom: i32 = 1 # parse_class_atom
+let tail_normal_char: i32 = 2 # normal_char
+
+# An octal digit `b` as a value, or -1.
+func octal_digit(b: u8) -> i32:
+    if b >= '0' and b <= '7':
+        return (i32)b - (i32)'0'
+    return -1
+
+func re_parse_term(s: REParseState*, is_backward_dir: bool) -> i32:
+    var cr_s: REStringList
+    let cr = &cr_s
+
+    var last_atom_start: i32 = -1
+    var last_capture_count: i32 = 0
+    var p = s.buf_ptr
+    var c = (i32)*p
+    var tail = tail_none
+    match *p:
+        '^':
+            p = p + 1
+            re_emit_op(s, REOp.line_start_m if s.multi_line else REOp.line_start)
+        '$':
+            p = p + 1
+            re_emit_op(s, REOp.line_end_m if s.multi_line else REOp.line_end)
+        '.':
+            p = p + 1
+            last_atom_start = (i32)s.byte_code.size
+            last_capture_count = s.capture_count
+            if is_backward_dir:
+                re_emit_op(s, REOp.prev)
+            re_emit_op(s, REOp.any if s.dotall else REOp.dot)
+            if is_backward_dir:
+                re_emit_op(s, REOp.prev)
+        '{':
+            if s.is_unicode:
+                return re_parse_error(s, "syntax error")
+            elif not is_digit(p[1]):
+                # Annex B: we accept '{' not followed by digits as a
+                # normal atom
+                tail = tail_class_atom
+            else:
+                var p1 = p + 1
+                # Annex B: error if it is like a repetition count
+                discard(parse_digits(&p1, true))
+                if *p1 == ',':
+                    p1 = p1 + 1
+                    if is_digit(*p1):
+                        discard(parse_digits(&p1, true))
+                if *p1 != '}':
+                    tail = tail_class_atom
+                else:
+                    return re_parse_error(s, "nothing to repeat")
+        '*', '+', '?':
+            return re_parse_error(s, "nothing to repeat")
+        '(':
+            if re_parse_group(s, &p, is_backward_dir, &last_atom_start, &last_capture_count) != 0:
+                return -1
+        '\\':
+            match p[1]:
+                'b', 'B':
+                    if p[1] != 'b':
+                        re_emit_op(s, REOp.not_word_boundary_i if s.ignore_case and s.is_unicode
+                                   else REOp.not_word_boundary)
+                    else:
+                        re_emit_op(s, REOp.word_boundary_i if s.ignore_case and s.is_unicode
+                                   else REOp.word_boundary)
+                    p = p + 2
+                'k':
+                    let ret = re_parse_named_back_reference(s, &p, is_backward_dir,
+                                                            &last_atom_start, &last_capture_count)
+                    if ret < 0:
+                        return -1
+                    if ret == term_class_atom:
+                        tail = tail_class_atom
+                '0':
+                    p = p + 2
+                    c = 0
+                    if s.is_unicode:
+                        if is_digit(*p):
+                            return re_parse_error(s, "invalid decimal escape in regular expression")
+                    else:
+                        # Annex B.1.4: accept legacy octal
+                        if octal_digit(*p) >= 0:
+                            c = octal_digit(*p)
+                            p = p + 1
+                            if octal_digit(*p) >= 0:
+                                c = (c << 3) + octal_digit(*p)
+                                p = p + 1
+                    tail = tail_normal_char
+                '1'..='9':
+                    p = p + 1
+                    let q = p
+
+                    c = parse_digits(&p, false)
+                    if c < 0 or (c >= s.capture_count and c >= re_count_captures(s)):
+                        if not s.is_unicode:
+                            # Annex B.1.4: accept legacy octal
+                            p = q
+                            if *p <= '7':
+                                c = 0
+                                if *p <= '3':
+                                    c = (i32)*p - (i32)'0'
+                                    p = p + 1
+                                if octal_digit(*p) >= 0:
+                                    c = (c << 3) + octal_digit(*p)
+                                    p = p + 1
+                                    if octal_digit(*p) >= 0:
+                                        c = (c << 3) + octal_digit(*p)
+                                        p = p + 1
+                            else:
+                                c = (i32)*p
+                                p = p + 1
+                            tail = tail_normal_char
+                        else:
+                            return re_parse_error(s, "back reference out of range in regular expression")
+                    else:
+                        last_atom_start = (i32)s.byte_code.size
+                        last_capture_count = s.capture_count
+
+                        re_emit_op_u8(s, re_op(REOp.back_reference,
+                                               2 * (i32)is_backward_dir + (i32)s.ignore_case), 1)
+                        discard(cutils.dbuf_putc(&s.byte_code, (u8)c))
+                _:
+                    tail = tail_class_atom
+        '[':
+            last_atom_start = (i32)s.byte_code.size
+            last_capture_count = s.capture_count
+            if is_backward_dir:
+                re_emit_op(s, REOp.prev)
+            if re_parse_char_class(s, &p) != 0:
+                return -1
+            if is_backward_dir:
+                re_emit_op(s, REOp.prev)
+        ']', '}':
+            if s.is_unicode:
+                return re_parse_error(s, "syntax error")
+            tail = tail_class_atom
+        _:
+            tail = tail_class_atom
+
+    if tail == tail_class_atom:
+        # parse_class_atom:
+        c = get_class_atom(s, cr, &p, false)
+        if c < 0:
+            return -1
+        tail = tail_normal_char
+    if tail == tail_normal_char:
+        # normal_char:
+        last_atom_start = (i32)s.byte_code.size
+        last_capture_count = s.capture_count
+        if is_backward_dir:
+            re_emit_op(s, REOp.prev)
+        if (u32)c >= class_range_base:
+            var ret: i32 = 0
+            # optimize the common 'space' tests
+            if (u32)c == (class_range_base + class_s):
+                re_emit_op(s, REOp.space)
+            elif (u32)c == (class_range_base + class_upper_s):
+                re_emit_op(s, REOp.not_space)
+            else:
+                ret = re_emit_string_list(s, cr)
+            re_string_list_free(cr)
+            if ret != 0:
+                return -1
+        else:
+            if s.ignore_case:
+                c = unicode.lre_canonicalize((u32)c, s.is_unicode)
+            re_emit_char(s, (u32)c)
+        if is_backward_dir:
+            re_emit_op(s, REOp.prev)
+
+    # quantifier
+    if last_atom_start >= 0:
+        if re_parse_quantifier(s, &p, last_atom_start, last_capture_count) != 0:
+            return -1
+    s.buf_ptr = p
+    return 0

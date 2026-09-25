@@ -1,0 +1,212 @@
+#==============================================================================================
+#
+#   compile - Alternatives, disjunctions, register allocation and lre_compile
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 2372-2614: re_parse_alternative,
+#       re_parse_disjunction, compute_register_count, lre_bytecode_realloc and the public
+#       lre_compile.
+#
+#==============================================================================================
+
+# mark: Alternatives ===========================================================================
+
+func re_parse_alternative(s: REParseState*, is_backward_dir: bool) -> i32:
+    let start = s.byte_code.size
+    while true:
+        let p = s.buf_ptr
+        if p >= s.buf_end:
+            break
+        if *p == '|' or *p == ')':
+            break
+        let term_start = s.byte_code.size
+        let ret = re_parse_term(s, is_backward_dir)
+        if ret != 0:
+            return ret
+        if is_backward_dir:
+            # reverse the order of the terms (XXX: inefficient, but
+            # speed is not really critical here)
+            let end = s.byte_code.size
+            let term_size = end - term_start
+            if cutils.dbuf_claim(&s.byte_code, term_size) != 0:
+                return -1
+            let b = bc_storage(s)
+            discard(cutils.memmove(b + start + term_size, b + start, end - start))
+            discard(cutils.memcpy(b + start, b + end, term_size))
+    return 0
+
+func re_parse_disjunction(s: REParseState*, is_backward_dir: bool) -> i32:
+    if lre_check_stack_overflow(s.opaque, 0):
+        return re_parse_error(s, "stack overflow")
+
+    let start = (i32)s.byte_code.size
+    if re_parse_alternative(s, is_backward_dir) != 0:
+        return -1
+    while *s.buf_ptr == '|':
+        s.buf_ptr = s.buf_ptr + 1
+
+        var len = (i32)s.byte_code.size - start
+
+        # insert a split before the first alternative
+        if dbuf_insert(&s.byte_code, start, 5) != 0:
+            return re_parse_out_of_memory(s)
+        bc_storage(s)[(usize)start] = (u8)REOp.split_next_first
+        cutils.put_u32(bc_storage(s) + (usize)start + 1, (u32)(len + 5))
+
+        let pos = re_emit_op_u32(s, REOp.goto_, 0)
+
+        s.group_name_scope +%= 1
+
+        if re_parse_alternative(s, is_backward_dir) != 0:
+            return -1
+
+        # patch the goto
+        len = (i32)s.byte_code.size - (pos + 4)
+        cutils.put_u32(bc_storage(s) + (usize)pos, (u32)len)
+    return 0
+
+# mark: Registers ==============================================================================
+
+# Allocate the registers as a stack. The control flow is recursive so
+# the analysis can be linear.
+func compute_register_count(bc_buf0: u8*, bc_buf_len0: i32) -> i32:
+    var stack_size: i32 = 0
+    var stack_size_max: i32 = 0
+    let bc_buf = bc_buf0 + re_header_len
+    let bc_buf_len = bc_buf_len0 - (i32)re_header_len
+    var pos: i32 = 0
+    while pos < bc_buf_len:
+        let opcode = bc_buf[(usize)pos]
+        assert((i32)opcode < reop_count)
+        var len = (i32)reopcode_size[opcode]
+        assert((pos + len) <= bc_buf_len)
+        match (REOp)opcode:
+            .set_i32, .set_char_pos:
+                bc_buf[(usize)pos + 1] = (u8)stack_size
+                stack_size += 1
+                if stack_size > stack_size_max:
+                    if stack_size > register_count_max:
+                        return -1
+                    stack_size_max = stack_size
+            .check_advance, .loop, .loop_split_goto_first, .loop_split_next_first:
+                assert(stack_size > 0)
+                stack_size -= 1
+                bc_buf[(usize)pos + 1] = (u8)stack_size
+            .loop_check_adv_split_goto_first, .loop_check_adv_split_next_first:
+                assert(stack_size >= 2)
+                stack_size -= 2
+                bc_buf[(usize)pos + 1] = (u8)stack_size
+            .range, .range_i:
+                let val = cutils.get_u16(bc_buf + (usize)pos + 1)
+                len += (i32)val * 4
+            .range32, .range32_i:
+                let val = cutils.get_u16(bc_buf + (usize)pos + 1)
+                len += (i32)val * 8
+            .back_reference, .back_reference_i, .backward_back_reference, .backward_back_reference_i:
+                let val = bc_buf[(usize)pos + 1]
+                len += (i32)val
+            _:
+                len = len # nothing to do (a match arm needs a statement)
+        pos += len
+    return stack_size_max
+
+func lre_bytecode_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    if size > (usize)(int32_max // 2):
+        # the bytecode cannot be larger than 2G. Leave some slack to
+        # avoid some overflows.
+        return none
+    else:
+        return lre_realloc(opaque, ptr, size)
+
+# mark: Compilation ============================================================================
+
+# The failure path of lre_compile (C's `error:` label).
+func lre_compile_error(s: REParseState*, plen: i32*, error_msg: u8[]) -> u8*?:
+    cutils.dbuf_free(&s.byte_code)
+    cutils.dbuf_free(&s.group_names)
+    cutils.pstrcpy(error_msg.data, (i32)error_msg.length, &s.u.error_msg[0])
+    *plen = 0
+    return none
+
+# 'buf' must be a zero terminated UTF-8 string of length buf_len.
+# Return NULL if error and allocate an error message in *perror_msg,
+# otherwise the compiled bytecode and its length in plen.
+## Compile the pattern `buf[0..<buf_len]`, which must be followed by a NUL byte, with the
+## `lre_flag_*` flags. Answers the bytecode, allocated with `host.realloc_func` and
+## `*plen` bytes long, with an empty message in `error_msg`; or none, with `*plen` 0 and
+## the error message (NUL-terminated, truncated to the span) in `error_msg`.
+pub func lre_compile(plen: i32*, error_msg: u8[], buf: const u8*, buf_len: usize, re_flags: i32,
+                     host: const RegExpHost*) -> u8*?:
+    var s_s: REParseState = ---
+    let s = &s_s
+
+    discard(cutils.memset(s, 0, sizeof(REParseState)))
+    s.opaque = (void*)host
+    s.buf_ptr = buf
+    s.buf_end = s.buf_ptr + buf_len
+    s.buf_start = s.buf_ptr
+    s.re_flags = re_flags
+    s.is_unicode = ((re_flags & (lre_flag_unicode | lre_flag_unicode_sets)) != 0)
+    let is_sticky = ((re_flags & lre_flag_sticky) != 0)
+    s.ignore_case = ((re_flags & lre_flag_ignorecase) != 0)
+    s.multi_line = ((re_flags & lre_flag_multiline) != 0)
+    s.dotall = ((re_flags & lre_flag_dotall) != 0)
+    s.unicode_sets = ((re_flags & lre_flag_unicode_sets) != 0)
+    s.capture_count = 1
+    s.total_capture_count = -1
+    s.has_named_captures = -1
+
+    cutils.dbuf_init2(&s.byte_code, s.opaque, lre_bytecode_realloc)
+    cutils.dbuf_init2(&s.group_names, s.opaque, lre_realloc)
+
+    discard(cutils.dbuf_put_u16(&s.byte_code, (u16)re_flags)) # first element is the flags
+    discard(cutils.dbuf_putc(&s.byte_code, 0)) # second element is the number of captures
+    discard(cutils.dbuf_putc(&s.byte_code, 0)) # stack size
+    discard(cutils.dbuf_put_u32(&s.byte_code, 0)) # bytecode length
+
+    if not is_sticky:
+        # iterate thru all positions (about the same as .*?( ... ) )
+        # .  We do it without an explicit loop so that lock step
+        # thread execution will be possible in an optimized
+        # implementation
+        discard(re_emit_op_u32(s, REOp.split_goto_first, 1 + 5))
+        re_emit_op(s, REOp.any)
+        discard(re_emit_op_u32(s, REOp.goto_, (u32)(-(5 + 1 + 5))))
+    re_emit_op_u8(s, REOp.save_start, 0)
+
+    if re_parse_disjunction(s, false) != 0:
+        return lre_compile_error(s, plen, error_msg)
+
+    re_emit_op_u8(s, REOp.save_end, 0)
+
+    re_emit_op(s, REOp.match_)
+
+    if *s.buf_ptr != 0:
+        discard(re_parse_error(s, "extraneous characters at the end"))
+        return lre_compile_error(s, plen, error_msg)
+
+    if cutils.dbuf_error(&s.byte_code):
+        discard(re_parse_out_of_memory(s))
+        return lre_compile_error(s, plen, error_msg)
+
+    let register_count = compute_register_count(bc_storage(s), (i32)s.byte_code.size)
+    if register_count < 0:
+        discard(re_parse_error(s, "too many imbricated quantifiers"))
+        return lre_compile_error(s, plen, error_msg)
+
+    let b = bc_storage(s)
+    b[re_header_capture_count] = (u8)s.capture_count
+    b[re_header_register_count] = (u8)register_count
+    cutils.put_u32(b + re_header_bytecode_len, (u32)(s.byte_code.size - re_header_len))
+
+    # add the named groups if needed
+    if s.group_names.size > (usize)((s.capture_count - 1) * lre_group_name_trailer_len):
+        let names = s.group_names.buf else trap("lre_compile: no group names")
+        discard(cutils.dbuf_put(&s.byte_code, names, s.group_names.size))
+        cutils.put_u16(bc_storage(s) + re_header_flags,
+                       (u16)(lre_get_flags(bc_storage(s)) | lre_flag_named_groups))
+    cutils.dbuf_free(&s.group_names)
+
+    error_msg[0] = 0
+    *plen = (i32)s.byte_code.size
+    return s.byte_code.buf

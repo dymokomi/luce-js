@@ -1,0 +1,311 @@
+#==============================================================================================
+#
+#   class - Character classes: parsing `[...]` (with the `v` set operations) and emitting
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 1225-1552: re_emit_range, re_emit_char,
+#       re_emit_string_list, re_parse_class_set_operand, re_parse_nested_class and
+#       re_parse_char_class.
+#
+#==============================================================================================
+
+# mark: Emission ===============================================================================
+
+func re_emit_range(s: REParseState*, cr: const unicode.CharRange*) -> i32:
+    let len = (i32)((u32)cr.len // 2)
+    if len >= 65535:
+        return re_parse_error(s, "too many ranges")
+    if len == 0:
+        discard(re_emit_op_u32(s, REOp.char32, 0xffffffff))
+    else:
+        let points = unicode.cr_points(cr)
+        let n = points.length
+        var high = points[n - 1]
+        if high == 0xffffffff:
+            high = points[n - 2]
+        if high <= 0xffff:
+            # can use 16 bit ranges with the conversion that 0xffff =
+            # infinity
+            re_emit_op_u16(s, REOp.range_i if s.ignore_case else REOp.range, (u32)len)
+            var i: usize = 0
+            while i < n:
+                discard(cutils.dbuf_put_u16(&s.byte_code, (u16)points[i]))
+                high = points[i + 1] -% 1
+                if high == 0xffffffff - 1:
+                    high = 0xffff
+                discard(cutils.dbuf_put_u16(&s.byte_code, (u16)high))
+                i += 2
+        else:
+            re_emit_op_u16(s, REOp.range32_i if s.ignore_case else REOp.range32, (u32)len)
+            var i: usize = 0
+            while i < n:
+                discard(cutils.dbuf_put_u32(&s.byte_code, points[i]))
+                discard(cutils.dbuf_put_u32(&s.byte_code, points[i + 1] -% 1))
+                i += 2
+    return 0
+
+# Longest strings first.
+func re_string_cmp_len(a: const void*, b: const void*, arg: void*?) -> i32:
+    let p1 = *(const REString**)a
+    let p2 = *(const REString**)b
+    return (i32)(p1.len < p2.len) - (i32)(p1.len > p2.len)
+
+func re_emit_char(s: REParseState*, c: u32):
+    if c <= 0xffff:
+        re_emit_op_u16(s, REOp.char_i if s.ignore_case else REOp.char_, c)
+    else:
+        discard(re_emit_op_u32(s, REOp.char32_i if s.ignore_case else REOp.char32, c))
+
+func re_emit_string_list(s: REParseState*, sl: const REStringList*) -> i32:
+    if sl.n_strings == 0:
+        # simple case: only characters
+        if re_emit_range(s, &sl.cr) != 0:
+            return -1
+    else:
+        # at least one string list is present : match the longest ones first
+        # XXX: add a new op_switch opcode to compile as a trie
+        let tab = (REString**)(lre_realloc(s.opaque, none, sizeof(REString*) * sl.n_strings)
+                               else return re_parse_out_of_memory(s))
+        var has_empty_string = false
+        var n: i32 = 0
+        for i: u32 in 0..<sl.hash_size:
+            var p = re_hash_table(sl)[(usize)i]
+            while let q = p:
+                if q.len == 0:
+                    has_empty_string = true
+                else:
+                    tab[(usize)n] = q
+                    n += 1
+                p = q.next
+        assert((u32)n <= sl.n_strings)
+
+        cutils.rqsort(tab, (usize)n, sizeof(REString*), re_string_cmp_len, none)
+
+        var last_match_pos: i32 = -1
+        for i: i32 in 0..<n:
+            let p = tab[(usize)i]
+            let is_last = not has_empty_string and sl.cr.len == 0 and i == (n - 1)
+            var split_pos: i32 = 0
+            if not is_last:
+                split_pos = re_emit_op_u32(s, REOp.split_next_first, 0)
+            let buf = re_string_buf(p)
+            for j: u32 in 0..<p.len:
+                re_emit_char(s, buf[(usize)j])
+            if not is_last:
+                last_match_pos = re_emit_op_u32(s, REOp.goto_, (u32)last_match_pos)
+                cutils.put_u32(bc_storage(s) + (usize)split_pos,
+                               (u32)((i32)s.byte_code.size - (split_pos + 4)))
+
+        if sl.cr.len != 0:
+            # char range
+            let is_last = not has_empty_string
+            var split_pos: i32 = 0 # not used when is_last
+            if not is_last:
+                split_pos = re_emit_op_u32(s, REOp.split_next_first, 0)
+            if re_emit_range(s, &sl.cr) != 0:
+                discard(lre_realloc(s.opaque, tab, 0))
+                return -1
+            if not is_last:
+                cutils.put_u32(bc_storage(s) + (usize)split_pos,
+                               (u32)((i32)s.byte_code.size - (split_pos + 4)))
+
+        # patch the 'goto match'
+        while last_match_pos != -1:
+            let next_pos = cutils.get_i32(bc_storage(s) + (usize)last_match_pos)
+            cutils.put_u32(bc_storage(s) + (usize)last_match_pos,
+                           (u32)((i32)s.byte_code.size - (last_match_pos + 4)))
+            last_match_pos = next_pos
+
+        discard(lre_realloc(s.opaque, tab, 0))
+    return 0
+
+# mark: Parsing ================================================================================
+
+func re_parse_class_set_operand(s: REParseState*, cr: REStringList*, pp: const u8**) -> i32:
+    let p = *pp
+
+    if *p == '[':
+        if re_parse_nested_class(s, cr, pp) != 0:
+            return -1
+    else:
+        var c1 = get_class_atom(s, cr, pp, true)
+        if c1 < 0:
+            return -1
+        if (u32)c1 < class_range_base:
+            # create a range with a single character
+            re_string_list_init(s, cr)
+            if s.ignore_case:
+                c1 = unicode.lre_canonicalize((u32)c1, s.is_unicode)
+            if unicode.cr_union_interval(&cr.cr, (u32)c1, (u32)c1) != 0:
+                re_string_list_free(cr)
+                return -1
+    return 0
+
+# How the body of re_parse_nested_class ends: C's `goto fail` (the error is already set) and
+# `goto memory_error`.
+let class_fail: i32 = -1
+let class_memory_error: i32 = -2
+
+func invalid_class_range(s: REParseState*) -> i32:
+    discard(re_parse_error(s, "invalid class range"))
+    return class_fail
+
+func invalid_operation(s: REParseState*) -> i32:
+    discard(re_parse_error(s, "invalid operation in regular expression"))
+    return class_fail
+
+# The '&&' (op = CR_OP_INTER) or '--' (CR_OP_SUB) operations of a class set, `*pp` at the
+# first operator.
+func re_parse_class_set_operations(s: REParseState*, cr: REStringList*, cr1: REStringList*,
+                                   pp: const u8**, op: i32) -> i32:
+    var p = *pp
+    let op_char: u8 = '&' if op == unicode.cr_op_inter else '-'
+    while true:
+        if *p == ']':
+            break
+        elif *p == op_char and p[1] == op_char and (op_char != '&' or p[2] != '&'):
+            p = p + 2
+        else:
+            return invalid_operation(s)
+        if re_parse_class_set_operand(s, cr1, &p) != 0:
+            return class_fail
+        let ret = re_string_list_op(cr, cr1, op)
+        re_string_list_free(cr1)
+        if ret != 0:
+            return class_memory_error
+    *pp = p
+    return 0
+
+# The class after '[' up to and including its ']'; 0, class_fail or class_memory_error.
+func re_parse_nested_class_body(s: REParseState*, cr: REStringList*, pp: const u8**) -> i32:
+    var cr1_s: REStringList
+    let cr1 = &cr1_s
+
+    var p = *pp
+    p = p + 1 # skip '['
+
+    var invert = false
+    if *p == '^':
+        p = p + 1
+        invert = true
+
+    # handle unions
+    var is_first = true
+    while true:
+        if *p == ']':
+            break
+        # C's `goto class_union`
+        var class_union = false
+        if *p == '[' and s.unicode_sets:
+            if re_parse_nested_class(s, cr1, &p) != 0:
+                return class_fail
+            class_union = true
+        else:
+            let c1 = (u32)get_class_atom(s, cr1, &p, true)
+            if (i32)c1 < 0:
+                return class_fail
+            # C's `goto class_atom`
+            var class_atom = true
+            if *p == '-' and p[1] != ']':
+                var p0 = p + 1
+                if p[1] == '-' and s.unicode_sets and is_first:
+                    class_atom = true # first character class followed by '--'
+                elif c1 >= class_range_base:
+                    if s.is_unicode:
+                        re_string_list_free(cr1)
+                        return invalid_class_range(s)
+                    # Annex B: match '-' character
+                    class_atom = true
+                else:
+                    let c2 = (u32)get_class_atom(s, cr1, &p0, true)
+                    if (i32)c2 < 0:
+                        return class_fail
+                    if c2 >= class_range_base:
+                        re_string_list_free(cr1)
+                        if s.is_unicode:
+                            return invalid_class_range(s)
+                        # Annex B: match '-' character
+                        class_atom = true
+                    else:
+                        class_atom = false
+                        p = p0
+                        if c2 < c1:
+                            return invalid_class_range(s)
+                        if s.ignore_case:
+                            var cr2_s: unicode.CharRange
+                            let cr2 = &cr2_s
+                            unicode.cr_init(cr2, s.opaque, lre_realloc)
+                            if (unicode.cr_add_interval(cr2, c1, c2 + 1) != 0 or
+                                unicode.cr_regexp_canonicalize(cr2, s.is_unicode) != 0 or
+                                unicode.cr_op1(&cr.cr, unicode.cr_points(cr2), unicode.cr_op_union) != 0):
+                                unicode.cr_free(cr2)
+                                return class_memory_error
+                            unicode.cr_free(cr2)
+                        else:
+                            if unicode.cr_union_interval(&cr.cr, c1, c2) != 0:
+                                return class_memory_error
+                        is_first = false # union operation
+            if class_atom:
+                if c1 >= class_range_base:
+                    class_union = true
+                else:
+                    var c = c1
+                    if s.ignore_case:
+                        c = (u32)unicode.lre_canonicalize(c1, s.is_unicode)
+                    if unicode.cr_union_interval(&cr.cr, c, c) != 0:
+                        return class_memory_error
+        if class_union:
+            let ret = re_string_list_op(cr, cr1, unicode.cr_op_union)
+            re_string_list_free(cr1)
+            if ret != 0:
+                return class_memory_error
+        if s.unicode_sets and is_first:
+            if *p == '&' and p[1] == '&' and p[2] != '&':
+                # handle '&&'
+                let ret = re_parse_class_set_operations(s, cr, cr1, &p, unicode.cr_op_inter)
+                if ret != 0:
+                    return ret
+            elif *p == '-' and p[1] == '-':
+                # handle '--'
+                let ret = re_parse_class_set_operations(s, cr, cr1, &p, unicode.cr_op_sub)
+                if ret != 0:
+                    return ret
+        is_first = false
+
+    p = p + 1 # skip ']'
+    *pp = p
+    if invert:
+        # XXX: add may_contain_string syntax check to be fully
+        # compliant. The test here accepts more input than the
+        # spec.
+        if cr.n_strings != 0:
+            discard(re_parse_error(s, "negated character class with strings in regular expression debugger eval code"))
+            return class_fail
+        if unicode.cr_invert(&cr.cr) != 0:
+            return class_memory_error
+    return 0
+
+func re_parse_nested_class(s: REParseState*, cr: REStringList*, pp: const u8**) -> i32:
+    if lre_check_stack_overflow(s.opaque, 0):
+        return re_parse_error(s, "stack overflow")
+
+    re_string_list_init(s, cr)
+    let ret = re_parse_nested_class_body(s, cr, pp)
+    if ret != 0:
+        if ret == class_memory_error:
+            discard(re_parse_out_of_memory(s))
+        re_string_list_free(cr)
+        return -1
+    return 0
+
+func re_parse_char_class(s: REParseState*, pp: const u8**) -> i32:
+    var cr_s: REStringList
+    let cr = &cr_s
+
+    if re_parse_nested_class(s, cr, pp) != 0:
+        return -1
+    if re_emit_string_list(s, cr) != 0:
+        re_string_list_free(cr)
+        return -1
+    re_string_list_free(cr)
+    return 0

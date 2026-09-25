@@ -1,0 +1,315 @@
+#==============================================================================================
+#
+#   class_atom - Class atoms: characters, class escapes and unicode properties
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 852-1223 (CONFIG_ALL_UNICODE is on):
+#       is_unicode_char, seq_prop_cb, parse_unicode_property,
+#       parse_class_string_disjunction and get_class_atom.
+#
+#==============================================================================================
+
+# mark: Unicode properties =====================================================================
+
+# XXX: we use the same chars for name and value
+func is_unicode_char(c: u8) -> bool:
+    return ((c >= '0' and c <= '9') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= 'a' and c <= 'z') or
+            (c == '_'))
+
+# XXX: memory error test
+func seq_prop_cb(opaque: void*?, seq: const u32[]):
+    let sl = (REStringList*)(opaque else trap("seq_prop_cb: no list"))
+    discard(re_string_add(sl, (i32)seq.length, seq.data))
+
+# How parse_unicode_property ends: C's `goto out_of_memory` and `goto unknown_property_name`.
+let prop_ok: i32 = 0
+let prop_out_of_memory: i32 = 1
+let prop_unknown_name: i32 = 2
+
+# The lookup of a property `name=value` (or a lone `name`) into `cr`: 0, or the parse error
+# already set (-1), or prop_out_of_memory / prop_unknown_name with `cr` freed or never
+# initialised as C leaves it.
+func parse_unicode_property_value(s: REParseState*, cr: REStringList*, name: str, value: str,
+                                  is_inv: bool, allow_sequence_prop: bool) -> i32:
+    if name == "Script" or name == "sc" or name == "Script_Extensions" or name == "scx":
+        let script_ext = not (name == "Script" or name == "sc")
+        re_string_list_init(s, cr)
+        let ret = unicode.unicode_script(&cr.cr, value, script_ext)
+        if ret != 0:
+            re_string_list_free(cr)
+            if ret == -2:
+                return re_parse_error(s, "unknown unicode script")
+            else:
+                return prop_out_of_memory
+    elif name == "General_Category" or name == "gc":
+        re_string_list_init(s, cr)
+        let ret = unicode.unicode_general_category(&cr.cr, value)
+        if ret != 0:
+            re_string_list_free(cr)
+            if ret == -2:
+                return re_parse_error(s, "unknown unicode general category")
+            else:
+                return prop_out_of_memory
+    elif value.length == 0:
+        re_string_list_init(s, cr)
+        var ret = unicode.unicode_general_category(&cr.cr, name)
+        if ret == -1:
+            re_string_list_free(cr)
+            return prop_out_of_memory
+        if ret < 0:
+            ret = unicode.unicode_prop(&cr.cr, name)
+            if ret == -1:
+                re_string_list_free(cr)
+                return prop_out_of_memory
+        if ret < 0 and not is_inv and allow_sequence_prop:
+            var cr_tmp: unicode.CharRange
+            unicode.cr_init(&cr_tmp, s.opaque, lre_realloc)
+            ret = unicode.unicode_sequence_prop(name, seq_prop_cb, cr, &cr_tmp)
+            unicode.cr_free(&cr_tmp)
+            if ret == -1:
+                re_string_list_free(cr)
+                return prop_out_of_memory
+        if ret < 0:
+            return prop_unknown_name
+    else:
+        return prop_unknown_name
+    return prop_ok
+
+func parse_unicode_property(s: REParseState*, cr: REStringList*, pp: const u8**, is_inv: bool,
+                            allow_sequence_prop: bool) -> i32:
+    var name: u8[64]
+    var value: u8[64]
+
+    var p = *pp
+    if *p != '{':
+        return re_parse_error(s, "expecting '{' after \\p")
+    p = p + 1
+    var name_len: usize = 0
+    while is_unicode_char(*p):
+        if name_len >= name.length - 1:
+            return re_parse_error(s, "unknown unicode property name")
+        name[name_len] = *p
+        name_len += 1
+        p = p + 1
+    var value_len: usize = 0
+    if *p == '=':
+        p = p + 1
+        while is_unicode_char(*p):
+            if value_len >= value.length - 1:
+                return re_parse_error(s, "unknown unicode property value")
+            value[value_len] = *p
+            value_len += 1
+            p = p + 1
+    if *p != '}':
+        return re_parse_error(s, "expecting '}'")
+    p = p + 1
+
+    let ret = parse_unicode_property_value(s, cr, (str)name[0..<name_len],
+                                           (str)value[0..<value_len], is_inv,
+                                           allow_sequence_prop)
+    if ret == prop_out_of_memory:
+        return re_parse_out_of_memory(s)
+    if ret == prop_unknown_name:
+        return re_parse_error(s, "unknown unicode property name")
+    if ret != prop_ok:
+        return ret
+
+    # the ordering of case folding and inversion  differs with
+    # unicode_sets. 'unicode_sets' ordering is more consistent
+    # XXX: the spec seems incorrect, we do it as the other engines
+    # seem to do it.
+    if s.ignore_case and s.unicode_sets:
+        if re_string_list_canonicalize(s, cr, s.is_unicode) != 0:
+            re_string_list_free(cr)
+            return re_parse_out_of_memory(s)
+    if is_inv:
+        if unicode.cr_invert(&cr.cr) != 0:
+            re_string_list_free(cr)
+            return re_parse_out_of_memory(s)
+    if s.ignore_case and not s.unicode_sets:
+        if re_string_list_canonicalize(s, cr, s.is_unicode) != 0:
+            re_string_list_free(cr)
+            return re_parse_out_of_memory(s)
+    *pp = p
+    return 0
+
+# mark: String disjunctions ====================================================================
+
+func parse_class_string_disjunction(s: REParseState*, cr: REStringList*, pp: const u8**) -> i32:
+    var p = *pp
+    if *p != '{':
+        return re_parse_error(s, "expecting '{' after \\q")
+
+    var text: cutils.DynBuf
+    cutils.dbuf_init2(&text, s.opaque, lre_realloc)
+    re_string_list_init(s, cr)
+
+    p = p + 1
+    var failed = false
+    outer: while true:
+        text.size = 0
+        while *p != '}' and *p != '|':
+            let c = get_class_atom(s, none, &p, false)
+            if c < 0:
+                failed = true
+                break outer
+            if cutils.dbuf_put_u32(&text, (u32)c) != 0:
+                discard(re_parse_out_of_memory(s))
+                failed = true
+                break outer
+        # an empty string has no storage yet (C passes NULL); its length is 0, so the
+        # pointer is not read
+        var empty: u32 = 0
+        var buf: const u32* = &empty
+        if let b = text.buf:
+            buf = (const u32*)b
+        if re_string_add(cr, (i32)(text.size // 4), buf) != 0:
+            discard(re_parse_out_of_memory(s))
+            failed = true
+            break
+        if *p == '}':
+            break
+        p = p + 1
+    if not failed and s.ignore_case:
+        if re_string_list_canonicalize(s, cr, true) != 0:
+            failed = true
+    if failed:
+        cutils.dbuf_free(&text)
+        re_string_list_free(cr)
+        return -1
+    p = p + 1 # skip the '}'
+    cutils.dbuf_free(&text)
+    *pp = p
+    return 0
+
+# mark: Class atoms ============================================================================
+
+func invalid_escape(s: REParseState*) -> i32:
+    return re_parse_error(s, "invalid escape sequence in regular expression")
+
+# return -1 if error otherwise the character or a class range
+# (CLASS_RANGE_BASE) if cr != NULL. In case of class range, 'cr' is
+# initialized. Otherwise, it is ignored.
+func get_class_atom(s: REParseState*, cr: REStringList*?, pp: const u8**, inclass: bool) -> i32:
+    var p = *pp
+
+    var c: u32 = *p
+    # C's `goto normal_char`
+    var normal_char = false
+    match *p:
+        '\\':
+            p = p + 1
+            if p >= s.buf_end:
+                return re_parse_error(s, "unexpected end")
+            c = *p
+            p = p + 1
+            # C's `goto class_range` and `goto default_escape`
+            var class_range = false
+            var default_escape = false
+            match (u8)c:
+                'd':
+                    c = class_d
+                    class_range = true
+                'D':
+                    c = class_upper_d
+                    class_range = true
+                's':
+                    c = class_s
+                    class_range = true
+                'S':
+                    c = class_upper_s
+                    class_range = true
+                'w':
+                    c = class_w
+                    class_range = true
+                'W':
+                    c = class_upper_w
+                    class_range = true
+                'c':
+                    let b = *p
+                    if ((b >= 'a' and b <= 'z') or
+                        (b >= 'A' and b <= 'Z') or
+                        (((b >= '0' and b <= '9') or b == '_') and
+                         inclass and not s.is_unicode)): # Annex B.1.4
+                        c = (u32)(b & 0x1f)
+                        p = p + 1
+                    elif s.is_unicode:
+                        return invalid_escape(s)
+                    else:
+                        # otherwise return '\' and 'c'
+                        p = p - 1
+                        c = (u32)'\\'
+                '-':
+                    if not inclass and s.is_unicode:
+                        return invalid_escape(s)
+                '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/':
+                    # always valid to escape these characters
+                    c = c # (a match arm needs a statement)
+                'p', 'P':
+                    default_escape = true
+                    if let list = cr:
+                        if s.is_unicode:
+                            default_escape = false
+                            if parse_unicode_property(s, list, &p, c == (u32)'P',
+                                                      s.unicode_sets) != 0:
+                                return -1
+                            c = class_range_base
+                'q':
+                    if s.unicode_sets and inclass:
+                        if let list = cr:
+                            if parse_class_string_disjunction(s, list, &p) != 0:
+                                return -1
+                            c = class_range_base
+                        else:
+                            default_escape = true
+                    else:
+                        default_escape = true
+                _:
+                    default_escape = true
+            if class_range:
+                if let list = cr:
+                    if cr_init_char_range(s, list, c) != 0:
+                        return -1
+                    c += class_range_base
+                else:
+                    default_escape = true
+            if default_escape:
+                p = p - 1
+                let ret = lre_parse_escape(&p, (i32)s.is_unicode * 2)
+                if ret >= 0:
+                    c = (u32)ret
+                else:
+                    if s.is_unicode:
+                        return invalid_escape(s)
+                    else:
+                        # just ignore the '\'
+                        normal_char = true
+        0:
+            if p >= s.buf_end:
+                return re_parse_error(s, "unexpected end")
+            normal_char = true
+        '&', '!', '#', '$', '%', '*', '+', ',', '.', ':', ';', '<', '=', '>', '?', '@', '^', '`', '~':
+            if s.unicode_sets and p[1] == (u8)c:
+                # forbidden double characters
+                return re_parse_error(s, "invalid class set operation in regular expression")
+            normal_char = true
+        '(', ')', '[', ']', '{', '}', '/', '-', '|':
+            if s.unicode_sets:
+                # invalid characters in unicode sets
+                return re_parse_error(s, "invalid character in class in regular expression")
+            normal_char = true
+        _:
+            normal_char = true
+    if normal_char:
+        # normal char
+        if c >= 128:
+            c = (u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
+            if c > 0xffff and not s.is_unicode:
+                # XXX: should handle non BMP-1 code points
+                return re_parse_error(s, "malformed unicode char")
+        else:
+            p = p + 1
+    *pp = p
+    return (i32)c

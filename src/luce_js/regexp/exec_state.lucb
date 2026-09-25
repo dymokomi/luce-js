@@ -1,0 +1,152 @@
+#==============================================================================================
+#
+#   exec_state - The matcher's state: reading the subject, the backtracking stack
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 2616-2771: is_line_terminator, the GET_CHAR,
+#       PEEK_CHAR, PEEK_PREV_CHAR, GET_PREV_CHAR and PREV_CHAR macros (functions here, the
+#       cursor passed by pointer), REExecStateEnum, StackElem, REExecContext,
+#       lre_poll_timeout and stack_realloc.
+#
+#==============================================================================================
+
+# mark: Subject characters =====================================================================
+
+func is_line_terminator(c: u32) -> bool:
+    return (c == (u32)'\n' or c == (u32)'\r' or c == cp_ls or c == cp_ps)
+
+# The subject is 8-bit (cbuf_type 0) or 16-bit (1, or 2 when surrogate pairs are one
+# character). These read the character at or before a cursor and move it.
+
+# GET_CHAR: the character at `*pcptr`, advancing `*pcptr` past it.
+func get_char(pcptr: const u8**, cbuf_end: const u8*, cbuf_type: i32) -> u32:
+    let cptr = *pcptr
+    if cbuf_type == 0:
+        *pcptr = cptr + 1
+        return *cptr
+    var p = (const u16*)cptr
+    let end = (const u16*)cbuf_end
+    var c: u32 = *p
+    p = p + 1
+    if cutils.is_hi_surrogate(c) and cbuf_type == 2:
+        if p < end and cutils.is_lo_surrogate(*p):
+            c = cutils.from_surrogate(c, *p)
+            p = p + 1
+    *pcptr = (const u8*)p
+    return c
+
+# PEEK_CHAR: the character at `cptr`.
+func peek_char(cptr: const u8*, cbuf_end: const u8*, cbuf_type: i32) -> u32:
+    if cbuf_type == 0:
+        return cptr[0]
+    var p = (const u16*)cptr
+    let end = (const u16*)cbuf_end
+    var c: u32 = *p
+    p = p + 1
+    if cutils.is_hi_surrogate(c) and cbuf_type == 2:
+        if p < end and cutils.is_lo_surrogate(*p):
+            c = cutils.from_surrogate(c, *p)
+    return c
+
+# PEEK_PREV_CHAR: the character before `cptr`.
+func peek_prev_char(cptr: const u8*, cbuf_start: const u8*, cbuf_type: i32) -> u32:
+    if cbuf_type == 0:
+        return *(cptr - 1)
+    let p = (const u16*)cptr - 1
+    let start = (const u16*)cbuf_start
+    var c: u32 = *p
+    if cutils.is_lo_surrogate(c) and cbuf_type == 2:
+        if p > start and cutils.is_hi_surrogate(*(p - 1)):
+            c = cutils.from_surrogate(*(p - 1), c)
+    return c
+
+# GET_PREV_CHAR: the character before `*pcptr`, moving `*pcptr` back over it.
+func get_prev_char(pcptr: const u8**, cbuf_start: const u8*, cbuf_type: i32) -> u32:
+    if cbuf_type == 0:
+        let cptr = *pcptr - 1
+        *pcptr = cptr
+        return cptr[0]
+    var p = (const u16*)*pcptr - 1
+    let start = (const u16*)cbuf_start
+    var c: u32 = *p
+    if cutils.is_lo_surrogate(c) and cbuf_type == 2:
+        if p > start and cutils.is_hi_surrogate(*(p - 1)):
+            p = p - 1
+            c = cutils.from_surrogate(*p, c)
+    *pcptr = (const u8*)p
+    return c
+
+# PREV_CHAR: move `*pcptr` back over the character before it.
+func prev_char(pcptr: const u8**, cbuf_start: const u8*, cbuf_type: i32):
+    if cbuf_type == 0:
+        *pcptr = *pcptr - 1
+        return
+    var p = (const u16*)*pcptr - 1
+    let start = (const u16*)cbuf_start
+    if cutils.is_lo_surrogate(*p) and cbuf_type == 2:
+        if p > start and cutils.is_hi_surrogate(*(p - 1)):
+            p = p - 1
+    *pcptr = (const u8*)p
+
+# mark: Backtracking stack =====================================================================
+
+# REExecStateEnum
+let re_exec_state_split: usize = 0
+let re_exec_state_lookahead: usize = 1
+let re_exec_state_negative_lookahead: usize = 2
+
+# for bp, the low BP_TYPE_BITS bits store REExecStateEnum
+# workaround: compiler-issues/c_backend_global_conditional (functions, not constants)
+func bp_type_bits() -> usize:
+    return 3 if sizeof(usize) >= 8 else 2
+
+func bp_type_mask() -> usize:
+    return (1 << bp_type_bits()) - 1
+
+# A stack element (C's union of a pointer, an intptr_t and the `bp` bit-field): one machine
+# word. Pointers are stored as their address, a saved `bp` as `(index << BP_TYPE_BITS) |
+# type`; the stack pointers themselves are indices into the stack.
+type StackElem = usize
+
+struct REExecContext:
+    var cbuf: const u8*
+    var cbuf_end: const u8*
+    # 0 = 8 bit chars, 1 = 16 bit chars, 2 = 16 bit chars, UTF-16
+    var cbuf_type: i32
+    var capture_count: i32
+    var is_unicode: bool
+    var interrupt_counter: i32
+    var opaque: void* # used for stack overflow check
+
+    var stack_buf: StackElem*
+    var stack_size: usize
+    var static_stack_buf: StackElem[32] # static stack to avoid allocation in most cases
+
+# The pointer a stack element or a capture holds (never none there).
+func elem_ptr(v: usize) -> const u8*:
+    return (const u8*?)v else trap("regexp: null pointer on the stack")
+
+func lre_poll_timeout(s: REExecContext*) -> i32:
+    s.interrupt_counter -= 1
+    if s.interrupt_counter <= 0:
+        s.interrupt_counter = interrupt_counter_init
+        if lre_check_timeout(s.opaque):
+            return lre_ret_timeout
+    return 0
+
+noinline func stack_realloc(s: REExecContext*, n: usize) -> i32:
+    var new_size = s.stack_size * 3 // 2
+    if new_size < n:
+        new_size = n
+    var new_stack: StackElem* = s.stack_buf
+    if s.stack_buf == &s.static_stack_buf[0]:
+        new_stack = (StackElem*)(lre_realloc(s.opaque, none, new_size * sizeof(StackElem))
+                                 else return -1)
+        # XXX: could use correct size
+        discard(cutils.memcpy(new_stack, s.stack_buf, s.stack_size * sizeof(StackElem)))
+    else:
+        new_stack = (StackElem*)(lre_realloc(s.opaque, s.stack_buf, new_size * sizeof(StackElem))
+                                 else return -1)
+    s.stack_size = new_size
+    s.stack_buf = new_stack
+    return 0

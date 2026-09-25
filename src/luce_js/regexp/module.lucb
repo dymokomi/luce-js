@@ -1,0 +1,110 @@
+#==============================================================================================
+#
+#   module - Regular expression engine: the public interface (libregexp.h)
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.h (lines 24-65): the flags, the return codes and the
+#       header layout of the compiled bytecode, and the three functions the C library
+#       expects from its user. Those are callbacks here, gathered in `RegExpHost`: a Luce
+#       module cannot call up into the engine that imports it. The module is the port of
+#       libregexp.c; the opcodes (libregexp-opcode.h) are `opcodes.lucb`.
+#
+#       Regular Expression Engine
+#
+#       Copyright (c) 2017-2018 Fabrice Bellard
+#
+#       Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#       software and associated documentation files (the "Software"), to deal in the Software
+#       without restriction, including without limitation the rights to use, copy, modify,
+#       merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#       permit persons to whom the Software is furnished to do so, subject to the following
+#       conditions: the above copyright notice and this permission notice shall be included
+#       in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS
+#       IS", WITHOUT WARRANTY OF ANY KIND.
+#
+#==============================================================================================
+
+import luce_js.cutils as cutils
+import luce_js.unicode as unicode
+
+# mark: Flags ==================================================================================
+
+## The `g` flag.
+pub let lre_flag_global: i32 = 1 << 0
+## The `i` flag.
+pub let lre_flag_ignorecase: i32 = 1 << 1
+## The `m` flag.
+pub let lre_flag_multiline: i32 = 1 << 2
+## The `s` flag.
+pub let lre_flag_dotall: i32 = 1 << 3
+## The `u` flag.
+pub let lre_flag_unicode: i32 = 1 << 4
+## The `y` flag.
+pub let lre_flag_sticky: i32 = 1 << 5
+## The `d` flag. Unused by libregexp, just recorded.
+pub let lre_flag_indices: i32 = 1 << 6
+## named groups are present in the regexp
+pub let lre_flag_named_groups: i32 = 1 << 7
+## The `v` flag.
+pub let lre_flag_unicode_sets: i32 = 1 << 8
+
+## `lre_exec` result: an allocation failed.
+pub let lre_ret_memory_error: i32 = -1
+## `lre_exec` result: the host's `check_timeout` asked to stop.
+pub let lre_ret_timeout: i32 = -2
+
+## trailer length after the group name including the trailing '\0'
+pub let lre_group_name_trailer_len: i32 = 2
+
+# mark: The host ===============================================================================
+
+# The C library expects its user to define lre_check_stack_overflow, lre_check_timeout and
+# lre_realloc (quickjs.c does). A Luce module cannot call into the module that imports it,
+# so the user passes them here instead, where C passes `void *opaque`; each callback
+# receives `opaque` as its first argument, exactly as the C functions do.
+
+## The callbacks the engine provides to the regexp compiler and matcher, in place of C's
+## `opaque` argument. `lre_compile` and `lre_exec` read it for the duration of the call.
+pub struct RegExpHost:
+    ## Passed as the first argument of every callback (quickjs passes the JSContext).
+    pub var opaque: void*?
+    ## `(opaque, alloca_size)`: true if the native stack is about to overflow; checked
+    ## before each nested disjunction and class, so deep nesting fails with
+    ## "stack overflow" instead of crashing.
+    pub var check_stack_overflow: func(void*?, usize) -> bool
+    ## `(opaque)`: true if matching must stop; `lre_exec` then answers `lre_ret_timeout`.
+    ## Called about every 10000 backtracking steps.
+    pub var check_timeout: func(void*?) -> bool
+    ## `(opaque, ptr, size)` with C `realloc` semantics (a size of zero frees and answers
+    ## none). The bytecode `lre_compile` returns was allocated with it.
+    pub var realloc_func: cutils.DynBufReallocFunc
+
+# The host behind the `opaque` of the parse and exec states, which is the RegExpHost itself.
+func lre_host(opaque: void*?) -> const RegExpHost*:
+    let p = opaque else trap("regexp: no host")
+    return (const RegExpHost*)p
+
+# must be provided by the user, return non zero if overflow
+func lre_check_stack_overflow(opaque: void*?, alloca_size: usize) -> bool:
+    let host = lre_host(opaque)
+    return host.check_stack_overflow(host.opaque, alloca_size)
+
+# must be provided by the user, return non zero if time out
+func lre_check_timeout(opaque: void*?) -> bool:
+    let host = lre_host(opaque)
+    return host.check_timeout(host.opaque)
+
+# The allocator of every buffer of the library (CharRange, DynBuf, the string lists and the
+# backtracking stack), a `cutils.DynBufReallocFunc` over the host.
+func lre_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    let host = lre_host(opaque)
+    return host.realloc_func(host.opaque, ptr, size)
+
+# mark: Pointer helpers ========================================================================
+
+# A nullable typed pointer does not convert to `void*?`, implicitly or by a cast.
+# workaround: compiler-issues/nullable_pointer_cast (reported by the cutils port)
+func nullable_void(p: u8*?) -> void*?:
+    if let q = p:
+        return q
+    return none

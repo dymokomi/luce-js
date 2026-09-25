@@ -1,0 +1,208 @@
+#==============================================================================================
+#
+#   emit - Bytecode emission, parse errors and escape sequences
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 616-850: the re_emit_* helpers, re_parse_error
+#       (which takes a formatted string instead of a printf format), parse_digits,
+#       re_parse_expect and the public lre_parse_escape.
+#
+#==============================================================================================
+
+# mark: Emission ===============================================================================
+
+# The emitters ignore allocation failures, as in C: the DynBuf remembers the error and
+# lre_compile checks it at the end.
+
+func re_emit_op(s: REParseState*, op: REOp):
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)op))
+
+# return the offset of the u32 value
+func re_emit_op_u32(s: REParseState*, op: REOp, val: u32) -> i32:
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)op))
+    let pos = (i32)s.byte_code.size
+    discard(cutils.dbuf_put_u32(&s.byte_code, val))
+    return pos
+
+func re_emit_goto(s: REParseState*, op: REOp, val: u32) -> i32:
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)op))
+    let pos = (i32)s.byte_code.size
+    discard(cutils.dbuf_put_u32(&s.byte_code, val -% (u32)(pos + 4)))
+    return pos
+
+func re_emit_goto_u8(s: REParseState*, op: REOp, arg: u32, val: u32) -> i32:
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)op))
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)arg))
+    let pos = (i32)s.byte_code.size
+    discard(cutils.dbuf_put_u32(&s.byte_code, val -% (u32)(pos + 4)))
+    return pos
+
+func re_emit_goto_u8_u32(s: REParseState*, op: REOp, arg0: u32, arg1: u32, val: u32) -> i32:
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)op))
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)arg0))
+    discard(cutils.dbuf_put_u32(&s.byte_code, arg1))
+    let pos = (i32)s.byte_code.size
+    discard(cutils.dbuf_put_u32(&s.byte_code, val -% (u32)(pos + 4)))
+    return pos
+
+func re_emit_op_u8(s: REParseState*, op: REOp, val: u32):
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)op))
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)val))
+
+func re_emit_op_u16(s: REParseState*, op: REOp, val: u32):
+    discard(cutils.dbuf_putc(&s.byte_code, (u8)op))
+    discard(cutils.dbuf_put_u16(&s.byte_code, (u16)val))
+
+# mark: Errors =================================================================================
+
+# Store the message (truncated to the buffer, as vsnprintf does) and answer -1.
+func re_parse_error(s: REParseState*, text: fmt) -> i32:
+    var buf: u8[128]
+    let msg = format(buf, text) catch failure:
+        recover (str)buf[0..<127]
+    let n = msg.length
+    discard(cutils.memcpy(&s.u.error_msg[0], msg.bytes.data, n))
+    s.u.error_msg[n] = 0
+    return -1
+
+# The one-byte text of `c`, for the "%c" messages.
+func char_text(c: const u8*) -> str:
+    return (str)u8[]((u8*)c, 1)
+
+func re_parse_out_of_memory(s: REParseState*) -> i32:
+    return re_parse_error(s, "out of memory")
+
+# If allow_overflow is false, return -1 in case of
+# overflow. Otherwise return INT32_MAX.
+func parse_digits(pp: const u8**, allow_overflow: bool) -> i32:
+    var p = *pp
+    var v: u64 = 0
+    while true:
+        let c = *p
+        if c < '0' or c > '9':
+            break
+        v = v * 10 + (u64)c - (u64)'0'
+        if v >= (u64)int32_max:
+            if allow_overflow:
+                v = (u64)int32_max
+            else:
+                return -1
+        p = p + 1
+    *pp = p
+    return (i32)v
+
+func re_parse_expect(s: REParseState*, pp: const u8**, c: u8) -> i32:
+    var p = *pp
+    if *p != c:
+        var cc = c
+        return re_parse_error(s, f"expecting '{char_text(&cc)}'")
+    p = p + 1
+    *pp = p
+    return 0
+
+# mark: Escapes ================================================================================
+
+# The escaped surrogate pair after a high surrogate `\uXXXX`: `p` points at the next '\'.
+# Answers the low surrogate and whether all four hex digits were read.
+func parse_lo_surrogate_escape(p: const u8*) -> (u32, bool):
+    var c1: u32 = 0
+    for i: usize in 0..<4:
+        let h = cutils.from_hex((i32)p[2 + i])
+        if h < 0:
+            return (c1, false)
+        c1 = (c1 << 4) | (u32)h
+    return (c1, true)
+
+# Parse an escape sequence, *pp points after the '\':
+# allow_utf16 value:
+# 0 : no UTF-16 escapes allowed
+# 1 : UTF-16 escapes allowed
+# 2 : UTF-16 escapes allowed and escapes of surrogate pairs are
+# converted to a unicode character (unicode regexp case).
+#
+# Return the unicode char and update *pp if recognized,
+# return -1 if malformed escape,
+# return -2 otherwise.
+## Parse the escape sequence at `*pp` (just after the '\'): answer its code point and
+## advance `*pp`, or -1 if it is malformed, or -2 if it is not a character escape.
+## `allow_utf16` is 0 (no `\u`), 1 (`\u` and `\u{...}`) or 2 (also joins an escaped
+## surrogate pair into one code point, the unicode regexp case).
+pub func lre_parse_escape(pp: const u8**, allow_utf16: i32) -> i32:
+    var p = *pp
+    let b = *p
+    p = p + 1
+    var c: u32 = b
+    match b:
+        'b':
+            c = 0x08
+        'f':
+            c = 0x0c
+        'n':
+            c = (u32)'\n'
+        'r':
+            c = (u32)'\r'
+        't':
+            c = (u32)'\t'
+        'v':
+            c = 0x0b
+        'x':
+            let h0 = cutils.from_hex((i32)*p)
+            p = p + 1
+            if h0 < 0:
+                return -1
+            let h1 = cutils.from_hex((i32)*p)
+            p = p + 1
+            if h1 < 0:
+                return -1
+            c = (u32)((h0 << 4) | h1)
+        'u':
+            if *p == '{' and allow_utf16 != 0:
+                p = p + 1
+                c = 0
+                while true:
+                    let h = cutils.from_hex((i32)*p)
+                    p = p + 1
+                    if h < 0:
+                        return -1
+                    c = (c << 4) | (u32)h
+                    if c > 0x10FFFF:
+                        return -1
+                    if *p == '}':
+                        break
+                p = p + 1
+            else:
+                c = 0
+                for i: i32 in 0..<4:
+                    let h = cutils.from_hex((i32)*p)
+                    p = p + 1
+                    if h < 0:
+                        return -1
+                    c = (c << 4) | (u32)h
+                if cutils.is_hi_surrogate(c) and allow_utf16 == 2 and p[0] == '\\' and p[1] == 'u':
+                    # convert an escaped surrogate pair into a
+                    # unicode char
+                    let (c1, complete) = parse_lo_surrogate_escape(p)
+                    if complete and cutils.is_lo_surrogate(c1):
+                        p = p + 6
+                        c = cutils.from_surrogate(c, c1)
+        '0'..='7':
+            c -= (u32)'0'
+            if allow_utf16 == 2:
+                # only accept \0 not followed by digit
+                if c != 0 or is_digit(*p):
+                    return -1
+            else:
+                # parse a legacy octal sequence
+                var v = (u32)*p -% (u32)'0'
+                if v <= 7:
+                    c = (c << 3) | v
+                    p = p + 1
+                    if c < 32:
+                        v = (u32)*p -% (u32)'0'
+                        if v <= 7:
+                            c = (c << 3) | v
+                            p = p + 1
+        _:
+            return -2
+    *pp = p
+    return (i32)c

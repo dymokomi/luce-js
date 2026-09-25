@@ -1,0 +1,289 @@
+#==============================================================================================
+#
+#   tests - Unit tests of the regexp engine against upstream libregexp.c
+#
+#   DESCRIPTION:
+#       Every expectation comes from upstream libregexp.c (the tests_*_table.lucb
+#       fragments): the full description of each compiled pattern (bytecode bytes, or their
+#       hash when long, capture and register counts, flags and group names) or its error
+#       message, the result of lre_exec for patterns x subjects x 8/16-bit x start index,
+#       and lre_parse_escape. A row's host mode selects the callbacks: 0 normal, 1
+#       check_timeout always true, 2 check_stack_overflow always true, 100 + N the
+#       allocator fails after N allocations.
+#
+#==============================================================================================
+
+# mark: Table rows =============================================================================
+
+struct CompileCase:
+    let pattern: str
+    let flags: i32
+    let mode: i32
+    let expect: str
+
+struct ExecCase:
+    let pattern: str
+    let flags: i32
+    let mode: i32
+    # the code units; `%XXXX` is one unit in hex
+    let subject: str
+    let cbuf_type: i32
+    let cindex: i32
+    let expect: str
+
+struct EscapeCase:
+    let text: str
+    let allow_utf16: i32
+    let expect: str
+
+# mark: Hosts ==================================================================================
+
+var test_alloc_left: i32 = 0
+
+func test_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    if size == 0:
+        cutils.c_free(ptr)
+        return none
+    return cutils.realloc(ptr, size)
+
+func test_limited_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
+    if size == 0:
+        cutils.c_free(ptr)
+        return none
+    if test_alloc_left <= 0:
+        return none
+    test_alloc_left -= 1
+    return cutils.realloc(ptr, size)
+
+func test_no(opaque: void*?, alloca_size: usize) -> bool:
+    return false
+
+func test_yes(opaque: void*?, alloca_size: usize) -> bool:
+    return true
+
+func test_no_timeout(opaque: void*?) -> bool:
+    return false
+
+func test_timeout(opaque: void*?) -> bool:
+    return true
+
+func test_host(mode: i32) -> RegExpHost:
+    var host = RegExpHost(opaque = none, check_stack_overflow = test_no,
+                          check_timeout = test_no_timeout, realloc_func = test_realloc)
+    if mode == 1:
+        host.check_timeout = test_timeout
+    elif mode == 2:
+        host.check_stack_overflow = test_yes
+    elif mode >= 100:
+        test_alloc_left = mode - 100
+        host.realloc_func = test_limited_realloc
+    return host
+
+# mark: Descriptions ===========================================================================
+
+func put_hex(d: cutils.DynBuf*, v: u32, digits: i32):
+    let chars = "0123456789abcdef".bytes
+    var i = digits - 1
+    while i >= 0:
+        discard(cutils.dbuf_putc(d, chars[(usize)((v >> (u32)(i * 4)) & 15)]))
+        i -= 1
+
+func dbuf_text(d: const cutils.DynBuf*) -> str:
+    if let b = d.buf:
+        return (str)u8[](b, d.size)
+    return ""
+
+# What the C driver prints for one lre_compile: "err=MSG" or
+# "ok len=N cc=N alloc=N flags=0xN[ names=<a>,<b>] (bc=HEX|hash=HASH)".
+func describe_compile(d: cutils.DynBuf*, bc: u8*?, len: i32, error_msg: const u8[]):
+    if bc == none:
+        discard(cutils.dbuf_printf(d, "err="))
+        discard(cutils.dbuf_put(d, error_msg.data, cutils.strlen(error_msg.data)))
+        return
+    let b = bc else trap("unreachable")
+    let cc = lre_get_capture_count(b)
+    discard(cutils.dbuf_printf(d, f"ok len={len} cc={cc} alloc={lre_get_alloc_count(b)} flags=0x"))
+    let flags = (u32)lre_get_flags(b)
+    var digits: i32 = 1
+    while digits < 8 and (flags >> (u32)(digits * 4)) != 0:
+        digits += 1
+    put_hex(d, flags, digits)
+    if let names0 = lre_get_groupnames(b):
+        discard(cutils.dbuf_printf(d, " names="))
+        var names = names0
+        for i: i32 in 1..<cc:
+            if i != 1:
+                discard(cutils.dbuf_printf(d, ","))
+            let n = cutils.strlen(names)
+            discard(cutils.dbuf_printf(d, "<"))
+            discard(cutils.dbuf_put(d, names, n))
+            discard(cutils.dbuf_printf(d, ">"))
+            names = names + n + (usize)lre_group_name_trailer_len
+    if len <= 200:
+        discard(cutils.dbuf_printf(d, " bc="))
+        for i: i32 in 0..<len:
+            put_hex(d, b[(usize)i], 2)
+    else:
+        var h: u32 = 2166136261
+        for i: i32 in 0..<len:
+            h = (h ^ b[(usize)i]) *% 16777619
+        discard(cutils.dbuf_printf(d, " hash="))
+        put_hex(d, h, 8)
+
+func hex_value(c: u8) -> u32:
+    if c >= '0' and c <= '9':
+        return (u32)(c - '0')
+    return (u32)(c - 'a') + 10
+
+# Decode a row's subject into `units` (room for subject.length units); answers the count.
+func decode_subject(subject: str, units: u16*) -> i32:
+    let b = subject.bytes
+    var i: usize = 0
+    var n: usize = 0
+    while i < b.length:
+        if b[i] == '%':
+            var v: u32 = 0
+            for k: usize in 1..=4:
+                v = (v << 4) | hex_value(b[i + k])
+            units[n] = (u16)v
+            i += 5
+        else:
+            units[n] = b[i]
+            i += 1
+        n += 1
+    return (i32)n
+
+# mark: Tests ==================================================================================
+
+func check_compile(c: const CompileCase*) -> bool:
+    let host = test_host(c.mode)
+    var error_msg: u8[64]
+    var len: i32 = -1
+    let bc = lre_compile(&len, error_msg, c.pattern.bytes.data, c.pattern.length, c.flags,
+                         &host)
+    var d: cutils.DynBuf
+    cutils.dbuf_init(&d)
+    describe_compile(&d, bc, len, error_msg)
+    let ok = dbuf_text(&d) == c.expect
+    if not ok:
+        print(f"compile /{c.pattern}/ {c.flags} mode {c.mode}:\n  got    {dbuf_text(&d)}\n  expect {c.expect}")
+    cutils.dbuf_free(&d)
+    if let b = bc:
+        discard(host.realloc_func(host.opaque, b, 0))
+    elif len != 0:
+        print(f"compile /{c.pattern}/: plen {len} on error")
+        return false
+    return ok
+
+func check_exec(c: const ExecCase*) -> bool:
+    let compile_host = test_host(0)
+    var error_msg: u8[64]
+    var len: i32 = 0
+    let bc0 = lre_compile(&len, error_msg, c.pattern.bytes.data, c.pattern.length, c.flags,
+                          &compile_host)
+    if bc0 == none:
+        let msg = (str)error_msg[0..<cutils.strlen(&error_msg[0])]
+        var buf: u8[128]
+        let got = format(buf, f"compile error {msg}") catch failure:
+            recover "?"
+        if got != c.expect:
+            print(f"exec /{c.pattern}/: got {got}, expect {c.expect}")
+            return false
+        return true
+    let bc = bc0 else trap("unreachable")
+    let units = (u16*)(cutils.malloc(c.subject.length * 2 + 2) else trap("out of memory"))
+    let clen = decode_subject(c.subject, units)
+    let bytes = (u8*)units
+    if c.cbuf_type == 0:
+        for i: i32 in 0..<clen:
+            bytes[(usize)i] = (u8)units[(usize)i]
+    let alloc_count = lre_get_alloc_count(bc)
+    let capture = (u8*?*)(cutils.malloc(sizeof(u8*?) * (usize)(alloc_count + 1))
+                          else trap("out of memory"))
+    let host = test_host(c.mode)
+    let ret = lre_exec(capture, bc, bytes, c.cindex, clen, c.cbuf_type, &host)
+
+    var d: cutils.DynBuf
+    cutils.dbuf_init(&d)
+    discard(cutils.dbuf_printf(&d, f"{ret}"))
+    if ret == 1:
+        for i: i32 in 0..<lre_get_capture_count(bc):
+            let start = capture[(usize)(2 * i)]
+            let end = capture[(usize)(2 * i + 1)]
+            if let p0 = start:
+                if let p1 = end:
+                    let a = ((usize)p0 - (usize)bytes) >> (usize)c.cbuf_type
+                    let z = ((usize)p1 - (usize)bytes) >> (usize)c.cbuf_type
+                    discard(cutils.dbuf_printf(&d, f" {a},{z}"))
+                else:
+                    discard(cutils.dbuf_printf(&d, " -"))
+            else:
+                discard(cutils.dbuf_printf(&d, " -"))
+    let ok = dbuf_text(&d) == c.expect
+    if not ok:
+        print(f"exec /{c.pattern}/ {c.flags} mode {c.mode} on \"{c.subject}\" type {c.cbuf_type} at {c.cindex}:\n  got    {dbuf_text(&d)}\n  expect {c.expect}")
+    cutils.dbuf_free(&d)
+    cutils.c_free(capture)
+    cutils.c_free(units)
+    discard(compile_host.realloc_func(compile_host.opaque, bc, 0))
+    return ok
+
+test "lre_compile: bytecode, counts, flags, group names and error messages":
+    var failures: i32 = 0
+    for c in &compile_cases1:
+        if not check_compile(c):
+            failures += 1
+    for c in &compile_cases2:
+        if not check_compile(c):
+            failures += 1
+    assert(failures == 0)
+
+test "lre_exec: captures over 8-bit and 16-bit subjects":
+    var failures: i32 = 0
+    for c in &exec_cases1:
+        if not check_exec(c):
+            failures += 1
+    for c in &exec_cases2:
+        if not check_exec(c):
+            failures += 1
+    assert(failures == 0)
+
+test "lre_parse_escape":
+    var failures: i32 = 0
+    for c in &escape_cases:
+        var p = c.text.bytes.data
+        let start = p
+        let ret = lre_parse_escape(&p, c.allow_utf16)
+        var buf: u8[32]
+        let got = format(buf, f"{ret} {p - start}") catch failure:
+            recover "?"
+        if got != c.expect:
+            print(f"escape \"{c.text}\" {c.allow_utf16}: got {got}, expect {c.expect}")
+            failures += 1
+    assert(failures == 0)
+
+test "lre_compile writes an empty message and the length on success":
+    let host = test_host(0)
+    var error_msg: u8[8] = [0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78]
+    var len: i32 = -1
+    let pattern = "(?<first>a)(b)"
+    let bc = lre_compile(&len, error_msg, pattern.bytes.data, pattern.length,
+                         lre_flag_global | lre_flag_indices, &host) else trap("no bytecode")
+    assert(error_msg[0] == 0)
+    assert(len > 8)
+    assert(lre_get_capture_count(bc) == 3)
+    assert(lre_get_flags(bc) == (lre_flag_global | lre_flag_indices | lre_flag_named_groups))
+    let names = lre_get_groupnames(bc) else trap("no names")
+    assert(cutils.strlen(names) == 5 and names[5] == 0 and names[6] == 0)
+    # the unnamed second group has an empty name
+    assert(names[7] == 0)
+    discard(host.realloc_func(host.opaque, bc, 0))
+
+test "lre_compile truncates the error message to the buffer":
+    let host = test_host(0)
+    var error_msg: u8[8]
+    var len: i32 = -1
+    let pattern = "a)"
+    assert(lre_compile(&len, error_msg, pattern.bytes.data, pattern.length, 0, &host) == none)
+    assert(len == 0)
+    assert((str)error_msg[0..<7] == "extrane" and error_msg[7] == 0)

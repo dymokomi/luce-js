@@ -1,0 +1,192 @@
+#==============================================================================================
+#
+#   quantifier - Quantifiers: `*`, `+`, `?` and `{n,m}` applied to the last atom
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 2196-2369, the quantifier half of re_parse_term:
+#       it rewrites the bytecode of the atom that starts at `last_atom_start` into a loop.
+#
+#==============================================================================================
+
+# mark: Quantifiers ============================================================================
+
+# The byte `v` at `pos` of the bytecode.
+func bc_set(s: REParseState*, pos: i32, v: u8):
+    bc_storage(s)[(usize)pos] = v
+
+# The quantifier after the atom at `last_atom_start`, if any; `*pp` is just after the atom.
+func re_parse_quantifier(s: REParseState*, pp: const u8**, last_atom_start0: i32,
+                         last_capture_count: i32) -> i32:
+    var p = *pp
+    var last_atom_start = last_atom_start0
+    var quant_min: i32 = 0
+    var quant_max: i32 = 0
+    var is_quantifier = false
+    match *p:
+        '*':
+            p = p + 1
+            quant_min = 0
+            quant_max = int32_max
+            is_quantifier = true
+        '+':
+            p = p + 1
+            quant_min = 1
+            quant_max = int32_max
+            is_quantifier = true
+        '?':
+            p = p + 1
+            quant_min = 0
+            quant_max = 1
+            is_quantifier = true
+        '{':
+            let p1 = p
+            # As an extension (see ES6 annex B), we accept '{' not
+            # followed by digits as a normal atom
+            if not is_digit(p[1]):
+                if s.is_unicode:
+                    return re_parse_error(s, "invalid repetition count")
+            else:
+                p = p + 1
+                quant_min = parse_digits(&p, true)
+                quant_max = quant_min
+                if *p == ',':
+                    p = p + 1
+                    if is_digit(*p):
+                        quant_max = parse_digits(&p, true)
+                        if quant_max < quant_min:
+                            return re_parse_error(s, "invalid repetition count")
+                    else:
+                        quant_max = int32_max # infinity
+                if *p != '}' and not s.is_unicode:
+                    # Annex B: normal atom if invalid '{' syntax
+                    p = p1
+                else:
+                    if re_parse_expect(s, &p, '}') != 0:
+                        return -1
+                    is_quantifier = true
+        _:
+            is_quantifier = false
+    if not is_quantifier:
+        *pp = p
+        return 0
+
+    # quantifier:
+    var greedy = true
+    if *p == '?':
+        p = p + 1
+        greedy = false
+    if last_atom_start < 0:
+        return re_parse_error(s, "nothing to repeat")
+    let greedy_i = (i32)greedy
+
+    # the spec tells that if there is no advance when
+    # running the atom after the first quant_min times,
+    # then there is no match. We remove this test when we
+    # are sure the atom always advances the position.
+    var need_capture_init = false
+    var add_zero_advance_check = re_need_check_adv_and_capture_init(
+        &need_capture_init, bc_storage(s) + (usize)last_atom_start,
+        (i32)s.byte_code.size - last_atom_start)
+
+    # general case: need to reset the capture at each
+    # iteration. We don't do it if there are no captures
+    # in the atom or if we are sure all captures are
+    # initialized in the atom. If quant_min = 0, we still
+    # need to reset once the captures in case the atom
+    # does not match.
+    if need_capture_init and last_capture_count != s.capture_count:
+        if dbuf_insert(&s.byte_code, last_atom_start, 3) != 0:
+            return re_parse_out_of_memory(s)
+        var pos = last_atom_start
+        bc_set(s, pos, (u8)REOp.save_reset)
+        pos += 1
+        bc_set(s, pos, (u8)last_capture_count)
+        pos += 1
+        bc_set(s, pos, (u8)(s.capture_count - 1))
+
+    let len = (i32)s.byte_code.size - last_atom_start
+    if quant_min == 0:
+        # need to reset the capture in case the atom is
+        # not executed
+        if not need_capture_init and last_capture_count != s.capture_count:
+            if dbuf_insert(&s.byte_code, last_atom_start, 3) != 0:
+                return re_parse_out_of_memory(s)
+            bc_set(s, last_atom_start, (u8)REOp.save_reset)
+            last_atom_start += 1
+            bc_set(s, last_atom_start, (u8)last_capture_count)
+            last_atom_start += 1
+            bc_set(s, last_atom_start, (u8)(s.capture_count - 1))
+            last_atom_start += 1
+        let check = (i32)add_zero_advance_check
+        if quant_max == 0:
+            s.byte_code.size = (usize)last_atom_start
+        elif quant_max == 1 or quant_max == int32_max:
+            let has_goto = (i32)(quant_max == int32_max)
+            if dbuf_insert(&s.byte_code, last_atom_start, 5 + check * 2) != 0:
+                return re_parse_out_of_memory(s)
+            bc_set(s, last_atom_start, (u8)re_op(REOp.split_goto_first, greedy_i))
+            cutils.put_u32(bc_storage(s) + (usize)last_atom_start + 1,
+                           (u32)(len + 5 * has_goto + check * 2 * 2))
+            if add_zero_advance_check:
+                bc_set(s, last_atom_start + 1 + 4, (u8)REOp.set_char_pos)
+                bc_set(s, last_atom_start + 1 + 4 + 1, 0)
+                re_emit_op_u8(s, REOp.check_advance, 0)
+            if has_goto != 0:
+                discard(re_emit_goto(s, REOp.goto_, (u32)last_atom_start))
+        else:
+            if dbuf_insert(&s.byte_code, last_atom_start, 11 + check * 2) != 0:
+                return re_parse_out_of_memory(s)
+            var pos = last_atom_start
+            bc_set(s, pos, (u8)re_op(REOp.split_goto_first, greedy_i))
+            pos += 1
+            cutils.put_u32(bc_storage(s) + (usize)pos, (u32)(6 + check * 2 + len + 10))
+            pos += 4
+
+            bc_set(s, pos, (u8)REOp.set_i32)
+            pos += 1
+            bc_set(s, pos, 0)
+            pos += 1
+            cutils.put_u32(bc_storage(s) + (usize)pos, (u32)quant_max)
+            pos += 4
+            last_atom_start = pos
+            if add_zero_advance_check:
+                bc_set(s, pos, (u8)REOp.set_char_pos)
+                pos += 1
+                bc_set(s, pos, 0)
+                pos += 1
+            let loop_op = (REOp.loop_check_adv_split_next_first if add_zero_advance_check
+                           else REOp.loop_split_next_first)
+            discard(re_emit_goto_u8_u32(s, re_op(loop_op, -greedy_i), 0, (u32)quant_max,
+                                        (u32)last_atom_start))
+    elif quant_min == 1 and quant_max == int32_max and not add_zero_advance_check:
+        discard(re_emit_goto(s, re_op(REOp.split_next_first, -greedy_i), (u32)last_atom_start))
+    else:
+        if quant_min == quant_max:
+            add_zero_advance_check = false
+        let check = (i32)add_zero_advance_check
+        if dbuf_insert(&s.byte_code, last_atom_start, 6 + check * 2) != 0:
+            return re_parse_out_of_memory(s)
+        # Note: we assume the string length is < INT32_MAX
+        var pos = last_atom_start
+        bc_set(s, pos, (u8)REOp.set_i32)
+        pos += 1
+        bc_set(s, pos, 0)
+        pos += 1
+        cutils.put_u32(bc_storage(s) + (usize)pos, (u32)quant_max)
+        pos += 4
+        last_atom_start = pos
+        if add_zero_advance_check:
+            bc_set(s, pos, (u8)REOp.set_char_pos)
+            pos += 1
+            bc_set(s, pos, 0)
+            pos += 1
+        if quant_min == quant_max:
+            # a simple loop is enough
+            discard(re_emit_goto_u8(s, REOp.loop, 0, (u32)last_atom_start))
+        else:
+            let loop_op = (REOp.loop_check_adv_split_next_first if add_zero_advance_check
+                           else REOp.loop_split_next_first)
+            discard(re_emit_goto_u8_u32(s, re_op(loop_op, -greedy_i), 0,
+                                        (u32)(quant_max - quant_min), (u32)last_atom_start))
+    *pp = p
+    return 0

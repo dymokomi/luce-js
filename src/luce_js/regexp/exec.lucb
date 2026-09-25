@@ -1,0 +1,549 @@
+#==============================================================================================
+#
+#   exec - The backtracking matcher and the bytecode accessors
+#
+#   DESCRIPTION:
+#       Port of QuickJS libregexp.c lines 2773-3391: lre_exec_backtrack, lre_exec,
+#       lre_get_alloc_count, lre_get_capture_count, lre_get_flags and lre_get_groupnames.
+#       The C `goto no_match` becomes a flag the opcode sets; the undo code runs after the
+#       opcode. The capture array (captures, then registers) is read as machine words, as C
+#       stores register values in its pointer slots.
+#
+#==============================================================================================
+
+# mark: Helpers ================================================================================
+
+# The back reference test (REOP_back_reference and its variants) with the capture indexes
+# `pc1[0..<n]`: whether it matches, moving `*pcptr` over the text it matched.
+func lre_exec_back_reference(s: REExecContext*, capture: const usize*, opcode: REOp,
+                             pc1: const u8*, n: i32, pcptr: const u8**) -> bool:
+    let cbuf_type = s.cbuf_type
+    let cbuf_end = s.cbuf_end
+    for i: i32 in 0..<n:
+        let val = (i32)pc1[(usize)i]
+        if val >= s.capture_count:
+            return false
+        let start_w = capture[(usize)(2 * val)]
+        let end_w = capture[(usize)(2 * val + 1)]
+        # test the first not empty capture
+        if start_w != 0 and end_w != 0:
+            let cptr1_start = elem_ptr(start_w)
+            let cptr1_end = elem_ptr(end_w)
+            if opcode == REOp.back_reference or opcode == REOp.back_reference_i:
+                var cptr1 = cptr1_start
+                while cptr1 < cptr1_end:
+                    if *pcptr >= cbuf_end:
+                        return false
+                    var c1 = get_char(&cptr1, cptr1_end, cbuf_type)
+                    var c2 = get_char(pcptr, cbuf_end, cbuf_type)
+                    if opcode == REOp.back_reference_i:
+                        c1 = (u32)unicode.lre_canonicalize(c1, s.is_unicode)
+                        c2 = (u32)unicode.lre_canonicalize(c2, s.is_unicode)
+                    if c1 != c2:
+                        return false
+            else:
+                var cptr1 = cptr1_end
+                while cptr1 > cptr1_start:
+                    if *pcptr == s.cbuf:
+                        return false
+                    var c1 = get_prev_char(&cptr1, cptr1_start, cbuf_type)
+                    var c2 = get_prev_char(pcptr, s.cbuf, cbuf_type)
+                    if opcode == REOp.backward_back_reference_i:
+                        c1 = (u32)unicode.lre_canonicalize(c1, s.is_unicode)
+                        c2 = (u32)unicode.lre_canonicalize(c2, s.is_unicode)
+                    if c1 != c2:
+                        return false
+            break
+    return true
+
+# Whether `c` is in the `n` 16-bit ranges at `pc` (REOP_range).
+func lre_exec_range16(pc: const u8*, n: i32, c: u32) -> bool:
+    var idx_min: u32 = 0
+    var low = cutils.get_u16(pc + 0 * 4)
+    if c < low:
+        return false
+    var idx_max = (u32)(n - 1)
+    var high = cutils.get_u16(pc + (usize)idx_max * 4 + 2)
+    # 0xffff in for last value means +infinity
+    if c >= 0xffff and high == 0xffff:
+        return true
+    if c > high:
+        return false
+    while idx_min <= idx_max:
+        let idx = (idx_min + idx_max) // 2
+        low = cutils.get_u16(pc + (usize)idx * 4)
+        high = cutils.get_u16(pc + (usize)idx * 4 + 2)
+        if c < low:
+            idx_max = idx -% 1
+        elif c > high:
+            idx_min = idx + 1
+        else:
+            return true
+    return false
+
+# Whether `c` is in the `n` 32-bit ranges at `pc` (REOP_range32).
+func lre_exec_range32(pc: const u8*, n: i32, c: u32) -> bool:
+    var idx_min: u32 = 0
+    var low = cutils.get_u32(pc + 0 * 8)
+    if c < low:
+        return false
+    var idx_max = (u32)(n - 1)
+    var high = cutils.get_u32(pc + (usize)idx_max * 8 + 4)
+    if c > high:
+        return false
+    while idx_min <= idx_max:
+        let idx = (idx_min + idx_max) // 2
+        low = cutils.get_u32(pc + (usize)idx * 8)
+        high = cutils.get_u32(pc + (usize)idx * 8 + 4)
+        if c < low:
+            idx_max = idx -% 1
+        elif c > high:
+            idx_min = idx + 1
+        else:
+            return true
+    return false
+
+# Whether the character `c` next to a word boundary test is a word character.
+func is_word_char(c: u32, ignore_case: bool) -> bool:
+    if c < 256:
+        return unicode.lre_is_word_byte((u8)c)
+    return ignore_case and (c == 0x017f or c == 0x212a)
+
+# mark: Backtracking ===========================================================================
+
+# return 1 if match, 0 if not match or < 0 if error.
+func lre_exec_backtrack(s: REExecContext*, capture: usize*, pc0: const u8*,
+                        cptr0: const u8*) -> isize:
+    var pc = pc0
+    var cptr = cptr0
+    let cbuf_type = s.cbuf_type
+    let cbuf_end = s.cbuf_end
+
+    # sp and bp are indices into s.stack_buf; the stack ends at s.stack_size
+    var sp: usize = 0
+    var bp: usize = 0
+
+    while true:
+        let opcode = (REOp)*pc
+        pc = pc + 1
+        var no_match = false
+        match opcode:
+            .match_:
+                return 1
+            .lookahead_match:
+                # pop all the saved states until reaching the start of
+                # the lookahead and keep the updated captures and
+                # variables and the corresponding undo info.
+                let sp_top = sp
+                while true:
+                    let sp1 = sp
+                    sp = bp
+                    let stack = s.stack_buf
+                    pc = elem_ptr(stack[sp - 3])
+                    cptr = elem_ptr(stack[sp - 2])
+                    let state_type = stack[sp - 1] & bp_type_mask()
+                    bp = stack[sp - 1] >> bp_type_bits()
+                    stack[sp - 1] = sp1 # save the next value for the copy step
+                    sp -= 3
+                    if state_type == re_exec_state_lookahead:
+                        break
+                if sp != 0:
+                    # keep the undo info if there is a saved state
+                    let stack = s.stack_buf
+                    var sp1 = sp
+                    while sp1 < sp_top:
+                        let next_sp = stack[sp1 + 2]
+                        sp1 += 3
+                        while sp1 < next_sp:
+                            stack[sp] = stack[sp1]
+                            sp += 1
+                            sp1 += 1
+            .negative_lookahead_match:
+                # pop all the saved states until reaching start of the negative lookahead
+                while true:
+                    let stack = s.stack_buf
+                    # undo the modifications to capture[]
+                    while sp > bp:
+                        capture[stack[sp - 2]] = stack[sp - 1]
+                        sp -= 2
+                    pc = elem_ptr(stack[sp - 3])
+                    cptr = elem_ptr(stack[sp - 2])
+                    let state_type = stack[sp - 1] & bp_type_mask()
+                    bp = stack[sp - 1] >> bp_type_bits()
+                    sp -= 3
+                    if state_type == re_exec_state_negative_lookahead:
+                        break
+                no_match = true
+            .char32, .char32_i, .char_, .char_i:
+                var val: u32 = 0
+                if opcode == REOp.char32 or opcode == REOp.char32_i:
+                    val = cutils.get_u32(pc)
+                    pc = pc + 4
+                else:
+                    val = cutils.get_u16(pc)
+                    pc = pc + 2
+                # test_char:
+                if cptr >= cbuf_end:
+                    no_match = true
+                else:
+                    var c = get_char(&cptr, cbuf_end, cbuf_type)
+                    if opcode == REOp.char_i or opcode == REOp.char32_i:
+                        c = (u32)unicode.lre_canonicalize(c, s.is_unicode)
+                    if val != c:
+                        no_match = true
+            .split_goto_first, .split_next_first:
+                let val = cutils.get_u32(pc)
+                pc = pc + 4
+                var pc1 = pc
+                if opcode == REOp.split_next_first:
+                    pc1 = pc + (isize)(i32)val
+                else:
+                    pc1 = pc
+                    pc = pc + (isize)(i32)val
+                # CHECK_STACK_SPACE(3)
+                if s.stack_size - sp < 3:
+                    if stack_realloc(s, sp + 3) != 0:
+                        return lre_ret_memory_error
+                let stack = s.stack_buf
+                stack[sp] = (usize)pc1
+                stack[sp + 1] = (usize)cptr
+                stack[sp + 2] = (bp << bp_type_bits()) | re_exec_state_split
+                sp += 3
+                bp = sp
+            .lookahead, .negative_lookahead:
+                let val = cutils.get_u32(pc)
+                pc = pc + 4
+                # CHECK_STACK_SPACE(3)
+                if s.stack_size - sp < 3:
+                    if stack_realloc(s, sp + 3) != 0:
+                        return lre_ret_memory_error
+                let stack = s.stack_buf
+                stack[sp] = (usize)(pc + (isize)(i32)val)
+                stack[sp + 1] = (usize)cptr
+                stack[sp + 2] = ((bp << bp_type_bits()) | (re_exec_state_lookahead +
+                                 (usize)((u8)opcode - (u8)REOp.lookahead)))
+                sp += 3
+                bp = sp
+            .goto_:
+                let val = cutils.get_u32(pc)
+                pc = pc + 4 + (isize)(i32)val
+                if lre_poll_timeout(s) != 0:
+                    return lre_ret_timeout
+            .line_start, .line_start_m:
+                if cptr != s.cbuf:
+                    if opcode == REOp.line_start:
+                        no_match = true
+                    else:
+                        let c = peek_prev_char(cptr, s.cbuf, cbuf_type)
+                        if not is_line_terminator(c):
+                            no_match = true
+            .line_end, .line_end_m:
+                if cptr != cbuf_end:
+                    if opcode == REOp.line_end:
+                        no_match = true
+                    else:
+                        let c = peek_char(cptr, cbuf_end, cbuf_type)
+                        if not is_line_terminator(c):
+                            no_match = true
+            .dot:
+                if cptr == cbuf_end:
+                    no_match = true
+                else:
+                    let c = get_char(&cptr, cbuf_end, cbuf_type)
+                    if is_line_terminator(c):
+                        no_match = true
+            .any:
+                if cptr == cbuf_end:
+                    no_match = true
+                else:
+                    discard(get_char(&cptr, cbuf_end, cbuf_type))
+            .space:
+                if cptr == cbuf_end:
+                    no_match = true
+                else:
+                    let c = get_char(&cptr, cbuf_end, cbuf_type)
+                    if not unicode.lre_is_space(c):
+                        no_match = true
+            .not_space:
+                if cptr == cbuf_end:
+                    no_match = true
+                else:
+                    let c = get_char(&cptr, cbuf_end, cbuf_type)
+                    if unicode.lre_is_space(c):
+                        no_match = true
+            .save_start, .save_end:
+                let val: u32 = *pc
+                pc = pc + 1
+                assert(val < (u32)s.capture_count)
+                let idx = (usize)(2 * val + (u32)((u8)opcode - (u8)REOp.save_start))
+                # SAVE_CAPTURE(idx, cptr)
+                if s.stack_size - sp < 2:
+                    if stack_realloc(s, sp + 2) != 0:
+                        return lre_ret_memory_error
+                s.stack_buf[sp] = idx
+                s.stack_buf[sp + 1] = capture[idx]
+                sp += 2
+                capture[idx] = (usize)cptr
+            .save_reset:
+                var val: u32 = pc[0]
+                let val2: u32 = pc[1]
+                pc = pc + 2
+                assert(val2 < (u32)s.capture_count)
+                # CHECK_STACK_SPACE(2 * (val2 - val + 1))
+                let need = (usize)(2 *% (val2 -% val +% 1))
+                if s.stack_size - sp < need:
+                    if stack_realloc(s, sp + need) != 0:
+                        return lre_ret_memory_error
+                while val <= val2:
+                    for k: u32 in 0..<2:
+                        let idx = (usize)(2 * val + k)
+                        # SAVE_CAPTURE(idx, NULL)
+                        if s.stack_size - sp < 2:
+                            if stack_realloc(s, sp + 2) != 0:
+                                return lre_ret_memory_error
+                        s.stack_buf[sp] = idx
+                        s.stack_buf[sp + 1] = capture[idx]
+                        sp += 2
+                        capture[idx] = 0
+                    val += 1
+            .set_i32:
+                let idx = (usize)(2 * s.capture_count + (i32)pc[0])
+                let val = cutils.get_u32(pc + 1)
+                pc = pc + 5
+                if save_capture_check(s, capture, &sp, bp, idx, (usize)val) != 0:
+                    return lre_ret_memory_error
+            .loop:
+                let idx = (usize)(2 * s.capture_count + (i32)pc[0])
+                let val = cutils.get_u32(pc + 1)
+                pc = pc + 5
+
+                let val2 = (u32)(capture[idx] -% 1)
+                if save_capture_check(s, capture, &sp, bp, idx, (usize)val2) != 0:
+                    return lre_ret_memory_error
+                if val2 != 0:
+                    pc = pc + (isize)(i32)val
+                    if lre_poll_timeout(s) != 0:
+                        return lre_ret_timeout
+            .loop_split_goto_first, .loop_split_next_first, .loop_check_adv_split_goto_first, .loop_check_adv_split_next_first:
+                let idx = (usize)(2 * s.capture_count + (i32)pc[0])
+                let limit = cutils.get_u32(pc + 1)
+                let val = cutils.get_u32(pc + 5)
+                pc = pc + 9
+
+                # decrement the counter
+                let val2 = (u32)(capture[idx] -% 1)
+                if save_capture_check(s, capture, &sp, bp, idx, (usize)val2) != 0:
+                    return lre_ret_memory_error
+
+                if val2 > limit:
+                    # normal loop if counter > limit
+                    pc = pc + (isize)(i32)val
+                    if lre_poll_timeout(s) != 0:
+                        return lre_ret_timeout
+                elif ((opcode == REOp.loop_check_adv_split_goto_first or
+                       opcode == REOp.loop_check_adv_split_next_first) and
+                      capture[idx + 1] == (usize)cptr and val2 != limit):
+                    # check advance
+                    no_match = true
+                elif val2 != 0:
+                    # otherwise conditional split
+                    var pc1 = pc
+                    if (opcode == REOp.loop_split_next_first or
+                        opcode == REOp.loop_check_adv_split_next_first):
+                        pc1 = pc + (isize)(i32)val
+                    else:
+                        pc1 = pc
+                        pc = pc + (isize)(i32)val
+                    # CHECK_STACK_SPACE(3)
+                    if s.stack_size - sp < 3:
+                        if stack_realloc(s, sp + 3) != 0:
+                            return lre_ret_memory_error
+                    let stack = s.stack_buf
+                    stack[sp] = (usize)pc1
+                    stack[sp + 1] = (usize)cptr
+                    stack[sp + 2] = (bp << bp_type_bits()) | re_exec_state_split
+                    sp += 3
+                    bp = sp
+            .set_char_pos:
+                let idx = (usize)(2 * s.capture_count + (i32)pc[0])
+                pc = pc + 1
+                if save_capture_check(s, capture, &sp, bp, idx, (usize)cptr) != 0:
+                    return lre_ret_memory_error
+            .check_advance:
+                let idx = (usize)(2 * s.capture_count + (i32)pc[0])
+                pc = pc + 1
+                if capture[idx] == (usize)cptr:
+                    no_match = true
+            .word_boundary, .word_boundary_i, .not_word_boundary, .not_word_boundary_i:
+                let ignore_case = (opcode == REOp.word_boundary_i or
+                                   opcode == REOp.not_word_boundary_i)
+                let is_boundary = (opcode == REOp.word_boundary or
+                                   opcode == REOp.word_boundary_i)
+                var v1 = false
+                var v2 = false
+                # char before
+                if cptr != s.cbuf:
+                    v1 = is_word_char(peek_prev_char(cptr, s.cbuf, cbuf_type), ignore_case)
+                # current char
+                if cptr < cbuf_end:
+                    v2 = is_word_char(peek_char(cptr, cbuf_end, cbuf_type), ignore_case)
+                if (v1 != v2) != is_boundary:
+                    no_match = true
+            .back_reference, .back_reference_i, .backward_back_reference, .backward_back_reference_i:
+                let n = (i32)*pc
+                pc = pc + 1
+                let pc1 = pc
+                pc = pc + (usize)n
+                if not lre_exec_back_reference(s, capture, opcode, pc1, n, &cptr):
+                    no_match = true
+            .range, .range_i:
+                let n = (i32)cutils.get_u16(pc) # n must be >= 1
+                pc = pc + 2
+                if cptr >= cbuf_end:
+                    no_match = true
+                else:
+                    var c = get_char(&cptr, cbuf_end, cbuf_type)
+                    if opcode == REOp.range_i:
+                        c = (u32)unicode.lre_canonicalize(c, s.is_unicode)
+                    if lre_exec_range16(pc, n, c):
+                        # range_match:
+                        pc = pc + 4 * (usize)n
+                    else:
+                        no_match = true
+            .range32, .range32_i:
+                let n = (i32)cutils.get_u16(pc) # n must be >= 1
+                pc = pc + 2
+                if cptr >= cbuf_end:
+                    no_match = true
+                else:
+                    var c = get_char(&cptr, cbuf_end, cbuf_type)
+                    if opcode == REOp.range32_i:
+                        c = (u32)unicode.lre_canonicalize(c, s.is_unicode)
+                    if lre_exec_range32(pc, n, c):
+                        # range32_match:
+                        pc = pc + 8 * (usize)n
+                    else:
+                        no_match = true
+            .prev:
+                # go to the previous char
+                if cptr == s.cbuf:
+                    no_match = true
+                else:
+                    prev_char(&cptr, s.cbuf, cbuf_type)
+            _:
+                trap("lre_exec: unknown opcode")
+        if no_match:
+            # no_match:
+            while true:
+                if bp == 0:
+                    return 0
+                let stack = s.stack_buf
+                # undo the modifications to capture[]
+                while sp > bp:
+                    capture[stack[sp - 2]] = stack[sp - 1]
+                    sp -= 2
+
+                pc = elem_ptr(stack[sp - 3])
+                cptr = elem_ptr(stack[sp - 2])
+                let state_type = stack[sp - 1] & bp_type_mask()
+                bp = stack[sp - 1] >> bp_type_bits()
+                sp -= 3
+                if state_type != re_exec_state_lookahead:
+                    break
+            if lre_poll_timeout(s) != 0:
+                return lre_ret_timeout
+    # workaround: compiler-issues/inner_break_ends_outer_loop
+    trap("unreachable")
+
+# SAVE_CAPTURE_CHECK: set capture[idx] to `value`, saving the previous value for undo
+# unless it was already saved since the last state (`bp`). 0, or -1 when the stack cannot
+# grow.
+func save_capture_check(s: REExecContext*, capture: usize*, psp: usize*, bp: usize, idx: usize,
+                        value: usize) -> i32:
+    # avoid saving the previous value if already saved
+    var sp1 = *psp
+    while true:
+        if sp1 > bp:
+            if s.stack_buf[sp1 - 2] == idx:
+                break
+            sp1 -= 2
+        else:
+            let sp = *psp
+            if s.stack_size - sp < 2:
+                if stack_realloc(s, sp + 2) != 0:
+                    return -1
+            s.stack_buf[sp] = idx
+            s.stack_buf[sp + 1] = capture[idx]
+            *psp = sp + 2
+            break
+    capture[idx] = value
+    return 0
+
+# mark: Public interface =======================================================================
+
+# Return 1 if match, 0 if not match or < 0 if error (see LRE_RET_x). cindex is the
+# starting position of the match and must be such as 0 <= cindex <=
+# clen.
+## Match the bytecode `bc_buf` against the subject `cbuf` of `clen` characters, 8-bit
+## (`cbuf_type` 0) or 16-bit (1), starting at character `cindex` (0 <= cindex <= clen).
+## `capture` has room for `lre_get_alloc_count(bc_buf)` pointers: on a match the first
+## `2 * lre_get_capture_count(bc_buf)` hold each group's start and end in `cbuf` (none
+## when unset); the rest are scratch registers. Answers 1 on a match, 0 on none,
+## `lre_ret_memory_error` or `lre_ret_timeout`.
+pub func lre_exec(capture: u8*?*, bc_buf: const u8*, cbuf: const u8*, cindex: i32, clen: i32,
+                  cbuf_type: i32, host: const RegExpHost*) -> i32:
+    var s_s: REExecContext = ---
+    let s = &s_s
+
+    let re_flags = lre_get_flags(bc_buf)
+    s.is_unicode = (re_flags & (lre_flag_unicode | lre_flag_unicode_sets)) != 0
+    s.capture_count = (i32)bc_buf[re_header_capture_count]
+    s.cbuf = cbuf
+    s.cbuf_end = cbuf + (usize)(clen << cbuf_type)
+    s.cbuf_type = cbuf_type
+    if s.cbuf_type == 1 and s.is_unicode:
+        s.cbuf_type = 2
+    s.interrupt_counter = interrupt_counter_init
+    s.opaque = (void*)host
+
+    s.stack_buf = &s.static_stack_buf[0]
+    s.stack_size = s.static_stack_buf.length
+
+    let words = (usize*)capture
+    for i: i32 in 0..<s.capture_count * 2:
+        words[(usize)i] = 0
+
+    var cptr = cbuf + (usize)(cindex << cbuf_type)
+    if 0 < cindex and cindex < clen and s.cbuf_type == 2:
+        let p = (const u16*)cptr
+        if cutils.is_lo_surrogate(*p) and cutils.is_hi_surrogate(*(p - 1)):
+            cptr = (const u8*)(p - 1)
+
+    let ret = lre_exec_backtrack(s, words, bc_buf + re_header_len, cptr)
+
+    if s.stack_buf != &s.static_stack_buf[0]:
+        discard(lre_realloc(s.opaque, s.stack_buf, 0))
+    return (i32)ret
+
+## The number of capture slots `lre_exec` needs: two per group plus the registers.
+pub func lre_get_alloc_count(bc_buf: const u8*) -> i32:
+    return (i32)bc_buf[re_header_capture_count] * 2 + (i32)bc_buf[re_header_register_count]
+
+## The number of capture groups, group 0 (the whole match) included.
+pub func lre_get_capture_count(bc_buf: const u8*) -> i32:
+    return (i32)bc_buf[re_header_capture_count]
+
+## The `lre_flag_*` flags of the bytecode, with `lre_flag_named_groups` if it has names.
+pub func lre_get_flags(bc_buf: const u8*) -> i32:
+    return (i32)cutils.get_u16(bc_buf + re_header_flags)
+
+# Return NULL if no group names. Otherwise, return a pointer to
+# 'capture_count - 1' zero terminated UTF-8 strings.
+## None if the bytecode has no group names; otherwise `capture_count - 1` NUL-terminated
+## UTF-8 names (empty for an unnamed group), each followed by
+## `lre_group_name_trailer_len - 1` more bytes.
+pub func lre_get_groupnames(bc_buf: const u8*) -> const u8*?:
+    if (lre_get_flags(bc_buf) & lre_flag_named_groups) == 0:
+        return none
+    let re_bytecode_len = cutils.get_u32(bc_buf + re_header_bytecode_len)
+    return bc_buf + re_header_len + (usize)re_bytecode_len
