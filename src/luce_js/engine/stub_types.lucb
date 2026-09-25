@@ -98,8 +98,19 @@ struct SumPreciseState:
 struct ValueBuffer:
     var unported: i32
 
+# quickjs.c:26066 (region r17, first half): declared here so the second half of the
+# parser can name its cases; the fragment porting get_lvalue/put_lvalue moves it.
 enum PutLValueKind as i32:
-    unported = 0
+    ## [depth] v ->
+    nokeep = 0
+    ## [depth] v -> , keep depth (currently just disable optimizations)
+    nokeep_depth = 1
+    ## [depth] v -> v
+    keep_top = 2
+    ## [depth] v0 v -> v0
+    keep_second = 3
+    ## v [depth] ->
+    nokeep_bottom = 4
 
 enum ResolveResult as i32:
     unported = 0
@@ -107,8 +118,18 @@ enum ResolveResult as i32:
 enum StrictEqMode as i32:
     unported = 0
 
+# quickjs.c:24293 (region r17, first half, JSVarDefEnum): declared here so the second
+# half of the parser can name its cases; the fragment porting define_var moves it.
 enum VarDefKind as i32:
-    unported = 0
+    with_ = 0
+    let_ = 1
+    const_ = 2
+    ## function declaration
+    function_decl = 3
+    ## async/generator function declaration
+    new_function_decl = 4
+    catch_ = 5
+    var_ = 6
 
 type PrintValueWrite = func() -> unit
 
@@ -118,3 +139,24 @@ type PrintValueWrite = func() -> unit
 # quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
 let global_var_offset: i32 = 0x40000000
 let argument_var_offset: i32 = 0x20000000
+
+# quickjs.c:25085 (region r17, first half): the parse_flags of the expression parser.
+# allow the 'in' binary operator
+let pf_in_accepted: i32 = 1 << 0
+# allow function calls parsing in js_parse_postfix_expr()
+let pf_postfix_call: i32 = 1 << 1
+# allow the exponentiation operator in js_parse_unary()
+let pf_pow_allowed: i32 = 1 << 2
+# forbid the exponentiation operator in js_parse_unary()
+let pf_pow_forbidden: i32 = 1 << 3
+
+# quickjs.c:24781 (region r17, first half): the bits js_parse_skip_parens_token answers.
+let skip_has_semi: i32 = 1 << 0
+let skip_has_ellipsis: i32 = 1 << 1
+
+# quickjs.c:17732 (region r14): the OP_special_object operand for import.meta.
+let op_special_object_import_meta: u8 = 6
+
+# quickjs.c:18336 (region r14): the OP_throw_error types the parser emits.
+let js_throw_error_delete_super: u8 = 3
+let js_throw_error_iterator_throw: u8 = 4

@@ -27,7 +27,7 @@ func find_export_entry(ctx: Context*, m: ModuleDef*, export_name: Atom) -> Expor
 func add_export_entry2(ctx: Context*, s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom, export_type: ExportType) -> ExportEntry*!:
     trap("unported: add_export_entry2")
 ## Ported from quickjs.c:29828 add_export_entry.
-func add_export_entry(s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom, export_type: ExportType) -> ExportEntry*:
+func add_export_entry(s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom, export_type: ExportType) -> ExportEntry*!:
     trap("unported: add_export_entry")
 ## Ported from quickjs.c:29836 add_star_export_entry.
 func add_star_export_entry(ctx: Context*, m: ModuleDef*, req_module_idx: i32) -> i32!:

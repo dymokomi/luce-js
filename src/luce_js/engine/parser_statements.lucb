@@ -1,0 +1,512 @@
+#==============================================================================================
+#
+#   parser_statements - Break entries, return, blocks, variable declarations and for-in/of
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 28318-28899: the break/continue stack (push_break_entry,
+#       pop_break_entry, emit_break), emit_return, the declaration masks, blocks,
+#       var/let/const declarations, the label and 'let' look-ahead tests, the for-in,
+#       for-of and for-await-of loops, and set_eval_ret_undefined.
+#
+#       A BlockEnv lives in the frame of the function parsing the statement, as in C: it
+#       is linked on fd.top_break while the statement's body is parsed. On a syntax
+#       error it stays linked, as in C, and the function definition is freed.
+#
+#==============================================================================================
+
+# mark: The break/continue stack ================================================================
+
+# Link `be` on top of the break/continue stack of `fd`.
+func push_break_entry(fd: FunctionDef*, be: BlockEnv*, label_name: Atom, label_break: i32,
+                      label_cont: i32, drop_count: i32):
+    be.prev = fd.top_break
+    fd.top_break = be
+    be.label_name = label_name
+    be.label_break = label_break
+    be.label_cont = label_cont
+    be.drop_count = drop_count
+    be.label_finally = -1
+    be.scope_level = fd.scope_level
+    be.has_iterator = false
+    be.is_regular_stmt = false
+
+# Unlink the top entry of the break/continue stack of `fd`.
+func pop_break_entry(fd: FunctionDef*):
+    let be = fd.top_break else trap("pop_break_entry: empty break stack")
+    fd.top_break = be.prev
+
+# Emit a 'break' (or a 'continue' if `is_cont`) to the label `name` (no_atom for the
+# innermost statement): the scopes, iterators, stack values and finally blocks of the
+# statements left are closed on the way.
+func emit_break(s: ParseState*, name: Atom, is_cont: bool) -> !:
+    let fd = s.fd()
+    var scope_level = fd.scope_level
+    var top = fd.top_break
+    while let t = top:
+        close_scopes(s, scope_level, t.scope_level)
+        scope_level = t.scope_level
+        if is_cont and t.label_cont != -1 and (name == no_atom or t.label_name == name):
+            # continue stays inside the same block
+            discard(emit_goto(s, (i32)Op.goto_, t.label_cont))
+            return
+        if (not is_cont and t.label_break != -1 and
+            ((name == no_atom and not t.is_regular_stmt) or t.label_name == name)):
+            discard(emit_goto(s, (i32)Op.goto_, t.label_break))
+            return
+        var i: i32 = 0
+        if t.has_iterator:
+            emit_op(s, (u8)Op.iterator_close)
+            i += 3
+        while i < t.drop_count:
+            emit_op(s, (u8)Op.drop)
+            i += 1
+        if t.label_finally != -1:
+            # must push dummy value to keep same stack depth
+            emit_op(s, (u8)Op.undefined)
+            discard(emit_goto(s, (i32)Op.gosub, t.label_finally))
+            emit_op(s, (u8)Op.drop)
+        top = t.prev
+    if name == no_atom:
+        if is_cont:
+            try js_parse_error(s, "continue must be inside loop")
+        else:
+            try js_parse_error(s, "break must be inside loop or switch")
+    else:
+        try js_parse_error(s, "break/continue label not found")
+
+# execute the finally blocks before return
+func emit_return(s: ParseState*, hasval0: bool):
+    let fd = s.fd()
+    var hasval = hasval0
+    if fd.func_kind != js_func_normal:
+        if not hasval:
+            # no value: direct return in case of async generator
+            emit_op(s, (u8)Op.undefined)
+            hasval = true
+        elif fd.func_kind == js_func_async_generator:
+            # the await must be done before handling the "finally" in case it raises an
+            # exception
+            emit_op(s, (u8)Op.await)
+
+    var top = fd.top_break
+    while let t = top:
+        if t.has_iterator or t.label_finally != -1:
+            if not hasval:
+                emit_op(s, (u8)Op.undefined)
+                hasval = true
+            # Remove the stack elements up to and including the catch offset. When
+            # 'yield' is used in an expression we have no easy way to count them, so we
+            # use this specific instruction instead.
+            emit_op(s, (u8)Op.nip_catch)
+            # stack: iter_obj next ret_val
+            if t.has_iterator:
+                if fd.func_kind == js_func_async_generator:
+                    # next
+                    emit_op(s, (u8)Op.nip)
+                    emit_op(s, (u8)Op.swap)
+                    emit_op(s, (u8)Op.get_field2)
+                    emit_atom(s, atom_return)
+                    # stack: iter_obj return_func
+                    emit_op(s, (u8)Op.dup)
+                    emit_op(s, (u8)Op.is_undefined_or_null)
+                    let label_next = emit_goto(s, (i32)Op.if_true, -1)
+                    emit_op(s, (u8)Op.call_method)
+                    emit_u16(s, 0)
+                    emit_op(s, (u8)Op.iterator_check_object)
+                    emit_op(s, (u8)Op.await)
+                    let label_next2 = emit_goto(s, (i32)Op.goto_, -1)
+                    discard(emit_label(s, label_next))
+                    emit_op(s, (u8)Op.drop)
+                    discard(emit_label(s, label_next2))
+                    emit_op(s, (u8)Op.drop)
+                else:
+                    emit_op(s, (u8)Op.rot3r)
+                    # dummy catch offset
+                    emit_op(s, (u8)Op.undefined)
+                    emit_op(s, (u8)Op.iterator_close)
+            else:
+                # execute the "finally" block
+                discard(emit_goto(s, (i32)Op.gosub, t.label_finally))
+        top = t.prev
+    if fd.is_derived_class_constructor:
+        # 'this' can be uninitialized, so it may be accessed only if the derived class
+        # constructor does not return an object
+        var label_return: i32 = -1
+        if hasval:
+            emit_op(s, (u8)Op.check_ctor_return)
+            label_return = emit_goto(s, (i32)Op.if_false, -1)
+            emit_op(s, (u8)Op.drop)
+
+        # The error should be raised in the caller context, so we use a specific opcode
+        emit_op(s, (u8)TempOp.scope_get_var_checkthis)
+        emit_atom(s, atom_this)
+        emit_u16(s, 0)
+
+        discard(emit_label(s, label_return))
+        emit_op(s, (u8)Op.return_)
+    elif fd.func_kind != js_func_normal:
+        emit_op(s, (u8)Op.return_async)
+    else:
+        emit_op(s, (u8)Op.return_ if hasval else (u8)Op.return_undef)
+
+# mark: Blocks and declarations =================================================================
+
+# allow normal function declaration
+let decl_mask_func: i32 = 1 << 0
+# ored with DECL_MASK_FUNC if function declarations are allowed with a label
+let decl_mask_func_with_label: i32 = 1 << 1
+# all other declarations
+let decl_mask_other: i32 = 1 << 2
+let decl_mask_all: i32 = decl_mask_func | decl_mask_func_with_label | decl_mask_other
+
+func js_parse_statement(s: ParseState*) -> !:
+    try js_parse_statement_or_decl(s, 0)
+
+func js_parse_block(s: ParseState*) -> !:
+    try js_parse_expect(s, TokenType.lbrace)
+    if s.token.val != TokenType.rbrace:
+        discard(try push_scope(s))
+        while true:
+            try js_parse_statement_or_decl(s, decl_mask_all)
+            if s.token.val == TokenType.rbrace:
+                break
+        pop_scope(s)
+    try next_token(s)
+
+# One `name [= initializer]` of a declaration: `name` is the identifier just read, with
+# its own reference, which the caller frees.
+func js_parse_var_binding(s: ParseState*, name: Atom, parse_flags: i32, tok: i32,
+                          export_flag: bool) -> !:
+    let fd = s.fd()
+    let kind = (TokenType)tok
+    if name == atom_let and (kind == TokenType.let_ or kind == TokenType.const_):
+        try js_parse_error(s, "'let' is not a valid lexical identifier")
+    try next_token(s)
+    try js_define_var(s, name, tok)
+    if export_flag:
+        let m = fd.module else trap("js_parse_var: export outside a module")
+        discard(try add_export_entry(s, m, name, name, ExportType.local_))
+
+    if s.token.val == TokenType.assign:
+        let source_ptr = s.token.ptr
+        try next_token(s)
+        if need_var_reference(s, tok):
+            # Must make a reference for proper `with` semantics
+            emit_op(s, (u8)TempOp.scope_get_var)
+            emit_atom(s, name)
+            emit_u16(s, (u16)fd.scope_level)
+            var opcode: i32 = 0
+            var scope: i32 = 0
+            var name1 = no_atom
+            var label: i32 = 0
+            var depth_unused: i32 = 0
+            try get_lvalue(s, &opcode, &scope, &name1, &label, &depth_unused, false,
+                           (i32)TokenType.assign)
+            js_parse_assign_expr2(s, parse_flags) catch failure:
+                js_free_atom(s.ctx, name1)
+                error(failure.code, failure.message)
+            set_object_name(s, name)
+            emit_source_pos(s, source_ptr)
+            put_lvalue(s, opcode, scope, name1, label, PutLValueKind.nokeep, false)
+        else:
+            try js_parse_assign_expr2(s, parse_flags)
+            set_object_name(s, name)
+            emit_source_pos(s, source_ptr)
+            if kind == TokenType.const_ or kind == TokenType.let_:
+                emit_op(s, (u8)TempOp.scope_put_var_init)
+            else:
+                emit_op(s, (u8)TempOp.scope_put_var)
+            emit_atom(s, name)
+            emit_u16(s, (u16)fd.scope_level)
+    else:
+        if kind == TokenType.const_:
+            try js_parse_error(s, "missing initializer for const variable")
+        if kind == TokenType.let_:
+            # initialize lexical variable upon entering its scope
+            emit_op(s, (u8)Op.undefined)
+            emit_op(s, (u8)TempOp.scope_put_var_init)
+            emit_atom(s, name)
+            emit_u16(s, (u16)fd.scope_level)
+
+## The declarations of a var/let/const statement (`tok` is TOK_VAR, TOK_LET or
+## TOK_CONST), after the keyword. allowed parse_flags: PF_IN_ACCEPTED
+func js_parse_var(s: ParseState*, parse_flags: i32, tok: i32, export_flag: bool) -> !:
+    let ctx = s.ctx
+    while true:
+        if s.token.val == TokenType.ident:
+            if s.token.u.ident.is_reserved:
+                try js_parse_error_reserved_identifier(s)
+            let name = js_dup_atom(ctx, s.token.u.ident.atom)
+            js_parse_var_binding(s, name, parse_flags, tok, export_flag) catch failure:
+                js_free_atom(ctx, name)
+                error(failure.code, failure.message)
+            js_free_atom(ctx, name)
+        else:
+            var skip_bits: i32 = 0
+            if ((s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace) and
+                js_parse_skip_parens_token(s, &skip_bits, false) == (i32)TokenType.assign):
+                emit_op(s, (u8)Op.undefined)
+                discard(try js_parse_destructuring_element(s, tok, 0, 1,
+                                                           skip_bits & skip_has_ellipsis,
+                                                           true, export_flag))
+            else:
+                try js_parse_error(s, "variable name expected")
+        if s.token.val != TokenType.comma:
+            break
+        try next_token(s)
+
+# mark: Look-ahead tests ========================================================================
+
+# test if the current token is a label. Use simplistic look-ahead scanner
+func is_label(s: ParseState*) -> bool:
+    return (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved and
+            peek_token(s, false) == TokenType.colon)
+
+# test if the current token is a let keyword. Use simplistic look-ahead scanner
+func is_let(s: ParseState*, decl_mask: i32) -> bool!:
+    var res = false
+    if token_is_pseudo_keyword(s, atom_let):
+        var pos: ParsePos = ---
+        discard(js_parse_get_pos(s, &pos))
+        let last_token_ptr = s.token.ptr
+        var next_ok = true
+        next_token(s) catch failure:
+            next_ok = false
+            recover ()
+        if next_ok:
+            let tok = s.token.val
+            if tok == TokenType.lbracket:
+                # let [ is a syntax restriction: it never introduces an
+                # ExpressionStatement
+                res = true
+            elif (tok == TokenType.lbrace or
+                  (tok == TokenType.ident and not s.token.u.ident.is_reserved) or
+                  tok == TokenType.let_ or tok == TokenType.yield or tok == TokenType.await):
+                # Check for possible ASI if not scanning for Declaration
+                # XXX: should also check that `{` introduces a BindingPattern, but Firefox
+                # does not and rejects eval("let=1;let\n{if(1)2;}")
+                if (not has_lf_in_range(last_token_ptr, s.token.ptr) or
+                    (decl_mask & decl_mask_other) != 0):
+                    res = true
+        try js_parse_seek_token(s, &pos)
+        if not next_ok:
+            # the exception of next_token is pending
+            error(exception, "")
+    return res
+
+# mark: Moving loop code ========================================================================
+
+# Move the bytecode from `pos_start` to `pos_end` (the `next` part of a for-in/of loop,
+# or the increment of a for loop, which ends with a goto) to the end of the function,
+# replacing it with nops, and move the labels from `first_label` placed in it. QuickJS
+# does this when OPTIMIZE is on, which it is. A failure of the bytecode buffer is
+# reported as QuickJS does, by failing with no exception thrown.
+func move_loop_code_to_end(s: ParseState*, pos_start: i32, pos_end: i32, first_label: i32) -> !:
+    let fd = s.fd()
+    let bc = &fd.byte_code
+    let chunk_size = pos_end - pos_start
+    let offset = (i32)bc.size - pos_start
+    if cutils.dbuf_claim(bc, (usize)chunk_size) != 0:
+        error(exception, "")
+    let buf = bc.buf else trap("move_loop_code_to_end: no bytecode")
+    discard(cutils.dbuf_put(bc, buf + (isize)pos_start, (usize)chunk_size))
+    discard(cutils.memset(buf + (isize)pos_start, (i32)Op.nop, (usize)chunk_size))
+    # the moved part ends with a goto
+    fd.last_opcode_pos = (i32)bc.size - 5
+    # relocate labels
+    for i in first_label..<fd.label_count:
+        let ls = fd_label(fd, i)
+        if ls.pos >= pos_start and ls.pos < pos_end:
+            ls.pos += offset
+
+# mark: for-in, for-of and for-await-of =========================================================
+
+# The error for an initializer in the head of a for-in/of loop (initializer_error).
+func js_parse_for_initializer_error(s: ParseState*, is_for_of: bool) -> never!:
+    let kind = "of" if is_for_of else "in"
+    try js_parse_error(s, f"a declaration in the head of a for-{kind} loop can't have an initializer")
+
+# The binding of a for-in/of loop, between its '(' and its 'in' or 'of' (the `next`
+# part): answers the declared kind (TOK_VAR, TOK_LET, TOK_CONST or another token), the
+# variable name for an initializer (a new reference, or no_atom) and whether it is a
+# destructuring declaration.
+func js_parse_for_in_of_binding(s: ParseState*, is_async: bool) -> (TokenType, Atom, bool)!:
+    let ctx = s.ctx
+    let fd = s.fd()
+    var tok = s.token.val
+    if try is_let(s, decl_mask_other):
+        tok = TokenType.let_
+    if tok == TokenType.var_ or tok == TokenType.let_ or tok == TokenType.const_:
+        try next_token(s)
+
+        if not (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved):
+            if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
+                discard(try js_parse_destructuring_element(s, (i32)tok, 0, 1, -1, false, false))
+                return (tok, no_atom, true)
+            try js_parse_error(s, "variable name expected")
+        let var_name = js_dup_atom(ctx, s.token.u.ident.atom)
+        errdefer js_free_atom(ctx, var_name)
+        try next_token(s)
+        try js_define_var(s, var_name, (i32)tok)
+        if tok == TokenType.const_ or tok == TokenType.let_:
+            emit_op(s, (u8)TempOp.scope_put_var_init)
+        else:
+            emit_op(s, (u8)TempOp.scope_put_var)
+        emit_atom(s, var_name)
+        emit_u16(s, (u16)fd.scope_level)
+        return (tok, var_name, false)
+    elif (not is_async and token_is_pseudo_keyword(s, atom_async) and
+          peek_token(s, false) == TokenType.of):
+        try js_parse_error(s, "'for of' expression cannot start with 'async'")
+    else:
+        var skip_bits: i32 = 0
+        var is_destructuring = false
+        if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
+            let tok1 = js_parse_skip_parens_token(s, &skip_bits, false)
+            is_destructuring = tok1 == (i32)TokenType.in_ or tok1 == (i32)TokenType.of
+        if is_destructuring:
+            discard(try js_parse_destructuring_element(s, 0, 0, 1, skip_bits & skip_has_ellipsis,
+                                                       true, false))
+        else:
+            var opcode: i32 = 0
+            var scope: i32 = 0
+            var lvalue_name = no_atom
+            var lvalue_label: i32 = 0
+            var depth_unused: i32 = 0
+            try js_parse_left_hand_side_expr(s)
+            try get_lvalue(s, &opcode, &scope, &lvalue_name, &lvalue_label, &depth_unused,
+                           false, (i32)TokenType.for_)
+            put_lvalue(s, opcode, scope, lvalue_name, lvalue_label, PutLValueKind.nokeep_bottom,
+                       false)
+        return (tok, no_atom, false)
+
+# XXX: handle IteratorClose when exiting the loop before the enumeration is done
+func js_parse_for_in_of(s: ParseState*, label_name: Atom, is_async: bool) -> !:
+    let ctx = s.ctx
+    let fd = s.fd()
+    var has_initializer = false
+    var is_for_of = false
+    let block_scope_level = fd.scope_level
+    let label_cont = new_label(s)
+    let label_body = new_label(s)
+    let label_break = new_label(s)
+    let label_next = new_label(s)
+
+    # create scope for the lexical variables declared in the enumeration expressions.
+    # XXX: Not completely correct because of weird capturing semantics in
+    # `for (i of o) a.push(function(){return i})`
+    discard(try push_scope(s))
+
+    # local for_in scope starts here so individual elements can be closed in statement.
+    var break_entry: BlockEnv = ---
+    push_break_entry(fd, &break_entry, label_name, label_break, label_cont, 1)
+    break_entry.scope_level = block_scope_level
+
+    let label_expr = emit_goto(s, (i32)Op.goto_, -1)
+
+    let pos_next = (i32)fd.byte_code.size
+    discard(emit_label(s, label_next))
+
+    let (tok, var_name, has_destructuring) = try js_parse_for_in_of_binding(s, is_async)
+    discard(emit_goto(s, (i32)Op.goto_, label_body))
+
+    let pos_expr = (i32)fd.byte_code.size
+    discard(emit_label(s, label_expr))
+    if s.token.val == TokenType.assign:
+        # XXX: potential scoping issue if inside `with` statement
+        has_initializer = true
+        # parse and evaluate initializer prior to evaluating the object (only used with
+        # "for in" with a non lexical variable in non strict mode
+        next_token(s) catch failure:
+            js_free_atom(ctx, var_name)
+            error(failure.code, failure.message)
+        js_parse_assign_expr2(s, 0) catch failure:
+            js_free_atom(ctx, var_name)
+            error(failure.code, failure.message)
+        if var_name != no_atom:
+            emit_op(s, (u8)TempOp.scope_put_var)
+            emit_atom(s, var_name)
+            emit_u16(s, (u16)fd.scope_level)
+    js_free_atom(ctx, var_name)
+
+    if token_is_pseudo_keyword(s, atom_of):
+        is_for_of = true
+        if has_initializer:
+            try js_parse_for_initializer_error(s, is_for_of)
+    elif s.token.val == TokenType.in_:
+        if is_async:
+            try js_parse_error(s, "'for await' loop should be used with 'of'")
+        if (has_initializer and
+            (tok != TokenType.var_ or ((i32)fd.js_mode & js_mode_strict) != 0 or
+             has_destructuring)):
+            try js_parse_for_initializer_error(s, is_for_of)
+    else:
+        try js_parse_error(s, "expected 'of' or 'in' in for control expression")
+    try next_token(s)
+    if is_for_of:
+        try js_parse_assign_expr(s)
+    else:
+        try js_parse_expr(s)
+    # close the scope after having evaluated the expression so that the TDZ values are
+    # in the closures
+    close_scopes(s, s.fd().scope_level, block_scope_level)
+    if is_for_of:
+        # set has_iterator after the iterable expression is parsed so that a yield in the
+        # expression does not try to close a not-yet-created iterator
+        break_entry.has_iterator = true
+        break_entry.drop_count += 2
+        if is_async:
+            emit_op(s, (u8)Op.for_await_of_start)
+        else:
+            emit_op(s, (u8)Op.for_of_start)
+        # on stack: enum_rec
+    else:
+        emit_op(s, (u8)Op.for_in_start)
+        # on stack: enum_obj
+    discard(emit_goto(s, (i32)Op.goto_, label_cont))
+
+    try js_parse_expect(s, TokenType.rparen)
+
+    # move the `next` code here
+    try move_loop_code_to_end(s, pos_next, pos_expr, label_cont)
+
+    discard(emit_label(s, label_body))
+    try js_parse_statement(s)
+
+    close_scopes(s, s.fd().scope_level, block_scope_level)
+
+    discard(emit_label(s, label_cont))
+    if is_for_of:
+        if is_async:
+            # stack: iter_obj next catch_offset
+            # call the next method
+            emit_op(s, (u8)Op.for_await_of_next)
+            # get the result of the promise
+            emit_op(s, (u8)Op.await)
+            # unwrap the value and done values
+            emit_op(s, (u8)Op.iterator_get_value_done)
+        else:
+            emit_op(s, (u8)Op.for_of_next)
+            emit_u8(s, 0)
+    else:
+        emit_op(s, (u8)Op.for_in_next)
+    # on stack: enum_rec / enum_obj value bool
+    discard(emit_goto(s, (i32)Op.if_false, label_next))
+    # drop the undefined value from for_xx_next
+    emit_op(s, (u8)Op.drop)
+
+    discard(emit_label(s, label_break))
+    if is_for_of:
+        # close and drop enum_rec
+        emit_op(s, (u8)Op.iterator_close)
+    else:
+        emit_op(s, (u8)Op.drop)
+    pop_break_entry(s.fd())
+    pop_scope(s)
+
+func set_eval_ret_undefined(s: ParseState*):
+    let fd = s.fd()
+    if fd.eval_ret_idx >= 0:
+        emit_op(s, (u8)Op.undefined)
+        emit_op(s, (u8)Op.put_loc)
+        emit_u16(s, (u16)fd.eval_ret_idx)
