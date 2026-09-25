@@ -60,7 +60,9 @@ for_in.lucb
 iterators.lucb
 closures.lucb
 calls.lucb
-stub_r14_interpreter.lucb
+interpreter_support.lucb
+interpreter.lucb
+call_entry.lucb
 stub_r15_async_generators.lucb
 tokenizer.lucb
 tokenizer_next.lucb
@@ -110,3 +112,4 @@ tests_r13.lucb
 tests_bytecode_io.lucb
 tests_modules.lucb
 tests_r22.lucb
+tests_interpreter.lucb

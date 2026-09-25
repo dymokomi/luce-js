@@ -1,0 +1,178 @@
+#==============================================================================================
+#
+#   calls - Calling functions and constructors, and async function frames
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 20711-20951: the entry points around the interpreter
+#       (JS_Call, JS_CallFree, JS_CallConstructorInternal and its public forms,
+#       JS_Invoke), a function's realm and the objects a constructor creates from
+#       new.target, and the frame of a generator or async function (async_func_init,
+#       async_func_free_frame), which JS_CallInternal resumes.
+#
+#==============================================================================================
+
+# mark: Calls ===================================================================================
+
+## Call `func_obj` with `this_obj` and the `argc` arguments at `argv`, which are not
+## modified (JS_Call).
+pub func js_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_call_internal(ctx, func_obj, this_obj, js_undefined(), argc, argv, call_flag_copy_argv)
+
+## js_call, then release `func_obj` (JS_CallFree).
+func js_call_free(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*) -> Value!:
+    defer js_free_value(ctx, func_obj)
+    return try js_call_internal(ctx, func_obj, this_obj, js_undefined(), argc, argv, call_flag_copy_argv)
+
+# warning: the refcount of the context is not incremented. Return
+# NULL in case of exception (case of revoked proxy only)
+## The realm of a function: its own for functions, its target's for proxies and bound
+## functions, `ctx` otherwise (JS_GetFunctionRealm).
+func js_get_function_realm(ctx: Context*, func_obj: Value) -> Context*!:
+    if func_obj.tag != Tag.object:
+        return ctx
+    let p = func_obj.u.obj
+    var realm: Context* = ctx
+    match p.class_id:
+        .c_function:
+            realm = p.u.cfunc.realm
+        .bytecode_function, .generator_function, .async_function, .async_generator_function:
+            let b = p.u.func_.function_bytecode
+            realm = b.realm
+        .proxy:
+            let opaque = p.u.opaque else return ctx
+            let s = (ProxyData*)opaque
+            if s.is_revoked != 0:
+                try js_throw_type_error_revoked_proxy(ctx)
+            else:
+                realm = try js_get_function_realm(ctx, s.target)
+        .bound_function:
+            let bf = p.u.bound_function
+            realm = try js_get_function_realm(ctx, bf.func_obj)
+        _:
+            realm = ctx
+    return realm
+
+## A new object of class `class_id` whose prototype is `ctor.prototype`, or the realm's
+## prototype of the class when that is not an object (js_create_from_ctor).
+func js_create_from_ctor(ctx: Context*, ctor: Value, class_id: u32) -> Value!:
+    var proto = js_undefined()
+    if js_is_undefined(ctor):
+        proto = js_dup_value(ctx, context_class_proto(ctx)[(usize)class_id])
+    else:
+        proto = try js_get_property(ctx, ctor, atom_prototype)
+        if not js_is_object(proto):
+            js_free_value(ctx, proto)
+            let realm = try js_get_function_realm(ctx, ctor)
+            proto = js_dup_value(ctx, context_class_proto(realm)[(usize)class_id])
+    defer js_free_value(ctx, proto)
+    return try js_new_object_proto_class(ctx, proto, class_id)
+
+# argv[] is modified if (flags & JS_CALL_FLAG_COPY_ARGV) = 0.
+## Call `func_obj` as a constructor with `new_target` (JS_CallConstructorInternal).
+func js_call_constructor_internal(ctx: Context*, func_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
+    try js_poll_interrupts(ctx)
+    let call_flags = flags | call_flag_constructor
+    if func_obj.tag != Tag.object:
+        try js_throw_type_error(ctx, "not a function")
+    let p = func_obj.u.obj
+    if not p.is_constructor:
+        try js_throw_type_error_not_a_constructor(ctx, func_obj)
+    if p.class_id != ClassId.bytecode_function:
+        let class_array = ctx.rt.class_array else trap("the class array is not allocated")
+        let call_func = class_array[(usize)(u16)p.class_id].call else try js_throw_type_error(ctx, "not a function")
+        return try call_func(ctx, func_obj, new_target, argc, argv, call_flags)
+
+    let b = p.u.func_.function_bytecode
+    if b.is_derived_class_constructor:
+        return try js_call_internal(ctx, func_obj, js_undefined(), new_target, argc, argv, call_flags)
+    else:
+        # legacy constructor behavior
+        let obj = try js_create_from_ctor(ctx, new_target, (u32)ClassId.object)
+        let ret = js_call_internal(ctx, func_obj, obj, new_target, argc, argv, call_flags) catch failure:
+            js_free_value(ctx, obj)
+            error(failure.code, failure.message)
+        if ret.tag == Tag.object:
+            js_free_value(ctx, obj)
+            return ret
+        else:
+            js_free_value(ctx, ret)
+            return obj
+
+## Call `func_obj` as a constructor with `new_target` (JS_CallConstructor2).
+pub func js_call_constructor2(ctx: Context*, func_obj: Value, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_call_constructor_internal(ctx, func_obj, new_target, argc, argv, call_flag_copy_argv)
+
+## `new func_obj(...argv)` (JS_CallConstructor).
+pub func js_call_constructor(ctx: Context*, func_obj: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_call_constructor_internal(ctx, func_obj, func_obj, argc, argv, call_flag_copy_argv)
+
+## Call the method `atom` of `this_val` (JS_Invoke).
+pub func js_invoke(ctx: Context*, this_val: Value, atom: Atom, argc: i32, argv: Value*) -> Value!:
+    let func_obj = try js_get_property(ctx, this_val, atom)
+    return try js_call_free(ctx, func_obj, this_val, argc, argv)
+
+## js_invoke, then release `this_val` (JS_InvokeFree).
+func js_invoke_free(ctx: Context*, this_val: Value, atom: Atom, argc: i32, argv: Value*) -> Value!:
+    defer js_free_value(ctx, this_val)
+    return try js_invoke(ctx, this_val, atom, argc, argv)
+
+# mark: Async function frames ===================================================================
+
+## The frame values of an AsyncFunctionState: `arg_buf` follows the header, then
+## `var_buf`, the stack and the variable references.
+func async_func_values(s: AsyncFunctionState*) -> Value*:
+    return (Value*)((u8*)s + sizeof(AsyncFunctionState))
+
+# JSAsyncFunctionState (used by generator and async functions)
+## A suspended frame for calling the generator or async function `func_obj`, with its
+## arguments copied in; JS_CallInternal runs it with call_flag_generator
+## (async_func_init).
+func async_func_init(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*) -> AsyncFunctionState*!:
+    let p = func_obj.u.obj
+    let b = p.u.func_.function_bytecode
+    let arg_buf_len = cutils.max_int((i32)b.arg_count, argc)
+    let size = sizeof(AsyncFunctionState) + sizeof(Value) * ((usize)arg_buf_len + (usize)b.var_count + (usize)b.stack_size) + sizeof(VarRef*) * (usize)b.var_ref_count
+    let s = (AsyncFunctionState*)(try js_malloc(ctx, size))
+    discard(cutils.memset(s, 0, sizeof(AsyncFunctionState)))
+    js_rc(s).ref_count = 1
+    add_gc_object(ctx.rt, &s.header, GCObjectType.async_function)
+
+    let sf = &s.frame
+    let arg_buf = async_func_values(s)
+    sf.js_mode = (i32)b.js_mode | js_mode_async
+    sf.cur_pc = b.byte_code_buf
+    sf.arg_buf = arg_buf
+    sf.cur_func = js_dup_value(ctx, func_obj)
+    s.this_val = js_dup_value(ctx, this_obj)
+    s.argc = argc
+    sf.arg_count = arg_buf_len
+    let var_buf = arg_buf + (usize)arg_buf_len
+    sf.var_buf = var_buf
+    let cur_sp = var_buf + (usize)b.var_count
+    sf.cur_sp = cur_sp
+    let var_refs = (VarRef*?*)(cur_sp + (usize)b.stack_size)
+    sf.var_refs = var_refs
+    for i in 0..<(usize)b.var_ref_count:
+        var_refs[i] = none
+    for i in 0..<(usize)argc:
+        arg_buf[i] = js_dup_value(ctx, argv[i])
+    let n = (usize)arg_buf_len + (usize)b.var_count
+    for i in (usize)argc..<n:
+        arg_buf[i] = js_undefined()
+    s.resolving_funcs[0] = js_undefined()
+    s.resolving_funcs[1] = js_undefined()
+    s.is_completed = false
+    return s
+
+## Release the values of a suspended frame, its function and its `this`
+## (async_func_free_frame).
+func async_func_free_frame(rt: Runtime*, s: AsyncFunctionState*):
+    let sf = &s.frame
+    # cannot free the function if it is running
+    let cur_sp = sf.cur_sp else trap("async_func_free_frame: the function is running")
+    var sp = sf.arg_buf else trap("async_func_free_frame: frame without arguments")
+    while sp < cur_sp:
+        js_free_value_rt(rt, *sp)
+        sp = sp + 1
+    js_free_value_rt(rt, sf.cur_func)
+    js_free_value_rt(rt, s.this_val)
