@@ -1,0 +1,39 @@
+#==============================================================================================
+#
+#   stub_r18_parse - Not yet linked: the parser side of the modules region
+#
+#   DESCRIPTION:
+#       The functions of quickjs.c lines 29828-29834 and 31594-32221 read the fields of
+#       JSParseState, JSToken and JSFunctionDef, which region 16 declares. Their port is
+#       module_parse.lucb, kept out of ORDER until those types land; then module_parse.lucb
+#       replaces this file in ORDER (see its header). The signatures here are the port's.
+#
+#==============================================================================================
+
+## Ported in module_parse.lucb from quickjs.c:29828 add_export_entry.
+func add_export_entry(s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom, export_type: ExportType) -> ExportEntry*!:
+    trap("unlinked: add_export_entry")
+## Ported in module_parse.lucb from quickjs.c:31594 js_parse_with_clause.
+func js_parse_with_clause(s: ParseState*, rme: ReqModuleEntry*) -> !:
+    trap("unlinked: js_parse_with_clause")
+## Ported in module_parse.lucb from quickjs.c:31665 js_parse_from_clause.
+func js_parse_from_clause(s: ParseState*, m: ModuleDef*) -> i32!:
+    trap("unlinked: js_parse_from_clause")
+## Ported in module_parse.lucb from quickjs.c:31699 js_parse_export.
+func js_parse_export(s: ParseState*) -> !:
+    trap("unlinked: js_parse_export")
+## Ported in module_parse.lucb from quickjs.c:31864 add_import.
+func add_import(s: ParseState*, m: ModuleDef*, local_name: Atom, import_name: Atom, is_star: bool) -> !:
+    trap("unlinked: add_import")
+## Ported in module_parse.lucb from quickjs.c:31899 js_parse_import.
+func js_parse_import(s: ParseState*) -> !:
+    trap("unlinked: js_parse_import")
+## Ported in module_parse.lucb from quickjs.c:32034 js_parse_source_element.
+func js_parse_source_element(s: ParseState*) -> !:
+    trap("unlinked: js_parse_source_element")
+## Ported in module_parse.lucb from quickjs.c:32062 js_new_function_def.
+func js_new_function_def(ctx: Context*, parent: FunctionDef*?, is_eval: bool, is_func_expr: bool, filename: const u8*, source_ptr: const u8*, get_line_col_cache: GetLineColCache*) -> FunctionDef*!:
+    trap("unlinked: js_new_function_def")
+## Ported in module_parse.lucb from quickjs.c:32162 js_free_function_def.
+func js_free_function_def(ctx: Context*, fd: FunctionDef*):
+    trap("unlinked: js_free_function_def")

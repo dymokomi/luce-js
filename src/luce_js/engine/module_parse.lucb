@@ -1,0 +1,490 @@
+#==============================================================================================
+#
+#   module_parse - The module syntax of the parser, and creating and freeing FunctionDefs
+#
+#   DESCRIPTION:
+#       Port of quickjs.c add_export_entry (lines 29828-29834) and lines 31594-32221: the
+#       `with` clause of imports, the `from` clause, export and import declarations,
+#       js_parse_source_element, js_new_function_def and js_free_function_def.
+#
+#       NOT YET IN ORDER. This fragment reads JSParseState, JSToken and JSFunctionDef,
+#       which region 16 declares (compiler_types.lucb), and calls the parser functions of
+#       regions 16, 17, 19 and 20. When those types are merged, list this fragment in ORDER
+#       in place of stub_r18_parse.lucb and delete that file. It was checked against r16's
+#       compiler_types.lucb and tokenizer (commit aff7b35), with the not yet ported parser
+#       functions following docs/PORTING.md's conventions:
+#           token_is_ident(tok: TokenType) -> bool
+#           js_parse_class(s, is_class_expr: bool, export_flag: ParseExportKind) -> !
+#           js_parse_function_decl(s, func_type, func_kind: u8, func_name, ptr) -> !
+#           js_parse_function_decl2(s, ..., export_flag, pfd: FunctionDef*?*?) -> !
+#           js_parse_assign_expr(s) -> !
+#           js_parse_var(s, parse_flags: i32, tok: TokenType, export_flag: bool) -> !
+#           js_parse_statement_or_decl(s, decl_mask: i32) -> !, decl_mask_all: i32
+#           define_var(s, fd, name, var_def_type: VarDefKind) -> i32!, VarDefKind.let_
+#           js_value_to_atom(ctx, val) -> Atom!, js_has_property(ctx, obj, prop) -> bool!
+#
+#==============================================================================================
+
+# mark: Import attributes and the from clause ===================================================
+
+func add_export_entry(s: ParseState*, m: ModuleDef*, local_name: Atom, export_name: Atom,
+                      export_type: ExportType) -> ExportEntry*!:
+    return try add_export_entry2(s.ctx, s, m, local_name, export_name, export_type)
+
+# Parse `with { key: "value", ... }` into the attributes of `rme`.
+func js_parse_with_clause(s: ParseState*, rme: ReqModuleEntry*) -> !:
+    let ctx = s.ctx
+
+    try next_token(s)
+    try js_parse_expect(s, TokenType.lbrace)
+    while s.token.val != TokenType.rbrace:
+        let key_token_ptr = s.token.ptr
+        var key = no_atom
+        if s.token.val == TokenType.string:
+            key = try js_value_to_atom(ctx, s.token.u.str_.str)
+        else:
+            if not token_is_ident(s.token.val):
+                try js_parse_error(s, "identifier expected")
+            key = js_dup_atom(ctx, s.token.u.ident.atom)
+        try next_token(s)
+        js_parse_expect(s, TokenType.colon) catch failure:
+            js_free_atom(ctx, key)
+            error(failure.code, failure.message)
+        if s.token.val != TokenType.string:
+            try js_parse_error_pos(s, key_token_ptr, "string expected")
+        if js_is_undefined(rme.attributes):
+            let attributes = js_new_object_proto(ctx, js_null()) catch failure:
+                js_free_atom(ctx, key)
+                error(failure.code, failure.message)
+            rme.attributes = attributes
+        let has_key = js_has_property(ctx, rme.attributes, key) catch failure:
+            js_free_atom(ctx, key)
+            error(failure.code, failure.message)
+        if has_key:
+            js_free_atom(ctx, key)
+            try js_parse_error(s, "duplicate with key")
+        let defined = js_define_property_value(ctx, rme.attributes, key,
+                                               js_dup_value(ctx, s.token.u.str_.str), prop_c_w_e) catch failure:
+            js_free_atom(ctx, key)
+            error(failure.code, failure.message)
+        discard(defined)
+        js_free_atom(ctx, key)
+        try next_token(s)
+        if s.token.val != TokenType.comma:
+            break
+        try next_token(s)
+    if not js_is_undefined(rme.attributes):
+        let rt = ctx.rt
+        if let check = rt.module_check_attrs:
+            try check(ctx, rt.module_loader_opaque, rme.attributes)
+    try js_parse_expect(s, TokenType.rbrace)
+
+# return the module index in m.req_module_entries[]
+func js_parse_from_clause(s: ParseState*, m: ModuleDef*) -> i32!:
+    if not token_is_pseudo_keyword(s, atom_from):
+        try js_parse_error(s, "from clause expected")
+    try next_token(s)
+    if s.token.val != TokenType.string:
+        try js_parse_error(s, "string expected")
+    let module_name = try js_value_to_atom(s.ctx, s.token.u.str_.str)
+    next_token(s) catch failure:
+        js_free_atom(s.ctx, module_name)
+        error(failure.code, failure.message)
+
+    let idx = add_req_module_entry(s.ctx, m, module_name) catch failure:
+        js_free_atom(s.ctx, module_name)
+        error(failure.code, failure.message)
+    js_free_atom(s.ctx, module_name)
+    if s.token.val == TokenType.with_:
+        try js_parse_with_clause(s, module_req_entry(m, idx))
+    return idx
+
+# mark: Export declarations =====================================================================
+
+# After the local name of `export { local as name }`: the exported name, `local_name`
+# itself when there is no `as`.
+func js_parse_export_as(s: ParseState*, local_name: Atom) -> Atom!:
+    let ctx = s.ctx
+    try next_token(s)
+    if token_is_pseudo_keyword(s, atom_as):
+        try next_token(s)
+        var export_name = no_atom
+        if s.token.val == TokenType.string:
+            if js_string_find_invalid_codepoint(js_value_get_string(s.token.u.str_.str)) >= 0:
+                try js_parse_error(s, "contains unpaired surrogate")
+            export_name = try js_value_to_atom(s.ctx, s.token.u.str_.str)
+        else:
+            if not token_is_ident(s.token.val):
+                try js_parse_error(s, "identifier expected")
+            export_name = js_dup_atom(ctx, s.token.u.ident.atom)
+        next_token(s) catch failure:
+            js_free_atom(ctx, export_name)
+            error(failure.code, failure.message)
+        return export_name
+    return js_dup_atom(ctx, local_name)
+
+# One `local [as name]` of `export { ... }`.
+func js_parse_export_specifier(s: ParseState*, m: ModuleDef*) -> !:
+    let ctx = s.ctx
+    if not token_is_ident(s.token.val):
+        try js_parse_error(s, "identifier expected")
+    let local_name = js_dup_atom(ctx, s.token.u.ident.atom)
+    defer js_free_atom(ctx, local_name)
+    let export_name = try js_parse_export_as(s, local_name)
+    defer js_free_atom(ctx, export_name)
+    discard(try add_export_entry(s, m, local_name, export_name, ExportType.local_))
+
+# `export * as name from "module"`: the token after `as`.
+func js_parse_export_ns_from(s: ParseState*, m: ModuleDef*) -> !:
+    let ctx = s.ctx
+    if not token_is_ident(s.token.val):
+        try js_parse_error(s, "identifier expected")
+    let export_name = js_dup_atom(ctx, s.token.u.ident.atom)
+    defer js_free_atom(ctx, export_name)
+    try next_token(s)
+    let idx = try js_parse_from_clause(s, m)
+    let me = try add_export_entry(s, m, atom__star_, export_name, ExportType.indirect)
+    me.u.req_module_idx = idx
+
+func js_parse_export(s: ParseState*) -> !:
+    let ctx = s.ctx
+    let m = s.fd().module else trap("js_parse_export: not a module")
+
+    try next_token(s)
+
+    let tok = s.token.val
+    if tok == TokenType.class_:
+        try js_parse_class(s, false, ParseExportKind.named)
+        return
+    elif (tok == TokenType.function or
+            (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
+        try js_parse_function_decl2(s, ParseFunctionKind.statement, js_func_normal, no_atom,
+                                    s.token.ptr, ParseExportKind.named, none)
+        return
+
+    try next_token(s)
+
+    match tok:
+        .lbrace:
+            let first_export = m.export_entries_count
+            while s.token.val != TokenType.rbrace:
+                try js_parse_export_specifier(s, m)
+                if s.token.val != TokenType.comma:
+                    break
+                try next_token(s)
+            try js_parse_expect(s, TokenType.rbrace)
+            if token_is_pseudo_keyword(s, atom_from):
+                let idx = try js_parse_from_clause(s, m)
+                for i in first_export..<m.export_entries_count:
+                    let me = module_export_entry(m, i)
+                    me.export_type = ExportType.indirect
+                    me.u.req_module_idx = idx
+        .star:
+            if token_is_pseudo_keyword(s, atom_as):
+                # export ns from
+                try next_token(s)
+                try js_parse_export_ns_from(s, m)
+            else:
+                let idx = try js_parse_from_clause(s, m)
+                try add_star_export_entry(ctx, m, idx)
+        .default:
+            if s.token.val == TokenType.class_:
+                try js_parse_class(s, false, ParseExportKind.default)
+                return
+            elif (s.token.val == TokenType.function or
+                    (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
+                try js_parse_function_decl2(s, ParseFunctionKind.statement, js_func_normal, no_atom,
+                                            s.token.ptr, ParseExportKind.default, none)
+                return
+            else:
+                try js_parse_assign_expr(s)
+            # set the name of anonymous functions
+            set_object_name(s, atom_default)
+
+            # store the value in the _default_ global variable and export it
+            let local_name = atom__default_
+            discard(try define_var(s, s.fd(), local_name, VarDefKind.let_))
+            emit_op(s, (u8)TempOp.scope_put_var_init)
+            emit_atom(s, local_name)
+            emit_u16(s, 0)
+
+            discard(try add_export_entry(s, m, local_name, atom_default, ExportType.local_))
+        .var_, .let_, .const_:
+            # parse_flags TRUE: PF_IN_ACCEPTED
+            try js_parse_var(s, 1, tok, true)
+            return
+        _:
+            try js_parse_error(s, "invalid export syntax")
+    try js_parse_expect_semi(s)
+
+# mark: Import declarations =====================================================================
+
+func add_import(s: ParseState*, m: ModuleDef*, local_name: Atom, import_name: Atom, is_star: bool) -> !:
+    let ctx = s.ctx
+    let fd = s.fd()
+
+    if local_name == atom_arguments or local_name == atom_eval:
+        try js_parse_error(s, "invalid import binding")
+
+    if local_name != atom_default:
+        for i in 0..<fd.closure_var_count:
+            let closure_var = fd.closure_var else trap("add_import: no closure variables")
+            if closure_var[(usize)i].var_name == local_name:
+                try js_parse_error(s, "duplicate import binding")
+
+    let closure_type = ClosureType.module_decl if is_star else ClosureType.module_import
+    let var_idx = try add_closure_var(ctx, fd, closure_type, m.import_entries_count, local_name,
+                                      true, true, VarKind.normal)
+    try js_resize_array(ctx, (void*?*)&m.import_entries, (i32)sizeof(ImportEntry),
+                        &m.import_entries_size, m.import_entries_count + 1)
+    let mi = module_import_entry(m, m.import_entries_count)
+    m.import_entries_count += 1
+    mi.import_name = js_dup_atom(ctx, import_name)
+    mi.var_idx = var_idx
+    mi.is_star = is_star
+
+# The binding after a default or namespace import: add the import of `local_name`, which is
+# released.
+func js_parse_import_binding(s: ParseState*, m: ModuleDef*, local_name: Atom, import_name: Atom,
+                             is_star: bool) -> !:
+    defer js_free_atom(s.ctx, local_name)
+    try next_token(s)
+    try add_import(s, m, local_name, import_name, is_star)
+
+# After the imported name of `import { name as local }`: the local name, `import_name`
+# itself when there is no `as`.
+func js_parse_import_local_name(s: ParseState*, import_name: Atom, is_string: bool) -> Atom!:
+    try next_token(s)
+    if token_is_pseudo_keyword(s, atom_as):
+        try next_token(s)
+        if not token_is_ident(s.token.val):
+            try js_parse_error(s, "identifier expected")
+        let local_name = js_dup_atom(s.ctx, s.token.u.ident.atom)
+        next_token(s) catch failure:
+            js_free_atom(s.ctx, local_name)
+            error(failure.code, failure.message)
+        return local_name
+    if is_string:
+        try js_parse_error(s, "expecting 'as'")
+    return js_dup_atom(s.ctx, import_name)
+
+# One `name [as local]` of `import { ... }`.
+func js_parse_import_specifier(s: ParseState*, m: ModuleDef*) -> !:
+    let ctx = s.ctx
+    var is_string = false
+    var import_name = no_atom
+    if s.token.val == TokenType.string:
+        is_string = true
+        if js_string_find_invalid_codepoint(js_value_get_string(s.token.u.str_.str)) >= 0:
+            try js_parse_error(s, "contains unpaired surrogate")
+        import_name = try js_value_to_atom(s.ctx, s.token.u.str_.str)
+    else:
+        if not token_is_ident(s.token.val):
+            try js_parse_error(s, "identifier expected")
+        import_name = js_dup_atom(ctx, s.token.u.ident.atom)
+    defer js_free_atom(ctx, import_name)
+    let local_name = try js_parse_import_local_name(s, import_name, is_string)
+    defer js_free_atom(ctx, local_name)
+    try add_import(s, m, local_name, import_name, false)
+
+# The import clause and the from clause of `import ... from "module"`; answers the module
+# index.
+func js_parse_import_clause(s: ParseState*, m: ModuleDef*) -> i32!:
+    let ctx = s.ctx
+    var end_import_clause = false
+    if s.token.val == TokenType.ident:
+        if s.token.u.ident.is_reserved:
+            try js_parse_error_reserved_identifier(s)
+        # "default" import
+        let local_name = js_dup_atom(ctx, s.token.u.ident.atom)
+        try js_parse_import_binding(s, m, local_name, atom_default, false)
+
+        if s.token.val != TokenType.comma:
+            end_import_clause = true
+        else:
+            try next_token(s)
+
+    if not end_import_clause:
+        if s.token.val == TokenType.star:
+            # name space import
+            try next_token(s)
+            if not token_is_pseudo_keyword(s, atom_as):
+                try js_parse_error(s, "expecting 'as'")
+            try next_token(s)
+            if not token_is_ident(s.token.val):
+                try js_parse_error(s, "identifier expected")
+            let local_name = js_dup_atom(ctx, s.token.u.ident.atom)
+            try js_parse_import_binding(s, m, local_name, atom__star_, true)
+        elif s.token.val == TokenType.lbrace:
+            try next_token(s)
+
+            while s.token.val != TokenType.rbrace:
+                try js_parse_import_specifier(s, m)
+                if s.token.val != TokenType.comma:
+                    break
+                try next_token(s)
+            try js_parse_expect(s, TokenType.rbrace)
+    return try js_parse_from_clause(s, m)
+
+func js_parse_import(s: ParseState*) -> !:
+    let ctx = s.ctx
+    let m = s.fd().module else trap("js_parse_import: not a module")
+
+    try next_token(s)
+
+    let first_import = m.import_entries_count
+    var idx: i32 = 0
+    if s.token.val == TokenType.string:
+        let module_name = try js_value_to_atom(ctx, s.token.u.str_.str)
+        next_token(s) catch failure:
+            js_free_atom(ctx, module_name)
+            error(failure.code, failure.message)
+        idx = add_req_module_entry(ctx, m, module_name) catch failure:
+            js_free_atom(ctx, module_name)
+            error(failure.code, failure.message)
+        js_free_atom(ctx, module_name)
+        if s.token.val == TokenType.with_:
+            try js_parse_with_clause(s, module_req_entry(m, idx))
+    else:
+        idx = try js_parse_import_clause(s, m)
+    for i in first_import..<m.import_entries_count:
+        module_import_entry(m, i).req_module_idx = idx
+
+    try js_parse_expect_semi(s)
+
+func js_parse_source_element(s: ParseState*) -> !:
+    let fd = s.fd()
+
+    if (s.token.val == TokenType.function or
+            (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
+        try js_parse_function_decl(s, ParseFunctionKind.statement, js_func_normal, no_atom, s.token.ptr)
+    elif s.token.val == TokenType.export_ and fd.module != none:
+        try js_parse_export(s)
+    else:
+        var is_import = false
+        if s.token.val == TokenType.import_ and fd.module != none:
+            # the peek_token is needed to avoid confusion with ImportCall (dynamic import) or
+            # import.meta
+            let tok = peek_token(s, false)
+            is_import = tok != TokenType.lparen and tok != TokenType.dot
+        if is_import:
+            try js_parse_import(s)
+        else:
+            try js_parse_statement_or_decl(s, decl_mask_all)
+
+# mark: Function definitions ====================================================================
+
+func js_new_function_def(ctx: Context*, parent: FunctionDef*?, is_eval: bool, is_func_expr: bool,
+                         filename: const u8*, source_ptr: const u8*,
+                         get_line_col_cache: GetLineColCache*) -> FunctionDef*!:
+    let fd = (FunctionDef*)(try js_mallocz(ctx, sizeof(FunctionDef)))
+
+    fd.ctx = ctx
+    cutils.init_list_head(&fd.child_list)
+
+    # insert in parent list
+    fd.parent = parent
+    fd.parent_cpool_idx = -1
+    if let p = parent:
+        cutils.list_add_tail(&fd.link, &p.child_list)
+        fd.js_mode = p.js_mode
+        fd.parent_scope_level = p.scope_level
+    let strip_flags = (i32)ctx.rt.strip_flags
+    fd.strip_debug = (strip_flags & strip_debug) != 0
+    fd.strip_source = (strip_flags & (strip_debug | strip_source)) != 0
+
+    fd.is_eval = is_eval
+    fd.is_func_expr = is_func_expr
+    js_dbuf_bytecode_init(ctx, &fd.byte_code)
+    fd.last_opcode_pos = -1
+    fd.func_name = no_atom
+    fd.var_object_idx = -1
+    fd.arg_var_object_idx = -1
+    fd.arguments_var_idx = -1
+    fd.arguments_arg_idx = -1
+    fd.func_var_idx = -1
+    fd.eval_ret_idx = -1
+    fd.this_var_idx = -1
+    fd.new_target_var_idx = -1
+    fd.this_active_func_var_idx = -1
+    fd.home_object_var_idx = -1
+
+    # XXX: should distinguish arg, var and var object and body scopes
+    fd.scopes = &fd.def_scope_array[0]
+    fd.scope_size = (i32)fd.def_scope_array.length
+    fd.scope_count = 1
+    fd.scopes[0].first = -1
+    fd.scopes[0].parent = -1
+    # 0: var/arg scope
+    fd.scope_level = 0
+    fd.scope_first = -1
+    fd.body_scope = -1
+
+    # QuickJS ignores a failure here (the name is JS_ATOM_NULL then)
+    fd.filename = js_new_atom_len(ctx, filename, cutils.strlen(filename)) catch failure: recover no_atom
+    fd.source_pos = (u32)(source_ptr - get_line_col_cache.buf_start)
+    fd.get_line_col_cache = get_line_col_cache
+
+    js_dbuf_init(ctx, &fd.pc2line)
+    fd.last_opcode_source_ptr = source_ptr
+    return fd
+
+func js_free_function_def(ctx: Context*, fd: FunctionDef*):
+    # free the child functions
+    let head = &fd.child_list
+    var el = head.next else trap("js_free_function_def: unlinked child list")
+    while el != head:
+        let next = el.next else trap("js_free_function_def: unlinked child list")
+        let fd1 = (FunctionDef*)((u8*)el - offsetof(FunctionDef, link))
+        js_free_function_def(ctx, fd1)
+        el = next
+
+    if let bc_buf = fd.byte_code.buf:
+        free_bytecode_atoms(ctx.rt, bc_buf, (i32)fd.byte_code.size, fd.use_short_opcodes)
+    cutils.dbuf_free(&fd.byte_code)
+    if let p = fd.jump_slots:
+        js_free(ctx, p)
+    if let p = fd.label_slots:
+        js_free(ctx, p)
+    if let p = fd.line_number_slots:
+        js_free(ctx, p)
+
+    if let cpool = fd.cpool:
+        for i in 0..<fd.cpool_count:
+            js_free_value(ctx, cpool[(usize)i])
+        js_free(ctx, cpool)
+
+    js_free_atom(ctx, fd.func_name)
+
+    if let vars = fd.vars:
+        for i in 0..<fd.var_count:
+            js_free_atom(ctx, vars[(usize)i].var_name)
+        js_free(ctx, vars)
+    if let args = fd.args:
+        for i in 0..<fd.arg_count:
+            js_free_atom(ctx, args[(usize)i].var_name)
+        js_free(ctx, args)
+
+    if let global_vars = fd.global_vars:
+        for i in 0..<fd.global_var_count:
+            js_free_atom(ctx, global_vars[(usize)i].var_name)
+        js_free(ctx, global_vars)
+
+    if let closure_var = fd.closure_var:
+        for i in 0..<fd.closure_var_count:
+            js_free_atom(ctx, closure_var[(usize)i].var_name)
+        js_free(ctx, closure_var)
+
+    if fd.scopes != &fd.def_scope_array[0]:
+        js_free(ctx, fd.scopes)
+
+    js_free_atom(ctx, fd.filename)
+    cutils.dbuf_free(&fd.pc2line)
+
+    if let source = fd.source:
+        js_free(ctx, source)
+
+    if fd.parent != none:
+        # remove in parent list
+        cutils.list_del(&fd.link)
+    js_free(ctx, fd)

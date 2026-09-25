@@ -32,16 +32,10 @@ struct ClassFieldsDef:
 struct CodeContext:
     var unported: i32
 
-struct ExecModuleList:
-    var unported: i32
-
 struct FunctionDef:
     var unported: i32
 
 struct GeneratorData:
-    var unported: i32
-
-struct GetExportNamesState:
     var unported: i32
 
 struct GetLineColCache:
@@ -107,9 +101,6 @@ struct RegExpStringIteratorData:
 struct RelocEntry:
     var unported: i32
 
-struct ResolveState:
-    var unported: i32
-
 struct StackSizeState:
     var unported: i32
 
@@ -132,9 +123,6 @@ enum ParseFunctionKind as i32:
     unported = 0
 
 enum PutLValueKind as i32:
-    unported = 0
-
-enum ResolveResult as i32:
     unported = 0
 
 enum StrictEqMode as i32:

@@ -1,0 +1,242 @@
+#==============================================================================================
+#
+#   module_link - Loading requested modules, linking, and the module accessors
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 30524-30932: js_resolve_module (loading every requested
+#       module), creating the module functions, InnerModuleLinking (js_inner_module_linking
+#       and js_link_module, which bind every import to the exporting module's variable),
+#       JS_GetScriptOrModuleName, JS_GetModuleName, import.meta and JS_NewModuleValue.
+#
+#==============================================================================================
+
+# mark: Loading and creating ====================================================================
+
+# Load all the required modules for module 'm'
+func js_resolve_module_internal(ctx: Context*, m: ModuleDef*) -> !:
+    if m.resolved:
+        return
+    m.resolved = true
+    # resolve each requested module
+    for i in 0..<m.req_module_entries_count:
+        let rme = module_req_entry(m, i)
+        let m1 = try js_host_resolve_imported_module_atom(ctx, m.module_name, rme.module_name,
+                                                          rme.attributes)
+        rme.module = m1
+        # already done in js_host_resolve_imported_module() except if the module was loaded
+        # with JS_EvalBinary()
+        try js_resolve_module_internal(ctx, m1)
+
+# Create the <eval> function associated with the module
+func js_create_module_bytecode_function(ctx: Context*, m: ModuleDef*) -> !:
+    let bfunc = m.func_obj
+    let func_obj = try js_new_object_proto_class(ctx, ctx.function_proto,
+                                                 (u32)ClassId.bytecode_function)
+    m.func_obj = func_obj
+    let b = bfunc.u.bytecode
+    discard(js_closure2(ctx, func_obj, b, none, none, true, m) catch failure:
+        # XXX: keep it ?
+        m.func_obj = js_undefined()
+        error(failure.code, failure.message))
+
+# must be done before js_link_module() because of cyclic references
+func js_create_module_function(ctx: Context*, m: ModuleDef*) -> !:
+    if m.func_created:
+        return
+
+    let is_c_module = m.init_func != none
+
+    if is_c_module:
+        # initialize the exported variables
+        for i in 0..<m.export_entries_count:
+            let me = module_export_entry(m, i)
+            if me.export_type == ExportType.local_:
+                let var_ref = try js_create_var_ref(ctx, false)
+                me.u.local_.var_ref = var_ref
+    else:
+        try js_create_module_bytecode_function(ctx, m)
+    m.func_created = true
+
+    # do it on the dependencies
+
+    for i in 0..<m.req_module_entries_count:
+        let rme = module_req_entry(m, i)
+        try js_create_module_function(ctx, req_entry_module(rme))
+
+# mark: Linking =================================================================================
+
+# Prepare a module to be executed by resolving all the imported variables. Answers the
+# next DFS index.
+func js_inner_module_linking(ctx: Context*, m: ModuleDef*, pstack_top: ModuleDef*?*, index: i32) -> i32!:
+    if js_check_stack_overflow(ctx.rt, 0):
+        try js_throw_stack_overflow(ctx)
+
+    if (m.status == ModuleStatus.linking or m.status == ModuleStatus.linked or
+            m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated):
+        return index
+
+    assert(m.status == ModuleStatus.unlinked)
+    m.status = ModuleStatus.linking
+    m.dfs_index = index
+    m.dfs_ancestor_index = index
+    var next_index = index + 1
+    # push 'm' on stack
+    m.stack_prev = *pstack_top
+    *pstack_top = m
+
+    for i in 0..<m.req_module_entries_count:
+        let rme = module_req_entry(m, i)
+        let m1 = req_entry_module(rme)
+        next_index = try js_inner_module_linking(ctx, m1, pstack_top, next_index)
+        assert(m1.status == ModuleStatus.linking or m1.status == ModuleStatus.linked or
+               m1.status == ModuleStatus.evaluating_async or m1.status == ModuleStatus.evaluated)
+        if m1.status == ModuleStatus.linking:
+            m.dfs_ancestor_index = cutils.min_int(m.dfs_ancestor_index, m1.dfs_ancestor_index)
+
+    # check the indirect exports
+    for i in 0..<m.export_entries_count:
+        let me = module_export_entry(m, i)
+        if me.export_type == ExportType.indirect and me.local_name != atom__star_:
+            var res_me: ExportEntry*? = none
+            var res_m: ModuleDef*? = none
+            let m1 = req_entry_module(module_req_entry(m, me.u.req_module_idx))
+            let ret = try js_resolve_export(ctx, &res_m, &res_me, m1, me.local_name)
+            if ret != ResolveResult.found:
+                try js_resolve_export_throw_error(ctx, ret, m, me.export_name)
+
+    let is_c_module = m.init_func != none
+
+    if not is_c_module:
+        let p = js_value_get_obj(m.func_obj)
+        let var_refs = p.u.func_.var_refs else trap("js_inner_module_linking: no module variables")
+
+        for i in 0..<m.import_entries_count:
+            let mi = module_import_entry(m, i)
+            let m1 = req_entry_module(module_req_entry(m, mi.req_module_idx))
+            if mi.is_star:
+                # name space import
+                let val = try js_get_module_namespace(ctx, m1)
+                let var_ref = var_refs[(usize)mi.var_idx] else trap("namespace import without a variable")
+                set_value(ctx, &var_ref.u.value, val)
+            else:
+                var res_me: ExportEntry*? = none
+                var res_m: ModuleDef*? = none
+
+                let ret = try js_resolve_export(ctx, &res_m, &res_me, m1, mi.import_name)
+                if ret != ResolveResult.found:
+                    try js_resolve_export_throw_error(ctx, ret, m1, mi.import_name)
+                let me = res_me else trap("js_inner_module_linking: found without an entry")
+                let rm = res_m else trap("js_inner_module_linking: found without a module")
+                if me.local_name == atom__star_:
+                    # name space import from
+                    let m2 = req_entry_module(module_req_entry(rm, me.u.req_module_idx))
+                    let val = try js_get_module_namespace(ctx, m2)
+                    let var_ref = js_create_var_ref(ctx, true) catch failure:
+                        js_free_value(ctx, val)
+                        error(failure.code, failure.message)
+                    set_value(ctx, &var_ref.u.value, val)
+                    var_refs[(usize)mi.var_idx] = var_ref
+                else:
+                    var found_ref = me.u.local_.var_ref
+                    if found_ref == none:
+                        found_ref = module_func_var_ref(rm, me.u.local_.var_idx)
+                    let var_ref = found_ref else trap("js_inner_module_linking: export without a variable")
+                    js_rc(var_ref).ref_count += 1
+                    var_refs[(usize)mi.var_idx] = var_ref
+
+        # keep the exported variables in the module export entries (they are used when the
+        # eval function is deleted and cannot be initialized before in case imports are
+        # exported)
+        for i in 0..<m.export_entries_count:
+            let me = module_export_entry(m, i)
+            if me.export_type == ExportType.local_:
+                let var_ref = var_refs[(usize)me.u.local_.var_idx] else trap("export without a variable")
+                js_rc(var_ref).ref_count += 1
+                me.u.local_.var_ref = var_ref
+
+        # initialize the global variables
+        var no_args = js_undefined()
+        let ret_val = try js_call(ctx, m.func_obj, js_true(), 0, &no_args)
+        js_free_value(ctx, ret_val)
+
+    assert(m.dfs_ancestor_index <= m.dfs_index)
+    if m.dfs_index == m.dfs_ancestor_index:
+        while true:
+            # pop m1 from stack
+            let m1 = *pstack_top else trap("js_inner_module_linking: empty module stack")
+            *pstack_top = m1.stack_prev
+            m1.status = ModuleStatus.linked
+            if m1 == m:
+                break
+
+    return next_index
+
+# Prepare a module to be executed by resolving all the imported variables.
+func js_link_module(ctx: Context*, m: ModuleDef*) -> !:
+    assert(m.status == ModuleStatus.unlinked or m.status == ModuleStatus.linked or
+           m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated)
+    var stack_top: ModuleDef*? = none
+    let last_index = js_inner_module_linking(ctx, m, &stack_top, 0) catch failure:
+        while let m1 = stack_top:
+            assert(m1.status == ModuleStatus.linking)
+            m1.status = ModuleStatus.unlinked
+            stack_top = m1.stack_prev
+        error(failure.code, failure.message)
+    discard(last_index)
+    assert(stack_top == none)
+    assert(m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or
+           m.status == ModuleStatus.evaluated)
+
+# mark: Accessors and import.meta ===============================================================
+
+## The file name of the script or module running `n_stack_levels` frames up, or no_atom if
+## it cannot be found (JS_GetScriptOrModuleName). Only works with not stripped bytecode
+## functions.
+pub func js_get_script_or_module_name(ctx: Context*, n_stack_levels: i32) -> Atom:
+    # XXX: currently we just use the filename of the englobing function from the debug info.
+    # May need to add a ScriptOrModule info in FunctionBytecode.
+    var sf = ctx.rt.current_stack_frame else return no_atom
+    var levels = n_stack_levels
+    while levels > 0:
+        levels -= 1
+        sf = sf.prev_frame else return no_atom
+    while true:
+        if sf.cur_func.tag != Tag.object:
+            return no_atom
+        let p = js_value_get_obj(sf.cur_func)
+        if not js_class_has_bytecode((u32)p.class_id):
+            return no_atom
+        let b = p.u.func_.function_bytecode
+        if not b.is_direct_or_indirect_eval:
+            if not b.has_debug:
+                return no_atom
+            return js_dup_atom(ctx, b.debug.filename)
+        else:
+            sf = sf.prev_frame else return no_atom
+
+## A new reference to the name of the module `m` (JS_GetModuleName).
+pub func js_get_module_name(ctx: Context*, m: ModuleDef*) -> Atom:
+    return js_dup_atom(ctx, m.module_name)
+
+## The import.meta object of the module `m`, created on first use (JS_GetImportMeta).
+pub func js_get_import_meta(ctx: Context*, m: ModuleDef*) -> Value!:
+    # allocate meta_obj only if requested to save memory
+    var obj = m.meta_obj
+    if js_is_undefined(obj):
+        obj = try js_new_object_proto(ctx, js_null())
+        m.meta_obj = obj
+    return js_dup_value(ctx, obj)
+
+func js_import_meta(ctx: Context*) -> Value!:
+    let filename = js_get_script_or_module_name(ctx, 0)
+    if filename != no_atom:
+        # XXX: inefficient, need to add a module or script pointer in FunctionBytecode
+        let found = js_find_loaded_module(ctx, filename)
+        js_free_atom(ctx, filename)
+        if let m = found:
+            return try js_get_import_meta(ctx, m)
+    try js_throw_type_error(ctx, "import.meta not supported in this context")
+
+# A new reference to the module `m` as a value (JS_NewModuleValue).
+func js_new_module_value(ctx: Context*, m: ModuleDef*) -> Value:
+    return js_dup_value(ctx, js_mkptr(Tag.module, m))

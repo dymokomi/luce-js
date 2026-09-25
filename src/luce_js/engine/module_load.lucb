@@ -1,0 +1,207 @@
+#==============================================================================================
+#
+#   module_load - JS_LoadModule and dynamic import()
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 30934-31171: loading, linking and evaluating a module on
+#       behalf of a promise (JS_LoadModuleInternal and its fulfilled and rejected
+#       callbacks), JS_LoadModule, and import(), which converts its arguments, collects
+#       the import attributes and queues a job that loads the module.
+#
+#==============================================================================================
+
+# mark: Loading on behalf of a promise ==========================================================
+
+# Call `func_obj` and release its result. A failure leaves its exception pending, as
+# QuickJS's `JS_FreeValue(ctx, JS_Call(...))` does.
+func call_free_result(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*):
+    let ret = js_call(ctx, func_obj, this_obj, argc, argv) catch failure: recover js_exception()
+    js_free_value(ctx, ret)
+
+# `func_data` is the resolving functions of the load and the module.
+func js_load_module_rejected(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32,
+                             func_data: Value*) -> Value!:
+    let resolving_funcs = func_data
+
+    # XXX: check if the test is necessary
+    var error_val = js_undefined()
+    if argc >= 1:
+        error_val = argv[0]
+    call_free_result(ctx, resolving_funcs[1], js_undefined(), 1, &error_val)
+    return js_undefined()
+
+func js_load_module_fulfilled(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32,
+                              func_data: Value*) -> Value!:
+    let resolving_funcs = func_data
+    let m = func_data[2].u.module
+
+    # return the module namespace
+    var ns = js_get_module_namespace(ctx, m) catch failure:
+        var err = js_get_exception(ctx)
+        discard(js_load_module_rejected(ctx, js_undefined(), 1, &err, 0, func_data)
+                catch failure1: recover js_undefined())
+        return js_undefined()
+    call_free_result(ctx, resolving_funcs[0], js_undefined(), 1, &ns)
+    js_free_value(ctx, ns)
+    return js_undefined()
+
+# Load, resolve and start evaluating the module `filename` imported from `basename`:
+# answers the module and the promise of its evaluation.
+func js_load_module_evaluate(ctx: Context*, basename: const u8*, filename: const u8*,
+                             attributes: Value) -> (ModuleDef*, Value)!:
+    let m = try js_host_resolve_imported_module(ctx, basename, filename, attributes)
+
+    js_resolve_module_internal(ctx, m) catch failure:
+        js_free_modules(ctx, FreeModuleKind.not_resolved)
+        error(failure.code, failure.message)
+
+    # Evaluate the module code
+    let func_obj = js_new_module_value(ctx, m)
+    let evaluate_promise = try js_eval_function(ctx, func_obj)
+    return (m, evaluate_promise)
+
+# Load the module `filename` and settle the promise of `resolving_funcs` with its namespace
+# or its exception (JS_LoadModuleInternal).
+func js_load_module_internal(ctx: Context*, basename: const u8*, filename: const u8*,
+                             resolving_funcs: Value*, attributes: Value):
+    let (m, evaluate_promise) = js_load_module_evaluate(ctx, basename, filename, attributes) catch failure:
+        var err = js_get_exception(ctx)
+        # XXX: what to do if exception ?
+        call_free_result(ctx, resolving_funcs[1], js_undefined(), 1, &err)
+        js_free_value(ctx, err)
+        return
+
+    let func_obj = js_new_module_value(ctx, m)
+    var func_data: Value[3] = [resolving_funcs[0], resolving_funcs[1], func_obj]
+    var evaluate_resolving_funcs: Value[2] = ---
+    evaluate_resolving_funcs[0] = js_new_c_function_data(ctx, js_load_module_fulfilled, 0, 0, 3,
+                                                         &func_data[0]) catch failure: recover js_exception()
+    evaluate_resolving_funcs[1] = js_new_c_function_data(ctx, js_load_module_rejected, 0, 0, 3,
+                                                         &func_data[0]) catch failure: recover js_exception()
+    js_free_value(ctx, func_obj)
+    let ret = js_promise_then(ctx, evaluate_promise, 2, &evaluate_resolving_funcs[0]) catch failure: recover js_exception()
+    js_free_value(ctx, ret)
+    js_free_value(ctx, evaluate_resolving_funcs[0])
+    js_free_value(ctx, evaluate_resolving_funcs[1])
+    js_free_value(ctx, evaluate_promise)
+
+## Load the module `filename` relative to `basename`, link and evaluate it; answers a
+## promise of its namespace (JS_LoadModule). Fails only on a memory error. Used by
+## os.Worker().
+pub func js_load_module(ctx: Context*, basename: const u8*, filename: const u8*) -> Value!:
+    var resolving_funcs: Value[2] = ---
+    let promise = try js_new_promise_capability(ctx, &resolving_funcs[0])
+    js_load_module_internal(ctx, basename, filename, &resolving_funcs[0], js_undefined())
+    js_free_value(ctx, resolving_funcs[0])
+    js_free_value(ctx, resolving_funcs[1])
+    return promise
+
+# mark: Dynamic import ==========================================================================
+
+# The conversions and the load of js_dynamic_import_job: its `exception` exit is the
+# caller's.
+func js_dynamic_import_load(ctx: Context*, resolving_funcs: Value*, basename_val: Value,
+                            specifier: Value, attributes: Value) -> !:
+    if not js_is_string(basename_val):
+        try js_throw_type_error(ctx, "no function filename for import()")
+    let basename = try js_to_c_string(ctx, basename_val)
+    defer js_free_c_string(ctx, basename)
+
+    let filename = try js_to_c_string(ctx, specifier)
+
+    js_load_module_internal(ctx, basename, filename, resolving_funcs, attributes)
+    js_free_c_string(ctx, filename)
+
+# The job import() queues: `argv` is the resolving functions, the importing file name, the
+# specifier and the attributes.
+func js_dynamic_import_job(ctx: Context*, argc: i32, argv: Value*) -> Value!:
+    let resolving_funcs = argv
+    let basename_val = argv[2]
+    let specifier = argv[3]
+    let attributes = argv[4]
+
+    js_dynamic_import_load(ctx, resolving_funcs, basename_val, specifier, attributes) catch failure:
+        var err = js_get_exception(ctx)
+        # XXX: what to do if exception ?
+        call_free_result(ctx, resolving_funcs[1], js_undefined(), 1, &err)
+        js_free_value(ctx, err)
+        return js_undefined()
+    return js_undefined()
+
+# Copy the enumerable string-keyed properties of `attributes_obj` into `attributes`,
+# checking that every value is a string.
+func js_copy_import_attributes(ctx: Context*, attributes: Value, attributes_obj: Value) -> !:
+    var atoms: PropertyEnum* = ---
+    var atoms_len: u32 = 0
+    discard(try js_get_own_property_names_internal(ctx, &atoms, &atoms_len,
+                                                   js_value_get_obj(attributes_obj),
+                                                   gpn_string_mask | gpn_enum_only))
+    defer js_free_property_enum(ctx, atoms, atoms_len)
+    for i in 0..<atoms_len:
+        let atom = atoms[i].atom
+        let val = try js_get_property(ctx, attributes_obj, atom)
+        if not js_is_string(val):
+            js_free_value(ctx, val)
+            try js_throw_type_error(ctx, "module attribute values must be strings")
+        discard(try js_define_property_value(ctx, attributes, atom, val, prop_c_w_e))
+
+# The argument processing of js_dynamic_import: the specifier as a string in
+# `*pspecifier_str`, and the `with` attributes of `options` in `*pattributes`.
+func js_dynamic_import_prepare(ctx: Context*, specifier: Value, options: Value,
+                               pspecifier_str: Value*, pattributes: Value*) -> !:
+    # the string conversion must occur here
+    *pspecifier_str = try js_to_string(ctx, specifier)
+
+    if not js_is_undefined(options):
+        if not js_is_object(options):
+            try js_throw_type_error(ctx, "options must be an object")
+        let attributes_obj = try js_get_property(ctx, options, atom_with)
+        errdefer js_free_value(ctx, attributes_obj)
+        if not js_is_undefined(attributes_obj):
+            if not js_is_object(attributes_obj):
+                try js_throw_type_error(ctx, "options.with must be an object")
+            *pattributes = try js_new_object_proto(ctx, js_null())
+            try js_copy_import_attributes(ctx, *pattributes, attributes_obj)
+            let rt = ctx.rt
+            if let check = rt.module_check_attrs:
+                try check(ctx, rt.module_loader_opaque, *pattributes)
+            js_free_value(ctx, attributes_obj)
+
+# import(specifier, options): answers the promise of the module's namespace.
+func js_dynamic_import(ctx: Context*, specifier: Value, options: Value) -> Value!:
+    let basename = js_get_script_or_module_name(ctx, 0)
+    var basename_val = js_null()
+    if basename != no_atom:
+        basename_val = js_atom_to_value(ctx, basename) catch failure:
+            js_free_atom(ctx, basename)
+            error(failure.code, failure.message)
+    js_free_atom(ctx, basename)
+
+    var resolving_funcs: Value[2] = ---
+    let promise = js_new_promise_capability(ctx, &resolving_funcs[0]) catch failure:
+        js_free_value(ctx, basename_val)
+        error(failure.code, failure.message)
+
+    var specifier_str = js_undefined()
+    var attributes = js_undefined()
+    var prepared = true
+    js_dynamic_import_prepare(ctx, specifier, options, &specifier_str, &attributes) catch failure:
+        prepared = false
+        var err = js_get_exception(ctx)
+        call_free_result(ctx, resolving_funcs[1], js_undefined(), 1, &err)
+        js_free_value(ctx, err)
+        recover ()
+
+    if prepared:
+        var args: Value[5] = [resolving_funcs[0], resolving_funcs[1], basename_val, specifier_str,
+                              attributes]
+        # cannot run JS_LoadModuleInternal synchronously because it would cause an
+        # unexpected recursion in js_evaluate_module()
+        js_enqueue_job(ctx, js_dynamic_import_job, 5, &args[0]) catch failure: recover ()
+
+    js_free_value(ctx, basename_val)
+    js_free_value(ctx, resolving_funcs[0])
+    js_free_value(ctx, resolving_funcs[1])
+    js_free_value(ctx, specifier_str)
+    js_free_value(ctx, attributes)
+    return promise

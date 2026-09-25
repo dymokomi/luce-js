@@ -41,7 +41,13 @@ stub_r14_interpreter.lucb
 stub_r15_async_generators.lucb
 stub_r16_tokenizer.lucb
 stub_r17_parser.lucb
-stub_r18_modules.lucb
+modules.lucb
+module_resolve.lucb
+module_link.lucb
+module_load.lucb
+module_eval.lucb
+function_def.lucb
+stub_r18_parse.lucb
 stub_r19_resolve.lucb
 stub_r20_function_eval.lucb
 stub_r21_bytecode_io.lucb
@@ -60,3 +66,4 @@ tests_atoms.lucb
 tests_malloc_runtime.lucb
 tests_r04.lucb
 tests_shapes_objects.lucb
+tests_modules.lucb

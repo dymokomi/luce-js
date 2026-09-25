@@ -234,10 +234,10 @@ func js_set_union(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
 func js_add_intrinsic_map_set(ctx: Context*) -> i32!:
     trap("unported: JS_AddIntrinsicMapSet")
 ## Ported from quickjs.c:53358 JS_PromiseState.
-func js_promise_state(ctx: Context*, promise: Value) -> PromiseState!:
+func js_promise_state(ctx: Context*, promise: Value) -> PromiseState:
     trap("unported: JS_PromiseState")
 ## Ported from quickjs.c:53366 JS_PromiseResult.
-func js_promise_result(ctx: Context*, promise: Value) -> Value!:
+func js_promise_result(ctx: Context*, promise: Value) -> Value:
     trap("unported: JS_PromiseResult")
 ## Ported from quickjs.c:53377 promise_reaction_data_free.
 func promise_reaction_data_free(rt: Runtime*, rd: PromiseReactionData*):

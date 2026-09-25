@@ -1,0 +1,108 @@
+#==============================================================================================
+#
+#   tests_modules - Unit tests of the modules region's plain helpers
+#
+#   DESCRIPTION:
+#       What runs without a runtime: the default module name normalizer's path logic
+#       (expected results from the C function), the lookups in the resolve state, the
+#       exported names and the list of ready modules, and the [[AsyncEvaluationOrder]]
+#       sort of that list.
+#
+#==============================================================================================
+
+# mark: Helpers ================================================================================
+
+# The name js_default_module_normalize_name gives `name` imported from `base`, built in
+# `buf` with the capacity the C function allocates.
+func normalized(buf: u8[], base: str, name: str) -> str:
+    var len: i32 = 0
+    if let p = find_last_byte(base.bytes.data, '/'):
+        len = (i32)(p - base.bytes.data)
+    let cap = len + (i32)name.length + 1 + 1
+    assert((usize)cap <= buf.length)
+    module_normalize_path(&buf[0], cap, base.bytes.data, name.bytes.data)
+    return c_str_view(&buf[0])
+
+# mark: Module names ===========================================================================
+
+test "relative module names are resolved against the importing module's directory":
+    var buf: u8[64]
+    assert(normalized(buf, "a/b/c.js", "./d.js") == "a/b/d.js")
+    assert(normalized(buf, "a/b/c.js", "../d.js") == "a/d.js")
+    assert(normalized(buf, "a/b/c.js", "././../e/f.js") == "a/e/f.js")
+    assert(normalized(buf, "c.js", "./x") == "x")
+    assert(normalized(buf, "/root/m.js", "./x.js") == "/root/x.js")
+    assert(normalized(buf, "a/b/c.js", ".hidden") == "a/b/.hidden")
+
+test "only the leading dots are normalized, and never past '.' or '..'":
+    var buf: u8[64]
+    assert(normalized(buf, "a/b/c.js", "../../../d.js") == "../d.js")
+    assert(normalized(buf, "../a/m.js", "../x.js") == "../x.js")
+    assert(normalized(buf, "./m.js", "../x.js") == "./../x.js")
+    assert(normalized(buf, "/m.js", "../x.js") == "../x.js")
+
+test "C string helpers":
+    let text = "a/b/c"
+    let last = find_last_byte(text.bytes.data, '/') else trap("no slash")
+    assert(last - text.bytes.data == 3)
+    assert(find_last_byte(text.bytes.data, 'z') == none)
+    assert(c_str_equals("..".bytes.data, ".."))
+    assert(not c_str_equals("...".bytes.data, ".."))
+    assert(not c_str_equals(".".bytes.data, ".."))
+
+# mark: Lookups ================================================================================
+
+test "resolve state lookups match the module and the name":
+    var m1: ModuleDef = ---
+    var m2: ModuleDef = ---
+    var entries: ResolveEntry[3] = [
+        ResolveEntry(module = &m1, name = atom_default),
+        ResolveEntry(module = &m2, name = atom_default),
+        ResolveEntry(module = &m1, name = atom_as),
+    ]
+    var s = ResolveState(array = &entries[0], size = 3, count = 3)
+    assert(find_resolve_entry(&s, &m1, atom_default) == 0)
+    assert(find_resolve_entry(&s, &m2, atom_default) == 1)
+    assert(find_resolve_entry(&s, &m1, atom_as) == 2)
+    assert(find_resolve_entry(&s, &m2, atom_as) == -1)
+    s.count = 2
+    assert(find_resolve_entry(&s, &m1, atom_as) == -1)
+
+test "exported names are found by name":
+    var names: ExportedNameEntry[2]
+    names[0].export_name = atom_default
+    names[1].export_name = atom_from
+    var s: GetExportNamesState
+    assert(find_exported_name(&s, atom_default) == -1)
+    s.exported_names = &names[0]
+    s.exported_names_size = 2
+    s.exported_names_count = 2
+    assert(find_exported_name(&s, atom_from) == 1)
+    assert(find_exported_name(&s, atom_default) == 0)
+    assert(find_exported_name(&s, atom_as) == -1)
+
+# mark: Ready modules ==========================================================================
+
+test "ready modules sort by their async evaluation order":
+    var mods: ModuleDef[4] = ---
+    let stamps: i64[4] = [7, 2, 9, 2]
+    var tab: ModuleDef*[4] = [&mods[0], &mods[1], &mods[2], &mods[3]]
+    for i in 0..<mods.length:
+        mods[i].async_evaluation_timestamp = stamps[i]
+    assert(exec_module_list_cmp(&tab[0], &tab[1], none) == 1)
+    assert(exec_module_list_cmp(&tab[1], &tab[0], none) == -1)
+    assert(exec_module_list_cmp(&tab[1], &tab[3], none) == 0)
+    cutils.rqsort(&tab[0], 4, sizeof(ModuleDef*), exec_module_list_cmp, none)
+    for i in 1..<tab.length:
+        assert(tab[i - 1].async_evaluation_timestamp <= tab[i].async_evaluation_timestamp)
+    assert(tab[3] == &mods[2] and tab[2] == &mods[0])
+
+test "the list of ready modules is searched by address":
+    var mods: ModuleDef[3] = ---
+    var tab: ModuleDef*[2] = [&mods[0], &mods[2]]
+    var exec_list = ExecModuleList(tab = &tab[0], count = 2, size = 2)
+    assert(find_in_exec_module_list(&exec_list, &mods[0]))
+    assert(not find_in_exec_module_list(&exec_list, &mods[1]))
+    assert(find_in_exec_module_list(&exec_list, &mods[2]))
+    exec_list.count = 1
+    assert(not find_in_exec_module_list(&exec_list, &mods[2]))
