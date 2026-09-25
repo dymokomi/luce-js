@@ -1,0 +1,376 @@
+#==============================================================================================
+#
+#   shapes - Shapes: the shared prototype and property layout of objects
+#
+#   DESCRIPTION:
+#       Port of quickjs.c "Shape support" (lines 5119-5612). A shape is followed in memory
+#       by its hash table (`prop_hash_mask + 1` u32 entries, 1-based property indexes) and
+#       then by its `prop_size` ShapeProperty entries; `get_shape_hash_table` and
+#       `get_shape_prop` reach them. Shapes of objects built the same way are shared
+#       through the runtime's shape hash table, keyed by the prototype and the sequence
+#       of (atom, flags) pairs. The debug dumps JS_DumpShape and JS_DumpShapes are only
+#       used under DUMP_SHAPES and are not ported.
+#
+#==============================================================================================
+
+# mark: Layout ==================================================================================
+
+## The byte size of a shape with `hash_size` hash entries and `prop_size` properties.
+func get_shape_size(hash_size: usize, prop_size: usize) -> usize:
+    return sizeof(Shape) + hash_size * sizeof(u32) + prop_size * sizeof(ShapeProperty)
+
+## The shape's hash table (the C flexible member `hash_table`): `prop_hash_mask + 1`
+## entries, each 0 or the 1-based index of the first property of that bucket.
+func get_shape_hash_table(sh: Shape*) -> u32*:
+    return (u32*)((u8*)sh + sizeof(Shape))
+
+## The shape's properties, after its hash table.
+func get_shape_prop(sh: Shape*) -> ShapeProperty*:
+    return (ShapeProperty*)(get_shape_hash_table(sh) + (usize)sh.prop_hash_mask + 1)
+
+# mark: The shape hash table ====================================================================
+
+## Allocate the runtime's empty shape hash table; -1 if out of memory (no exception).
+func init_shape_hash(rt: Runtime*) -> i32:
+    rt.shape_hash_bits = 4   # 16 shapes
+    rt.shape_hash_size = 1 << rt.shape_hash_bits
+    rt.shape_hash_count = 0
+    let table = js_mallocz_rt(rt, sizeof(Shape*?) * (usize)rt.shape_hash_size) else return -1
+    rt.shape_hash = (Shape*?*)table
+    return 0
+
+# same magic hash multiplier as the Linux kernel
+func shape_hash(h: u32, val: u32) -> u32:
+    return (h +% val) *% 0x9e370001
+
+# truncate the shape hash to 'hash_bits' bits
+func get_shape_hash(h: u32, hash_bits: i32) -> u32:
+    return h >> (u32)(32 - hash_bits)
+
+## The hash of an empty shape with prototype `proto`.
+func shape_initial_hash(proto: Object*?) -> u32:
+    var addr: usize = 0
+    if let p = proto:
+        addr = (usize)p
+    var h = shape_hash(1, (u32)addr)
+    if sizeof(usize) > 4:
+        h = shape_hash(h, (u32)((u64)addr >> 32))
+    return h
+
+## The runtime's shape hash table (always allocated once the runtime exists).
+func runtime_shape_hash(rt: Runtime*) -> Shape*?*:
+    return rt.shape_hash else trap("the shape hash table is not allocated")
+
+## Rehash every hashed shape into a table of 2^new_shape_hash_bits buckets; -1 if out of
+## memory (no exception), leaving the old table in place.
+func resize_shape_hash(rt: Runtime*, new_shape_hash_bits: i32) -> i32:
+    let new_shape_hash_size: i32 = 1 << new_shape_hash_bits
+    let raw = js_mallocz_rt(rt, sizeof(Shape*?) * (usize)new_shape_hash_size) else return -1
+    let new_shape_hash = (Shape*?*)raw
+    let old_shape_hash = runtime_shape_hash(rt)
+    for i in 0..<(usize)rt.shape_hash_size:
+        var cur = old_shape_hash[i]
+        while let sh = cur:
+            cur = sh.shape_hash_next
+            let h = get_shape_hash(sh.hash, new_shape_hash_bits)
+            sh.shape_hash_next = new_shape_hash[(usize)h]
+            new_shape_hash[(usize)h] = sh
+    js_free_rt(rt, old_shape_hash)
+    rt.shape_hash_bits = new_shape_hash_bits
+    rt.shape_hash_size = new_shape_hash_size
+    rt.shape_hash = new_shape_hash
+    return 0
+
+## Insert `sh` in its bucket of the shape hash table.
+func js_shape_hash_link(rt: Runtime*, sh: Shape*):
+    let h = get_shape_hash(sh.hash, rt.shape_hash_bits)
+    let table = runtime_shape_hash(rt)
+    sh.shape_hash_next = table[(usize)h]
+    table[(usize)h] = sh
+    rt.shape_hash_count += 1
+
+## Remove `sh` from its bucket of the shape hash table; it must be there.
+func js_shape_hash_unlink(rt: Runtime*, sh: Shape*):
+    let h = get_shape_hash(sh.hash, rt.shape_hash_bits)
+    var psh: Shape*?* = runtime_shape_hash(rt) + (usize)h
+    while true:
+        let cur = *psh else trap("shape not in the shape hash table")
+        if cur == sh:
+            break
+        psh = &cur.shape_hash_next
+    *psh = sh.shape_hash_next
+    rt.shape_hash_count -= 1
+
+# mark: Creating and freeing shapes =============================================================
+
+# create a new empty shape with prototype 'proto'. It is not hashed
+func js_new_shape_nohash(ctx: Context*, proto: Object*?, hash_size: i32, prop_size: i32) -> Shape*!:
+    let rt = ctx.rt
+    let sh = (Shape*)(try js_malloc(ctx, get_shape_size((usize)hash_size, (usize)prop_size)))
+    js_rc(sh).ref_count = 1
+    add_gc_object(rt, &sh.header, GCObjectType.shape)
+    if let p = proto:
+        discard(js_dup_value(ctx, js_mkptr(Tag.object, p)))
+    sh.proto = proto
+    discard(cutils.memset(get_shape_hash_table(sh), 0, sizeof(u32) * (usize)hash_size))
+    sh.prop_hash_mask = (u32)hash_size - 1
+    sh.prop_size = prop_size
+    sh.prop_count = 0
+    sh.deleted_prop_count = 0
+    sh.is_hashed = 0
+    sh.shape_hash_next = none
+    return sh
+
+# create a new empty shape with prototype 'proto'
+func js_new_shape2(ctx: Context*, proto: Object*?, hash_size: i32, prop_size: i32) -> Shape*!:
+    let rt = ctx.rt
+
+    # resize the shape hash table if necessary
+    if 2 * (rt.shape_hash_count + 1) > rt.shape_hash_size:
+        discard(resize_shape_hash(rt, rt.shape_hash_bits + 1))
+
+    let sh = try js_new_shape_nohash(ctx, proto, hash_size, prop_size)
+
+    # insert in the hash table
+    sh.hash = shape_initial_hash(proto)
+    sh.is_hashed = 1
+    js_shape_hash_link(ctx.rt, sh)
+    return sh
+
+## A new hashed empty shape with prototype `proto` and the initial sizes.
+func js_new_shape(ctx: Context*, proto: Object*?) -> Shape*!:
+    return try js_new_shape2(ctx, proto, js_prop_initial_hash_size, js_prop_initial_size)
+
+# The shape is cloned. The new shape is not inserted in the shape
+# hash table
+func js_clone_shape(ctx: Context*, sh1: Shape*) -> Shape*!:
+    let hash_size = sh1.prop_hash_mask + 1
+    let size = get_shape_size((usize)hash_size, (usize)sh1.prop_size)
+    let sh = (Shape*)(try js_malloc(ctx, size))
+    discard(cutils.memcpy((u8*)sh + sizeof(GCObjectHeader), (u8*)sh1 + sizeof(GCObjectHeader),
+        size - sizeof(GCObjectHeader)))
+    js_rc(sh).ref_count = 1
+    add_gc_object(ctx.rt, &sh.header, GCObjectType.shape)
+    sh.is_hashed = 0
+    if let proto = sh.proto:
+        discard(js_dup_value(ctx, js_mkptr(Tag.object, proto)))
+    let pr = get_shape_prop(sh)
+    for i in 0..<(usize)sh.prop_count:
+        discard(js_dup_atom(ctx, pr[i].atom))
+    return sh
+
+## A new reference to `sh`.
+func js_dup_shape(sh: Shape*) -> Shape*:
+    js_rc(sh).ref_count += 1
+    return sh
+
+## Free a shape whose reference count reached zero.
+func js_free_shape0(rt: Runtime*, sh: Shape*):
+    assert(js_rc(sh).ref_count == 0)
+    if sh.is_hashed != 0:
+        js_shape_hash_unlink(rt, sh)
+    if let proto = sh.proto:
+        js_free_value_rt(rt, js_mkptr(Tag.object, proto))
+    let pr = get_shape_prop(sh)
+    for i in 0..<(usize)sh.prop_count:
+        js_free_atom_rt(rt, pr[i].atom)
+    remove_gc_object(&sh.header)
+    js_free_rt(rt, sh)
+
+## Release a reference to `sh`; the last one frees it.
+func js_free_shape(rt: Runtime*, sh: Shape*):
+    let rc = js_rc(sh)
+    rc.ref_count -= 1
+    if rc.ref_count <= 0:
+        js_free_shape0(rt, sh)
+
+## Release a reference to `sh` if there is one.
+func js_free_shape_null(rt: Runtime*, sh: Shape*?):
+    if let s = sh:
+        js_free_shape(rt, s)
+
+# mark: Growing and compacting ==================================================================
+
+## Rebuild the hash chains of the first `count` properties of `sh` in its (cleared) hash
+## table of mask `hash_mask`.
+func rehash_shape_props(sh: Shape*, hash_mask: u32, count: u32):
+    let hash_table = get_shape_hash_table(sh)
+    let pr = get_shape_prop(sh)
+    for i in 0..<count:
+        if pr[i].atom != no_atom:
+            let h = (usize)(pr[i].atom & hash_mask)
+            pr[i].hash_next = hash_table[h]
+            hash_table[h] = i + 1
+
+# make space to hold at least 'count' properties
+func resize_properties(ctx: Context*, psh: Shape**, p: Object*?, count: u32) -> !:
+    var sh = *psh
+    let new_size = (u32)cutils.max_int((i32)count, sh.prop_size * 3 // 2)
+    # Reallocate prop array first to avoid crash or size inconsistency
+    # in case of memory allocation failure
+    if let obj = p:
+        let new_prop = try js_realloc(ctx, obj.prop, sizeof(Property) * (usize)new_size)
+        obj.prop = (Property*)new_prop
+    var new_hash_size = sh.prop_hash_mask + 1
+    while new_hash_size < new_size:
+        new_hash_size = 2 * new_hash_size
+    # resize the property shapes. Using js_realloc() is not possible in
+    # case the GC runs during the allocation
+    let old_sh = sh
+    sh = (Shape*)(try js_malloc(ctx, get_shape_size((usize)new_hash_size, (usize)new_size)))
+    remove_gc_object(&old_sh.header)
+
+    js_rc(sh).ref_count = 1
+    add_gc_object(ctx.rt, &sh.header, GCObjectType.shape)
+
+    discard(cutils.memcpy((u8*)sh + sizeof(GCObjectHeader), (u8*)old_sh + sizeof(GCObjectHeader),
+        sizeof(Shape) - sizeof(GCObjectHeader)))
+
+    if new_hash_size != sh.prop_hash_mask + 1:
+        # resize the hash table and the properties
+        let new_hash_mask = new_hash_size - 1
+        sh.prop_hash_mask = new_hash_mask
+        discard(cutils.memset(get_shape_hash_table(sh), 0, sizeof(u32) * (usize)new_hash_size))
+        discard(cutils.memcpy(get_shape_prop(sh), get_shape_prop(old_sh),
+            sizeof(ShapeProperty) * (usize)old_sh.prop_count))
+        rehash_shape_props(sh, new_hash_mask, (u32)sh.prop_count)
+    else:
+        # just copy the previous hash table and the properties
+        discard(cutils.memcpy(get_shape_hash_table(sh), get_shape_hash_table(old_sh),
+            sizeof(u32) * (usize)new_hash_size))
+
+        discard(cutils.memcpy(get_shape_prop(sh), get_shape_prop(old_sh),
+            sizeof(ShapeProperty) * (usize)old_sh.prop_count))
+    js_free(ctx, old_sh)
+    *psh = sh
+    sh.prop_size = (i32)new_size
+
+# remove the deleted properties.
+func compact_properties(ctx: Context*, p: Object*) -> !:
+    var sh = p.shape
+    assert(sh.is_hashed == 0)
+
+    let new_size = (u32)cutils.max_int(js_prop_initial_size, sh.prop_count - sh.deleted_prop_count)
+    assert(new_size <= (u32)sh.prop_size)
+
+    var new_hash_size = sh.prop_hash_mask + 1
+    while (new_hash_size // 2) >= new_size:
+        new_hash_size = new_hash_size // 2
+    let new_hash_mask = new_hash_size - 1
+
+    # resize the hash table and the properties
+    let old_sh = sh
+    sh = (Shape*)(try js_malloc(ctx, get_shape_size((usize)new_hash_size, (usize)new_size)))
+    remove_gc_object(&old_sh.header)
+
+    js_rc(sh).ref_count = 1
+    add_gc_object(ctx.rt, &sh.header, GCObjectType.shape)
+
+    discard(cutils.memcpy((u8*)sh + sizeof(GCObjectHeader), (u8*)old_sh + sizeof(GCObjectHeader),
+        sizeof(Shape) - sizeof(GCObjectHeader)))
+
+    let hash_table = get_shape_hash_table(sh)
+    discard(cutils.memset(hash_table, 0, sizeof(u32) * (usize)new_hash_size))
+    sh.prop_hash_mask = new_hash_mask
+
+    var j: u32 = 0
+    let old_pr = get_shape_prop(old_sh)
+    let pr = get_shape_prop(sh)
+    let prop = p.prop
+    for i in 0..<(usize)sh.prop_count:
+        if old_pr[i].atom != no_atom:
+            pr[j].atom = old_pr[i].atom
+            pr[j].flags = old_pr[i].flags
+            let h = (usize)(old_pr[i].atom & new_hash_mask)
+            pr[j].hash_next = hash_table[h]
+            hash_table[h] = j + 1
+            prop[j] = prop[i]
+            j += 1
+    assert(j == (u32)(sh.prop_count - sh.deleted_prop_count))
+    sh.prop_size = (i32)new_size
+    sh.deleted_prop_count = 0
+    sh.prop_count = (i32)j
+
+    p.shape = sh
+    js_free(ctx, old_sh)
+
+    # reduce the size of the object properties
+    # (a failure is not reported, as in QuickJS: the larger array stays in place)
+    let new_prop = js_realloc(ctx, p.prop, sizeof(Property) * (usize)new_size) catch failure:
+        return
+    p.prop = (Property*)new_prop
+
+## Append the property (`atom`, `prop_flags`) to `*psh`, growing it (and `p`'s property
+## array when `p` is given) when full. The object property at p.prop[prop_count - 1] is
+## left uninitialized.
+func add_shape_property(ctx: Context*, psh: Shape**, p: Object*?, atom: Atom, prop_flags: i32) -> !:
+    let rt = ctx.rt
+    var sh = *psh
+    var new_shape_hash: u32 = 0
+
+    # update the shape hash
+    if sh.is_hashed != 0:
+        js_shape_hash_unlink(rt, sh)
+        new_shape_hash = shape_hash(shape_hash(sh.hash, atom), (u32)prop_flags)
+
+    if sh.prop_count >= sh.prop_size:
+        resize_properties(ctx, psh, p, (u32)sh.prop_count + 1) catch failure:
+            # in case of error, reinsert in the hash table.
+            # sh is still valid if resize_properties() failed
+            if sh.is_hashed != 0:
+                js_shape_hash_link(rt, sh)
+            error(failure.code, failure.message)
+        sh = *psh
+    if sh.is_hashed != 0:
+        sh.hash = new_shape_hash
+        js_shape_hash_link(rt, sh)
+    # Initialize the new shape property.
+    # The object property at p->prop[sh->prop_count] is uninitialized
+    let pr = get_shape_prop(sh) + (usize)sh.prop_count
+    sh.prop_count += 1
+    pr.atom = js_dup_atom(ctx, atom)
+    pr.flags = (u8)prop_flags
+    # add in hash table
+    let hash_mask = sh.prop_hash_mask
+    let h = (usize)(atom & hash_mask)
+    let hash_table = get_shape_hash_table(sh)
+    pr.hash_next = hash_table[h]
+    hash_table[h] = (u32)sh.prop_count
+
+# mark: Finding shared shapes ===================================================================
+
+# find a hashed empty shape matching the prototype. Return NULL if
+# not found
+func find_hashed_shape_proto(rt: Runtime*, proto: Object*?) -> Shape*?:
+    let h = shape_initial_hash(proto)
+    let h1 = get_shape_hash(h, rt.shape_hash_bits)
+    var cur = runtime_shape_hash(rt)[(usize)h1]
+    while let sh1 = cur:
+        if sh1.hash == h and sh1.proto == proto and sh1.prop_count == 0:
+            return sh1
+        cur = sh1.shape_hash_next
+    return none
+
+# find a hashed shape matching sh + (prop, prop_flags). Return NULL if
+# not found
+func find_hashed_shape_prop(rt: Runtime*, sh: Shape*, atom: Atom, prop_flags: i32) -> Shape*?:
+    var h = sh.hash
+    h = shape_hash(h, atom)
+    h = shape_hash(h, (u32)prop_flags)
+    let h1 = get_shape_hash(h, rt.shape_hash_bits)
+    var cur = runtime_shape_hash(rt)[(usize)h1]
+    next: while let sh1 = cur:
+        cur = sh1.shape_hash_next
+        # we test the hash first so that the rest is done only if the
+        # shapes really match
+        let n = (usize)sh.prop_count
+        if sh1.hash == h and sh1.proto == sh.proto and (usize)sh1.prop_count == n + 1:
+            let prop = get_shape_prop(sh)
+            let prop1 = get_shape_prop(sh1)
+            for i in 0..<n:
+                if prop1[i].atom != prop[i].atom or prop1[i].flags != prop[i].flags:
+                    continue next
+            if prop1[n].atom != atom or (i32)prop1[n].flags != prop_flags:
+                continue next
+            return sh1
+    return none

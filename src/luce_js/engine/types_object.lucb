@@ -506,8 +506,8 @@ union ObjectArrayValues:
     values: Value*
     ## ClassId.mapped_arguments.
     var_refs: VarRef**
-    ## Typed arrays.
-    ptr: void*
+    ## Typed arrays; none while the array has no storage.
+    ptr: void*?
     int8_ptr: i8*
     uint8_ptr: u8*
     int16_ptr: i16*
@@ -529,7 +529,8 @@ struct ObjectArray:
 
 ## An object's class-specific data (the u union of JSObject).
 union ObjectUnion:
-    opaque: void*
+    ## None for an object whose class data is not set yet.
+    opaque: void*?
     bound_function: BoundFunction*
     c_function_data_record: CFunctionDataRecord*
     for_in_iterator: ForInIterator*
