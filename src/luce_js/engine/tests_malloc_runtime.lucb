@@ -1,0 +1,168 @@
+#==============================================================================================
+#
+#   tests_malloc_runtime - Tests of the JS malloc allocator and the runtime's small helpers
+#
+#   DESCRIPTION:
+#       The allocator runs on a MallocContext over the default host allocator, without a
+#       runtime: size classes, arena reuse, large and zero-sized blocks, realloc keeping
+#       the GC header, usable sizes and the host accounting. Also the block header's GC
+#       bits, the atom free-slot encoding and the stack pointer.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+## A malloc context over the default host allocator, with no memory limit.
+func test_malloc_context(s: MallocContext*):
+    js_malloc_init(s)
+    s.mf = def_malloc_funcs
+    s.malloc_state = MallocState(malloc_limit = ~(usize)0)
+
+## The number of arenas of a size class.
+func test_arena_count(s: MallocContext*, block_size_idx: usize) -> i32:
+    var n: i32 = 0
+    let head = &s.arena_list[block_size_idx]
+    var el = head.next else trap("unlinked")
+    while el != head:
+        n += 1
+        el = el.next else trap("unlinked")
+    return n
+
+# mark: Layout and size classes =================================================================
+
+test "the block header is 8 bytes and arenas keep the C layout":
+    assert(sizeof(MallocBlockHeader) == 8)
+    assert(sizeof(MallocLargeBlockHeader) == 8)
+    assert(sizeof(MallocArena) == 40)
+    assert(js_malloc_block_sizes[30] == (u16)js_malloc_max_small_size)
+
+test "every small size maps to the smallest class that holds it":
+    for size: usize in 1..=512:
+        let idx = get_block_size_index(size)
+        assert(idx >= 0 and idx < 31)
+        assert((usize)js_malloc_block_sizes[idx] >= size)
+        if idx > 0:
+            assert((usize)js_malloc_block_sizes[idx - 1] < size)
+    assert(get_block_size_index(513) == 31)
+
+# mark: Allocation ==============================================================================
+
+test "small blocks come from arenas and return to them":
+    var s: MallocContext = ---
+    test_malloc_context(&s)
+    # 20 bytes of data plus the header round up to the 32-byte class
+    let a = js_malloc_raw(&s, 20) else trap("out of memory")
+    let b = js_malloc_raw(&s, 20) else trap("out of memory")
+    assert(js_rc(a).block_size_idx == 2)
+    assert((usize)b - (usize)a == 32)
+    assert(js_malloc_usable_size_raw(&s, a) == 24)
+    assert(test_arena_count(&s, 2) == 1)
+    assert(s.malloc_state.malloc_count == 1)
+    js_free_raw(&s, a)
+    # the freed block is reused first
+    let c = js_malloc_raw(&s, 17) else trap("out of memory")
+    assert(c == a)
+    js_free_raw(&s, b)
+    js_free_raw(&s, c)
+    # an empty arena goes back to the host
+    assert(test_arena_count(&s, 2) == 0)
+    assert(s.malloc_state.malloc_count == 0)
+    assert(s.malloc_state.malloc_size == 0)
+
+test "a full arena leaves the free list and a new one is made":
+    var s: MallocContext = ---
+    test_malloc_context(&s)
+    let n = (js_malloc_arena_size - sizeof(MallocArena)) // 512
+    var blocks: (void*?)[8]
+    assert(n < 8)
+    for i in 0..<n + 1:
+        blocks[i] = js_malloc_raw(&s, 500)
+        assert(blocks[i] != none)
+    assert(test_arena_count(&s, 30) == 2)
+    for i in 0..<n + 1:
+        js_free_raw(&s, blocks[i])
+    assert(test_arena_count(&s, 30) == 0)
+    assert(s.malloc_state.malloc_count == 0)
+
+test "zero-sized and large blocks":
+    var s: MallocContext = ---
+    test_malloc_context(&s)
+    let z = js_malloc_raw(&s, 0) else trap("no zero-size block")
+    assert(js_rc(z) == get_zero_size_block(&s))
+    assert(js_malloc_usable_size_raw(&s, z) == 0)
+    js_free_raw(&s, z)
+    let big = js_malloc_raw(&s, 1000) else trap("out of memory")
+    assert(js_rc(big).block_idx == free_nil)
+    assert(js_malloc_usable_size_raw(&s, big) >= 1000)
+    assert(s.malloc_state.malloc_count == 1)
+    js_free_raw(&s, big)
+    assert(s.malloc_state.malloc_count == 0)
+    js_free_raw(&s, none)
+    assert(js_malloc_usable_size_raw(&s, none) == 0)
+
+test "realloc keeps the data and the GC header":
+    var s: MallocContext = ---
+    test_malloc_context(&s)
+    let p = (u8*)(js_malloc_raw(&s, 10) else trap("out of memory"))
+    for i: usize in 0..<10:
+        p[i] = (u8)i
+    let h = js_rc(p)
+    h.ref_count = 7
+    block_set_gc_obj_type(h, GCObjectType.shape)
+    block_set_mark(h, true)
+    # growing within the block keeps it in place
+    assert(js_realloc_raw(&s, p, 14) == (void*)p)
+    # growing past it moves to a larger class, then to a large block
+    let q = (u8*)(js_realloc_raw(&s, p, 100) else trap("out of memory"))
+    let r = (u8*)(js_realloc_raw(&s, q, 2000) else trap("out of memory"))
+    let hr = js_rc(r)
+    assert(hr.ref_count == 7)
+    for i: usize in 0..<10:
+        assert(r[i] == (u8)i)
+    # the large block's header is rewritten: its GC bits are the caller's to keep
+    assert(hr.block_idx == free_nil)
+    let t = (u8*)(js_realloc_raw(&s, r, 4000) else trap("out of memory"))
+    assert(t[9] == 9)
+    assert(js_realloc_raw(&s, t, 0) == none)
+    assert(s.malloc_state.malloc_count == 0)
+
+test "the host memory limit refuses an allocation":
+    var s: MallocContext = ---
+    test_malloc_context(&s)
+    s.malloc_state.malloc_limit = 1024
+    # a large block, and a small one whose 4 KiB arena passes the limit
+    assert(js_malloc_raw(&s, 4096) == none)
+    assert(js_malloc_raw(&s, 8) == none)
+    assert(s.malloc_state.malloc_count == 0)
+    s.malloc_state.malloc_limit = ~(usize)0
+    let small = js_malloc_raw(&s, 8)
+    assert(small != none)
+    js_free_raw(&s, small)
+
+# mark: Header bits and helpers =================================================================
+
+test "the GC type and mark share one byte":
+    var h = MallocBlockHeader(block_idx = 0, block_size_idx = 0, gc_bits = 0, ref_count = 1)
+    block_set_gc_obj_type(&h, GCObjectType.module)
+    assert(block_gc_obj_type(&h) == GCObjectType.module)
+    assert(not block_mark(&h))
+    block_set_mark(&h, true)
+    assert(block_mark(&h))
+    assert(block_gc_obj_type(&h) == GCObjectType.module)
+    block_set_gc_obj_type(&h, GCObjectType.js_object)
+    assert(block_mark(&h))
+    assert(h.gc_bits == 0x80)
+    block_set_mark(&h, false)
+    assert(h.gc_bits == 0)
+
+test "free atom slots encode the next free index":
+    let slot = atom_set_free(12345)
+    assert(atom_is_free(slot))
+    assert(atom_get_free(slot) == 12345)
+    var s = String(len = 0, hash = 0, hash_next = 0, is_wide_char = false, atom_type = 1)
+    assert(not atom_is_free(&s))
+
+test "digits and the stack pointer":
+    assert(is_digit((i32)'0') and is_digit((i32)'9'))
+    assert(not is_digit((i32)'a') and not is_digit((i32)'/'))
+    assert(js_get_stack_pointer() != 0)

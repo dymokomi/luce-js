@@ -347,7 +347,7 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
 
 # only works with zero terminated 8 bit strings
 func js_new_atom_init_raw(rt: Runtime*, str_: const u8*, len: i32, atom_type: u8) -> Atom:
-    let p = js_alloc_string_rt(rt, len, 0) else return no_atom
+    let p = js_alloc_string_rt(rt, len, false) else return no_atom
     discard(cutils.memcpy(atom_str8(p), str_, (usize)len))
     atom_str8(p)[len] = 0
     return js_new_atom_raw(rt, p, atom_type)
