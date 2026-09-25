@@ -107,11 +107,15 @@ test "break and continue close what they leave":
     defer cutils.c_free(s)
     defer cutils.dbuf_free(&fd.byte_code)
 
+    # One array for the four entries: the native backend (luce-base 9852cbf) gives
+    # separate locals whose addresses the break stack keeps one shared frame home, which
+    # links the stack into a cycle.
+    var entries: BlockEnv[4] = ---
     # outer: a loop labelled 'value'; inner: a for-of loop (iterator and 3 stack values)
-    var outer: BlockEnv = ---
-    var inner: BlockEnv = ---
-    push_break_entry(fd, &outer, atom_value, 0, 1, 0)
-    push_break_entry(fd, &inner, no_atom, 2, 3, 3)
+    let outer = &entries[0]
+    let inner = &entries[1]
+    push_break_entry(fd, outer, atom_value, 0, 1, 0)
+    push_break_entry(fd, inner, no_atom, 2, 3, 3)
     inner.has_iterator = true
 
     # break: the inner loop
@@ -132,10 +136,10 @@ test "break and continue close what they leave":
     # continue from a switch (1 value) and a finally block (label 4) in the loop
     emit_op(s, (u8)Op.nop)
     pop_break_entry(fd)
-    var switch_entry: BlockEnv = ---
-    push_break_entry(fd, &switch_entry, no_atom, 2, -1, 1)
-    var finally_entry: BlockEnv = ---
-    push_break_entry(fd, &finally_entry, no_atom, -1, -1, 0)
+    let switch_entry = &entries[2]
+    push_break_entry(fd, switch_entry, no_atom, 2, -1, 1)
+    let finally_entry = &entries[3]
+    push_break_entry(fd, finally_entry, no_atom, -1, -1, 0)
     finally_entry.label_finally = 4
     let start2 = fd.byte_code.size
     try emit_break(s, no_atom, true)
