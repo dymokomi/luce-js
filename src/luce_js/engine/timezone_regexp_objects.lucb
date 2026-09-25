@@ -33,9 +33,47 @@ extern struct Tm:
 
 extern func localtime_r(timep: const i64*, result: Tm*) -> Tm*?
 # Windows' C library names its 64-bit time functions with a prefix.
-extern func win_gmtime as "_gmtime64"(timep: const i64*) -> Tm*?
 extern func win_localtime as "_localtime64"(timep: const i64*) -> Tm*?
-extern func win_mktime as "_mktime64"(tm: Tm*) -> i64
+
+# Deviation on Windows. Upstream's _WIN32 branch answers (mktime(gmtime(t)) -
+# mktime(localtime(t))) / 60: gmtime's tm_isdst is 0, so the first mktime reads the
+# UTC fields as standard time and daylight saving time is never counted (July in
+# Pacific time answers 480, not 420), and the CRT's localtime fails before 1970 and
+# after 3000, where upstream answers 0. This port reads the offset from localtime's
+# fields directly, and maps a year outside 1971..2999 to an equivalent year (same
+# leap-ness, same weekday of January 1) that the CRT supports, as V8 does.
+
+## The first and last years whose times the Windows mapping leaves as they are.
+let win_first_year: i64 = 1971
+let win_last_year: i64 = 2999
+
+## `ti` (seconds) moved to the equivalent year in 2008..2035 when its year is outside
+## win_first_year..win_last_year.
+func windows_supported_time(ti: i64) -> i64:
+    var days = floor_div(ti, 86400)
+    let year = year_from_days(&days)
+    if year >= win_first_year and year <= win_last_year:
+        return ti
+    # the weekday of January 1 (1970-01-01 was a Thursday)
+    let week_day = math_mod(days_from_year(year) + 4, 7)
+    let is_leap = days_in_year(year) == 366
+    let recent_year = (1956 if is_leap else 1967) + (week_day * 12) % 28
+    let equivalent_year = 2008 + (recent_year + 3 * 28 - 2008) % 28
+    return ti + (days_from_year(equivalent_year) - days_from_year(year)) * 86400
+
+## The offset in minutes of UTC from local time at `ti` (seconds) on Windows, from the
+## fields of _localtime64.
+func windows_timezone_offset(ti: i64) -> i32:
+    # under `if` because `luce-base test` compiles this function on every target
+    if os.windows:
+        let t = windows_supported_time(ti)
+        let loc = win_localtime(&t) else return 0
+        let local_days = days_from_year((i64)loc.tm_year + 1900) + (i64)loc.tm_yday
+        let local_ti = (local_days * 86400 + (i64)loc.tm_hour * 3600 + (i64)loc.tm_min * 60
+                        + (i64)loc.tm_sec)
+        return (i32)floor_div(t - local_ti, 60)
+    else:
+        return 0
 
 # OS dependent. d = argv[0] is in ms from 1970. Return the difference
 # between UTC time and local time 'd' in minutes
@@ -44,11 +82,7 @@ func get_timezone_offset(time: i64) -> i32:
     # clamping for a 32-bit time_t does not apply
     let ti = time // 1000
     if os.windows:
-        let gm = win_gmtime(&ti) else return 0
-        let gm_ti = win_mktime(gm)
-        let loc = win_localtime(&ti) else return 0
-        let loc_ti = win_mktime(loc)
-        return (i32)((gm_ti - loc_ti) // 60)
+        return windows_timezone_offset(ti)
     var tm: Tm = ---
     discard(localtime_r(&ti, &tm))
     return (i32)(-tm.tm_gmtoff // 60)
