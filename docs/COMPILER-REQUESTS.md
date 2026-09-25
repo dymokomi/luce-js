@@ -153,12 +153,22 @@ test "first":
 
 Expected: linear, like the native build. (luce-browser runs that module's tests `--native`.)
 
-## Done on a branch, waiting for merge and release
+## Done on a branch, waiting for merge and release (x86_64 runs on LINUX/WINDOWS pending)
 
 - **Dense `match` → jump table; u8 match subject kept in a register; `(i32)`/`(i64)` float
   casts as one instruction** (fcvtzs / cvttsd2si with fix-ups): luce-base branch
   `perf-match` a84393d. ljs instruction counts −10…−45% per benchmark. Narrow and unsigned
   saturating float casts still call the helper.
+
+- **Enum case check linear** (800 cases 6.9 s → 0.02 s) and **`fmt` accepts `u8[128]*`**
+  (items 1 and 8 above): branch `check-fixes` d568164.
+- **Fallible results copied inline instead of memcpy** (ljs memcpy calls 7193 → 901; item 2,
+  partly: returning them in registers is an ABI change still to do), **parameters moved
+  straight from their registers** (System V and arm64; not yet Windows x64), **frame addresses
+  formed at their use** with base+offset folding (item 3), **`inline` honoured up to 1024
+  instructions, traps not counted** (item 4): branch `perf-calls` fa4fc10 (includes
+  perf-match). ljs: fib 15.11G → 12.21G instructions, empty-call loop 3.59G → 2.89G,
+  string_concat 16.13G → 11.61G.
 
 ## Fixed
 
