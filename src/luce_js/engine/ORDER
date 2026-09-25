@@ -58,7 +58,15 @@ stub_r20_function_eval.lucb
 stub_r21_bytecode_io.lucb
 stub_r22_object_function_error.lucb
 stub_r23_array_iterator.lucb
-stub_r24_number_string_math.lucb
+number_boolean.lucb
+string_exotic.lucb
+string_search.lucb
+string_regexp_methods.lucb
+string_methods.lucb
+string_normalize_iterator.lucb
+math.lucb
+math_sum_precise.lucb
+timezone_regexp_objects.lucb
 stub_r25_regexp_json_reflect.lucb
 stub_r26_proxy_symbol_map.lucb
 stub_r27_promise_date.lucb
@@ -74,3 +82,4 @@ tests_shapes_objects.lucb
 tests_r08.lucb
 tests_r10.lucb
 tests_r09.lucb
+tests_r24.lucb

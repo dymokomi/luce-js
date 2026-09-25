@@ -1,0 +1,223 @@
+#==============================================================================================
+#
+#   math_sum_precise - Math.sumPrecise: the exact sum of an iterable of numbers
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 47104-47358: the sum is accumulated exactly in a fixed-point
+#       accumulator of 56-bit limbs covering the whole double range, renormalized every
+#       SUM_PRECISE_COUNTER_INIT additions, and rounded once to the nearest double (ties to
+#       even) at the end. Infinities and NaN are tracked in a state beside it.
+#
+#==============================================================================================
+
+# mark: The accumulator =========================================================================
+
+## The special values met so far (SumPreciseStateEnum).
+enum SumPreciseStateEnum as i32:
+    finite = 0
+    infinity = 1
+    ## must be after infinity
+    minus_infinity = 2
+    ## must be after minus_infinity
+    nan = 3
+
+let sp_limb_bits: u32 = 56
+let sp_rnd_bits: u32 = sp_limb_bits - 53
+# we add one extra limb to avoid having to test for overflows during the sum
+let sum_precise_acc_len: i32 = 39
+
+let sum_precise_counter_init: u32 = 250
+
+## The state of an exact sum (SumPreciseState).
+struct SumPreciseState:
+    var state: SumPreciseStateEnum
+    var counter: u32
+    ## 'acc' contains n_limbs and is not necessarily normalized: acc[n_limbs - 1] may be
+    ## 0. 0 indicates minus zero result when state = finite
+    var n_limbs: i32
+    var acc: i64[39]
+
+# The mask of a limb's bits.
+func sp_limb_mask() -> u64:
+    return ((u64)1 << sp_limb_bits) - 1
+
+func sum_precise_init(s: SumPreciseState*):
+    for i in 0..<s.acc.length:
+        s.acc[i] = 0
+    s.state = SumPreciseStateEnum.finite
+    s.counter = sum_precise_counter_init
+    s.n_limbs = 0
+
+# Propagate the carries so that every limb but the last is in [0, 2^56).
+func sum_precise_renorm(s: SumPreciseState*):
+    var carry: i64 = 0
+    for i: i32 in 0..<s.n_limbs:
+        let v = s.acc[(usize)i] +% carry
+        s.acc[(usize)i] = (i64)((u64)v & sp_limb_mask())
+        carry = v >> (i64)sp_limb_bits
+    # we add a failsafe but it should be never reached in a
+    # reasonnable amount of time
+    if carry != 0 and s.n_limbs < sum_precise_acc_len:
+        s.acc[(usize)s.n_limbs] = carry
+        s.n_limbs += 1
+
+# Add `d` to the sum. As in C, the limbs are two's complement words that wrap between
+# renormalizations.
+func sum_precise_add(s: SumPreciseState*, d: f64):
+    let a = cutils.float64_as_uint64(d)
+    let sgn = (i32)(a >> 63)
+    let e = (i32)((a >> 52) & ((1 << 11) - 1))
+    var m = a & (((u64)1 << 52) - 1)
+    var p: i32 = 0
+    var shift: u32 = 0
+    if e == 2047:
+        if m == 0:
+            # +/- infinity
+            if (s.state == SumPreciseStateEnum.nan or
+                (s.state == SumPreciseStateEnum.minus_infinity and sgn == 0) or
+                (s.state == SumPreciseStateEnum.infinity and sgn != 0)):
+                s.state = SumPreciseStateEnum.nan
+            else:
+                s.state = (SumPreciseStateEnum)((i32)SumPreciseStateEnum.infinity + sgn)
+        else:
+            # NaN
+            s.state = SumPreciseStateEnum.nan
+        return
+    elif e == 0:
+        if m == 0:
+            # zero
+            if s.n_limbs == 0 and sgn == 0:
+                s.n_limbs = 1
+            return
+        # subnormal
+        p = 0
+        shift = 0
+    else:
+        # Note: we sum even if state != finite to avoid tests
+        m |= (u64)1 << 52
+        shift = (u32)(e - 1)
+        # 'p' is the position of a0 in acc. The division is normally
+        # implementation as a multiplication by the compiler.
+        p = (i32)(shift // sp_limb_bits)
+        shift %= sp_limb_bits
+    # add:
+    let a0 = (m << shift) & sp_limb_mask()
+    let a1 = m >> (sp_limb_bits - shift)
+    let lo = (usize)p
+    if sgn == 0:
+        s.acc[lo] = s.acc[lo] +% (i64)a0
+        s.acc[lo + 1] = s.acc[lo + 1] +% (i64)a1
+    else:
+        s.acc[lo] = s.acc[lo] -% (i64)a0
+        s.acc[lo + 1] = s.acc[lo + 1] -% (i64)a1
+    s.n_limbs = cutils.max_int(s.n_limbs, p + 2)
+
+    s.counter -= 1
+    if s.counter == 0:
+        s.counter = sum_precise_counter_init
+        sum_precise_renorm(s)
+
+# The sum rounded to the nearest double, ties to even.
+func sum_precise_get_result(s: SumPreciseState*) -> f64:
+    if s.state != SumPreciseStateEnum.finite:
+        match s.state:
+            .minus_infinity:
+                return -math.infinity
+            .nan:
+                return math.nan
+            _:
+                return math.infinity
+
+    sum_precise_renorm(s)
+
+    # extract the sign and absolute value
+    var n = s.n_limbs
+    # minus zero result
+    if n == 0:
+        return -0.0
+
+    # normalize
+    while n > 0 and s.acc[(usize)(n - 1)] == 0:
+        n -= 1
+    # zero result. The spec tells it is always positive in the finite case
+    if n == 0:
+        return 0.0
+    let is_neg = s.acc[(usize)(n - 1)] < 0
+    if is_neg:
+        # negate
+        # XXX: do it only when needed
+        var carry: u64 = 1
+        for i: i32 in 0..<(n - 1):
+            let v = (sp_limb_mask() -% (u64)s.acc[(usize)i]) +% carry
+            carry = v >> sp_limb_bits
+            s.acc[(usize)i] = (i64)(v & sp_limb_mask())
+        let top = (usize)(n - 1)
+        s.acc[top] = (i64)(((-%(u64)s.acc[top]) +% carry) -% 1)
+        while n > 1 and s.acc[(usize)(n - 1)] == 0:
+            n -= 1
+    let sign_bit = (u64)is_neg << 63
+    # subnormal case
+    if n == 1 and (u64)s.acc[0] < ((u64)1 << 52):
+        return cutils.uint64_as_float64(sign_bit | (u64)s.acc[0])
+    # normal case
+    var e = n * (i32)sp_limb_bits
+    var p = n - 1
+    var m = (u64)s.acc[(usize)p]
+    let shift = cutils.clz64(m) - (64 - (i32)sp_limb_bits)
+    e = e - shift - 52
+    if shift != 0:
+        m <<= (u64)shift
+        if p > 0:
+            p -= 1
+            let shift1 = sp_limb_bits - (u32)shift
+            let nz = (u64)s.acc[(usize)p] & (((u64)1 << shift1) - 1)
+            m = m | ((u64)s.acc[(usize)p] >> shift1) | (u64)(nz != 0)
+    if (m & (((u64)1 << sp_rnd_bits) - 1)) == ((u64)1 << (sp_rnd_bits - 1)):
+        # see if the LSB part is non zero for the final rounding
+        while p > 0:
+            p -= 1
+            if s.acc[(usize)p] != 0:
+                m |= 1
+                break
+    # rounding to nearest with ties to even
+    let addend = ((u64)1 << (sp_rnd_bits - 1)) - 1 + ((m >> sp_rnd_bits) & 1)
+    m = (m + addend) >> sp_rnd_bits
+    # handle overflow in the rounding
+    if m == ((u64)1 << 53):
+        e += 1
+    if e >= 2047:
+        # infinity
+        return cutils.uint64_as_float64(sign_bit | ((u64)2047 << 52))
+    m &= ((u64)1 << 52) - 1
+    return cutils.uint64_as_float64(sign_bit | ((u64)e << 52) | m)
+
+# mark: Math.sumPrecise =========================================================================
+
+func js_math_sum_precise(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var s_s: SumPreciseState
+    let s = &s_s
+
+    let iter = try js_get_iterator(ctx, argv[0], false)
+    defer js_free_value(ctx, iter)
+    let next = try js_get_property(ctx, iter, atom_next)
+    defer js_free_value(ctx, next)
+    sum_precise_init(s)
+    while true:
+        var done = false
+        # no arguments: any valid pointer for argv
+        var no_args = js_undefined()
+        let item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
+        if done:
+            break
+        var d: f64 = 0.0
+        if item.tag == Tag.float64:
+            d = js_value_get_float64(item)
+        elif item.tag == Tag.int:
+            d = f64(js_value_get_int(item))
+        else:
+            js_free_value(ctx, item)
+            # the iterator is closed with the TypeError pending
+            errdefer js_iterator_close(ctx, iter, true) catch failure: recover ()
+            try js_throw_type_error(ctx, "not a number")
+        sum_precise_add(s, d)
+    return js_new_float64_raw(sum_precise_get_result(s))

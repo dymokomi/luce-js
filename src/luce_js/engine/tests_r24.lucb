@@ -1,0 +1,173 @@
+#==============================================================================================
+#
+#   tests_r24 - Tests of the region r24 helpers that need no runtime
+#
+#   DESCRIPTION:
+#       The Math helpers (round, sign, the signed-zero min and max, fround, xorshift64*),
+#       Math.sumPrecise's accumulator against results of upstream's C code, the flat
+#       string search and case helpers on strings built by hand, the UTF-32 comparison
+#       and the time zone offset.
+#
+#==============================================================================================
+
+# mark: Helpers =================================================================================
+
+# The strings are built by tests_r04's test_string8 and test_string16.
+
+# The exact sum of `values` as Math.sumPrecise computes it.
+func test_sum_precise(values: const f64[]) -> f64:
+    var s: SumPreciseState
+    sum_precise_init(&s)
+    for v in values:
+        sum_precise_add(&s, v)
+    return sum_precise_get_result(&s)
+
+# mark: Math ====================================================================================
+
+test "Math.round rounds half up and keeps the sign of zero":
+    assert(js_math_round(0.5) == 1.0)
+    assert(js_math_round(1.5) == 2.0)
+    assert(js_math_round(2.5) == 3.0)
+    assert(js_math_round(-1.5) == -1.0)
+    assert(js_math_round(-2.5) == -2.0)
+    assert(js_math_round(-2.6) == -3.0)
+    assert(js_math_round(0.49999999999999994) == 0.0)
+    assert(js_math_round(-0.5).bits() == (-0.0).bits())
+    assert(js_math_round(-0.2).bits() == (-0.0).bits())
+    assert(js_math_round(0.2).bits() == 0)
+    assert(js_math_round(-0.7) == -1.0)
+    assert(js_math_round(4503599627370495.5) == 4503599627370496.0)
+    assert(js_math_round(9007199254740993.0) == 9007199254740993.0)
+    assert(js_math_round(math.infinity) == math.infinity)
+    assert(math.is_nan(js_math_round(math.nan)))
+
+test "Math.sign":
+    assert(js_math_sign(3.5) == 1.0)
+    assert(js_math_sign(-0.1) == -1.0)
+    assert(js_math_sign(-0.0).bits() == (-0.0).bits())
+    assert(js_math_sign(0.0).bits() == 0)
+    assert(math.is_nan(js_math_sign(math.nan)))
+
+test "min and max order signed zeros":
+    assert(js_fmin(0.0, -0.0).bits() == (-0.0).bits())
+    assert(js_fmin(-0.0, 0.0).bits() == (-0.0).bits())
+    assert(js_fmax(0.0, -0.0).bits() == 0)
+    assert(js_fmax(-0.0, 0.0).bits() == 0)
+    assert(js_fmin(1.0, -2.0) == -2.0)
+    assert(js_fmax(1.0, -2.0) == 1.0)
+
+test "fround and f16round":
+    assert(js_math_fround(0.1) == 0.10000000149011612)
+    assert(js_math_fround(5.5) == 5.5)
+    assert(js_math_f16round(1.337) == 1.3369140625)
+
+test "xorshift64* steps as upstream":
+    var state: u64 = 1
+    assert(xorshift64star(&state) == 5180492295206395165)
+    assert(state == 33554433)
+    state = 0x123456789abcdef
+    assert(xorshift64star(&state) == 0x7c9482472cb6708c)
+    assert(state == 0xa69cf1e9aa4d68fc)
+    assert(xorshift64star(&state) == 0xd5705692bf1f28de)
+    assert(xorshift64star(&state) == 0x88b71e3ba5e005c0)
+
+# mark: Math.sumPrecise =========================================================================
+
+# The expected values are upstream's sum_precise_* compiled from quickjs.c.
+test "sumPrecise rounds the exact sum once":
+    assert(test_sum_precise([0.1, 0.2, 0.3]).bits() == 0x3fe3333333333333)
+    assert(test_sum_precise([1e308, 1e308, -1e308]).bits() == 0x7fe1ccf385ebc8a0)
+    assert(test_sum_precise([9007199254740992.0, 1.0, f64.bits(0x3c30000000000000)]).bits() == 0x4340000000000001)
+    assert(test_sum_precise([9007199254740992.0, 1.0]).bits() == 0x4340000000000000)
+    assert(test_sum_precise([1.5, -2.75, 1e-300, -1e-300, 3.25]).bits() == 0x4000000000000000)
+    assert(test_sum_precise([f64.bits(0x800012688b70e62b), f64.bits(0x3739a252b281)]).bits() == 0x24d116e1cc56)
+    assert(test_sum_precise([5e-324, 5e-324]).bits() == 0x2)
+
+test "sumPrecise of zeros":
+    assert(test_sum_precise([-0.0]).bits() == (-0.0).bits())
+    let none_: f64[1] = [-0.0]
+    assert(test_sum_precise(none_[0..<0]).bits() == (-0.0).bits())
+    assert(test_sum_precise([-0.0, 0.0]).bits() == 0)
+
+test "sumPrecise of infinities and NaN":
+    let max = 1.7976931348623157e308
+    assert(test_sum_precise([max, max]) == math.infinity)
+    assert(test_sum_precise([-max, -max]) == -math.infinity)
+    assert(math.is_nan(test_sum_precise([math.infinity, -math.infinity])))
+    assert(test_sum_precise([-math.infinity, 1.0]) == -math.infinity)
+
+test "sumPrecise renormalizes long sums":
+    var values: f64[1000] = ---
+    for i in 0..<values.length:
+        values[i] = 0.1
+    assert(test_sum_precise(values).bits() == 0x4059000000000000)
+    for i in 0..<values.length:
+        values[i] = -f64.bits(0x403fffffffffffff) * f64((i % 3) + 1)
+    assert(test_sum_precise(values).bits() == 0xc0ef3bdfffffffff)
+
+# mark: Strings =================================================================================
+
+test "string search helpers":
+    let hay = test_string8("abcabcd")
+    defer cutils.c_free(hay)
+    let abcd = test_string8("abcd")
+    defer cutils.c_free(abcd)
+    let empty = test_string8("")
+    defer cutils.c_free(empty)
+    assert(string_indexof_char(hay, (i32)'c', 0) == 2)
+    assert(string_indexof_char(hay, (i32)'c', 3) == 5)
+    assert(string_indexof_char(hay, (i32)'z', 0) == -1)
+    assert(string_indexof_char(hay, 0x163, 0) == -1)
+    assert(string_indexof(hay, abcd, 0) == 3)
+    assert(string_indexof(hay, abcd, 4) == -1)
+    assert(string_indexof(hay, empty, 5) == 5)
+    assert(string_cmp(hay, abcd, 3, 0, 4) == 0)
+    assert(string_cmp(hay, abcd, 0, 0, 4) == (i32)'a' - (i32)'d')
+
+test "surrogates in wide strings":
+    let good_units: u16[4] = [0x61, 0xd83d, 0xde00, 0x62]
+    let good = test_string16(good_units)
+    defer cutils.c_free(good)
+    let lone_units: u16[3] = [0x61, 0xde00, 0xd83d]
+    let lone = test_string16(lone_units)
+    defer cutils.c_free(lone)
+    assert(js_string_find_invalid_codepoint(good) == -1)
+    assert(js_string_find_invalid_codepoint(lone) == 1)
+    # a unicode advance steps over the whole pair
+    assert(string_advance_index(good, 1, true) == 3)
+    assert(string_advance_index(good, 1, false) == 2)
+    var idx: i32 = 3
+    assert(string_prevc(good, &idx) == 0x1f600)
+    assert(idx == 1)
+    idx = 0
+    assert(string_prevc(good, &idx) == 0)
+
+test "the final sigma rule":
+    # "ΑΣ" ends a word: the sigma is final; "ΑΣΑ" does not
+    let end_units: u16[2] = [0x391, 0x3a3]
+    let at_end = test_string16(end_units)
+    defer cutils.c_free(at_end)
+    let mid_units: u16[3] = [0x391, 0x3a3, 0x391]
+    let in_middle = test_string16(mid_units)
+    defer cutils.c_free(in_middle)
+    let alone_units: u16[1] = [0x3a3]
+    let alone = test_string16(alone_units)
+    defer cutils.c_free(alone)
+    assert(test_final_sigma(at_end, 1))
+    assert(not test_final_sigma(in_middle, 1))
+    assert(not test_final_sigma(alone, 0))
+
+test "UTF-32 comparison":
+    let a: u32[3] = [0x61, 0x62, 0x63]
+    let b: u32[2] = [0x61, 0x62]
+    let c: u32[3] = [0x61, 0x1f600, 0x63]
+    assert(js_utf32_compare(&a[0], 3, &a[0], 3) == 0)
+    assert(js_utf32_compare(&a[0], 3, &b[0], 2) == 1)
+    assert(js_utf32_compare(&b[0], 2, &a[0], 3) == -1)
+    assert(js_utf32_compare(&a[0], 3, &c[0], 3) < 0)
+
+# mark: Time zone ===============================================================================
+
+test "the time zone offset is a whole number of minutes within a day":
+    let offset = get_timezone_offset(1700000000000)
+    assert(offset > -24 * 60 and offset < 24 * 60)

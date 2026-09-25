@@ -149,7 +149,7 @@ func js_add_standard_intrinsics(ctx: Context*) -> !:
     if try js_add_intrinsic_base_objects(ctx) != 0: error(exception, "")
     if try js_add_intrinsic_date(ctx) != 0: error(exception, "")
     if js_add_intrinsic_eval(ctx) != 0: error(exception, "")
-    if js_add_intrinsic_string_normalize(ctx) != 0: error(exception, "")
+    try js_add_intrinsic_string_normalize(ctx)
     if try js_add_intrinsic_reg_exp(ctx) != 0: error(exception, "")
     if js_add_intrinsic_json(ctx) != 0: error(exception, "")
     if try js_add_intrinsic_proxy(ctx) != 0: error(exception, "")

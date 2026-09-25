@@ -1,0 +1,210 @@
+#==============================================================================================
+#
+#   string_search - Searching strings: the helpers, well-formedness, indexOf and includes
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 45543-45805: comparing and searching flat strings
+#       (string_cmp, string_indexof_char, string_indexof, string_advance_index), lone
+#       surrogates (isWellFormed, toWellFormed), and String.prototype's indexOf,
+#       lastIndexOf, includes, startsWith and endsWith.
+#
+#==============================================================================================
+
+# mark: Search helpers ==========================================================================
+
+# Compare `len` code units of `p1` from `x1` with `p2` from `x2`: 0 when equal, else the
+# difference of the first code units that differ.
+func string_cmp(p1: const String*, p2: const String*, x1: i32, x2: i32, len: i32) -> i32:
+    for i: i32 in 0..<len:
+        let c1 = string_get(p1, x1 + i)
+        let c2 = string_get(p2, x2 + i)
+        if c1 != c2:
+            return c1 - c2
+    return 0
+
+# The index of the first code unit `c` of `p` at or after `from_`, or -1.
+func string_indexof_char(p: const String*, c: i32, from_: i32) -> i32:
+    # assuming 0 <= from_ <= p.len
+    let len = (i32)p.len
+    if p.is_wide_char:
+        let s16 = str16(p)
+        for i: i32 in from_..<len:
+            if (i32)s16[i] == c:
+                return i
+    else:
+        if (c & ~0xff) == 0:
+            let s8 = str8(p)
+            for i: i32 in from_..<len:
+                if s8[i] == (u8)c:
+                    return i
+    return -1
+
+# The index of the first occurrence of `p2` in `p1` at or after `from_`, or -1.
+func string_indexof(p1: const String*, p2: const String*, from_: i32) -> i32:
+    # assuming 0 <= from_ <= p1.len
+    let len1 = (i32)p1.len
+    let len2 = (i32)p2.len
+    if len2 == 0:
+        return from_
+    let c = string_get(p2, 0)
+    var i = from_
+    while i + len2 <= len1:
+        let j = string_indexof_char(p1, c, i)
+        if j < 0 or j + len2 > len1:
+            break
+        if string_cmp(p1, p2, j + 1, 1, len2 - 1) == 0:
+            return j
+        i = j + 1
+    return -1
+
+# The index after the character at `index` (AdvanceStringIndex): one code unit, or a whole
+# surrogate pair when `unicode_` is set.
+func string_advance_index(p: const String*, index: i64, unicode_: bool) -> i64:
+    if not unicode_ or index >= (i64)p.len or not p.is_wide_char:
+        return index + 1
+    var index32 = (i32)index
+    discard(string_getc(p, &index32))
+    return (i64)index32
+
+# return the position of the first invalid character in the string or
+# -1 if none
+func js_string_find_invalid_codepoint(p: const String*) -> i32:
+    if not p.is_wide_char:
+        return -1
+    let s16 = str16(p)
+    let len = (i32)p.len
+    var i: i32 = 0
+    while i < len:
+        let c = (u32)s16[i]
+        if cutils.is_surrogate(c):
+            if cutils.is_hi_surrogate(c) and (i + 1) < len and cutils.is_lo_surrogate((u32)s16[i + 1]):
+                i += 1
+            else:
+                return i
+        i += 1
+    return -1
+
+# mark: Well-formed strings =====================================================================
+
+func js_string_is_well_formed(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+    let p = text.u.string
+    let ret = js_string_find_invalid_codepoint(p) < 0
+    js_free_value(ctx, text)
+    return js_new_bool(ret)
+
+func js_string_to_well_formed(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+
+    var p = text.u.string
+    # avoid reallocating the string if it is well-formed
+    var i = js_string_find_invalid_codepoint(p)
+    if i < 0:
+        return text
+
+    let ret = js_new_string16_len(ctx, str16(p), (i32)p.len) catch failure:
+        js_free_value(ctx, text)
+        error(failure.code, failure.message)
+    js_free_value(ctx, text)
+
+    p = ret.u.string
+    let s16 = str16(p)
+    let len = (i32)p.len
+    while i < len:
+        let c = (u32)s16[i]
+        if cutils.is_surrogate(c):
+            if cutils.is_hi_surrogate(c) and (i + 1) < len and cutils.is_lo_surrogate((u32)s16[i + 1]):
+                i += 1
+            else:
+                s16[i] = 0xFFFD
+        i += 1
+    return ret
+
+# mark: indexOf and includes ====================================================================
+
+# indexOf (last_index_of 0) and lastIndexOf (last_index_of 1).
+func js_string_index_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*, last_index_of: i32) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    let v = try js_to_string(ctx, argv[0])
+    defer js_free_value(ctx, v)
+    let p = text.u.string
+    let p1 = v.u.string
+    let len = (i32)p.len
+    let v_len = (i32)p1.len
+    var pos: i32 = 0
+    var start: i32 = 0
+    var stop: i32 = 0
+    var inc: i32 = 0
+    if last_index_of != 0:
+        pos = len - v_len
+        if argc > 1:
+            var d: f64 = 0.0
+            try js_to_float64(ctx, &d, argv[1])
+            if not math.is_nan(d):
+                if d <= 0.0:
+                    pos = 0
+                elif d < f64(pos):
+                    pos = (i32)d
+        start = pos
+        stop = 0
+        inc = -1
+    else:
+        pos = 0
+        if argc > 1:
+            try js_to_int32_clamp(ctx, &pos, argv[1], 0, len, 0)
+        start = pos
+        stop = len - v_len
+        inc = 1
+    var ret: i32 = -1
+    if len >= v_len and inc * (stop - start) >= 0:
+        var i = start
+        while true:
+            if string_cmp(p, p1, i, 0, v_len) == 0:
+                ret = i
+                break
+            if i == stop:
+                break
+            i += inc
+    return js_new_int32(ret)
+
+# includes (magic 0), startsWith (magic 1) and endsWith (magic 2).
+func js_string_includes(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    let text = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, text)
+    if try js_is_regexp(ctx, argv[0]):
+        try js_throw_type_error(ctx, "regexp not supported")
+    let v = try js_to_string(ctx, argv[0])
+    defer js_free_value(ctx, v)
+    let p = text.u.string
+    let p1 = v.u.string
+    var len = (i32)p.len
+    let v_len = (i32)p1.len
+    var pos = len if magic == 2 else 0
+    if argc > 1 and not js_is_undefined(argv[1]):
+        try js_to_int32_clamp(ctx, &pos, argv[1], 0, len, 0)
+    len -= v_len
+    var ret = false
+    var start: i32 = 0
+    var stop: i32 = 0
+    if magic == 0:
+        start = pos
+        stop = len
+    else:
+        if magic == 1:
+            if pos > len:
+                return js_new_bool(false)
+        else:
+            pos -= v_len
+        start = pos
+        stop = pos
+    if start >= 0 and start <= stop:
+        var i = start
+        while true:
+            if string_cmp(p, p1, i, 0, v_len) == 0:
+                ret = true
+                break
+            if i == stop:
+                break
+            i += 1
+    return js_new_bool(ret)

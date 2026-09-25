@@ -1,0 +1,247 @@
+#==============================================================================================
+#
+#   string_exotic - The String exotic object, the String constructor and its statics,
+#                   and the character access methods
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 45174-45541: the exotic methods of String objects (their
+#       index properties are the characters of the wrapped string), the String
+#       constructor, thisStringValue, String.fromCharCode, String.fromCodePoint,
+#       String.raw, the test262 helper codePointRange, and String.prototype's charCodeAt,
+#       charAt/at, codePointAt and concat. The disabled js_string___isSpace (#if 0) is not
+#       ported.
+#
+#==============================================================================================
+
+# mark: String exotic methods ===================================================================
+
+# The character property `prop` of the String object `obj`, when `prop` is an index inside
+# the string.
+func js_string_get_own_property(ctx: Context*, desc: PropertyDescriptor*?, obj: Value, prop: Atom) -> bool!:
+    # This is a class exotic method: obj class_id is ClassId.string
+    if js_atom_is_tagged_int_raw(prop):
+        let p = obj.u.obj
+        if p.u.object_data.tag == Tag.string:
+            let p1 = p.u.object_data.u.string
+            let idx = js_atom_to_uint32_raw(prop)
+            if idx < p1.len:
+                if let d = desc:
+                    let ch = string_get(p1, (i32)idx)
+                    d.flags = prop_enumerable
+                    d.value = try js_new_string_char(ctx, (u16)ch)
+                    d.getter = js_undefined()
+                    d.setter = js_undefined()
+                return true
+    return false
+
+# Defining a character property succeeds only when it keeps the character and its flags;
+# other properties are defined as on an ordinary object.
+func js_string_define_own_property(ctx: Context*, this_obj: Value, prop: Atom, val: Value,
+                                   getter: Value, setter: Value, flags: i32) -> bool!:
+    if js_atom_is_tagged_int_raw(prop):
+        let idx = js_atom_to_uint32_raw(prop)
+        let p = this_obj.u.obj
+        if p.u.object_data.tag == Tag.string:
+            let p1 = p.u.object_data.u.string
+            if idx < p1.len:
+                if not check_define_prop_flags(prop_enumerable, flags):
+                    return try js_throw_type_error_or_false(ctx, flags, "property is not configurable")
+                # check that the same value is configured
+                if (flags & prop_has_value) != 0:
+                    var same = false
+                    if val.tag == Tag.string:
+                        let p2 = val.u.string
+                        same = p2.len == 1 and string_get(p1, (i32)idx) == string_get(p2, 0)
+                    if not same:
+                        return try js_throw_type_error_or_false(ctx, flags, "property is not configurable")
+                return true
+    return try js_define_property(ctx, this_obj, prop, val, getter, setter, flags | prop_no_exotic)
+
+# The character properties cannot be deleted.
+func js_string_delete_property(ctx: Context*, obj: Value, prop: Atom) -> bool!:
+    if js_atom_is_tagged_int_raw(prop):
+        let idx = js_atom_to_uint32_raw(prop)
+        if idx < js_string_obj_get_length(ctx, obj):
+            return false
+    return true
+
+## The exotic behaviour of String objects (js_string_exotic_methods).
+let js_string_exotic_methods = ClassExoticMethods(
+    get_own_property = js_string_get_own_property,
+    define_own_property = js_string_define_own_property,
+    delete_property = js_string_delete_property,
+)
+
+# mark: The String constructor ==================================================================
+
+func js_string_constructor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -> Value!:
+    var val = js_undefined()
+    if argc == 0:
+        val = try js_atom_to_string(ctx, atom_empty_string)
+    else:
+        if js_is_undefined(new_target) and js_is_symbol(argv[0]):
+            let p = (AtomStruct*)argv[0].u.ptr
+            let descr = try js_atom_to_string(ctx, js_get_atom_index(ctx.rt, p))
+            val = try js_concat_string3(ctx, "Symbol(".bytes.data, descr, ")".bytes.data)
+        else:
+            val = try js_to_string(ctx, argv[0])
+    if not js_is_undefined(new_target):
+        let p1 = val.u.string
+
+        let obj = js_create_from_ctor(ctx, new_target, (i32)ClassId.string) catch failure:
+            js_free_value(ctx, val)
+            error(failure.code, failure.message)
+        # as upstream, failures to store the data and the length are not reported
+        js_set_object_data(ctx, obj, val) else ()
+        discard(js_define_property_value(ctx, obj, atom_length, js_new_int32((i32)p1.len), 0) else false)
+        return obj
+    return val
+
+# The string of `this_val` (thisStringValue): a string, or the data of a String object.
+func js_this_string_value(ctx: Context*, this_val: Value) -> Value!:
+    if this_val.tag == Tag.string or this_val.tag == Tag.string_rope:
+        return js_dup_value(ctx, this_val)
+
+    if this_val.tag == Tag.object:
+        let p = this_val.u.obj
+        if p.class_id == ClassId.string:
+            if p.u.object_data.tag == Tag.string:
+                return js_dup_value(ctx, p.u.object_data)
+    try js_throw_type_error(ctx, "not a string")
+
+# mark: String statics ==========================================================================
+
+func js_string_from_char_code(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    # as upstream, a failed allocation is reported by the first write
+    string_buffer_init(ctx, b, argc) else ()
+    errdefer string_buffer_free(b)
+
+    for i: i32 in 0..<argc:
+        var c: i32 = 0
+        try js_to_int32(ctx, &c, argv[i])
+        try string_buffer_putc16(b, (u32)(c & 0xffff))
+    return try string_buffer_end(b)
+
+func js_string_from_code_point(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    # XXX: could pre-compute string length if all arguments are JS_TAG_INT
+
+    try string_buffer_init(ctx, b, argc)
+    errdefer string_buffer_free(b)
+    for i: i32 in 0..<argc:
+        var c: i32 = 0
+        if argv[i].tag == Tag.int:
+            c = js_value_get_int(argv[i])
+            if c < 0 or c > 0x10ffff:
+                try js_throw_range_error(ctx, "invalid code point")
+        else:
+            var d: f64 = 0.0
+            try js_to_float64(ctx, &d, argv[i])
+            if math.is_nan(d) or d < 0.0 or d > f64(0x10ffff):
+                try js_throw_range_error(ctx, "invalid code point")
+            c = (i32)d
+            if f64(c) != d:
+                try js_throw_range_error(ctx, "invalid code point")
+        try string_buffer_putc(b, (u32)c)
+    return try string_buffer_end(b)
+
+func js_string_raw(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # raw(temp,...a)
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    string_buffer_init(ctx, b, 0) else ()
+    errdefer string_buffer_free(b)
+    let cooked = try js_to_object(ctx, argv[0])
+    defer js_free_value(ctx, cooked)
+    let raw = try js_to_object_free(ctx, js_get_property(ctx, cooked, atom_raw))
+    defer js_free_value(ctx, raw)
+    var n: i64 = 0
+    try js_get_length64(ctx, &n, raw)
+
+    var i: i64 = 0
+    while i < n:
+        let val = try js_to_string_free(ctx, js_get_property_int64(ctx, raw, i))
+        # as upstream, a failed append is reported by the next write
+        string_buffer_concat_value_free(b, val) else ()
+        if i < n - 1 and i + 1 < (i64)argc:
+            try string_buffer_concat_value(b, argv[(isize)(i + 1)])
+        i += 1
+    return try string_buffer_end(b)
+
+## The string of the code points from `argv[0]` to `argv[1]` (exclusive), clamped to
+## U+10FFFF (js_string_codePointRange; only used in test262).
+pub func js_string_code_point_range(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    var start: u32 = 0
+    var end: u32 = 0
+    var b_s: StringBuffer = ---
+    let b = &b_s
+
+    # JS_ToUint32
+    try js_to_int32(ctx, (i32*)&start, argv[0])
+    try js_to_int32(ctx, (i32*)&end, argv[1])
+    end = cutils.min_uint32(end, 0x10ffff + 1)
+
+    if start > end:
+        start = end
+    var n = end - start
+    if end > 0x10000:
+        n += end - cutils.max_uint32(start, 0x10000)
+    try string_buffer_init2(ctx, b, (i32)n, end >= 0x100)
+    for i in start..<end:
+        string_buffer_putc(b, i) else ()
+    return try string_buffer_end(b)
+
+# mark: Character access ========================================================================
+
+func js_string_char_code_at(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, val)
+    let p = val.u.string
+    var idx: i32 = 0
+    try js_to_int32_sat(ctx, &idx, argv[0])
+    if idx < 0 or idx >= (i32)p.len:
+        return js_nan()
+    let c = string_get(p, idx)
+    return js_new_int32(c)
+
+# charAt (is_at 0) and at (is_at 1, negative indexes count from the end).
+func js_string_char_at(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_at: i32) -> Value!:
+    let val = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, val)
+    let p = val.u.string
+    var idx: i32 = 0
+    try js_to_int32_sat(ctx, &idx, argv[0])
+    if idx < 0 and is_at != 0:
+        idx += (i32)p.len
+    if idx < 0 or idx >= (i32)p.len:
+        if is_at != 0:
+            return js_undefined()
+        return try js_atom_to_string(ctx, atom_empty_string)
+    let c = string_get(p, idx)
+    return try js_new_string_char(ctx, (u16)c)
+
+func js_string_code_point_at(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_to_string_check_object(ctx, this_val)
+    defer js_free_value(ctx, val)
+    let p = val.u.string
+    var idx: i32 = 0
+    try js_to_int32_sat(ctx, &idx, argv[0])
+    if idx < 0 or idx >= (i32)p.len:
+        return js_undefined()
+    let c = string_getc(p, &idx)
+    return js_new_int32(c)
+
+func js_string_concat(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    # XXX: Use more efficient method
+    # XXX: This method is OK if r has a single refcount
+    # XXX: should use string_buffer?
+    var r = try js_to_string_check_object(ctx, this_val)
+    for i: i32 in 0..<argc:
+        r = try js_concat_string(ctx, r, js_dup_value(ctx, argv[i]))
+    return r

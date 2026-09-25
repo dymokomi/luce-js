@@ -10,6 +10,7 @@
 #==============================================================================================
 
 import io
+import math
 import memory
 import os
 import luce_js.cutils as cutils

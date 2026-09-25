@@ -181,11 +181,11 @@ pub func js_new_runtime2(mf: const MallocFunctions*, opaque: void*?) -> Runtime*
         return none
     let classes = rt.class_array else trap("js_new_runtime2: no class array")
     # pending-link: the exotic method tables are declared by the regions that own them
-    # (js_arguments_exotic_methods: quickjs.c:16150, js_string_exotic_methods: 45261,
-    # js_module_ns_exotic_methods: 30351). Enable these lines when they exist:
+    # (js_arguments_exotic_methods: quickjs.c:16150, js_module_ns_exotic_methods: 30351).
+    # Enable these lines when they exist:
     # classes[(usize)ClassId.arguments].exotic = &js_arguments_exotic_methods
     # classes[(usize)ClassId.mapped_arguments].exotic = &js_arguments_exotic_methods
-    # classes[(usize)ClassId.string].exotic = &js_string_exotic_methods
+    classes[(usize)ClassId.string].exotic = &js_string_exotic_methods
     # classes[(usize)ClassId.module_ns].exotic = &js_module_ns_exotic_methods
 
     classes[(usize)ClassId.c_function].call = js_call_c_function

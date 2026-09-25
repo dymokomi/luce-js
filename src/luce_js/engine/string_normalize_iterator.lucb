@@ -1,0 +1,318 @@
+#==============================================================================================
+#
+#   string_normalize_iterator - Normalization, localeCompare, the String iterator, the
+#                               annex B HTML methods and the String tables
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 46533-46923 (CONFIG_ALL_UNICODE is on, so normalize and
+#       the normalizing localeCompare are the ones ported): strings as UTF-32 buffers,
+#       String.prototype.normalize over luce_js.unicode's unicode_normalize,
+#       localeCompare, toString/valueOf, the String Iterator's next, the annex B
+#       anchor/big/.../sup methods, the String function lists, and
+#       JS_AddIntrinsicStringNormalize.
+#
+#==============================================================================================
+
+# mark: UTF-32 strings ==========================================================================
+
+# The code points of ToString(`val1`) in a js_malloc'ed buffer stored in `*pbuf` (none on
+# failure); answers their count.
+func js_to_utf32_string(ctx: Context*, pbuf: u32*?*, val1: Value) -> i32!:
+    let val = try js_to_string(ctx, val1)
+    defer js_free_value(ctx, val)
+    let p = val.u.string
+    let len = (i32)p.len
+    # UTF32 buffer length is len minus the number of correct surrogates pairs
+    let block = js_malloc(ctx, sizeof(u32) * (usize)cutils.max_int(len, 1)) catch failure:
+        *pbuf = none
+        error(failure.code, failure.message)
+    let buf = (u32*)block
+    var i: i32 = 0
+    var j: i32 = 0
+    while i < len:
+        buf[j] = (u32)string_getc(p, &i)
+        j += 1
+    *pbuf = buf
+    return j
+
+# The string of the `len` code points at `buf`.
+func js_new_utf32_string(ctx: Context*, buf: const u32*, len: i32) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+    try string_buffer_init(ctx, b, len)
+    errdefer string_buffer_free(b)
+    for i: i32 in 0..<len:
+        try string_buffer_putc(b, buf[i])
+    return try string_buffer_end(b)
+
+# The code points of ToString(`val`) normalized to `n_type`, in a buffer of the runtime's
+# heap stored in `*pout_buf`; answers their count.
+func js_string_normalize1(ctx: Context*, pout_buf: u32*?*, val: Value,
+                          n_type: unicode.UnicodeNormalizationEnum) -> i32!:
+    var buf: u32*? = none
+    let buf_len = try js_to_utf32_string(ctx, &buf, val)
+    let src = buf else trap("js_string_normalize1: no buffer")
+    let out_len = unicode.unicode_normalize(pout_buf, u32[](src, (usize)buf_len), n_type,
+                                            ctx.rt, js_dbuf_realloc_rt)
+    js_free(ctx, src)
+    if out_len < 0:
+        # as upstream, running out of memory here fails without a pending exception
+        error(exception, "")
+    return out_len
+
+# mark: normalize and localeCompare =============================================================
+
+func js_string_normalize(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let val = try js_to_string_check_object(ctx, this_val)
+    var n_type = unicode.unicode_nfc
+
+    if argc != 0 and not js_is_undefined(argv[0]):
+        var form_len: usize = 0
+        let form = js_to_c_string_len(ctx, &form_len, argv[0]) catch failure:
+            js_free_value(ctx, val)
+            error(failure.code, failure.message)
+        var p = form
+        # the form is NUL-terminated, so the bytes read below exist
+        var good = p[0] == 'N' and p[1] == 'F'
+        if good:
+            p = p + 2
+            var is_compat: i32 = 0
+            if *p == 'K':
+                is_compat = 1
+                p = p + 1
+            if *p == 'C' or *p == 'D':
+                n_type = unicode.unicode_nfc + is_compat * 2 + ((i32)*p - (i32)'C')
+                if (usize)(p + 1 - form) != form_len:
+                    good = false
+            else:
+                good = false
+        js_free_c_string(ctx, form)
+        if not good:
+            js_free_value(ctx, val)
+            try js_throw_range_error(ctx, "bad normalization form")
+
+    var out_buf: u32*? = none
+    let out_len = js_string_normalize1(ctx, &out_buf, val, n_type) catch failure:
+        js_free_value(ctx, val)
+        error(failure.code, failure.message)
+    js_free_value(ctx, val)
+    let out = out_buf else trap("js_string_normalize: no buffer")
+    defer js_free(ctx, out)
+    return try js_new_utf32_string(ctx, out, out_len)
+
+# Compare two code point buffers: < 0, 0 or > 0.
+func js_utf32_compare(buf1: const u32*, buf1_len: i32, buf2: const u32*, buf2_len: i32) -> i32:
+    let len = cutils.min_int(buf1_len, buf2_len)
+    for i: i32 in 0..<len:
+        # Note: range is limited so a subtraction is valid
+        let c = (i32)buf1[i] - (i32)buf2[i]
+        if c != 0:
+            return c
+    if buf1_len == buf2_len:
+        return 0
+    elif buf1_len < buf2_len:
+        return -1
+    return 1
+
+func js_string_locale_compare(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let a = try js_to_string_check_object(ctx, this_val)
+    let b = js_to_string(ctx, argv[0]) catch failure:
+        js_free_value(ctx, a)
+        error(failure.code, failure.message)
+    var a_buf: u32*? = none
+    let a_len = js_string_normalize1(ctx, &a_buf, a, unicode.unicode_nfc) catch failure:
+        js_free_value(ctx, a)
+        js_free_value(ctx, b)
+        error(failure.code, failure.message)
+    js_free_value(ctx, a)
+    let a_out = a_buf else trap("js_string_localeCompare: no buffer")
+    defer js_free(ctx, a_out)
+
+    var b_buf: u32*? = none
+    let b_len = js_string_normalize1(ctx, &b_buf, b, unicode.unicode_nfc) catch failure:
+        js_free_value(ctx, b)
+        error(failure.code, failure.message)
+    js_free_value(ctx, b)
+    let b_out = b_buf else trap("js_string_localeCompare: no buffer")
+    defer js_free(ctx, b_out)
+    let cmp = js_utf32_compare(a_out, a_len, b_out, b_len)
+    return js_new_int32(cmp)
+
+# also used for String.prototype.valueOf
+func js_string_to_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    return try js_this_string_value(ctx, this_val)
+
+# mark: String Iterator =========================================================================
+
+func js_string_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*,
+                             pdone: i32*, magic: i32) -> Value!:
+    let opaque = js_get_opaque2(ctx, this_val, (u32)ClassId.string_iterator) catch failure:
+        *pdone = 0
+        error(failure.code, failure.message)
+    let it = (ArrayIteratorData*)opaque
+    if js_is_undefined(it.obj):
+        *pdone = 1
+        return js_undefined()
+    let p = it.obj.u.string
+    let idx = it.idx
+    if idx >= p.len:
+        js_free_value(ctx, it.obj)
+        it.obj = js_undefined()
+        *pdone = 1
+        return js_undefined()
+
+    let start = idx
+    var idx32 = (i32)idx
+    let c = (u32)string_getc(p, &idx32)
+    it.idx = (u32)idx32
+    *pdone = 0
+    if c <= 0xffff:
+        return try js_new_string_char(ctx, (u16)c)
+    return try js_new_string16_len(ctx, str16(p) + start, 2)
+
+# mark: Annex B HTML methods ====================================================================
+
+# ES6 Annex B 2.3.2 etc.
+let magic_string_anchor: i16 = 0
+let magic_string_big: i16 = 1
+let magic_string_blink: i16 = 2
+let magic_string_bold: i16 = 3
+let magic_string_fixed: i16 = 4
+let magic_string_fontcolor: i16 = 5
+let magic_string_fontsize: i16 = 6
+let magic_string_italics: i16 = 7
+let magic_string_link: i16 = 8
+let magic_string_small: i16 = 9
+let magic_string_strike: i16 = 10
+let magic_string_sub: i16 = 11
+let magic_string_sup: i16 = 12
+
+# The element and the attribute (none if none) of each HTML method, by magic.
+struct HtmlDef:
+    let tag: str
+    let attr: str? = none
+
+let html_defs: HtmlDef[13] = [
+    HtmlDef(tag = "a", attr = "name"), HtmlDef(tag = "big"), HtmlDef(tag = "blink"), HtmlDef(tag = "b"),
+    HtmlDef(tag = "tt"), HtmlDef(tag = "font", attr = "color"), HtmlDef(tag = "font", attr = "size"),
+    HtmlDef(tag = "i"), HtmlDef(tag = "a", attr = "href"), HtmlDef(tag = "small"), HtmlDef(tag = "strike"),
+    HtmlDef(tag = "sub"), HtmlDef(tag = "sup"),
+]
+
+func js_string_create_html(ctx: Context*, this_val: Value, argc: i32, argv: Value*, magic: i32) -> Value!:
+    var b_s: StringBuffer = ---
+    let b = &b_s
+    let def = html_defs[(usize)magic]
+
+    let text = try js_to_string_check_object(ctx, this_val)
+    # as upstream, the writes below report their failures through string_buffer_end
+    string_buffer_init(ctx, b, 7) else ()
+    string_buffer_putc8(b, (u32)'<') else ()
+    string_buffer_puts8(b, def.tag.bytes.data) else ()
+    if let attr = def.attr:
+        # r += " " + attr + "=\"" + value + "\"";
+        string_buffer_putc8(b, (u32)' ') else ()
+        string_buffer_puts8(b, attr.bytes.data) else ()
+        string_buffer_puts8(b, "=\"".bytes.data) else ()
+        let value = js_to_string_check_object(ctx, argv[0]) catch failure:
+            js_free_value(ctx, text)
+            string_buffer_free(b)
+            error(failure.code, failure.message)
+        let p = value.u.string
+        for i: i32 in 0..<(i32)p.len:
+            let c = string_get(p, i)
+            if c == (i32)'"':
+                string_buffer_puts8(b, "&quot;".bytes.data) else ()
+            else:
+                string_buffer_putc16(b, (u32)c) else ()
+        js_free_value(ctx, value)
+        string_buffer_putc8(b, (u32)'"') else ()
+    # return r + ">" + str + "</" + tag + ">";
+    string_buffer_putc8(b, (u32)'>') else ()
+    string_buffer_concat_value_free(b, text) else ()
+    string_buffer_puts8(b, "</".bytes.data) else ()
+    string_buffer_puts8(b, def.tag.bytes.data) else ()
+    string_buffer_putc8(b, (u32)'>') else ()
+    return try string_buffer_end(b)
+
+# mark: Tables ==================================================================================
+
+let js_string_funcs: CFunctionListEntry[3] = [
+    CFunctionListEntry(name = "fromCharCode", def_type = def_cfunc, length = 1, generic = js_string_from_char_code),
+    CFunctionListEntry(name = "fromCodePoint", def_type = def_cfunc, length = 1, generic = js_string_from_code_point),
+    CFunctionListEntry(name = "raw", def_type = def_cfunc, length = 1, generic = js_string_raw),
+]
+
+let js_string_proto_funcs: CFunctionListEntry[50] = [
+    CFunctionListEntry(name = "length", prop_flags = (u8)prop_configurable, def_type = def_prop_int32, i32_value = 0),
+    CFunctionListEntry(name = "at", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_char_at, magic = 1),
+    CFunctionListEntry(name = "charCodeAt", def_type = def_cfunc, length = 1, generic = js_string_char_code_at),
+    CFunctionListEntry(name = "charAt", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_char_at, magic = 0),
+    CFunctionListEntry(name = "concat", def_type = def_cfunc, length = 1, generic = js_string_concat),
+    CFunctionListEntry(name = "codePointAt", def_type = def_cfunc, length = 1, generic = js_string_code_point_at),
+    CFunctionListEntry(name = "isWellFormed", def_type = def_cfunc, length = 0, generic = js_string_is_well_formed),
+    CFunctionListEntry(name = "toWellFormed", def_type = def_cfunc, length = 0, generic = js_string_to_well_formed),
+    CFunctionListEntry(name = "indexOf", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_index_of, magic = 0),
+    CFunctionListEntry(name = "lastIndexOf", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_index_of, magic = 1),
+    CFunctionListEntry(name = "includes", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_includes, magic = 0),
+    CFunctionListEntry(name = "endsWith", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_includes, magic = 2),
+    CFunctionListEntry(name = "startsWith", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_includes, magic = 1),
+    CFunctionListEntry(name = "match", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_match, magic = (i16)atom_Symbol_match),
+    CFunctionListEntry(name = "matchAll", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_match, magic = (i16)atom_Symbol_matchAll),
+    CFunctionListEntry(name = "search", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_match, magic = (i16)atom_Symbol_search),
+    CFunctionListEntry(name = "split", def_type = def_cfunc, length = 2, generic = js_string_split),
+    CFunctionListEntry(name = "substring", def_type = def_cfunc, length = 2, generic = js_string_substring),
+    CFunctionListEntry(name = "substr", def_type = def_cfunc, length = 2, generic = js_string_substr),
+    CFunctionListEntry(name = "slice", def_type = def_cfunc, length = 2, generic = js_string_slice),
+    CFunctionListEntry(name = "repeat", def_type = def_cfunc, length = 1, generic = js_string_repeat),
+    CFunctionListEntry(name = "replace", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_replace, magic = 0),
+    CFunctionListEntry(name = "replaceAll", def_type = def_cfunc, length = 2, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_replace, magic = 1),
+    CFunctionListEntry(name = "padEnd", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_pad, magic = 1),
+    CFunctionListEntry(name = "padStart", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_pad, magic = 0),
+    CFunctionListEntry(name = "trim", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_trim, magic = 3),
+    CFunctionListEntry(name = "trimEnd", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_trim, magic = 2),
+    CFunctionListEntry(name = "trimRight", def_type = def_alias, alias_name = "trimEnd"),
+    CFunctionListEntry(name = "trimStart", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_trim, magic = 1),
+    CFunctionListEntry(name = "trimLeft", def_type = def_alias, alias_name = "trimStart"),
+    CFunctionListEntry(name = "toString", def_type = def_cfunc, length = 0, generic = js_string_to_string),
+    CFunctionListEntry(name = "valueOf", def_type = def_cfunc, length = 0, generic = js_string_to_string),
+    CFunctionListEntry(name = "toLowerCase", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_to_lower_case, magic = 1),
+    CFunctionListEntry(name = "toUpperCase", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_to_lower_case, magic = 0),
+    CFunctionListEntry(name = "toLocaleLowerCase", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_to_lower_case, magic = 1),
+    CFunctionListEntry(name = "toLocaleUpperCase", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_to_lower_case, magic = 0),
+    CFunctionListEntry(name = "[Symbol.iterator]", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_create_array_iterator,
+                       magic = (i16)((i32)IteratorKind.value | 4)),
+    # ES6 Annex B 2.3.2 etc.
+    CFunctionListEntry(name = "anchor", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_anchor),
+    CFunctionListEntry(name = "big", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_big),
+    CFunctionListEntry(name = "blink", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_blink),
+    CFunctionListEntry(name = "bold", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_bold),
+    CFunctionListEntry(name = "fixed", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_fixed),
+    CFunctionListEntry(name = "fontcolor", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_fontcolor),
+    CFunctionListEntry(name = "fontsize", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_fontsize),
+    CFunctionListEntry(name = "italics", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_italics),
+    CFunctionListEntry(name = "link", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_link),
+    CFunctionListEntry(name = "small", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_small),
+    CFunctionListEntry(name = "strike", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_strike),
+    CFunctionListEntry(name = "sub", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_sub),
+    CFunctionListEntry(name = "sup", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.generic_magic, generic_magic = js_string_create_html, magic = magic_string_sup),
+]
+
+let js_string_iterator_proto_funcs: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "next", def_type = def_cfunc, length = 0, cproto = CFunctionEnum.iterator_next,
+                       iterator_next = js_string_iterator_next, magic = 0),
+    CFunctionListEntry(name = "[Symbol.toStringTag]", prop_flags = (u8)prop_configurable, def_type = def_prop_string,
+                       string_value = "String Iterator"),
+]
+
+let js_string_proto_normalize: CFunctionListEntry[2] = [
+    CFunctionListEntry(name = "normalize", def_type = def_cfunc, length = 0, generic = js_string_normalize),
+    CFunctionListEntry(name = "localeCompare", def_type = def_cfunc, length = 1, generic = js_string_locale_compare),
+]
+
+## Add String.prototype.normalize and localeCompare to the context
+## (JS_AddIntrinsicStringNormalize).
+pub func js_add_intrinsic_string_normalize(ctx: Context*) -> !:
+    let protos = ctx.class_proto else trap("js_add_intrinsic_string_normalize: no class prototypes")
+    try js_set_property_function_list(ctx, protos[(usize)ClassId.string], &js_string_proto_normalize[0],
+                                      (i32)js_string_proto_normalize.length)

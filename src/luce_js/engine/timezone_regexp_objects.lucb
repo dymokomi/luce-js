@@ -1,0 +1,165 @@
+#==============================================================================================
+#
+#   timezone_regexp_objects - The local time zone offset, and making RegExp objects
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 47450-47698: getTimezoneOffset (the OS-dependent part of
+#       Date), and the RegExp object's finalizer, js_compile_regexp (flags and pattern to
+#       the bytecode string), JS_NewRegexp and js_regexp_set_internal. The Date helpers
+#       under `#if 0` (js___date_getTimezoneOffset, js_get_prototype_from_ctor,
+#       js___date_create) are not ported.
+#
+#       pending-link: luce_js.regexp is not imported by the engine yet. Its flag
+#       constants are mirrored below and lre_compile is reached through
+#       js_lre_compile, whose body traps; when the module is imported, the constants
+#       become regexp.lre_flag_* and js_lre_compile calls regexp.lre_compile with the
+#       context's RegExpHost.
+#
+#==============================================================================================
+
+# mark: Time zone ===============================================================================
+
+# The C library's `struct tm` on macOS and Linux (on Windows only pointers to it are used).
+extern struct Tm:
+    tm_sec: i32
+    tm_min: i32
+    tm_hour: i32
+    tm_mday: i32
+    tm_mon: i32
+    tm_year: i32
+    tm_wday: i32
+    tm_yday: i32
+    tm_isdst: i32
+    tm_gmtoff: i64
+    tm_zone: void*?
+
+extern func localtime_r(timep: const i64*, result: Tm*) -> Tm*?
+# Windows' C library names its 64-bit time functions with a prefix.
+extern func win_gmtime as "_gmtime64"(timep: const i64*) -> Tm*?
+extern func win_localtime as "_localtime64"(timep: const i64*) -> Tm*?
+extern func win_mktime as "_mktime64"(tm: Tm*) -> i64
+
+# OS dependent. d = argv[0] is in ms from 1970. Return the difference
+# between UTC time and local time 'd' in minutes
+func get_timezone_offset(time: i64) -> i32:
+    # convert to seconds; time_t is 64-bit on every supported target, so upstream's
+    # clamping for a 32-bit time_t does not apply
+    let ti = time // 1000
+    if os.windows:
+        let gm = win_gmtime(&ti) else return 0
+        let gm_ti = win_mktime(gm)
+        let loc = win_localtime(&ti) else return 0
+        let loc_ti = win_mktime(loc)
+        return (i32)((gm_ti - loc_ti) // 60)
+    var tm: Tm = ---
+    discard(localtime_r(&ti, &tm))
+    return (i32)(-tm.tm_gmtoff // 60)
+
+# mark: RegExp objects ==========================================================================
+
+func js_regexp_finalizer(rt: Runtime*, val: Value):
+    let p = val.u.obj
+    let re = &p.u.regexp
+    # the fields are zero when the object was created but never set (a failed
+    # construction), although the shared type declares them non-null
+    if (usize)re.bytecode != 0:
+        js_free_value_rt(rt, js_mkptr(Tag.string, re.bytecode))
+    if (usize)re.pattern != 0:
+        js_free_value_rt(rt, js_mkptr(Tag.string, re.pattern))
+
+# pending-link: regexp.lre_flag_* of luce_js.regexp (libregexp.h).
+let lre_flag_global: i32 = 1 << 0
+let lre_flag_ignorecase: i32 = 1 << 1
+let lre_flag_multiline: i32 = 1 << 2
+let lre_flag_dotall: i32 = 1 << 3
+let lre_flag_unicode: i32 = 1 << 4
+let lre_flag_sticky: i32 = 1 << 5
+let lre_flag_indices: i32 = 1 << 6
+let lre_flag_unicode_sets: i32 = 1 << 8
+
+# pending-link: regexp.lre_compile(plen, error_msg, buf, buf_len, re_flags, &host), with the
+# context's RegExpHost (quickjs.c passes ctx as the opaque). Answers the bytecode,
+# allocated on the context's heap, or none with the message in `error_msg`.
+func js_lre_compile(plen: i32*, error_msg: u8[], buf: const u8*, buf_len: usize, re_flags: i32,
+                    ctx: Context*) -> u8*?:
+    trap("pending-link: lre_compile (luce_js.regexp is not imported by the engine yet)")
+
+# create a string containing the RegExp bytecode
+func js_compile_regexp(ctx: Context*, pattern: Value, flags: Value) -> Value!:
+    var error_msg: u8[64] = ---
+
+    var re_flags: i32 = 0
+    if not js_is_undefined(flags):
+        var flags_len: usize = 0
+        let flags_text = try js_to_c_string_len(ctx, &flags_len, flags)
+        var bad_flags = false
+        # XXX: re_flags = LRE_FLAG_OCTAL unless strict mode?
+        for i in 0..<flags_len:
+            let mask = match flags_text[i]:
+                'd' => lre_flag_indices
+                'g' => lre_flag_global
+                'i' => lre_flag_ignorecase
+                'm' => lre_flag_multiline
+                's' => lre_flag_dotall
+                'u' => lre_flag_unicode
+                'v' => lre_flag_unicode_sets
+                'y' => lre_flag_sticky
+                _ => 0
+            if mask == 0 or (re_flags & mask) != 0:
+                bad_flags = true
+                break
+            re_flags |= mask
+        js_free_c_string(ctx, flags_text)
+        if bad_flags:
+            try js_throw_syntax_error(ctx, "invalid regular expression flags")
+
+    # 'u' and 'v' cannot be both set
+    if (re_flags & lre_flag_unicode_sets) != 0 and (re_flags & lre_flag_unicode) != 0:
+        try js_throw_syntax_error(ctx, "invalid regular expression flags")
+
+    var len: usize = 0
+    let text = try js_to_c_string_len2(ctx, &len, pattern,
+                                       (re_flags & (lre_flag_unicode | lre_flag_unicode_sets)) == 0)
+    var re_bytecode_len: i32 = 0
+    let re_bytecode = js_lre_compile(&re_bytecode_len, error_msg, text, len, re_flags, ctx)
+    js_free_c_string(ctx, text)
+    if let re_bytecode_buf = re_bytecode:
+        defer js_free(ctx, re_bytecode_buf)
+        return try js_new_string8_len(ctx, re_bytecode_buf, re_bytecode_len)
+    let msg = str(error_msg[0..<cutils.strlen(&error_msg[0])]) else "invalid regular expression"
+    try js_throw_syntax_error(ctx, msg)
+
+# fast regexp creation
+func js_new_regexp(ctx: Context*, pattern: Value, bc: Value) -> Value!:
+    var props: Property[1] = ---
+
+    errdefer js_free_value(ctx, bc)
+    errdefer js_free_value(ctx, pattern)
+    # sanity check
+    if bc.tag != Tag.string or pattern.tag != Tag.string:
+        try js_throw_type_error(ctx, "string expected")
+    props[0].u.value = js_new_int32(0) # lastIndex
+    let regexp_shape = ctx.regexp_shape else trap("js_new_regexp: no regexp shape")
+    let obj = try js_new_object_from_shape(ctx, js_dup_shape(regexp_shape), (u32)ClassId.regexp, &props[0])
+    let p = obj.u.obj
+    let re = &p.u.regexp
+    re.pattern = pattern.u.string
+    re.bytecode = bc.u.string
+    return obj
+
+# set the RegExp fields
+func js_regexp_set_internal(ctx: Context*, obj: Value, pattern: Value, bc: Value) -> Value!:
+    # sanity check
+    if bc.tag != Tag.string or pattern.tag != Tag.string:
+        js_free_value(ctx, obj)
+        js_free_value(ctx, bc)
+        js_free_value(ctx, pattern)
+        try js_throw_type_error(ctx, "string expected")
+
+    let p = obj.u.obj
+    let re = &p.u.regexp
+    re.pattern = pattern.u.string
+    re.bytecode = bc.u.string
+    # Note: cannot fail because the field is preallocated
+    discard(js_define_property_value(ctx, obj, atom_lastIndex, js_new_int32(0), prop_writable) else false)
+    return obj
