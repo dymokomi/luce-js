@@ -4,7 +4,8 @@
 #
 #   DESCRIPTION:
 #       Checks the pieces a JavaScript test cannot isolate: C formats in std.sprintf, the
-#       target layouts of struct stat and struct dirent, file loading, and the timer loop.
+#       target layouts of struct stat and struct dirent, file loading, the timer loop, the
+#       wait status decoding, os.exec's options and the signal and read handlers.
 #       The upstream JavaScript tests (tests/run.py) cover the rest.
 #
 #==============================================================================================
@@ -110,3 +111,61 @@ test "js_load_file answers the bytes and a NUL, or none":
     cutils.c_free(buf)
     assert(js_load_file(none, &len, "no/such/file".bytes.data) == none)
     assert(has_suffix("a/b.json".bytes.data, ".json") and not has_suffix("json".bytes.data, ".json"))
+
+test "wait statuses decode as the POSIX macros do":
+    assert(w_if_exited(3 << 8) and w_exit_status(3 << 8) == 3 and not w_if_signaled(3 << 8))
+    assert(w_if_signaled(9) and w_term_sig(9) == 9 and not w_if_exited(9))
+    # stopped (0x7f in the low bits): neither exited nor signaled
+    assert(not w_if_exited(0x137f) and not w_if_signaled(0x137f))
+
+test "exec passes argv, env, cwd, file and stdout, and waitpid reports the status":
+    let ctx = test_context()
+    var buf: u8[256]
+    let text = eval_to_text(ctx, """
+        import * as std from "std";
+        import * as os from "os";
+        let r = [os.exec(["sh", "-c", "exit 7"]), os.exec(["no_such_program_xyz"])];
+        let fds = os.pipe();
+        let pid = os.exec(["x", "-c", "echo $V $(pwd) $0"], { file: "/bin/sh", usePath: false,
+                          cwd: "/", env: { V: "v1" }, stdout: fds[1], block: false });
+        os.close(fds[1]);
+        let f = std.fdopen(fds[0], "r");
+        r.push(f.getline());
+        f.close();
+        let [ret, status] = os.waitpid(pid, 0);
+        r.push(ret == pid, status);
+        pid = os.exec(["sleep", "10"], { block: false });
+        os.kill(pid, os.SIGTERM);
+        r.push(os.waitpid(pid, 0)[1] & 0x7f);
+        globalThis.result = r.join();
+        """, buf)
+    assert(text == "7,127,v1 / x,true,0,15")
+    free_test_context(ctx)
+
+test "signal and read handlers run from the loop":
+    let ctx = test_context()
+    var buf: u8[256]
+    discard(eval_to_text(ctx, """
+        import * as os from "os";
+        let r = [];
+        os.signal(os.SIGUSR2, () => { r.push("usr2"); os.signal(os.SIGUSR2, null); });
+        os.kill(os.getpid(), os.SIGUSR2);
+        let fds = os.pipe();
+        os.setReadHandler(fds[0], () => {
+            let b = new Uint8Array(4);
+            r.push("read " + os.read(fds[0], b.buffer, 0, 4));
+            os.setReadHandler(fds[0], null);
+            os.close(fds[0]);
+        });
+        os.setWriteHandler(fds[1], () => {
+            os.write(fds[1], new Uint8Array([1, 2]).buffer, 0, 2);
+            os.setWriteHandler(fds[1], null);
+            os.close(fds[1]);
+        });
+        globalThis.log = r;
+        globalThis.result = "";
+        """, buf))
+    js_std_loop(ctx)
+    let text = eval_to_text(ctx, "globalThis.result = globalThis.log.join();", buf)
+    assert(text == "usr2,read 2")
+    free_test_context(ctx)

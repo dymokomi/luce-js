@@ -22,8 +22,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LJS = os.path.join(ROOT, "build", "ljs")
 
-# (file, extra ljs options), in the order of upstream's Makefile. test_worker.js and
-# test_rw_handler.js need os.Worker and os.setReadHandler, which the host does not port.
+# (file, extra ljs options), in the order of upstream's Makefile. test_worker.js needs
+# os.Worker, which the host does not port.
 TESTS = [
     ("test_closure.js", []),
     ("test_language.js", []),
@@ -32,13 +32,12 @@ TESTS = [
     ("test_bigint.js", []),
     ("test_cyclic_import.js", []),
     ("test_std.js", []),
+    ("test_rw_handler.js", []),
 ]
 
 # file -> why it cannot pass yet. Keep the classification: (a) needs an unported region,
 # (b) a port bug, (c) a compiler bug, (d) a host feature deliberately not ported.
 KNOWN_FAILURES = {
-    "test_std.js": "(d) test_os and test_os_exec need os.exec, os.pipe, os.waitpid, os.kill "
-                   "(first error: TypeError: not a function, os.exec at test_std.js:159)",
 }
 
 

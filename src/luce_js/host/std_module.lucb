@@ -3,10 +3,9 @@
 #   std_module - The `std` module: process, environment, scripts and its tables
 #
 #   DESCRIPTION:
-#       Port of quickjs-libc.c lines 737-923 (std.exit, getenv, setenv, unsetenv, gc,
-#       evalScript, strerror, parseExtJSON) and 1630-1732 (the `std` tables, js_std_init
-#       and js_init_module_std). std.getenviron and std.urlGet are not ported; evalScript
-#       installs no interrupt handler, since the host handles no signals.
+#       Port of quickjs-libc.c lines 737-923 (std.exit, getenv, setenv, unsetenv,
+#       getenviron, gc, evalScript, strerror, parseExtJSON) and 1630-1732 (the `std`
+#       tables, js_std_init and js_init_module_std). std.urlGet is in `url_get`.
 #
 #==============================================================================================
 
@@ -39,9 +38,30 @@ func js_std_unsetenv(ctx: Context*, this_val: Value, argc: i32, argv: Value*) ->
     js.js_free_c_string(ctx, name)
     return js.js_undefined()
 
+## return an object containing the list of the available environment variables.
+func js_std_getenviron(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
+    let obj = try js.js_new_object(ctx)
+    errdefer js.js_free_value(ctx, obj)
+    let envp = environment()
+    var idx: usize = 0
+    while let name = envp[idx]:
+        idx += 1
+        let p = strchr(name, (i32)'=') else continue
+        let name_len = (usize)(p - name)
+        let value = p + 1
+        let atom = try js.js_new_atom_len(ctx, name, name_len)
+        defer js.js_free_atom(ctx, atom)
+        discard(try js.js_define_property_value(ctx, obj, atom, try js.js_new_string(ctx, value), js.prop_c_w_e))
+    return obj
+
 func js_std_gc(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     js.js_run_gc(js.js_get_runtime(ctx))
     return js.js_undefined()
+
+## Interrupt the evaluation of std.evalScript when SIGINT was received.
+func interrupt_handler(rt: Runtime*, opaque: void*?) -> i32:
+    let pending: u64 = os_pending_signals
+    return (i32)((pending >> (u64)sig_int) & 1)
 
 # mark: Scripts =================================================================================
 
@@ -65,12 +85,36 @@ func js_eval_script(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
     var len: usize = 0
     let text = try js.js_to_c_string_len(ctx, &len, argv[0])
     defer js.js_free_c_string(ctx, text)
+    # without workers, every runtime is the main thread
+    let rt = js.js_get_runtime(ctx)
+    let ts = thread_state(rt)
+    ts.eval_script_recurse += 1
+    if ts.eval_script_recurse == 1:
+        # install the interrupt handler
+        js.js_set_interrupt_handler(rt, interrupt_handler, none)
+    errdefer eval_script_failed(ctx, ts)
+    defer eval_script_leave(rt, ts)
     var flags = js.eval_type_global
     if backtrace_barrier:
         flags |= js.eval_flag_backtrace_barrier
     if is_async:
         flags |= js.eval_flag_async
     return try js.js_eval(ctx, text, len, "<evalScript>".bytes.data, flags)
+
+## The end of std.evalScript: remove the interrupt handler when leaving the outermost one.
+func eval_script_leave(rt: Runtime*, ts: ThreadState*):
+    ts.eval_script_recurse -= 1
+    if ts.eval_script_recurse == 0:
+        # remove the interrupt handler
+        js.js_set_interrupt_handler(rt, none, none)
+        os_pending_signals &= ~((u64)1 << (u64)sig_int)
+
+## The end of a failed std.evalScript, after eval_script_leave.
+func eval_script_failed(ctx: Context*, ts: ThreadState*):
+    if ts.eval_script_recurse == 0:
+        # convert the uncatchable "interrupted" error into a normal error so that it can
+        # be caught by the REPL
+        js.js_set_uncatchable_exception(ctx, false)
 
 func js_std_strerror(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var err: i32 = 0
@@ -100,7 +144,7 @@ let js_std_error_props: CFunctionListEntry[11] = [
     CFunctionListEntry(name = "EBADF", prop_flags = (u8)js.prop_configurable, def_type = js.def_prop_int32, i32_value = e_badf),
 ]
 
-let js_std_funcs: CFunctionListEntry[25] = [
+let js_std_funcs: CFunctionListEntry[27] = [
     CFunctionListEntry(name = "exit", def_type = js.def_cfunc, length = 1, generic = js_std_exit),
     CFunctionListEntry(name = "gc", def_type = js.def_cfunc, length = 0, generic = js_std_gc),
     CFunctionListEntry(name = "evalScript", def_type = js.def_cfunc, length = 1, generic = js_eval_script),
@@ -108,6 +152,8 @@ let js_std_funcs: CFunctionListEntry[25] = [
     CFunctionListEntry(name = "getenv", def_type = js.def_cfunc, length = 1, generic = js_std_getenv),
     CFunctionListEntry(name = "setenv", def_type = js.def_cfunc, length = 1, generic = js_std_setenv),
     CFunctionListEntry(name = "unsetenv", def_type = js.def_cfunc, length = 1, generic = js_std_unsetenv),
+    CFunctionListEntry(name = "getenviron", def_type = js.def_cfunc, length = 1, generic = js_std_getenviron),
+    CFunctionListEntry(name = "urlGet", def_type = js.def_cfunc, length = 1, generic = js_std_url_get),
     CFunctionListEntry(name = "loadFile", def_type = js.def_cfunc, length = 1, generic = js_std_load_file),
     CFunctionListEntry(name = "strerror", def_type = js.def_cfunc, length = 1, generic = js_std_strerror),
     CFunctionListEntry(name = "parseExtJSON", def_type = js.def_cfunc, length = 1, generic = js_std_parse_ext_json),
@@ -170,7 +216,7 @@ func js_std_init(ctx: Context*, m: ModuleDef*) -> !:
     try js.js_set_property_function_list(ctx, proto, js_std_file_proto_funcs)
     js.js_set_class_proto(ctx, js_std_file_class_id, proto)
 
-    try js.js_set_module_export_list(ctx, m, js_std_funcs[0..<22])
+    try js.js_set_module_export_list(ctx, m, js_std_funcs[0..<24])
     discard(try js.js_set_module_export(ctx, m, "in".bytes.data, try js_new_std_file(ctx, c.stdin(), false, false)))
     discard(try js.js_set_module_export(ctx, m, "out".bytes.data, try js_new_std_file(ctx, c.stdout(), false, false)))
     discard(try js.js_set_module_export(ctx, m, "err".bytes.data, try js_new_std_file(ctx, c.stderr(), false, false)))

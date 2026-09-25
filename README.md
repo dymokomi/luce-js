@@ -15,8 +15,7 @@ ported region by region (see `docs/PORTING.md`).
 | `regex` (the luce-regex package) | `libregexp.c` | replaced by luce-regex's ECMAScript dialect |
 | `libunicode` (the luce-regex package) | `libunicode.c` | ported in luce-regex |
 | `luce_js.engine` | `quickjs.c` | ported |
-
-| `luce_js.host` | `quickjs-libc.c` (parts) | helpers, module loader, job/timer loop, `std`, `os` |
+| `luce_js.host` | `quickjs-libc.c` (POSIX, without workers) | helpers, module loader, event loop (timers, signals, read/write handlers), `std`, `os` |
 
 Run the tests of a module with `luce-base test src/luce_js/<module>`; `./test.sh` runs every
 module's tests and then QuickJS's own JavaScript tests (`tests/run.py`).

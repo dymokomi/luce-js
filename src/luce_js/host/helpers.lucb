@@ -67,7 +67,7 @@ pub func js_std_add_helpers(ctx: Context*, args: const str[]?) -> !:
 
 # mark: Host state ==============================================================================
 
-## Install the host state (timers, rejected promises) as the opaque pointer of `rt`
+## Install the host state (handlers, timers, rejected promises) as the opaque pointer of `rt`
 ## (js_std_init_handlers).
 pub func js_std_init_handlers(rt: Runtime*):
     let block = cutils.malloc(sizeof(ThreadState))
@@ -77,6 +77,8 @@ pub func js_std_init_handlers(rt: Runtime*):
         c_exit(1)
     let ts = (ThreadState*)(block else c_exit(1))
     discard(cutils.memset(ts, 0, sizeof(ThreadState)))
+    cutils.init_list_head(&ts.os_rw_handlers)
+    cutils.init_list_head(&ts.os_signal_handlers)
     cutils.init_list_head(&ts.os_timers)
     cutils.init_list_head(&ts.rejected_promise_list)
     ts.next_timer_id = 1
@@ -86,9 +88,16 @@ pub func js_std_init_handlers(rt: Runtime*):
 func rejected_promise_of(el: ListHead*) -> RejectedPromiseEntry*:
     return (RejectedPromiseEntry*)((u8*)el - offsetof(RejectedPromiseEntry, link))
 
-## Free the host state of `rt` and the timers and promises it holds (js_std_free_handlers).
+## Free the host state of `rt` and the handlers, timers and promises it holds
+## (js_std_free_handlers).
 pub func js_std_free_handlers(rt: Runtime*):
     let ts = thread_state(rt)
+    while not cutils.list_empty(&ts.os_rw_handlers):
+        let el = ts.os_rw_handlers.next else break
+        free_rw_handler(rt, rw_handler_of(el))
+    while not cutils.list_empty(&ts.os_signal_handlers):
+        let el = ts.os_signal_handlers.next else break
+        free_sh(rt, signal_handler_of(el))
     while not cutils.list_empty(&ts.os_timers):
         let el = ts.os_timers.next else break
         free_timer(rt, timer_of(el))
@@ -99,6 +108,8 @@ pub func js_std_free_handlers(rt: Runtime*):
         js.js_free_value_rt(rt, rp.reason)
         cutils.list_del(el)
         cutils.c_free(rp)
+    if let poll_fds = ts.poll_fds:
+        cutils.c_free(poll_fds)
     cutils.c_free(ts)
     js.js_set_runtime_opaque(rt, none) # fail safe
 
