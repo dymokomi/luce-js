@@ -153,6 +153,30 @@ test "first":
 
 Expected: linear, like the native build. (luce-browser runs that module's tests `--native`.)
 
+### 12. `asm` clobbering a callee-saved register does not save it (backend)
+
+An `asm` block declaring a callee-saved register destroyed (`out("x19") _`, or rbx/r12–r15 on
+x86-64) does not make the function save and restore it, so the caller's value is lost.
+Found by luce-browser's LibGC port (register-spill test of the conservative scan).
+
+```luce
+noinline func write_x19(marker: usize):
+    asm arm64 (in("x9") marker, out("x19") _):
+        mov x19, x9
+    asm x86_64 (in("rax") marker, out("rbx") _):
+        mov %rax, %rbx
+
+test "a destroyed callee-saved register is preserved for the caller":
+    var total: usize = 0
+    for i in 0..<10:
+        write_x19(0xdead)
+        total += (usize)i
+    assert(total == 45)
+```
+
+Actual: `test` stops with a signal; as a program, total == 57014 (0xdead + 9) — the prologue
+saves only x29/x30. Expected: callee-saved registers named in `out(...)` are saved and restored.
+
 ## Done on a branch, waiting for merge and release (x86_64 runs on LINUX/WINDOWS pending)
 
 - **Dense `match` → jump table; u8 match subject kept in a register; `(i32)`/`(i64)` float
