@@ -374,8 +374,6 @@ func namelist_cmp(a0: const u8*, b0: const u8*) -> i32:
             return 1
         if ca == 0:
             return 0
-    # workaround: compiler-issues/inner_break_ends_outer_loop
-    trap("not reached")
 
 func namelist_cmp_indirect(a: const void*, b: const void*) -> i32:
     return namelist_cmp(*(u8**)a, *(u8**)b)

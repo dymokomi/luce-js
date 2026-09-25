@@ -212,7 +212,6 @@ func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line
         if line_num != -1:
             discard(cutils.dbuf_printf(&dbuf, f":{line_num}:{col_num}"))
         discard(cutils.dbuf_putc(&dbuf, '\n'))
-        # workaround: compiler-issues/catch-return-in-parentheses
         define_error_position(ctx, error_obj, fname, line_num, col_num) catch failure: return
 
     var skip_flags = backtrace_flags

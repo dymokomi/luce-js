@@ -413,8 +413,6 @@ func simple_next_token(pp: const u8**, no_line_terminator: bool) -> TokenType:
                 if unicode.lre_js_is_ident_first(c):
                     return TokenType.ident
                 return (TokenType)(i32)c
-    # workaround: compiler-issues/inner_break_ends_outer_loop
-    trap("simple_next_token: not reached")
 
 # The kind of the token after the current one, by simple_next_token.
 func peek_token(s: ParseState*, no_line_terminator: bool) -> TokenType:

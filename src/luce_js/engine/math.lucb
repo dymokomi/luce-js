@@ -126,18 +126,6 @@ func js_math_f16round(a: f64) -> f64:
 func js_math_fround(a: f64) -> f64:
     return (f64)(f32)a
 
-# workaround: compiler-issues/extern-function-address-not-constant
-# The C library's inverse hyperbolic functions, as functions of the module (the address of
-# an extern function is not a constant for the table).
-func js_math_acosh(a: f64) -> f64:
-    return c_acosh(a)
-
-func js_math_asinh(a: f64) -> f64:
-    return c_asinh(a)
-
-func js_math_atanh(a: f64) -> f64:
-    return c_atanh(a)
-
 # mark: Integer functions =======================================================================
 
 func js_math_imul(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
@@ -226,9 +214,9 @@ let js_math_funcs: CFunctionListEntry[46] = [
     CFunctionListEntry(name = "cosh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.cosh),
     CFunctionListEntry(name = "sinh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.sinh),
     CFunctionListEntry(name = "tanh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.tanh),
-    CFunctionListEntry(name = "acosh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_acosh),
-    CFunctionListEntry(name = "asinh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_asinh),
-    CFunctionListEntry(name = "atanh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = js_math_atanh),
+    CFunctionListEntry(name = "acosh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = c_acosh),
+    CFunctionListEntry(name = "asinh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = c_asinh),
+    CFunctionListEntry(name = "atanh", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = c_atanh),
     CFunctionListEntry(name = "expm1", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.expm1),
     CFunctionListEntry(name = "log1p", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.log1p),
     CFunctionListEntry(name = "log2", def_type = def_cfunc, length = 1, cproto = CFunctionEnum.f_f, f_f = math.log2),

@@ -35,7 +35,6 @@ pub struct DynBuf: Writer:
     ## Append `data` (the `io.Writer` requirement); fails with `memory.exhausted` when the
     ## buffer cannot grow.
     pub mutating func write(data: const u8[]) -> usize!:
-        # workaround: compiler-issues/mutating_self_type (`self` is not `Self*`)
         if dbuf_put(&self, data.data, data.length) != 0:
             error(memory.exhausted, "DynBuf: out of memory")
         return data.length
