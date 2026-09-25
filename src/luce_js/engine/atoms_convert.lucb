@@ -114,9 +114,9 @@ func js_atom_get_str_rt(rt: Runtime*, buf: u8[], atom: Atom) -> str:
         # special case ASCII strings
         var c: u8 = 0
         for i in 0..<(usize)len:
-            c |= atom_str8(text)[i]
+            c |= str8(text)[i]
         if c < 0x80:
-            return (str)u8[](atom_str8(text), (usize)len)
+            return (str)u8[](str8(text), (usize)len)
     var i: i32 = 0
     while i < len:
         var c = (u32)string_get(text, i)

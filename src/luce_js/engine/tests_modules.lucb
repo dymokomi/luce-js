@@ -21,7 +21,7 @@ func normalized(buf: u8[], base: str, name: str) -> str:
     let cap = len + (i32)name.length + 1 + 1
     assert((usize)cap <= buf.length)
     module_normalize_path(&buf[0], cap, base.bytes.data, name.bytes.data)
-    return c_str_view(&buf[0])
+    return cutils.c_str_view(&buf[0])
 
 # mark: Module names ===========================================================================
 
@@ -46,9 +46,9 @@ test "C string helpers":
     let last = find_last_byte(text.bytes.data, '/') else trap("no slash")
     assert(last - text.bytes.data == 3)
     assert(find_last_byte(text.bytes.data, 'z') == none)
-    assert(c_str_equals("..".bytes.data, ".."))
-    assert(not c_str_equals("...".bytes.data, ".."))
-    assert(not c_str_equals(".".bytes.data, ".."))
+    assert(cutils.c_str_equals("..".bytes.data, ".."))
+    assert(not cutils.c_str_equals("...".bytes.data, ".."))
+    assert(not cutils.c_str_equals(".".bytes.data, ".."))
 
 # mark: Lookups ================================================================================
 

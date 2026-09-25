@@ -71,14 +71,6 @@ func is_num_string(pval: u32*, p: const String*) -> bool:
 
 # mark: Hashing =================================================================================
 
-## The 8-bit characters of a flat string (p->u.str8): they follow the header.
-func atom_str8(p: const String*) -> u8*:
-    return (u8*)p + sizeof(String)
-
-## The 16-bit characters of a flat string (p->u.str16).
-func atom_str16(p: const String*) -> u16*:
-    return (u16*)((u8*)p + sizeof(String))
-
 # XXX: could use faster version ?
 func hash_string8(str_: const u8*, len: usize, h: u32) -> u32:
     var hv = h
@@ -94,8 +86,8 @@ func hash_string16(str_: const u16*, len: usize, h: u32) -> u32:
 
 func hash_string(str_: const String*, h: u32) -> u32:
     if str_.is_wide_char:
-        return hash_string16(atom_str16(str_), (usize)str_.len, h)
-    return hash_string8(atom_str8(str_), (usize)str_.len, h)
+        return hash_string16(str16(str_), (usize)str_.len, h)
+    return hash_string8(str8(str_), (usize)str_.len, h)
 
 func hash_string_rope(val: Value, h: u32) -> u32:
     if val.tag == Tag.string:
@@ -315,7 +307,7 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
             js_rc(p).ref_count = 1
             p.is_wide_char = s.is_wide_char
             p.len = s.len
-            discard(cutils.memcpy(atom_str8(p), atom_str8(s), data_size))
+            discard(cutils.memcpy(str8(p), str8(s), data_size))
             js_free_string(rt, s)
     else:
         let pm = js_malloc_rt(rt, sizeof(AtomStruct)) else return no_atom # empty wide string
@@ -348,8 +340,8 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
 # only works with zero terminated 8 bit strings
 func js_new_atom_init_raw(rt: Runtime*, str_: const u8*, len: i32, atom_type: u8) -> Atom:
     let p = js_alloc_string_rt(rt, len, false) else return no_atom
-    discard(cutils.memcpy(atom_str8(p), str_, (usize)len))
-    atom_str8(p)[len] = 0
+    discard(cutils.memcpy(str8(p), str_, (usize)len))
+    str8(p)[len] = 0
     return js_new_atom_raw(rt, p, atom_type)
 
 # Warning: str must be ASCII only. Like QuickJS, the lookup is always for a string atom
@@ -362,7 +354,7 @@ func js_find_atom_raw(rt: Runtime*, str_: const u8*, len: usize, atom_type: u8) 
     while i != 0:
         let p = atom_array_get(rt, i)
         if (p.hash == h and p.atom_type == js_atom_type_string and (usize)p.len == len and
-                not p.is_wide_char and cutils.memcmp(atom_str8(p), str_, len) == 0):
+                not p.is_wide_char and cutils.memcmp(str8(p), str_, len) == 0):
             if not js_atom_is_const_raw(i):
                 js_rc(p).ref_count += 1
             return i

@@ -131,8 +131,8 @@ test "the atom macros replace one %s":
     assert(g == "no placeholder %" and h == "")
 
 test "C string views":
-    assert(c_str_view("hello".bytes.data) == "hello")
-    assert(c_str_view("".bytes.data) == "")
+    assert(cutils.c_str_view("hello".bytes.data) == "hello")
+    assert(cutils.c_str_view("".bytes.data) == "")
 
 # mark: Memory report ==========================================================================
 

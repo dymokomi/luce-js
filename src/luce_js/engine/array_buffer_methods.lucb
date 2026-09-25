@@ -59,23 +59,23 @@ func js_array_buffer_transfer(ctx: Context*, this_val: Value, argc: i32, argv: V
                 res = try js_array_buffer_constructor2(ctx, js_undefined(), new_len, pmax_len,
                                                        (u32)ClassId.array_buffer)
                 let new_abuf = (ArrayBuffer*)(try js_get_opaque2(ctx, res, (u32)ClassId.array_buffer))
-                discard(cutils.memcpy(bytes_as_void(new_abuf.data), bytes_as_const_void(abuf.data),
+                discard(cutils.memcpy(cutils.nullable_void(new_abuf.data), cutils.nullable_const_void(abuf.data),
                                       (usize)cutils.min_int((i32)old_len, (i32)new_len)))
                 if let free_func = abuf.free_func:
-                    free_func(ctx.rt, abuf.opaque, bytes_as_void(abuf.data))
+                    free_func(ctx.rt, abuf.opaque, cutils.nullable_void(abuf.data))
             else:
                 # reallocate the buffer after the new array buffer is created in case the
                 # new array buffer creation fails.
                 res = try js_array_buffer_constructor2(ctx, js_undefined(), 0, pmax_len,
                                                        (u32)ClassId.array_buffer)
-                let new_bs_raw = js_realloc(ctx, bytes_as_void(abuf.data), (usize)new_len) catch failure:
+                let new_bs_raw = js_realloc(ctx, cutils.nullable_void(abuf.data), (usize)new_len) catch failure:
                     js_free_value(ctx, res)
                     error(failure.code, failure.message)
                 let new_bs = (u8*)(new_bs_raw else trap("js_realloc answered none for a nonzero size"))
                 if new_len > old_len:
                     discard(cutils.memset(new_bs + (usize)old_len, 0, (usize)(new_len - old_len)))
                 let new_abuf = (ArrayBuffer*)(try js_get_opaque2(ctx, res, (u32)ClassId.array_buffer))
-                js_free(ctx, bytes_as_void(new_abuf.data))
+                js_free(ctx, cutils.nullable_void(new_abuf.data))
                 new_abuf.data = new_bs
                 new_abuf.byte_length = (i32)new_len
         else:
@@ -122,7 +122,7 @@ func js_array_buffer_resize(ctx: Context*, this_val: Value, argc: i32, argv: Val
         # 2 bytes big in A, and 1 byte big in B
         abuf.byte_length = (i32)len
     else:
-        let data_raw = try js_realloc(ctx, bytes_as_void(abuf.data), (usize)cutils.max_int((i32)len, 1))
+        let data_raw = try js_realloc(ctx, cutils.nullable_void(abuf.data), (usize)cutils.max_int((i32)len, 1))
         let data = (u8*)(data_raw else trap("js_realloc answered none for a nonzero size"))
         if len > (i64)abuf.byte_length:
             discard(cutils.memset(data + (usize)abuf.byte_length, 0, (usize)(len - (i64)abuf.byte_length)))
@@ -169,7 +169,7 @@ func js_array_buffer_slice(ctx: Context*, this_val: Value, argc: i32, argv: Valu
     # must test again because of side effects
     if abuf.detached != 0 or (i64)abuf.byte_length < start + new_len:
         try js_throw_type_error_detached_array_buffer(ctx)
-    discard(cutils.memcpy(bytes_as_void(new_abuf.data), array_buffer_const_data_at(abuf.data, (u32)start),
+    discard(cutils.memcpy(cutils.nullable_void(new_abuf.data), array_buffer_const_data_at(abuf.data, (u32)start),
                           (usize)new_len))
     return new_obj
 

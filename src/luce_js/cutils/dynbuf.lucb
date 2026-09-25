@@ -40,13 +40,6 @@ pub struct DynBuf: Writer:
             error(memory.exhausted, "DynBuf: out of memory")
         return data.length
 
-# `u8*?` does not convert to `void*?` implicitly or by a cast.
-# workaround: compiler-issues/nullable_pointer_cast
-func nullable_void(p: u8*?) -> void*?:
-    if let q = p:
-        return q
-    return none
-
 # The storage when the capacity check guarantees there is some.
 func dbuf_storage(s: const DynBuf*) -> u8*:
     return s.buf else trap("DynBuf: no storage")

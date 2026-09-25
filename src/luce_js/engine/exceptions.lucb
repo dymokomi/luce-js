@@ -149,12 +149,6 @@ func find_line_col(b: FunctionBytecode*, pc_value: u32) -> (i32, i32)?:
 
 # mark: Backtraces ==============================================================================
 
-# The text of a NUL-terminated C string, as a view of its bytes (no copy). QuickJS's C
-# strings are UTF-8 except for lone surrogates, which only ever pass through as bytes.
-func c_str_view(p: const u8*) -> str:
-    let bytes: const u8[] = u8[]((u8*)p, cutils.strlen(p))
-    return (str)bytes
-
 # Return a string property without executing arbitrary JS code (used when dumping the stack
 # trace or in debug print). The result is released with js_free_c_string.
 func get_prop_string(ctx: Context*, obj: Value, prop: Atom) -> const u8*?:
@@ -214,7 +208,7 @@ func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line
     # C leaks the buffer when defining fileName and friends fails; here it is always freed.
     defer cutils.dbuf_free(&dbuf)
     if let fname = filename:
-        discard(cutils.dbuf_printf(&dbuf, f"    at {c_str_view(fname)}"))
+        discard(cutils.dbuf_printf(&dbuf, f"    at {cutils.c_str_view(fname)}"))
         if line_num != -1:
             discard(cutils.dbuf_printf(&dbuf, f":{line_num}:{col_num}"))
         discard(cutils.dbuf_putc(&dbuf, '\n'))
@@ -234,7 +228,7 @@ func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line
         var str1 = "<anonymous>"
         if let name = func_name_str:
             if name[0] != 0:
-                str1 = c_str_view(name)
+                str1 = cutils.c_str_view(name)
         discard(cutils.dbuf_printf(&dbuf, f"    at {str1}"))
         if let name = func_name_str:
             js_free_c_string(ctx, name)
@@ -248,7 +242,7 @@ func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line
                 let atom_str: const u8*? = (js_atom_to_c_string(ctx, b.debug.filename)
                                             catch failure: recover none)
                 if let a = atom_str:
-                    discard(cutils.dbuf_printf(&dbuf, f" ({c_str_view(a)}"))
+                    discard(cutils.dbuf_printf(&dbuf, f" ({cutils.c_str_view(a)}"))
                     js_free_c_string(ctx, a)
                 else:
                     discard(cutils.dbuf_printf(&dbuf, " (<null>"))

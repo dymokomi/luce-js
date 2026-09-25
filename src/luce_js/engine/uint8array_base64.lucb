@@ -54,11 +54,6 @@ func check_options_object(ctx: Context*, options: Value) -> !:
     if not js_is_object(options):
         try js_throw_type_error(ctx, "options must be an object")
 
-## Whether the NUL-terminated `p` is the text `text` (C's !strcmp).
-func c_string_is(p: const u8*, text: str) -> bool:
-    let n = cutils.strlen(p)
-    return n == text.length and cutils.memcmp(p, text.bytes.data, n) == 0
-
 # Parse the 'alphabet' option from an options object.
 ## b64_alphabet_base64 or b64_alphabet_base64url.
 func parse_alphabet_option(ctx: Context*, options: Value) -> i32!:
@@ -78,9 +73,9 @@ func parse_alphabet_option(ctx: Context*, options: Value) -> i32!:
     js_free_value(ctx, val)
     defer js_free_c_string(ctx, text)
 
-    if c_string_is(text, "base64"):
+    if cutils.c_str_equals(text, "base64"):
         return b64_alphabet_base64
-    elif c_string_is(text, "base64url"):
+    elif cutils.c_str_equals(text, "base64url"):
         return b64_alphabet_base64url
     try js_throw_type_error(ctx, "invalid alphabet")
 
@@ -103,11 +98,11 @@ func parse_last_chunk_option(ctx: Context*, options: Value) -> i32!:
     js_free_value(ctx, val)
     defer js_free_c_string(ctx, text)
 
-    if c_string_is(text, "loose"):
+    if cutils.c_str_equals(text, "loose"):
         return b64_last_loose
-    elif c_string_is(text, "strict"):
+    elif cutils.c_str_equals(text, "strict"):
         return b64_last_strict
-    elif c_string_is(text, "stop-before-partial"):
+    elif cutils.c_str_equals(text, "stop-before-partial"):
         return b64_last_stop_before_partial
     try js_throw_type_error(ctx, "invalid lastChunkHandling option")
 
