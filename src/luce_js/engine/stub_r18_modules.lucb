@@ -209,6 +209,3 @@ func free_bytecode_atoms(rt: Runtime*, bc_buf: const u8*, bc_len: i32, use_short
 ## Ported from quickjs.c:32162 js_free_function_def.
 func js_free_function_def(ctx: Context*, fd: FunctionDef*):
     trap("unported: js_free_function_def")
-## Ported from quickjs.c:32248 dump_byte_code.
-func dump_byte_code(ctx: Context*, pass: i32, tab: const u8*, len: i32, vardefs: const BytecodeVarDef*, args: const VarDef*, arg_count: i32, vars: const VarDef*, var_count: i32, closure_var: const ClosureVar*, closure_var_count: i32, cpool: const Value*, cpool_count: u32, source: const u8*, label_slots: const LabelSlot*, b: FunctionBytecode*):
-    trap("unported: dump_byte_code")

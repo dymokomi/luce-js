@@ -26,9 +26,6 @@ struct BCWriterState:
 struct ClassFieldsDef:
     var unported: i32
 
-struct CodeContext:
-    var unported: i32
-
 struct ExecModuleList:
     var unported: i32
 
@@ -118,3 +115,17 @@ type PrintValueWrite = func() -> unit
 # quickjs.c:16190 (region r13): the variable index flags of the scope opcodes.
 let global_var_offset: i32 = 0x40000000
 let argument_var_offset: i32 = 0x20000000
+
+# quickjs.c:17725 (region r14): the argument of OP_special_object (OPSpecialObjectEnum).
+enum OpSpecialObject as u8:
+    arguments = 0
+    mapped_arguments = 1
+    this_func = 2
+    new_target = 3
+    home_object = 4
+    var_object = 5
+    import_meta = 6
+
+# quickjs.c:18333 (region r14): the kinds of OP_throw_error the resolve passes emit.
+let throw_var_ro: i32 = 0
+let throw_var_redecl: i32 = 1

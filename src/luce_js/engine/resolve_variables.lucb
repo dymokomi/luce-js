@@ -1,0 +1,428 @@
+#==============================================================================================
+#
+#   resolve_variables - Phase 2 of the compiler: variables, scopes and hoisted definitions
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 34005-34545: instantiate_hoisted_definitions (the hoisted
+#       functions and the global variables of eval and module code), skip_dead_code,
+#       get_label_pos and resolve_variables, which rewrites the phase 1 bytecode: the
+#       scope_* opcodes become accesses to locals, arguments, closure or global
+#       variables, enter_scope/leave_scope initialize and close lexical variables, the
+#       optional chain opcodes become their plain forms, and a few peephole
+#       optimizations run (OPTIMIZE is on in QuickJS).
+#
+#       Phase 1 bytecode holds temporary opcodes whose values overlap the short opcodes;
+#       it holds no short opcode yet, so a byte in TempOp's range is a temporary opcode.
+#
+#==============================================================================================
+
+# mark: Hoisted definitions =====================================================================
+
+# Emit the creation of the hoisted functions and of the global variables of eval or
+# module code, at the start of the body.
+func instantiate_hoisted_definitions(ctx: Context*, s: FunctionDef*, bc: cutils.DynBuf*):
+    var label_next: i32 = -1
+
+    # add the hoisted functions in arguments and local variables
+    for i in 0..<s.arg_count:
+        let vd = fd_arg(s, i)
+        if vd.func_pool_idx >= 0:
+            dbuf_op(bc, Op.fclosure)
+            dbuf_u32(bc, (u32)vd.func_pool_idx)
+            dbuf_op(bc, Op.put_arg)
+            dbuf_u16(bc, i)
+    for i in 0..<s.var_count:
+        let vd = fd_var(s, i)
+        if vd.scope_level == 0 and vd.func_pool_idx >= 0:
+            dbuf_op(bc, Op.fclosure)
+            dbuf_u32(bc, (u32)vd.func_pool_idx)
+            dbuf_op(bc, Op.put_loc)
+            dbuf_u16(bc, i)
+
+    # the module global variables must be initialized before evaluating the module so
+    # that the exported functions are visible if there are cyclic module references
+    if s.module != none:
+        label_next = new_label_fd(s) catch: recover -1
+        if label_next < 0:
+            cutils.dbuf_set_error(bc)
+            return
+        # if 'this' is true, initialize the global variables and return
+        dbuf_op(bc, Op.push_this)
+        dbuf_op(bc, Op.if_false)
+        dbuf_u32(bc, (u32)label_next)
+        discard(update_label(s, label_next, 1))
+        s.jump_size += 1
+
+    # add the global variables (only happens if s->is_global_var is true)
+    # XXX: inefficient, add a closure index in JSGlobalVar
+    for i in 0..<s.global_var_count:
+        let hf = fd_global_var(s, i)
+        var has_var_obj = false
+        var force_init = hf.force_init
+        # we are in an eval, so the closure contains all the enclosing variables
+        # If the outer function has a variable environment, create a property for the
+        # variable there
+        var idx: i32 = 0
+        var found = false
+        while idx < s.closure_var_count:
+            let cv = fd_closure_var(s, idx)
+            if cv.var_name == hf.var_name:
+                force_init = false
+                found = true
+                break
+            if cv.var_name == atom__var_ or cv.var_name == atom__arg_var_:
+                dbuf_op(bc, Op.get_var_ref)
+                dbuf_u16(bc, idx)
+                has_var_obj = true
+                force_init = true
+                found = true
+                break
+            idx += 1
+        if not found:
+            trap("instantiate_hoisted_definitions: global variable not in the closure")
+        # closure_found:
+        if hf.cpool_idx >= 0 or force_init:
+            if hf.cpool_idx >= 0:
+                dbuf_op(bc, Op.fclosure)
+                dbuf_u32(bc, (u32)hf.cpool_idx)
+                if hf.var_name == atom__default_:
+                    # set default export function name
+                    dbuf_op(bc, Op.set_name)
+                    dbuf_u32(bc, js_dup_atom(ctx, atom_default))
+            else:
+                dbuf_op(bc, Op.undefined)
+            if not has_var_obj:
+                dbuf_op(bc, Op.put_var_ref)
+                dbuf_u16(bc, idx)
+            else:
+                dbuf_op(bc, Op.define_field)
+                dbuf_u32(bc, js_dup_atom(ctx, hf.var_name))
+                dbuf_op(bc, Op.drop)
+        js_free_atom(ctx, hf.var_name)
+
+    if s.module != none:
+        dbuf_op(bc, Op.return_undef)
+
+        dbuf_temp_op(bc, TempOp.label)
+        dbuf_u32(bc, (u32)label_next)
+        fd_label(s, label_next).pos2 = (i32)bc.size
+
+    if let global_vars = s.global_vars:
+        js_free(ctx, global_vars)
+    s.global_vars = none
+    s.global_var_count = 0
+    s.global_var_size = 0
+
+# mark: Dead code and labels ====================================================================
+
+# Skip the unreachable code from `pos0` up to the next label still referenced, releasing
+# the label references and atoms it holds; *linep receives the last line number skipped.
+# Answers the position of that label (or the end).
+func skip_dead_code(s: FunctionDef*, bc_buf: const u8*, bc_len: i32, pos0: i32,
+                    linep: i32*) -> i32:
+    var pos = pos0
+    while pos < bc_len:
+        let op = bc_buf[pos]
+        let len = (i32)op_info(op, true).size
+        if op == (u8)TempOp.line_num:
+            *linep = (i32)cutils.get_u32(bc_buf + pos + 1)
+        elif op == (u8)TempOp.label:
+            let label = (i32)cutils.get_u32(bc_buf + pos + 1)
+            if update_label(s, label, 0) > 0:
+                break
+            assert(fd_label(s, label).first_reloc == none)
+        else:
+            # XXX: output a warning for unreachable code?
+            match op_info(op, true).fmt:
+                .label, .label_u16:
+                    let label = (i32)cutils.get_u32(bc_buf + pos + 1)
+                    discard(update_label(s, label, -1))
+                .atom_label_u8, .atom_label_u16:
+                    let label = (i32)cutils.get_u32(bc_buf + pos + 5)
+                    discard(update_label(s, label, -1))
+                    let atom = cutils.get_u32(bc_buf + pos + 1)
+                    js_free_atom(s.ctx, atom)
+                .atom, .atom_u8, .atom_u16:
+                    let atom = cutils.get_u32(bc_buf + pos + 1)
+                    js_free_atom(s.ctx, atom)
+                _:
+                    discard(0)
+        pos += len
+    return pos
+
+# The position of the first real opcode at `label`, following gotos (at most 20).
+func get_label_pos(s: FunctionDef*, label0: i32) -> i32:
+    let buf = dbuf_bytes_or_empty(&s.byte_code)
+    var label = label0
+    var pos: i32 = 0
+    var i = 0
+    while i < 20:
+        i += 1
+        pos = fd_label(s, label).pos
+        while true:
+            let op = buf[pos]
+            if op == (u8)TempOp.line_num or op == (u8)TempOp.label:
+                pos += 5
+                continue
+            if op == (u8)Op.goto_:
+                label = (i32)cutils.get_u32(buf + pos + 1)
+                break
+            return pos
+    return pos
+
+# mark: resolve_variables =======================================================================
+
+# Emit a line_num opcode for `line_num`, counting it in s.line_number_size.
+func put_line_num(s: FunctionDef*, bc: cutils.DynBuf*, line_num: i32):
+    s.line_number_size += 1
+    dbuf_temp_op(bc, TempOp.line_num)
+    dbuf_u32(bc, (u32)line_num)
+
+# fail: continue the copy from `pos0` to keep the atom refcounts consistent, and make
+# the copy the function's bytecode.
+# XXX: find a better solution ?
+func resolve_variables_fail(s: FunctionDef*, bc_out: cutils.DynBuf*, bc_buf: const u8*,
+                            bc_len: i32, pos0: i32):
+    var pos = pos0
+    while pos < bc_len:
+        let len = (i32)op_info(bc_buf[pos], true).size
+        discard(cutils.dbuf_put(bc_out, bc_buf + pos, (usize)len))
+        pos += len
+    cutils.dbuf_free(&s.byte_code)
+    s.byte_code = *bc_out
+
+# Emit the initialization of the lexical variables of `scope` (enter_scope).
+func resolve_enter_scope(ctx: Context*, s: FunctionDef*, bc_out: cutils.DynBuf*, scope: i32):
+    if scope == s.body_scope:
+        instantiate_hoisted_definitions(ctx, s, bc_out)
+
+    var scope_idx = fd_scope(s, scope).first
+    while scope_idx >= 0:
+        let vd = fd_var(s, scope_idx)
+        if vd.scope_level != scope:
+            break
+        if scope_idx != s.arguments_arg_idx:
+            if vd.var_kind == VarKind.function_decl or vd.var_kind == VarKind.new_function_decl:
+                # Initialize lexical variable upon entering scope
+                dbuf_op(bc_out, Op.fclosure)
+                dbuf_u32(bc_out, (u32)vd.func_pool_idx)
+                dbuf_op(bc_out, Op.put_loc)
+                dbuf_u16(bc_out, scope_idx)
+            else:
+                # XXX: should check if variable can be used before initialization
+                dbuf_op(bc_out, Op.set_loc_uninitialized)
+                dbuf_u16(bc_out, scope_idx)
+        scope_idx = vd.scope_next
+
+# Emit the closing of the captured lexical variables of `scope` (leave_scope).
+func resolve_leave_scope(s: FunctionDef*, bc_out: cutils.DynBuf*, scope: i32):
+    var scope_idx = fd_scope(s, scope).first
+    while scope_idx >= 0:
+        let vd = fd_var(s, scope_idx)
+        if vd.scope_level != scope:
+            break
+        if vd.is_captured:
+            dbuf_op(bc_out, Op.close_loc)
+            dbuf_u16(bc_out, scope_idx)
+        scope_idx = vd.scope_next
+
+# convert global variable accesses to local variables or closure variables when
+# necessary
+func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
+    let bc_buf = dbuf_bytes_or_empty(&s.byte_code)
+    let bc_len = (i32)s.byte_code.size
+    var cc = CodeContext(bc_buf = bc_buf, bc_len = bc_len)
+    var bc_out: cutils.DynBuf
+    js_dbuf_bytecode_init(ctx, &bc_out)
+
+    # first pass for runtime checks (must be done before the variables are created)
+    # XXX: inefficient
+    for i in 0..<s.global_var_count:
+        let hf = fd_global_var(s, i)
+
+        # check if global variable (XXX: simplify)
+        for idx in 0..<s.closure_var_count:
+            let cv = fd_closure_var(s, idx)
+            if (cv.closure_type == ClosureType.global_ref or
+                cv.closure_type == ClosureType.global_decl or
+                cv.closure_type == ClosureType.global or
+                cv.closure_type == ClosureType.module_decl or
+                cv.closure_type == ClosureType.module_import):
+                break # don't look at global variables (they are at the end)
+            if cv.var_name == hf.var_name:
+                if s.eval_type == eval_type_direct and cv.is_lexical:
+                    # Check if a lexical variable is redefined as 'var'. XXX: Could abort
+                    # compilation here, but for consistency with the other checks, we
+                    # delay the error generation.
+                    dbuf_op(&bc_out, Op.throw_error)
+                    dbuf_u32(&bc_out, js_dup_atom(ctx, hf.var_name))
+                    dbuf_byte(&bc_out, (u8)throw_var_redecl)
+                break
+            if cv.var_name == atom__var_ or cv.var_name == atom__arg_var_:
+                break
+
+    var line_num: i32 = 0 # avoid warning
+    var pos: i32 = 0
+    while pos < bc_len:
+        let op = bc_buf[pos]
+        let len = (i32)op_info(op, true).size
+        var pos_next = pos + len
+        var no_change = false
+        if is_temp_op(op):
+            let temp_op = (TempOp)op
+            match temp_op:
+                .line_num:
+                    line_num = (i32)cutils.get_u32(bc_buf + pos + 1)
+                    s.line_number_size += 1
+                    no_change = true
+                .scope_get_var_checkthis, .scope_get_var_undef, .scope_get_var, .scope_put_var, .scope_delete_var, .scope_get_ref, .scope_put_var_init:
+                    let var_name = cutils.get_u32(bc_buf + pos + 1)
+                    let scope = (i32)cutils.get_u16(bc_buf + pos + 5)
+                    pos_next = resolve_scope_var(ctx, s, var_name, scope, temp_op, &bc_out, none,
+                                                 none, pos_next) catch failure:
+                        resolve_variables_fail(s, &bc_out, bc_buf, bc_len, pos)
+                        error(failure.code, failure.message)
+                    js_free_atom(ctx, var_name)
+                .scope_make_ref:
+                    let var_name = cutils.get_u32(bc_buf + pos + 1)
+                    let label = (i32)cutils.get_u32(bc_buf + pos + 5)
+                    let scope = (i32)cutils.get_u16(bc_buf + pos + 9)
+                    let ls = fd_label(s, label)
+                    ls.ref_count -= 1 # always remove label reference
+                    pos_next = resolve_scope_var(ctx, s, var_name, scope, temp_op, &bc_out, bc_buf,
+                                                 ls, pos_next) catch failure:
+                        resolve_variables_fail(s, &bc_out, bc_buf, bc_len, pos)
+                        error(failure.code, failure.message)
+                    js_free_atom(ctx, var_name)
+                .scope_get_private_field, .scope_get_private_field2, .scope_put_private_field, .scope_in_private_field:
+                    let var_name = cutils.get_u32(bc_buf + pos + 1)
+                    let scope = (i32)cutils.get_u16(bc_buf + pos + 5)
+                    resolve_scope_private_field(ctx, s, var_name, scope, temp_op,
+                                                &bc_out) catch failure:
+                        resolve_variables_fail(s, &bc_out, bc_buf, bc_len, pos)
+                        error(failure.code, failure.message)
+                    js_free_atom(ctx, var_name)
+                .label:
+                    let label = (i32)cutils.get_u32(bc_buf + pos + 1)
+                    assert(label >= 0 and label < s.label_count)
+                    let ls = fd_label(s, label)
+                    ls.pos2 = (i32)bc_out.size + (i32)op_info(op, true).size
+                    no_change = true
+                .enter_scope:
+                    resolve_enter_scope(ctx, s, &bc_out, (i32)cutils.get_u16(bc_buf + pos + 1))
+                .leave_scope:
+                    resolve_leave_scope(s, &bc_out, (i32)cutils.get_u16(bc_buf + pos + 1))
+                .set_class_name:
+                    # only used during parsing
+                    discard(0)
+                .get_field_opt_chain:
+                    # equivalent to OP_get_field
+                    let name = cutils.get_u32(bc_buf + pos + 1)
+                    dbuf_op(&bc_out, Op.get_field)
+                    dbuf_u32(&bc_out, name)
+                .get_array_el_opt_chain:
+                    # equivalent to OP_get_array_el
+                    dbuf_op(&bc_out, Op.get_array_el)
+                _:
+                    no_change = true
+        else:
+            match (Op)op:
+                .eval:
+                    # convert scope index to adjusted variable index
+                    let call_argc = (i32)cutils.get_u16(bc_buf + pos + 1)
+                    let scope = (i32)cutils.get_u16(bc_buf + pos + 1 + 2)
+                    mark_eval_captured_variables(ctx, s, scope)
+                    dbuf_byte(&bc_out, op)
+                    dbuf_u16(&bc_out, call_argc)
+                    dbuf_u16(&bc_out, fd_scope(s, scope).first - arg_scope_end)
+                .apply_eval:
+                    # convert scope index to adjusted variable index
+                    let scope = (i32)cutils.get_u16(bc_buf + pos + 1)
+                    mark_eval_captured_variables(ctx, s, scope)
+                    dbuf_byte(&bc_out, op)
+                    dbuf_u16(&bc_out, fd_scope(s, scope).first - arg_scope_end)
+                .gosub:
+                    s.jump_size += 1
+                    # remove calls to empty finalizers
+                    let label = (i32)cutils.get_u32(bc_buf + pos + 1)
+                    assert(label >= 0 and label < s.label_count)
+                    let ls = fd_label(s, label)
+                    if code_match(&cc, ls.pos, [(i32)Op.ret, -1]):
+                        ls.ref_count -= 1
+                    else:
+                        no_change = true
+                .drop:
+                    # QuickJS's removal of the drops before return_undef here is disabled
+                    # (`if (0)`): it breaks patterns recognised in resolve_labels.
+                    no_change = true
+                .insert3:
+                    # Transformation: insert3 put_array_el|put_ref_value drop ->
+                    # put_array_el|put_ref_value
+                    if code_match(&cc, pos_next,
+                                  [m2(Op.put_array_el, Op.put_ref_value), (i32)Op.drop, -1]):
+                        dbuf_byte(&bc_out, (u8)cc.op)
+                        pos_next = cc.pos
+                        if cc.line_num != -1 and cc.line_num != line_num:
+                            line_num = cc.line_num
+                            put_line_num(s, &bc_out, line_num)
+                    else:
+                        no_change = true
+                .goto_, .tail_call, .tail_call_method, .return_, .return_undef, .throw, .throw_error, .ret:
+                    if op == (u8)Op.goto_:
+                        s.jump_size += 1
+                    # remove dead code
+                    var line: i32 = -1
+                    discard(cutils.dbuf_put(&bc_out, bc_buf + pos, (usize)len))
+                    pos = skip_dead_code(s, bc_buf, bc_len, pos + len, &line)
+                    pos_next = pos
+                    if pos < bc_len and line >= 0 and line_num != line:
+                        line_num = line
+                        put_line_num(s, &bc_out, line_num)
+                .if_false, .if_true, .catch_:
+                    s.jump_size += 1
+                    no_change = true
+                .set_name:
+                    # remove dummy set_name opcodes
+                    let name = cutils.get_u32(bc_buf + pos + 1)
+                    if name != no_atom:
+                        no_change = true
+                .dup:
+                    # Transformation: dup if_false(l1) drop, l1: if_false(l2) -> if_false(l2)
+                    # Transformation: dup if_true(l1) drop, l1: if_true(l2) -> if_true(l2)
+                    no_change = true
+                    if code_match(&cc, pos_next, [m2(Op.if_false, Op.if_true), (i32)Op.drop, -1]):
+                        let lab0 = cc.label
+                        var lab1 = cc.label
+                        assert(lab1 >= 0 and lab1 < s.label_count)
+                        let op1 = cc.op
+                        let pos1 = cc.pos
+                        let line1 = cc.line_num
+                        var pos2 = get_label_pos(s, lab1)
+                        while code_match(&cc, pos2, [(i32)Op.dup, op1, (i32)Op.drop, -1]):
+                            lab1 = cc.label
+                            pos2 = get_label_pos(s, lab1)
+                        if code_match(&cc, pos2, [op1, -1]):
+                            s.jump_size += 1
+                            discard(update_label(s, lab0, -1))
+                            discard(update_label(s, cc.label, 1))
+                            dbuf_byte(&bc_out, (u8)op1)
+                            dbuf_u32(&bc_out, (u32)cc.label)
+                            pos_next = pos1
+                            if line1 != -1 and line1 != line_num:
+                                line_num = line1
+                                put_line_num(s, &bc_out, line_num)
+                            no_change = false
+                .nop:
+                    # remove erased code
+                    discard(0)
+                _:
+                    no_change = true
+        if no_change:
+            discard(cutils.dbuf_put(&bc_out, bc_buf + pos, (usize)len))
+        pos = pos_next
+
+    # set the new byte code
+    cutils.dbuf_free(&s.byte_code)
+    s.byte_code = bc_out
+    if cutils.dbuf_error(&s.byte_code):
+        try js_throw_out_of_memory(ctx)

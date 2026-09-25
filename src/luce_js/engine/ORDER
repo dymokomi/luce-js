@@ -57,7 +57,16 @@ tokenizer_json.lucb
 emitter.lucb
 stub_r17_parser.lucb
 stub_r18_modules.lucb
-stub_r19_resolve.lucb
+bytecode_dump.lucb
+closure_vars.lucb
+resolve_scope_var.lucb
+resolve_private_fields.lucb
+eval_variables.lucb
+code_match.lucb
+resolve_variables.lucb
+label_helpers.lucb
+resolve_labels.lucb
+resolve_labels_peephole.lucb
 stub_r20_function_eval.lucb
 stub_r21_bytecode_io.lucb
 stub_r22_object_function_error.lucb
@@ -79,3 +88,4 @@ tests_r08.lucb
 tests_r10.lucb
 tests_r09.lucb
 tests_tokenizer.lucb
+tests_r19.lucb

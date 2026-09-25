@@ -1,0 +1,233 @@
+#==============================================================================================
+#
+#   label_helpers - Line numbers, relocations, jump targets and short opcodes (phase 3)
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 34547-34794, the helpers of resolve_labels:
+#       add_pc2line_info and compute_pc2line_info (the compressed table mapping bytecode
+#       positions to source lines and columns), add_reloc (a jump to a label not placed
+#       yet), code_has_label and find_jump_target (following labels and gotos), and
+#       push_short_int and put_short_code (the short opcode forms; SHORT_OPCODES is on in
+#       QuickJS).
+#
+#==============================================================================================
+
+# mark: Line numbers ============================================================================
+
+# the pc2line table gives a source position for each PC value
+func add_pc2line_info(s: FunctionDef*, pc: u32, source_pos: u32):
+    if let slots = s.line_number_slots:
+        if (s.line_number_count < s.line_number_size and
+            pc >= (u32)s.line_number_last_pc and
+            source_pos != (u32)s.line_number_last):
+            let slot = slots + (isize)s.line_number_count
+            slot.pc = pc
+            slot.source_pos = source_pos
+            s.line_number_count += 1
+            s.line_number_last_pc = (i32)pc
+            s.line_number_last = (i32)source_pos
+
+# XXX: could use a more compact storage
+# XXX: get_line_col_cached() is slow. For more predictable performance, line/cols could
+# be stored every N source bytes. Alternatively, get_line_col_cached() could be issued in
+# emit_source_pos() so that the deltas are more likely to be small.
+func compute_pc2line_info(s: FunctionDef*):
+    if not s.strip_debug:
+        var last_col_num: i32 = 0
+        var last_pc: u32 = 0
+        let cache = s.get_line_col_cache
+        let buf_start = cache.buf_start
+        js_dbuf_init(s.ctx, &s.pc2line)
+
+        var last_line_num = get_line_col_cached(cache, &last_col_num,
+                                                buf_start + s.source_pos)
+        dbuf_put_leb128(&s.pc2line, (u32)last_line_num) # line number minus 1
+        dbuf_put_leb128(&s.pc2line, (u32)last_col_num) # column number minus 1
+
+        for i in 0..<s.line_number_count:
+            let slots = s.line_number_slots else trap("compute_pc2line_info: no line numbers")
+            let pc = slots[i].pc
+            let source_pos = slots[i].source_pos
+
+            if source_pos == 0xffffffff:
+                continue
+            let diff_pc = (i32)(pc -% last_pc)
+            if diff_pc < 0:
+                continue
+
+            var col_num: i32 = 0
+            let line_num = get_line_col_cached(cache, &col_num, buf_start + source_pos)
+            let diff_line = line_num - last_line_num
+            let diff_col = col_num - last_col_num
+            if diff_line == 0 and diff_col == 0:
+                continue
+
+            if (diff_line >= pc2line_base and
+                diff_line < pc2line_base + pc2line_range and
+                diff_pc <= pc2line_diff_pc_max):
+                let code = (diff_line - pc2line_base) + diff_pc * pc2line_range + pc2line_op_first
+                discard(cutils.dbuf_putc(&s.pc2line, (u8)code))
+            else:
+                # longer encoding
+                discard(cutils.dbuf_putc(&s.pc2line, 0))
+                dbuf_put_leb128(&s.pc2line, (u32)diff_pc)
+                dbuf_put_sleb128(&s.pc2line, diff_line)
+            dbuf_put_sleb128(&s.pc2line, diff_col)
+
+            last_pc = pc
+            last_line_num = line_num
+            last_col_num = col_num
+
+# mark: Labels and jumps ========================================================================
+
+# Record that the `size` bytes at `addr` of the new bytecode hold the offset to label
+# `ls`, to be patched when the label is placed.
+func add_reloc(ctx: Context*, ls: LabelSlot*, addr: u32, size: i32) -> RelocEntry*!:
+    let re = (RelocEntry*)try js_malloc(ctx, sizeof(RelocEntry))
+    re.addr = addr
+    re.size = size
+    re.next = ls.first_reloc
+    ls.first_reloc = re
+    return re
+
+# Whether `label` is placed at `pos`, among the labels and line numbers there, or is
+# the target of a goto there.
+func code_has_label(s: CodeContext*, pos0: i32, label: i32) -> bool:
+    var pos = pos0
+    while pos < s.bc_len:
+        let op = s.bc_buf[pos]
+        if op == (u8)TempOp.line_num:
+            pos += 5
+            continue
+        if op == (u8)TempOp.label:
+            let lab = (i32)cutils.get_u32(s.bc_buf + pos + 1)
+            if lab == label:
+                return true
+            pos += 5
+            continue
+        if op == (u8)Op.goto_:
+            let lab = (i32)cutils.get_u32(s.bc_buf + pos + 1)
+            if lab == label:
+                return true
+        break
+    return false
+
+# return the target label, following the OP_goto jumps
+# the first opcode at destination is stored in *pop
+func find_jump_target(s: FunctionDef*, label0: i32, pop: i32*, pline: i32*?) -> i32:
+    let buf = dbuf_bytes_or_empty(&s.byte_code)
+    var label = label0
+    var op: i32 = 0
+    discard(update_label(s, label, -1))
+    var i = 0
+    while i < 10:
+        i += 1
+        assert(label >= 0 and label < s.label_count)
+        var pos = fd_label(s, label).pos2
+        while true:
+            op = (i32)buf[pos]
+            if op == (i32)TempOp.line_num or op == (i32)TempOp.label:
+                if op == (i32)TempOp.line_num:
+                    if let line = pline:
+                        *line = (i32)cutils.get_u32(buf + pos + 1)
+                pos += (i32)op_info((u8)op, true).size
+                continue
+            if op == (i32)Op.goto_:
+                label = (i32)cutils.get_u32(buf + pos + 1)
+                break
+            if op == (i32)Op.drop:
+                # ignore drop opcodes if followed by OP_return_undef
+                pos += 1
+                while buf[pos] == (u8)Op.drop:
+                    pos += 1
+                if buf[pos] == (u8)Op.return_undef:
+                    op = (i32)Op.return_undef
+            # done:
+            *pop = op
+            discard(update_label(s, label, 1))
+            return label
+    # cycle detected, could issue a warning
+    # XXX: the combination of find_jump_target() and skip_dead_code() seems incorrect
+    # with cyclic labels. See for exemple:
+    #
+    #     for (;;) {
+    #     l:break l;
+    #     l:break l;
+    #     l:break l;
+    #     l:break l;
+    #     }
+    #
+    # Avoiding changing the target is just a workaround and might not suffice to
+    # completely fix the problem.
+    label = label0
+    # done:
+    *pop = op
+    discard(update_label(s, label, 1))
+    return label
+
+# mark: Short opcodes ===========================================================================
+
+# Emit the push of the integer `val` in its shortest form.
+func push_short_int(bc_out: cutils.DynBuf*, val: i32):
+    if val >= -1 and val <= 7:
+        dbuf_byte(bc_out, (u8)((i32)Op.push_0 + val))
+        return
+    if val == (i32)(i8)val:
+        dbuf_op(bc_out, Op.push_i8)
+        dbuf_byte(bc_out, (u8)val)
+        return
+    if val == (i32)(i16)val:
+        dbuf_op(bc_out, Op.push_i16)
+        dbuf_u16(bc_out, val)
+        return
+    dbuf_op(bc_out, Op.push_i32)
+    dbuf_u32(bc_out, (u32)val)
+
+# Emit the opcode `op` (a local, argument or closure variable access, or call) with the
+# index `idx`, in its shortest form.
+func put_short_code(bc_out: cutils.DynBuf*, op: i32, idx: i32):
+    if idx < 4:
+        var short_op: i32 = -1
+        match (Op)(u8)op:
+            .get_loc:
+                short_op = (i32)Op.get_loc0
+            .put_loc:
+                short_op = (i32)Op.put_loc0
+            .set_loc:
+                short_op = (i32)Op.set_loc0
+            .get_arg:
+                short_op = (i32)Op.get_arg0
+            .put_arg:
+                short_op = (i32)Op.put_arg0
+            .set_arg:
+                short_op = (i32)Op.set_arg0
+            .get_var_ref:
+                short_op = (i32)Op.get_var_ref0
+            .put_var_ref:
+                short_op = (i32)Op.put_var_ref0
+            .set_var_ref:
+                short_op = (i32)Op.set_var_ref0
+            .call:
+                short_op = (i32)Op.call0
+            _:
+                short_op = -1
+        if short_op >= 0:
+            dbuf_byte(bc_out, (u8)(short_op + idx))
+            return
+    if idx < 256:
+        var op8 = Op.invalid
+        match (Op)(u8)op:
+            .get_loc:
+                op8 = Op.get_loc8
+            .put_loc:
+                op8 = Op.put_loc8
+            .set_loc:
+                op8 = Op.set_loc8
+            _:
+                op8 = Op.invalid
+        if op8 != Op.invalid:
+            dbuf_op(bc_out, op8)
+            dbuf_byte(bc_out, (u8)idx)
+            return
+    dbuf_byte(bc_out, (u8)op)
+    dbuf_u16(bc_out, idx)

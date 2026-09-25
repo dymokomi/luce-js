@@ -1,0 +1,146 @@
+#==============================================================================================
+#
+#   resolve_private_fields - Resolving the scope_*_private_field opcodes (phase 2)
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 33396-33584: a private class member `#name` is a lexical
+#       variable of the class scope holding its private symbol, method, getter or
+#       setter. find_private_class_field_all and resolve_scope_private_field1 find it in
+#       the function or, through closures, in an enclosing one; resolve_scope_private_field
+#       emits the brand checks and accesses that replace the temporary opcode.
+#
+#==============================================================================================
+
+# search in all scopes
+func find_private_class_field_all(ctx: Context*, fd: FunctionDef*, name: Atom,
+                                  scope_level: i32) -> i32:
+    var idx = fd_scope(fd, scope_level).first
+    while idx >= 0:
+        if fd_var(fd, idx).var_name == name:
+            return idx
+        idx = fd_var(fd, idx).scope_next
+    return -1
+
+# Push local variable `idx`, or closure variable `idx` when `is_ref`.
+func get_loc_or_ref(bc: cutils.DynBuf*, is_ref: bool, idx: i32):
+    # if the field is not initialized, the error is catched when accessing it
+    if is_ref:
+        dbuf_op(bc, Op.get_var_ref)
+    else:
+        dbuf_op(bc, Op.get_loc)
+    dbuf_u16(bc, idx)
+
+# The variable holding the private member `var_name` seen from `scope_level` of `s`: a
+# local variable of `s`, or (*pis_ref set) a closure variable of `s`. *pvar_kind is the
+# member's kind. Throws a SyntaxError if there is no such member.
+func resolve_scope_private_field1(ctx: Context*, pis_ref: bool*, pvar_kind: VarKind*,
+                                  s: FunctionDef*, var_name: Atom, scope_level0: i32) -> i32!:
+    var fd = s
+    var is_ref = false
+    var scope_level = scope_level0
+    var idx: i32 = -1
+    var var_kind = VarKind.normal
+    while true:
+        idx = find_private_class_field_all(ctx, fd, var_name, scope_level)
+        if idx >= 0:
+            var_kind = fd_var(fd, idx).var_kind
+            if is_ref:
+                capture_var(fd, fd_var(fd, idx))
+                idx = try get_closure_var(ctx, s, fd, ClosureType.local_, idx, var_name, true,
+                                          true, VarKind.normal)
+            break
+        scope_level = fd.parent_scope_level
+        if let parent = fd.parent:
+            fd = parent
+        else:
+            if fd.is_eval:
+                # closure of the eval function (top level)
+                for i in 0..<fd.closure_var_count:
+                    let cv = fd_closure_var(fd, i)
+                    if cv.var_name == var_name:
+                        var_kind = cv.var_kind
+                        is_ref = true
+                        idx = i
+                        if fd != s:
+                            idx = try get_closure_var(ctx, s, fd, ClosureType.ref, i,
+                                                      cv.var_name, cv.is_const, cv.is_lexical,
+                                                      cv.var_kind)
+                        # done:
+                        *pis_ref = is_ref
+                        *pvar_kind = var_kind
+                        return idx
+            # XXX: no line number info
+            try js_throw_syntax_error_atom(ctx, "undefined private field '%s'", var_name)
+        is_ref = true
+    # done:
+    *pis_ref = is_ref
+    *pvar_kind = var_kind
+    return idx
+
+# Emit the access of the private member `var_name` that replaces the temporary opcode
+# `op` (scope_get_private_field, scope_get_private_field2, scope_put_private_field or
+# scope_in_private_field); fails if the member could not be resolved.
+func resolve_scope_private_field(ctx: Context*, s: FunctionDef*, var_name: Atom,
+                                 scope_level: i32, op: TempOp, bc: cutils.DynBuf*) -> !:
+    var is_ref = false
+    var var_kind = VarKind.normal
+    var idx = try resolve_scope_private_field1(ctx, &is_ref, &var_kind, s, var_name,
+                                               scope_level)
+    assert(var_kind != VarKind.normal)
+    match op:
+        .scope_get_private_field, .scope_get_private_field2:
+            match var_kind:
+                .private_field:
+                    if op == TempOp.scope_get_private_field2:
+                        dbuf_op(bc, Op.dup)
+                    get_loc_or_ref(bc, is_ref, idx)
+                    dbuf_op(bc, Op.get_private_field)
+                .private_method:
+                    get_loc_or_ref(bc, is_ref, idx)
+                    dbuf_op(bc, Op.check_brand)
+                    if op != TempOp.scope_get_private_field2:
+                        dbuf_op(bc, Op.nip)
+                .private_getter, .private_getter_setter:
+                    if op == TempOp.scope_get_private_field2:
+                        dbuf_op(bc, Op.dup)
+                    get_loc_or_ref(bc, is_ref, idx)
+                    dbuf_op(bc, Op.check_brand)
+                    dbuf_op(bc, Op.call_method)
+                    dbuf_u16(bc, 0)
+                .private_setter:
+                    # XXX: add clearer error message
+                    emit_throw_var_ro(ctx, bc, var_name)
+                _:
+                    trap("resolve_scope_private_field: not a private member")
+        .scope_put_private_field:
+            match var_kind:
+                .private_field:
+                    get_loc_or_ref(bc, is_ref, idx)
+                    dbuf_op(bc, Op.put_private_field)
+                .private_method, .private_getter:
+                    # XXX: add clearer error message
+                    emit_throw_var_ro(ctx, bc, var_name)
+                .private_setter, .private_getter_setter:
+                    let setter_name = try get_private_setter_name(ctx, var_name)
+                    defer js_free_atom(ctx, setter_name)
+                    idx = try resolve_scope_private_field1(ctx, &is_ref, &var_kind, s,
+                                                           setter_name, scope_level)
+                    assert(var_kind == VarKind.private_setter)
+                    get_loc_or_ref(bc, is_ref, idx)
+                    dbuf_op(bc, Op.swap)
+                    # obj func value
+                    dbuf_op(bc, Op.rot3r)
+                    # value obj func
+                    dbuf_op(bc, Op.check_brand)
+                    dbuf_op(bc, Op.rot3l)
+                    # obj func value
+                    dbuf_op(bc, Op.call_method)
+                    dbuf_u16(bc, 1)
+                    dbuf_op(bc, Op.drop)
+                _:
+                    trap("resolve_scope_private_field: not a private member")
+        .scope_in_private_field:
+            get_loc_or_ref(bc, is_ref, idx)
+            dbuf_op(bc, Op.private_in)
+        _:
+            trap("resolve_scope_private_field: not a private field opcode")

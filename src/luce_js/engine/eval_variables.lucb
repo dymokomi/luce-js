@@ -1,0 +1,233 @@
+#==============================================================================================
+#
+#   eval_variables - The variables a direct eval() can see
+#
+#   DESCRIPTION:
+#       Port of quickjs.c lines 33586-33866. A function containing a direct eval() call
+#       captures every variable the eval code could name (add_eval_variables,
+#       mark_eval_captured_variables); the eval code itself is compiled with closure
+#       variables referencing those of the calling function (add_closure_variables).
+#
+#       QuickJS ignores the failures of add_eval_variables (an index then holds -1 and
+#       the exception stays pending); the port does the same, so the function is not
+#       fallible.
+#
+#==============================================================================================
+
+# Capture the variables of scope `scope_level` of `s` and its enclosing scopes.
+func mark_eval_captured_variables(ctx: Context*, s: FunctionDef*, scope_level: i32):
+    var idx = fd_scope(s, scope_level).first
+    while idx >= 0:
+        let vd = fd_var(s, idx)
+        capture_var(s, vd)
+        idx = vd.scope_next
+
+# XXX: should handle the argument scope generically
+func is_var_in_arg_scope(var_name: Atom, var_kind: VarKind) -> bool:
+    return (var_name == atom_home_object or
+            var_name == atom_this_active_func or
+            var_name == atom_new_target or
+            var_name == atom_this or
+            var_name == atom__arg_var_ or
+            var_kind == VarKind.function_name)
+
+# add_var(ctx, fd, name) where QuickJS keeps the -1 of a failure.
+func add_var_unchecked(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32:
+    return add_var(ctx, fd, name) catch: recover -1
+
+# Add the 'this', 'new.target', 'this.active_func' and 'home_object' variables of `fd`
+# that are missing.
+func add_eval_this_vars(ctx: Context*, fd: FunctionDef*):
+    if fd.this_var_idx < 0:
+        fd.this_var_idx = add_var_this(ctx, fd) catch: recover -1
+    if fd.new_target_var_idx < 0:
+        fd.new_target_var_idx = add_var_unchecked(ctx, fd, atom_new_target)
+    if fd.is_derived_class_constructor and fd.this_active_func_var_idx < 0:
+        fd.this_active_func_var_idx = add_var_unchecked(ctx, fd, atom_this_active_func)
+    if fd.has_home_object and fd.home_object_var_idx < 0:
+        fd.home_object_var_idx = add_var_unchecked(ctx, fd, atom_home_object)
+
+# get_closure_var where QuickJS ignores the result.
+func add_eval_closure_var(ctx: Context*, s: FunctionDef*, fd: FunctionDef*,
+                          closure_type: ClosureType, var_idx: i32, var_name: Atom,
+                          is_const: bool, is_lexical: bool, var_kind: VarKind):
+    discard(get_closure_var(ctx, s, fd, closure_type, var_idx, var_name, is_const, is_lexical,
+                            var_kind) catch: recover -1)
+
+# Make every variable a direct eval() in `s` can name a captured variable of `s` or a
+# closure variable of `s`.
+func add_eval_variables(ctx: Context*, s: FunctionDef*):
+    # in non strict mode, variables are created in the caller's environment object
+    if not s.is_eval and ((i32)s.js_mode & js_mode_strict) == 0:
+        s.var_object_idx = add_var_unchecked(ctx, s, atom__var_)
+        if s.has_parameter_expressions:
+            # an additional variable object is needed for the argument scope
+            s.arg_var_object_idx = add_var_unchecked(ctx, s, atom__arg_var_)
+
+    # eval can potentially use 'arguments' so we must define it
+    var has_this_binding = s.has_this_binding
+    if has_this_binding:
+        add_eval_this_vars(ctx, s)
+    var has_arguments_binding = s.has_arguments_binding
+    if has_arguments_binding:
+        discard(add_arguments_var(ctx, s) catch: recover -1)
+        # also add an arguments binding in the argument scope to raise an error if a
+        # direct eval in the argument scope tries to redefine it
+        if s.has_parameter_expressions and ((i32)s.js_mode & js_mode_strict) == 0:
+            add_arguments_arg(ctx, s) catch: recover ()
+    if s.is_func_expr and s.func_name != no_atom:
+        discard(add_func_var(ctx, s, s.func_name) catch: recover -1)
+
+    for i in 0..<s.arg_count:
+        capture_var(s, fd_arg(s, i))
+    for i in 0..<s.var_count:
+        let vd = fd_var(s, i)
+        # do not close top level last result
+        if vd.scope_level == 0 and vd.var_name != atom__ret_ and vd.var_name != no_atom:
+            capture_var(s, vd)
+
+    # eval can use all the variables of the enclosing functions, so they must be all put
+    # in the closure. The closure variables are ordered by scope. It works only because
+    # no closure are created before.
+    assert(s.is_eval or s.closure_var_count == 0)
+
+    # XXX: inefficient, but eval performance is less critical
+    var fd = s
+    while let parent = fd.parent:
+        let scope_level = fd.parent_scope_level
+        fd = parent
+        # add 'this' if it was not previously added
+        if not has_this_binding and fd.has_this_binding:
+            add_eval_this_vars(ctx, fd)
+            has_this_binding = true
+        # add 'arguments' if it was not previously added
+        if not has_arguments_binding and fd.has_arguments_binding:
+            discard(add_arguments_var(ctx, fd) catch: recover -1)
+            has_arguments_binding = true
+        # add function name
+        if fd.is_func_expr and fd.func_name != no_atom:
+            discard(add_func_var(ctx, fd, fd.func_name) catch: recover -1)
+
+        # add lexical variables
+        var scope_idx = fd_scope(fd, scope_level).first
+        while scope_idx >= 0:
+            let vd = fd_var(fd, scope_idx)
+            capture_var(fd, vd)
+            add_eval_closure_var(ctx, s, fd, ClosureType.local_, scope_idx, vd.var_name,
+                                 vd.is_const, vd.is_lexical, vd.var_kind)
+            scope_idx = vd.scope_next
+        let is_arg_scope = scope_idx == arg_scope_end
+        if not is_arg_scope:
+            # add unscoped variables
+            # XXX: propagate is_const and var_kind too ?
+            for i in 0..<fd.arg_count:
+                let vd = fd_arg(fd, i)
+                if vd.var_name != no_atom:
+                    capture_var(fd, vd)
+                    add_eval_closure_var(ctx, s, fd, ClosureType.arg, i, vd.var_name, false,
+                                         vd.is_lexical, VarKind.normal)
+            for i in 0..<fd.var_count:
+                let vd = fd_var(fd, i)
+                # do not close top level last result
+                if vd.scope_level == 0 and vd.var_name != atom__ret_ and vd.var_name != no_atom:
+                    capture_var(fd, vd)
+                    add_eval_closure_var(ctx, s, fd, ClosureType.local_, i, vd.var_name, false,
+                                         vd.is_lexical, VarKind.normal)
+        else:
+            for i in 0..<fd.var_count:
+                let vd = fd_var(fd, i)
+                # do not close top level last result
+                if vd.scope_level == 0 and is_var_in_arg_scope(vd.var_name, vd.var_kind):
+                    capture_var(fd, vd)
+                    add_eval_closure_var(ctx, s, fd, ClosureType.local_, i, vd.var_name, false,
+                                         vd.is_lexical, VarKind.normal)
+        if fd.is_eval:
+            # add direct eval variables (we are necessarily at the top level).
+            for idx in 0..<fd.closure_var_count:
+                let cv = fd_closure_var(fd, idx)
+                # Global variables are removed but module definitions are kept.
+                if (cv.closure_type != ClosureType.global_ref and
+                    cv.closure_type != ClosureType.global_decl and
+                    cv.closure_type != ClosureType.global):
+                    add_eval_closure_var(ctx, s, fd, ClosureType.ref, idx, cv.var_name,
+                                         cv.is_const, cv.is_lexical, cv.var_kind)
+
+# Make `cv` refer to local variable `var_idx` of the calling function, described by `vd`.
+func set_closure_from_var(ctx: Context*, cv: ClosureVar*, vd: const BytecodeVarDef*,
+                          var_idx: i32):
+    cv.closure_type = ClosureType.local_
+    cv.is_const = vd.is_const
+    cv.is_lexical = vd.is_lexical
+    cv.var_kind = vd.var_kind
+    cv.var_idx = (u16)var_idx
+    cv.var_name = js_dup_atom(ctx, vd.var_name)
+
+# The variable definition `idx` of `b` (&b->vardefs[idx]).
+func bytecode_vardef(b: FunctionBytecode*, idx: i32) -> BytecodeVarDef*:
+    let vardefs = b.vardefs else trap("FunctionBytecode: no variables")
+    return vardefs + (isize)idx
+
+# Append a closure variable to `s`, whose closure_var array add_closure_variables sized.
+func push_eval_closure_var(s: FunctionDef*) -> ClosureVar*:
+    let cv = fd_closure_var(s, s.closure_var_count)
+    s.closure_var_count += 1
+    return cv
+
+# for direct eval compilation: add references to the variables of the calling function
+func add_closure_variables(ctx: Context*, s: FunctionDef*, b: FunctionBytecode*,
+                           scope_idx: i32) -> !:
+    let arg_count = (i32)b.arg_count
+    let count = arg_count + (i32)b.var_count + b.closure_var_count
+    s.closure_var = none
+    s.closure_var_count = 0
+    s.closure_var_size = count
+    if count == 0:
+        return
+    s.closure_var = (ClosureVar*)try js_malloc(ctx, sizeof(ClosureVar) * (usize)count)
+    # Add lexical variables in scope at the point of evaluation
+    var i = scope_idx
+    while i >= 0:
+        let vd = bytecode_vardef(b, arg_count + i)
+        if vd.has_scope:
+            set_closure_from_var(ctx, push_eval_closure_var(s), vd, i)
+        i = vd.scope_next
+    let is_arg_scope = i == arg_scope_end
+    if not is_arg_scope:
+        # Add argument variables
+        for j in 0..<arg_count:
+            let cv = push_eval_closure_var(s)
+            let vd = bytecode_vardef(b, j)
+            cv.closure_type = ClosureType.arg
+            cv.is_const = false
+            cv.is_lexical = false
+            cv.var_kind = VarKind.normal
+            cv.var_idx = (u16)j
+            cv.var_name = js_dup_atom(ctx, vd.var_name)
+        # Add local non lexical variables
+        for j in 0..<(i32)b.var_count:
+            let vd = bytecode_vardef(b, arg_count + j)
+            if not vd.has_scope and vd.var_name != atom__ret_:
+                set_closure_from_var(ctx, push_eval_closure_var(s), vd, j)
+    else:
+        # only add pseudo variables
+        for j in 0..<(i32)b.var_count:
+            let vd = bytecode_vardef(b, arg_count + j)
+            if not vd.has_scope and is_var_in_arg_scope(vd.var_name, vd.var_kind):
+                set_closure_from_var(ctx, push_eval_closure_var(s), vd, j)
+    for j in 0..<b.closure_var_count:
+        let closure_var = b.closure_var else trap("FunctionBytecode: no closure variables")
+        let cv0 = closure_var + (isize)j
+        match cv0.closure_type:
+            .local_, .arg, .ref, .module_decl, .module_import:
+                discard(0)
+            .global_ref, .global_decl, .global:
+                continue # not necessary to add global variables
+            _:
+                trap("add_closure_variables: bad closure type")
+        let cv = push_eval_closure_var(s)
+        cv.closure_type = ClosureType.ref
+        cv.is_const = cv0.is_const
+        cv.is_lexical = cv0.is_lexical
+        cv.var_kind = cv0.var_kind
+        cv.var_idx = (u16)j
+        cv.var_name = js_dup_atom(ctx, cv0.var_name)

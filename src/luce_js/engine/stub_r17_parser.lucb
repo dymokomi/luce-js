@@ -63,7 +63,7 @@ func find_private_class_field(ctx: Context*, fd: FunctionDef*, name: Atom, scope
 func emit_class_field_init(s: ParseState*):
     trap("unported: emit_class_field_init")
 ## Ported from quickjs.c:25210 get_private_setter_name.
-func get_private_setter_name(ctx: Context*, name: Atom) -> Atom:
+func get_private_setter_name(ctx: Context*, name: Atom) -> Atom!:
     trap("unported: get_private_setter_name")
 ## Ported from quickjs.c:25223 emit_class_init_start.
 func emit_class_init_start(s: ParseState*, cf: ClassFieldsDef*) -> i32:

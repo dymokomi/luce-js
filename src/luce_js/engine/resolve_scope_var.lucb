@@ -1,0 +1,439 @@
+#==============================================================================================
+#
+#   resolve_scope_var - Resolving a scope_* variable access to a local, closure or global
+#
+#   DESCRIPTION:
+#       Port of quickjs.c resolve_scope_var (lines 32915-33394), phase 2 of the compiler:
+#       a scope_get_var/scope_put_var/scope_make_ref/... opcode names a variable by atom
+#       and lexical scope; the lookup walks the scopes of the function, then those of the
+#       enclosing functions, then the closure of a direct eval, and emits the access to a
+#       local variable, an argument, a closure variable or a global variable, with the
+#       with-statement and eval variable object tests in front.
+#
+#       C's single function jumps between its three emitters with `goto has_idx`,
+#       `goto has_global_idx`, `goto local_scope_var`, `goto closure_scope_var` and
+#       `goto done`: each emitter is a function here, and `done` is the tail of
+#       resolve_scope_var.
+#
+#==============================================================================================
+
+# mark: Local variables =========================================================================
+
+# local_scope_var: emit the read or write of local variable or argument `var_idx`.
+func emit_local_scope_var(bc: cutils.DynBuf*, s: FunctionDef*, var_name: Atom, op: TempOp,
+                          var_idx: i32):
+    let is_put = op == TempOp.scope_put_var or op == TempOp.scope_put_var_init
+    if (var_idx & argument_var_offset) != 0:
+        dbuf_byte(bc, (u8)Op.get_arg + (u8)is_put)
+        dbuf_u16(bc, var_idx - argument_var_offset)
+    else:
+        let vd = fd_var(s, var_idx)
+        if is_put:
+            if vd.is_lexical:
+                if op == TempOp.scope_put_var_init:
+                    # 'this' can only be initialized once
+                    if var_name == atom_this:
+                        dbuf_op(bc, Op.put_loc_check_init)
+                    else:
+                        dbuf_op(bc, Op.put_loc)
+                else:
+                    dbuf_op(bc, Op.put_loc_check)
+            else:
+                dbuf_op(bc, Op.put_loc)
+        else:
+            if vd.is_lexical:
+                if op == TempOp.scope_get_var_checkthis:
+                    # only used for 'this' return in derived class constructors
+                    dbuf_op(bc, Op.get_loc_checkthis)
+                else:
+                    dbuf_op(bc, Op.get_loc_check)
+            else:
+                dbuf_op(bc, Op.get_loc)
+        dbuf_u16(bc, var_idx)
+
+# The access to `var_idx`, a local variable or argument (argument_var_offset set) of `s`
+# itself. Answers the position of the next opcode.
+func emit_local_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op: TempOp,
+                           bc: cutils.DynBuf*, bc_buf: u8*?, ls: LabelSlot*?, pos_next: i32,
+                           label_done: i32, var_idx0: i32) -> i32:
+    var var_idx = var_idx0
+    let is_arg = (var_idx & argument_var_offset) != 0
+    if ((op == TempOp.scope_put_var or op == TempOp.scope_make_ref) and
+        not is_arg and fd_var(s, var_idx).is_const):
+        # only happens when assigning a function expression name in strict mode
+        emit_throw_var_ro(ctx, bc, var_name)
+        return pos_next
+    # OP_scope_put_var_init is only used to initialize a lexical variable, so it is never
+    # used in a with or var object. It can be used with a closure (module global variable
+    # case).
+    match op:
+        .scope_make_ref:
+            if not is_arg and fd_var(s, var_idx).var_kind == VarKind.function_name:
+                # Create a dummy object reference for the func_var
+                dbuf_op(bc, Op.object)
+                dbuf_op(bc, Op.get_loc)
+                dbuf_u16(bc, var_idx)
+                dbuf_op(bc, Op.define_field)
+                dbuf_u32(bc, js_dup_atom(ctx, var_name))
+                dbuf_op(bc, Op.push_atom_value)
+                dbuf_u32(bc, js_dup_atom(ctx, var_name))
+                return pos_next
+            let buf = bc_buf else trap("resolve_scope_var: scope_make_ref without its bytecode")
+            let slot = ls else trap("resolve_scope_var: scope_make_ref without its label")
+            if label_done == -1 and can_opt_put_ref_value(buf, slot.pos):
+                var get_op = Op.get_loc
+                if is_arg:
+                    get_op = Op.get_arg
+                    var_idx -= argument_var_offset
+                else:
+                    if fd_var(s, var_idx).is_lexical:
+                        get_op = Op.get_loc_check
+                    else:
+                        get_op = Op.get_loc
+                return optimize_scope_make_ref(ctx, s, bc, buf, slot, pos_next, get_op, var_idx)
+            # Create a dummy object with a named slot that is a reference to the local
+            # variable
+            if is_arg:
+                capture_var(s, fd_arg(s, var_idx - argument_var_offset))
+                dbuf_op(bc, Op.make_arg_ref)
+                dbuf_u32(bc, js_dup_atom(ctx, var_name))
+                dbuf_u16(bc, var_idx - argument_var_offset)
+            else:
+                capture_var(s, fd_var(s, var_idx))
+                dbuf_op(bc, Op.make_loc_ref)
+                dbuf_u32(bc, js_dup_atom(ctx, var_name))
+                dbuf_u16(bc, var_idx)
+        .scope_put_var:
+            if not is_arg and fd_var(s, var_idx).var_kind == VarKind.function_name:
+                # in non strict mode, modifying the function name is ignored
+                dbuf_op(bc, Op.drop)
+                return pos_next
+            emit_local_scope_var(bc, s, var_name, op, var_idx)
+        .scope_get_ref:
+            dbuf_op(bc, Op.undefined)
+            emit_local_scope_var(bc, s, var_name, op, var_idx)
+        .scope_get_var_checkthis, .scope_get_var_undef, .scope_get_var, .scope_put_var_init:
+            emit_local_scope_var(bc, s, var_name, op, var_idx)
+        .scope_delete_var:
+            dbuf_op(bc, Op.push_false)
+        _:
+            discard(0)
+    return pos_next
+
+# mark: Closure and global variables ============================================================
+
+# closure_scope_var: emit the read or write of closure variable `idx`.
+func emit_closure_scope_var(bc: cutils.DynBuf*, s: FunctionDef*, var_name: Atom, op: TempOp,
+                            idx: i32):
+    let is_put = op == TempOp.scope_put_var or op == TempOp.scope_put_var_init
+    let cv = fd_closure_var(s, idx)
+    if is_put:
+        if cv.is_lexical:
+            if op == TempOp.scope_put_var_init:
+                # 'this' can only be initialized once
+                if var_name == atom_this:
+                    dbuf_op(bc, Op.put_var_ref_check_init)
+                else:
+                    dbuf_op(bc, Op.put_var_ref)
+            else:
+                dbuf_op(bc, Op.put_var_ref_check)
+        else:
+            dbuf_op(bc, Op.put_var_ref)
+    else:
+        if cv.is_lexical:
+            dbuf_op(bc, Op.get_var_ref_check)
+        else:
+            dbuf_op(bc, Op.get_var_ref)
+    dbuf_u16(bc, idx)
+
+# has_idx: the access to closure variable `idx` of `s`. Answers the position of the next
+# opcode.
+func emit_closure_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op: TempOp,
+                             bc: cutils.DynBuf*, bc_buf: u8*?, ls: LabelSlot*?,
+                             pos_next: i32, label_done: i32, idx: i32) -> i32:
+    let cv = fd_closure_var(s, idx)
+    if (op == TempOp.scope_put_var or op == TempOp.scope_make_ref) and cv.is_const:
+        emit_throw_var_ro(ctx, bc, var_name)
+        return pos_next
+    match op:
+        .scope_make_ref:
+            if cv.var_kind == VarKind.function_name:
+                # Create a dummy object reference for the func_var
+                dbuf_op(bc, Op.object)
+                dbuf_op(bc, Op.get_var_ref)
+                dbuf_u16(bc, idx)
+                dbuf_op(bc, Op.define_field)
+                dbuf_u32(bc, js_dup_atom(ctx, var_name))
+                dbuf_op(bc, Op.push_atom_value)
+                dbuf_u32(bc, js_dup_atom(ctx, var_name))
+                return pos_next
+            let buf = bc_buf else trap("resolve_scope_var: scope_make_ref without its bytecode")
+            let slot = ls else trap("resolve_scope_var: scope_make_ref without its label")
+            if label_done == -1 and can_opt_put_ref_value(buf, slot.pos):
+                var get_op = Op.get_var_ref
+                if cv.is_lexical:
+                    get_op = Op.get_var_ref_check
+                return optimize_scope_make_ref(ctx, s, bc, buf, slot, pos_next, get_op, idx)
+            # Create a dummy object with a named slot that is a reference to the closure
+            # variable
+            dbuf_op(bc, Op.make_var_ref_ref)
+            dbuf_u32(bc, js_dup_atom(ctx, var_name))
+            dbuf_u16(bc, idx)
+        .scope_put_var:
+            if cv.var_kind == VarKind.function_name:
+                # in non strict mode, modifying the function name is ignored
+                dbuf_op(bc, Op.drop)
+                return pos_next
+            emit_closure_scope_var(bc, s, var_name, op, idx)
+        .scope_get_ref:
+            # XXX: should create a dummy object with a named slot that is a reference to
+            # the closure variable
+            dbuf_op(bc, Op.undefined)
+            emit_closure_scope_var(bc, s, var_name, op, idx)
+        .scope_get_var_undef, .scope_get_var, .scope_put_var_init:
+            emit_closure_scope_var(bc, s, var_name, op, idx)
+        .scope_delete_var:
+            dbuf_op(bc, Op.push_false)
+        _:
+            discard(0)
+    return pos_next
+
+# has_global_idx: the access to the global variable of closure variable `idx`. Answers
+# the position of the next opcode.
+func emit_global_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op: TempOp,
+                            bc: cutils.DynBuf*, bc_buf: u8*?, ls: LabelSlot*?,
+                            pos_next: i32, label_done: i32, idx: i32) -> i32:
+    # global variable access
+    match op:
+        .scope_make_ref:
+            let buf = bc_buf else trap("resolve_scope_var: scope_make_ref without its bytecode")
+            let slot = ls else trap("resolve_scope_var: scope_make_ref without its label")
+            if label_done == -1 and can_opt_put_global_ref_value(buf, slot.pos):
+                return optimize_scope_make_ref(ctx, s, bc, buf, slot, pos_next, Op.get_var, idx)
+            dbuf_op(bc, Op.make_var_ref)
+            dbuf_u32(bc, js_dup_atom(ctx, var_name))
+        .scope_get_ref:
+            # XXX: should create a dummy object with a named slot that is a reference to
+            # the global variable
+            dbuf_op(bc, Op.undefined)
+            dbuf_op(bc, Op.get_var)
+            dbuf_u16(bc, idx)
+        .scope_get_var_undef, .scope_get_var, .scope_put_var:
+            let delta = (i32)op - (i32)TempOp.scope_get_var_undef
+            dbuf_byte(bc, (u8)((i32)Op.get_var_undef + delta))
+            dbuf_u16(bc, idx)
+        .scope_put_var_init:
+            dbuf_op(bc, Op.put_var_init)
+            dbuf_u16(bc, idx)
+        .scope_delete_var:
+            dbuf_op(bc, Op.delete_var)
+            dbuf_u32(bc, js_dup_atom(ctx, var_name))
+        _:
+            discard(0)
+    return pos_next
+
+# Whether closure variable `cv` refers to a global variable.
+func is_global_closure_var(cv: const ClosureVar*) -> bool:
+    return (cv.closure_type == ClosureType.global or
+            cv.closure_type == ClosureType.global_decl or
+            cv.closure_type == ClosureType.global_ref)
+
+# mark: resolve_scope_var =======================================================================
+
+# return the position of the next opcode or -1 if error
+func resolve_scope_var(ctx: Context*, s: FunctionDef*, var_name: Atom, scope_level: i32,
+                       op: TempOp, bc: cutils.DynBuf*, bc_buf: u8*?, ls: LabelSlot*?,
+                       pos_next: i32) -> i32!:
+    var label_done: i32 = -1
+    let next = try resolve_scope_var_access(ctx, s, var_name, scope_level, op, bc, bc_buf, ls,
+                                            pos_next, &label_done)
+    # done:
+    if label_done >= 0:
+        dbuf_temp_op(bc, TempOp.label)
+        dbuf_u32(bc, (u32)label_done)
+        fd_label(s, label_done).pos2 = (i32)bc.size
+    return next
+
+# The body of resolve_scope_var, up to its `done` label; `plabel_done` is its
+# label_done.
+func resolve_scope_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom,
+                              scope_level0: i32, op: TempOp, bc: cutils.DynBuf*,
+                              bc_buf: u8*?, ls: LabelSlot*?, pos_next: i32,
+                              plabel_done: i32*) -> i32!:
+    # XXX: could be simpler to use a specific function to resolve the pseudo variables
+    let is_pseudo_var = (var_name == atom_home_object or
+                         var_name == atom_this_active_func or
+                         var_name == atom_new_target or
+                         var_name == atom_this)
+    let is_put_or_ref = op == TempOp.scope_put_var or op == TempOp.scope_make_ref
+
+    # resolve local scoped variables
+    var var_idx: i32 = -1
+    var idx = fd_scope(s, scope_level0).first
+    while idx >= 0:
+        let vd = fd_var(s, idx)
+        if vd.var_name == var_name:
+            if is_put_or_ref and vd.is_const:
+                emit_throw_var_ro(ctx, bc, var_name)
+                return pos_next
+            var_idx = idx
+            break
+        elif vd.var_name == atom__with_ and not is_pseudo_var:
+            dbuf_op(bc, Op.get_loc)
+            dbuf_u16(bc, idx)
+            var_object_test(ctx, s, var_name, op, bc, plabel_done, true)
+        idx = vd.scope_next
+    var is_arg_scope = idx == arg_scope_end
+    if var_idx < 0:
+        # argument scope: variables are not visible but pseudo variables are visible
+        if not is_arg_scope:
+            var_idx = find_var(ctx, s, var_name)
+
+        if var_idx < 0 and is_pseudo_var:
+            var_idx = try resolve_pseudo_var(ctx, s, var_name)
+
+        if var_idx < 0 and var_name == atom_arguments and s.has_arguments_binding:
+            # 'arguments' pseudo variable
+            var_idx = try add_arguments_var(ctx, s)
+        if var_idx < 0 and s.is_func_expr and var_name == s.func_name:
+            # add a new variable with the function name
+            var_idx = try add_func_var(ctx, s, var_name)
+    if var_idx >= 0:
+        return emit_local_var_access(ctx, s, var_name, op, bc, bc_buf, ls, pos_next,
+                                     *plabel_done, var_idx)
+    # check eval object
+    if not is_arg_scope and s.var_object_idx >= 0 and not is_pseudo_var:
+        dbuf_op(bc, Op.get_loc)
+        dbuf_u16(bc, s.var_object_idx)
+        var_object_test(ctx, s, var_name, op, bc, plabel_done, false)
+    # check eval object in argument scope
+    if s.arg_var_object_idx >= 0 and not is_pseudo_var:
+        dbuf_op(bc, Op.get_loc)
+        dbuf_u16(bc, s.arg_var_object_idx)
+        var_object_test(ctx, s, var_name, op, bc, plabel_done, false)
+
+    # check parent scopes
+    var fd = s
+    while let parent = fd.parent:
+        let scope_level = fd.parent_scope_level
+        fd = parent
+        idx = fd_scope(fd, scope_level).first
+        while idx >= 0:
+            let vd = fd_var(fd, idx)
+            if vd.var_name == var_name:
+                if is_put_or_ref and vd.is_const:
+                    emit_throw_var_ro(ctx, bc, var_name)
+                    return pos_next
+                var_idx = idx
+                break
+            elif vd.var_name == atom__with_ and not is_pseudo_var:
+                capture_var(fd, vd)
+                let cidx = try get_closure_var(ctx, s, fd, ClosureType.local_, idx, vd.var_name,
+                                               false, false, VarKind.normal)
+                if cidx >= 0:
+                    dbuf_op(bc, Op.get_var_ref)
+                    dbuf_u16(bc, cidx)
+                    var_object_test(ctx, s, var_name, op, bc, plabel_done, true)
+            idx = vd.scope_next
+        is_arg_scope = idx == arg_scope_end
+        if var_idx >= 0:
+            break
+
+        if not is_arg_scope:
+            var_idx = find_var(ctx, fd, var_name)
+            if var_idx >= 0:
+                break
+        if is_pseudo_var:
+            var_idx = try resolve_pseudo_var(ctx, fd, var_name)
+            if var_idx >= 0:
+                break
+        if var_name == atom_arguments and fd.has_arguments_binding:
+            var_idx = try add_arguments_var(ctx, fd)
+            break
+        if fd.is_func_expr and fd.func_name == var_name:
+            # add a new variable with the function name
+            var_idx = try add_func_var(ctx, fd, var_name)
+            break
+
+        # check eval object
+        if not is_arg_scope and fd.var_object_idx >= 0 and not is_pseudo_var:
+            let vd = fd_var(fd, fd.var_object_idx)
+            capture_var(fd, vd)
+            let cidx = try get_closure_var(ctx, s, fd, ClosureType.local_, fd.var_object_idx,
+                                           vd.var_name, false, false, VarKind.normal)
+            dbuf_op(bc, Op.get_var_ref)
+            dbuf_u16(bc, cidx)
+            var_object_test(ctx, s, var_name, op, bc, plabel_done, false)
+
+        # check eval object in argument scope
+        if fd.arg_var_object_idx >= 0 and not is_pseudo_var:
+            let vd = fd_var(fd, fd.arg_var_object_idx)
+            capture_var(fd, vd)
+            let cidx = try get_closure_var(ctx, s, fd, ClosureType.local_,
+                                           fd.arg_var_object_idx, vd.var_name, false, false,
+                                           VarKind.normal)
+            dbuf_op(bc, Op.get_var_ref)
+            dbuf_u16(bc, cidx)
+            var_object_test(ctx, s, var_name, op, bc, plabel_done, false)
+
+        if fd.is_eval:
+            break # it it necessarily the top level function
+
+    # check direct eval scope (in the closure of the eval function which is necessarily
+    # at the top level)
+    if var_idx < 0 and fd.is_eval:
+        for idx1 in 0..<fd.closure_var_count:
+            let cv = fd_closure_var(fd, idx1)
+            if var_name == cv.var_name:
+                var cidx = idx1
+                if fd != s:
+                    var closure_type = ClosureType.ref
+                    if is_global_closure_var(cv):
+                        closure_type = ClosureType.global_ref
+                    cidx = try get_closure_var(ctx, s, fd, closure_type, idx1, cv.var_name,
+                                               cv.is_const, cv.is_lexical, cv.var_kind)
+                if is_global_closure_var(cv):
+                    return emit_global_var_access(ctx, s, var_name, op, bc, bc_buf, ls,
+                                                  pos_next, *plabel_done, cidx)
+                return emit_closure_var_access(ctx, s, var_name, op, bc, bc_buf, ls, pos_next,
+                                               *plabel_done, cidx)
+            elif ((cv.var_name == atom__var_ or
+                   cv.var_name == atom__arg_var_ or
+                   cv.var_name == atom__with_) and not is_pseudo_var):
+                let is_with = cv.var_name == atom__with_
+                var cidx = idx1
+                if fd != s:
+                    cidx = try get_closure_var(ctx, s, fd, ClosureType.ref, idx1, cv.var_name,
+                                               false, false, VarKind.normal)
+                dbuf_op(bc, Op.get_var_ref)
+                dbuf_u16(bc, cidx)
+                var_object_test(ctx, s, var_name, op, bc, plabel_done, is_with)
+
+        # not found: add a closure for a global variable access
+        let idx1 = try add_closure_var(ctx, fd, ClosureType.global, 0, var_name, false, false,
+                                       VarKind.normal)
+        var gidx = idx1
+        if fd != s:
+            gidx = try get_closure_var(ctx, s, fd, ClosureType.global_ref, idx1, var_name,
+                                       false, false, VarKind.normal)
+        return emit_global_var_access(ctx, s, var_name, op, bc, bc_buf, ls, pos_next,
+                                      *plabel_done, gidx)
+
+    # find the corresponding closure variable
+    # A variable not found here would need a top level function that is not eval code,
+    # which QuickJS never compiles (C would index vars[-1]).
+    assert(var_idx >= 0)
+    var cidx: i32
+    if (var_idx & argument_var_offset) != 0:
+        capture_var(fd, fd_arg(fd, var_idx - argument_var_offset))
+        cidx = try get_closure_var(ctx, s, fd, ClosureType.arg, var_idx - argument_var_offset,
+                                   var_name, false, false, VarKind.normal)
+    else:
+        let vd = fd_var(fd, var_idx)
+        capture_var(fd, vd)
+        cidx = try get_closure_var(ctx, s, fd, ClosureType.local_, var_idx, var_name,
+                                   vd.is_const, vd.is_lexical, vd.var_kind)
+    if cidx >= 0:
+        return emit_closure_var_access(ctx, s, var_name, op, bc, bc_buf, ls, pos_next,
+                                       *plabel_done, cidx)
+    return pos_next
