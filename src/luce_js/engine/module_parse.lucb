@@ -7,10 +7,6 @@
 #       `with` clause of imports, the `from` clause, export and import declarations,
 #       js_parse_source_element, js_new_function_def and js_free_function_def.
 #
-#       The parser functions of regions 17 and 20 it calls are stubs whose signatures
-#       follow this fragment (token_is_ident, js_parse_class, js_parse_function_decl(2),
-#       js_parse_assign_expr, js_parse_var, js_parse_statement_or_decl, define_var).
-#
 #==============================================================================================
 
 # mark: Import attributes and the from clause ===================================================

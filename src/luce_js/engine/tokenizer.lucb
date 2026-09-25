@@ -3,7 +3,7 @@
 #   tokenizer - Tokens, source positions, parse errors and the literal scanners
 #
 #   DESCRIPTION:
-#       Port of quickjs.c "JS parser" lines 22188-22826: releasing and dumping tokens,
+#       Port of quickjs.c "JS parser" lines 22188-22826: releasing tokens,
 #       line and column numbers, the js_parse_error family, js_parse_expect, template,
 #       string and regular expression literals, and identifiers (with the keyword
 #       conversion). next_token is in tokenizer_next.lucb.
@@ -26,11 +26,6 @@ func tok_is_keyword(tok: TokenType) -> bool:
 func tok_char(tok: TokenType) -> char:
     return char((u32)(u8)(i32)tok)
 
-# The text of a NUL-terminated C string, for printing.
-func c_text(p: const u8*) -> str:
-    let bytes: const u8[] = u8[]((u8*)p, cutils.strlen(p))
-    return (str)bytes
-
 func free_token(s: ParseState*, token: Token*):
     match token.val:
         .number:
@@ -45,49 +40,6 @@ func free_token(s: ParseState*, token: Token*):
         _:
             if tok_is_keyword(token.val):
                 js_free_atom(s.ctx, token.u.ident.atom)
-
-# The identifier or keyword of `token`, printed.
-func dump_token_atom(s: ParseState*, token: const Token*):
-    var buf: u8[atom_get_str_buf_size] = ---
-    print(f"ident: '{js_atom_get_str(s.ctx, buf, token.u.ident.atom)}'")
-
-# The value of a string token, printed with `label` (JS_ToCString, then printf).
-func dump_token_text(s: ParseState*, label: str, val: Value):
-    let text = js_to_c_string_len2(s.ctx, none, val, false) catch: return
-    print(f"{label}{c_text(text)}")
-    js_free_c_string(s.ctx, text)
-
-# A debugging aid, unused (as in QuickJS). A number prints in the shortest form that
-# reads back, where QuickJS prints "%.14g".
-func dump_token(s: ParseState*, token: const Token*):
-    match token.val:
-        .number:
-            var d: f64 = 0.0
-            # no exception possible
-            js_to_float64(s.ctx, &d, token.u.num.val) catch: recover ()
-            print(f"number: {d}")
-        .ident:
-            dump_token_atom(s, token)
-        .string:
-            # XXX: quote the string
-            dump_token_text(s, "string: ", token.u.str_.str)
-        .template:
-            dump_token_text(s, "template: ", token.u.str_.str)
-        .regexp:
-            let body = js_to_c_string_len2(s.ctx, none, token.u.regexp.body, false) catch: return
-            let flags = js_to_c_string_len2(s.ctx, none, token.u.regexp.flags, false) else return
-            print(f"regexp: '{c_text(body)}' '{c_text(flags)}'")
-            js_free_c_string(s.ctx, body)
-            js_free_c_string(s.ctx, flags)
-        .eof:
-            print("eof")
-        _:
-            if tok_is_keyword(s.token.val):
-                dump_token_atom(s, token)
-            elif (i32)s.token.val >= 256:
-                print(f"token: {(i32)token.val}")
-            else:
-                print(f"token: '{tok_char(token.val)}'")
 
 # mark: Source positions ========================================================================
 
@@ -131,7 +83,7 @@ func get_line_col_cached(s: GetLineColCache*, pcol_num: i32*, ptr: const u8*) ->
                     break
                 elif *p < 0x80 or *p >= 0xc0:
                     col_num += 1
-                p = p - 1
+                p -= 1
             s.col_num = col_num
     s.ptr = ptr
     *pcol_num = s.col_num
@@ -189,24 +141,24 @@ func js_parse_template_chars(s: ParseState*, b: StringBuffer*, p0: const u8*) ->
         if p >= s.buf_end:
             try js_parse_error(s, "unexpected end of string")
         c = (u32)*p
-        p = p + 1
+        p += 1
         if c == (u32)'`':
             # template end part
             break
         if c == (u32)'$' and *p == '{':
             # template start or middle part
-            p = p + 1
+            p += 1
             break
         if c == (u32)'\\':
             try string_buffer_putc8(b, c)
             if p >= s.buf_end:
                 try js_parse_error(s, "unexpected end of string")
             c = (u32)*p
-            p = p + 1
+            p += 1
         # newline sequences are normalized as single '\n' bytes
         if c == (u32)'\r':
             if *p == '\n':
-                p = p + 1
+                p += 1
             c = (u32)'\n'
         if c >= 0x80:
             var p_next = p
@@ -253,17 +205,17 @@ func js_parse_string_chars(s: ParseState*, b: StringBuffer*, sep: i32, do_throw:
             if sep == (i32)'`':
                 if c == (u32)'\r':
                     if p[1] == '\n':
-                        p = p + 1
+                        p += 1
                     c = (u32)'\n'
                 # do not update s->line_num
             elif c == (u32)'\n' or c == (u32)'\r':
                 try js_parse_string_fail(s, do_throw, s.token.ptr, "unexpected end of string")
-        p = p + 1
+        p += 1
         if c == (u32)sep:
             break
         if c == (u32)'$' and *p == '{' and sep == (i32)'`':
             # template start or middle part
-            p = p + 1
+            p += 1
             break
         if c == (u32)'\\':
             let p_escape = p - 1
@@ -273,15 +225,15 @@ func js_parse_string_chars(s: ParseState*, b: StringBuffer*, sep: i32, do_throw:
                 0:
                     if p >= s.buf_end:
                         try js_parse_string_fail(s, do_throw, s.token.ptr, "unexpected end of string")
-                    p = p + 1
+                    p += 1
                 '\'', '"', '\\':
-                    p = p + 1
+                    p += 1
                 '\r', '\n':
                     # accept DOS and MAC newline sequences
                     if c == (u32)'\r' and p[1] == '\n':
-                        p = p + 1
+                        p += 1
                     # ignore escaped newline sequence
-                    p = p + 1
+                    p += 1
                     continue
                 _:
                     var parse_escape = false
@@ -289,7 +241,7 @@ func js_parse_string_chars(s: ParseState*, b: StringBuffer*, sep: i32, do_throw:
                         if ((i32)s.fd().js_mode & js_mode_strict) == 0 and sep != (i32)'`':
                             parse_escape = true
                         elif c == (u32)'0' and not (p[1] >= '0' and p[1] <= '9'):
-                            p = p + 1
+                            p += 1
                             c = 0
                         elif c >= (u32)'8' or sep == (i32)'`':
                             # Note: according to ES2021, \8 and \9 are not accepted in
@@ -314,7 +266,7 @@ func js_parse_string_chars(s: ParseState*, b: StringBuffer*, sep: i32, do_throw:
                             try js_parse_string_fail(s, do_throw, p_escape, "malformed escape sequence in string literal")
                         elif ret < 0:
                             # ignore the '\' (could output a warning)
-                            p = p + 1
+                            p += 1
                         else:
                             c = (u32)ret
         elif c >= 0x80:
@@ -360,7 +312,7 @@ func js_parse_regexp_chars(s: ParseState*, b: StringBuffer*, b2: StringBuffer*, 
         if p >= s.buf_end:
             try js_parse_error(s, "unexpected end of regexp")
         var c = (u32)*p
-        p = p + 1
+        p += 1
         if c == (u32)'\n' or c == (u32)'\r':
             try js_parse_error_pos(s, p - 1, "unexpected line terminator in regexp")
         elif c == (u32)'/':
@@ -374,7 +326,7 @@ func js_parse_regexp_chars(s: ParseState*, b: StringBuffer*, b2: StringBuffer*, 
         elif c == (u32)'\\':
             try string_buffer_putc8(b, c)
             c = (u32)*p
-            p = p + 1
+            p += 1
             if c == (u32)'\n' or c == (u32)'\r':
                 try js_parse_error_pos(s, p - 1, "unexpected line terminator in regexp")
             elif c == 0 and p >= s.buf_end:
@@ -402,11 +354,11 @@ func js_parse_regexp_chars(s: ParseState*, b: StringBuffer*, b2: StringBuffer*, 
     while true:
         var p_next = p
         var c = (u32)*p_next
-        p_next = p_next + 1
+        p_next += 1
         if c >= 0x80:
             c = (u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p_next)
             if c > 0x10FFFF:
-                p = p + 1
+                p += 1
                 try js_parse_error_pos(s, p - 1, "invalid UTF-8 sequence")
         if not unicode.lre_js_is_ident_next(c):
             break
@@ -521,7 +473,7 @@ func parse_ident(s: ParseState*, pp: const u8**, pident_has_escape: bool*, c0: i
         else:
             ident_pos += (usize)cutils.unicode_to_utf8(buf + ident_pos, (u32)c)
         c = (i32)*p1
-        p1 = p1 + 1
+        p1 += 1
         if c == (i32)'\\' and *p1 == 'u':
             c = lre_parse_escape(&p1, 1)
             *pident_has_escape = true

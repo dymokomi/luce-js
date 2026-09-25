@@ -75,11 +75,11 @@ func js_string_normalize(ctx: Context*, this_val: Value, argc: i32, argv: Value*
         # the form is NUL-terminated, so the bytes read below exist
         var good = p[0] == 'N' and p[1] == 'F'
         if good:
-            p = p + 2
+            p += 2
             var is_compat: i32 = 0
             if *p == 'K':
                 is_compat = 1
-                p = p + 1
+                p += 1
             if *p == 'C' or *p == 'D':
                 n_type = unicode.unicode_nfc + is_compat * 2 + ((i32)*p - (i32)'C')
                 if (usize)(p + 1 - form) != form_len:

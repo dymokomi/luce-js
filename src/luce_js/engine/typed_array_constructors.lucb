@@ -113,7 +113,7 @@ func js_typed_array_constructor_ta(ctx: Context*, new_target: Value, src_obj: Va
     if ((u16)p.class_id == (u16)classid and
             (i64)ta.offset + (i64)abuf.byte_length <= (i64)src_abuf.byte_length):
         # same type and no overflow: copy the content
-        discard(cutils.memcpy(bytes_as_void(abuf.data), array_buffer_const_data_at(src_abuf.data, ta.offset),
+        discard(cutils.memcpy(abuf.data, array_buffer_data_at(src_abuf.data, ta.offset),
                               (usize)abuf.byte_length))
     else:
         for i in 0..<len:

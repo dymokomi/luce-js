@@ -116,7 +116,3 @@ func has_suffix(text: const u8*, suffix: str) -> bool:
     let len = cutils.strlen(text)
     let slen = suffix.length
     return len >= slen and cutils.memcmp(text + (len - slen), suffix.bytes.data, slen) == 0
-
-## The NUL-terminated `text` as a `str` view, without a check.
-func text_of(text: const u8*) -> str:
-    return (str)u8[]((u8*)text, cutils.strlen(text))

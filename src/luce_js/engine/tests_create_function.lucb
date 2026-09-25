@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r20 - Unit tests of the function creation and eval helpers that need no runtime
+#   tests_create_function - Unit tests of the function creation and eval helpers that need no runtime
 #
 #   DESCRIPTION:
 #       The "use strict" directive test, the strict-mode future keywords, the stack size

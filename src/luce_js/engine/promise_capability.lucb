@@ -7,7 +7,7 @@
 #       functions a promise hands out (they share one "already resolved" flag), the
 #       Promise class's finalizer and marking function, the Promise constructor, and
 #       NewPromiseCapability over any constructor. The promise records themselves
-#       (PromiseData and its kin) are declared by region r26.
+#       (PromiseData and its kin) are declared in promise_reactions.lucb.
 #
 #==============================================================================================
 

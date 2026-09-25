@@ -9,7 +9,7 @@
 #
 #==============================================================================================
 
-# mark: Helpers ================================================================================
+# mark: Helpers =================================================================================
 
 var test_seed: u32 = 12345
 
@@ -33,7 +33,7 @@ func ctz32_reference(a: u32) -> i32:
         bit = bit << 1
     return n
 
-# mark: Integers and strings ===================================================================
+# mark: Integers and strings ====================================================================
 
 test "min and max":
     assert(max_int(-3, 2) == 2 and min_int(-3, 2) == -3)
@@ -93,7 +93,7 @@ test "pstrcpy, pstrcat and strstart":
     assert(not strstart(text.bytes.data, "Inf!", none))
     assert(strstart(text.bytes.data, "", none))
 
-# mark: DynBuf =================================================================================
+# mark: DynBuf ==================================================================================
 
 var failing_budget: usize = 0
 
@@ -174,7 +174,7 @@ test "DynBuf allocation failure":
     dbuf_free(&s)
     assert(calls == 2 and not dbuf_error(&s)) # the free is the second call
 
-# mark: UTF-8, surrogates, hex =================================================================
+# mark: UTF-8, surrogates, hex ==================================================================
 
 test "unicode_to_utf8 and unicode_from_utf8 round trip":
     var buf: u8[8]
@@ -221,7 +221,7 @@ test "surrogates and hex":
     assert(from_hex((i32)'7') == 7 and from_hex((i32)'b') == 11 and from_hex((i32)'F') == 15)
     assert(from_hex((i32)'g') == -1 and from_hex(-1) == -1)
 
-# mark: rqsort =================================================================================
+# mark: rqsort ==================================================================================
 
 func compare_by_first_u16(a: const void*, b: const void*, opaque: void*?) -> i32:
     let x = memory.read[u16](a)
@@ -293,7 +293,7 @@ test "heapsortx":
     for index in 1..<500:
         assert(keys[index - 1] <= keys[index])
 
-# mark: Floats =================================================================================
+# mark: Floats ==================================================================================
 
 test "float bits":
     assert(float64_as_uint64(1.0) == 0x3ff0000000000000)
@@ -323,7 +323,7 @@ test "binary16 conversion":
     assert(isfp16nan(0x7c01) and not isfp16nan(0x7c00))
     assert(isfp16zero(0x8000) and isfp16zero(0) and not isfp16zero(1))
 
-# mark: Lists ==================================================================================
+# mark: Lists ===================================================================================
 
 struct Item:
     var value: i32

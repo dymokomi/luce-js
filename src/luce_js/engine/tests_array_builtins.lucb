@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r23 - Unit tests of the Array, Iterator and Number builtins' runtime-free parts
+#   tests_array_builtins - Unit tests of the Array, Iterator and Number builtins' runtime-free parts
 #
 #   DESCRIPTION:
 #       Tests of the parts of quickjs.c lines 41669-44927 that work without a runtime:
@@ -20,7 +20,7 @@ struct TestR23ContextBuf:
     var words: u64[sizeof(Context) // 8 + 1]
 
 # The index of the entry named `name` in `tab`, or -1.
-func test_r23_find(tab: const CFunctionListEntry[], name: str) -> i64:
+func test_find_entry(tab: const CFunctionListEntry[], name: str) -> i64:
     for i in 0..<tab.length:
         if tab[i].name == name:
             return (i64)i
@@ -58,22 +58,22 @@ test "sort: after a failed comparison every comparison answers 0":
 
 test "Array.prototype table: magics, the values alias and the unscopables object":
     assert(js_array_proto_funcs.length == 40)
-    let every = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "every")]
+    let every = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "every")]
     assert(every.cproto == CFunctionEnum.generic_magic and every.magic == 0)
-    let filter = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "filter")]
+    let filter = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "filter")]
     assert(filter.magic == 4)
-    let reduce_right = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "reduceRight")]
+    let reduce_right = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "reduceRight")]
     assert(reduce_right.magic == 1)
-    let find_last_index = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "findLastIndex")]
+    let find_last_index = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "findLastIndex")]
     assert(find_last_index.magic == 3)
-    let shift = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "shift")]
+    let shift = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "shift")]
     assert(shift.magic == 1 and shift.length == 0)
-    let splice = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "splice")]
+    let splice = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "splice")]
     assert(splice.cproto == CFunctionEnum.generic and splice.length == 2 and splice.prop_flags == 3)
-    let entries = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "entries")]
+    let entries = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "entries")]
     assert(entries.magic == (i16)IteratorKind.key_and_value)
     # [Symbol.iterator] is the same function as values
-    let alias = js_array_proto_funcs[(usize)test_r23_find(js_array_proto_funcs, "[Symbol.iterator]")]
+    let alias = js_array_proto_funcs[(usize)test_find_entry(js_array_proto_funcs, "[Symbol.iterator]")]
     assert(alias.def_type == def_alias and alias.alias_name == "values" and alias.alias_base == -1)
     let unscopables = js_array_proto_funcs[39]
     assert(unscopables.name == "[Symbol.unscopables]" and unscopables.def_type == def_object)
@@ -82,7 +82,7 @@ test "Array.prototype table: magics, the values alias and the unscopables object
     assert(list.length == 16)
     for e in list:
         assert(e.def_type == def_prop_bool and e.i32_value == 1 and e.prop_flags == (u8)prop_c_w_e)
-        assert(test_r23_find(js_array_proto_funcs, e.name) >= 0)
+        assert(test_find_entry(js_array_proto_funcs, e.name) >= 0)
 
 test "the typed arrays' magics combine with special_ta":
     assert(special_every | special_ta == 8)
@@ -94,9 +94,9 @@ test "Iterator tables: helper kinds in QuickJS's order, next/return magics":
     assert((i32)IteratorHelperKind.drop == 0 and (i32)IteratorHelperKind.take == 8)
     assert((i32)IteratorHelperKind.flat_map == 4 and (i32)IteratorHelperKind.some == 7)
     assert(js_iterator_proto_funcs.length == 13)
-    let take = js_iterator_proto_funcs[(usize)test_r23_find(js_iterator_proto_funcs, "take")]
+    let take = js_iterator_proto_funcs[(usize)test_find_entry(js_iterator_proto_funcs, "take")]
     assert(take.magic == (i16)IteratorHelperKind.take and take.length == 1)
-    let for_each = js_iterator_proto_funcs[(usize)test_r23_find(js_iterator_proto_funcs, "forEach")]
+    let for_each = js_iterator_proto_funcs[(usize)test_find_entry(js_iterator_proto_funcs, "forEach")]
     assert(for_each.magic == (i16)IteratorHelperKind.for_each)
     let tag = js_iterator_proto_funcs[12]
     assert(tag.def_type == def_cgetset and tag.prop_flags == 1)
@@ -112,15 +112,15 @@ test "Number table: the constants":
     assert(js_number_funcs.length == 14)
     let parse_int = js_number_funcs[0]
     assert(parse_int.def_type == def_alias and parse_int.alias_base == 0)
-    let nan = js_number_funcs[(usize)test_r23_find(js_number_funcs, "NaN")].f64_value
+    let nan = js_number_funcs[(usize)test_find_entry(js_number_funcs, "NaN")].f64_value
     assert(nan != nan)
-    let neg_inf = js_number_funcs[(usize)test_r23_find(js_number_funcs, "NEGATIVE_INFINITY")].f64_value
+    let neg_inf = js_number_funcs[(usize)test_find_entry(js_number_funcs, "NEGATIVE_INFINITY")].f64_value
     assert(neg_inf < -1.7976931348623157e308)
-    let pos_inf = js_number_funcs[(usize)test_r23_find(js_number_funcs, "POSITIVE_INFINITY")].f64_value
+    let pos_inf = js_number_funcs[(usize)test_find_entry(js_number_funcs, "POSITIVE_INFINITY")].f64_value
     assert(pos_inf > 1.7976931348623157e308)
-    let max_safe = js_number_funcs[(usize)test_r23_find(js_number_funcs, "MAX_SAFE_INTEGER")].f64_value
+    let max_safe = js_number_funcs[(usize)test_find_entry(js_number_funcs, "MAX_SAFE_INTEGER")].f64_value
     assert(max_safe == f64(max_safe_integer))
-    let min_value = js_number_funcs[(usize)test_r23_find(js_number_funcs, "MIN_VALUE")].f64_value
+    let min_value = js_number_funcs[(usize)test_find_entry(js_number_funcs, "MIN_VALUE")].f64_value
     assert(min_value > 0.0 and min_value / 2.0 == 0.0)
 
 # mark: Layout ==================================================================================

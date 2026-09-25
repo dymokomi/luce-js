@@ -390,17 +390,17 @@ func js_op_define_class_fail(ctx: Context*, sp: Value*, v: DefineClassValues*):
     js_free_value(ctx, v.bfunc)
     js_free_value(ctx, v.proto)
     js_free_value(ctx, v.ctor)
-    *(sp - 2) = js_undefined()
-    *(sp - 1) = js_undefined()
+    sp[-2] = js_undefined()
+    sp[-1] = js_undefined()
 
 ## OP_define_class: from the parent class sp[-2] and the constructor's bytecode sp[-1],
 ## make the class constructor and its prototype, left at sp[-2] and sp[-1]. A computed
 ## class name is at sp[-3].
 func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags: i32, cur_var_refs: VarRef*?*?, sf: StackFrame*?, is_computed_name: bool) -> !:
     var v = DefineClassValues(
-        parent_class = *(sp - 2),
+        parent_class = sp[-2],
         parent_proto = js_undefined(),
-        bfunc = *(sp - 1),
+        bfunc = sp[-1],
         proto = js_undefined(),
         ctor = js_undefined(),
     )
@@ -438,7 +438,7 @@ func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags
         js_new_int32((i32)b.defined_arg_count), prop_configurable) catch: recover false
 
     if is_computed_name:
-        try js_define_object_name_computed(ctx, v.ctor, *(sp - 3), prop_configurable)
+        try js_define_object_name_computed(ctx, v.ctor, sp[-3], prop_configurable)
     else:
         try js_define_object_name(ctx, v.ctor, class_name, prop_configurable)
 
@@ -455,8 +455,8 @@ func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags
     js_free_value(ctx, v.parent_proto)
     js_free_value(ctx, v.parent_class)
 
-    *(sp - 2) = v.ctor
-    *(sp - 1) = v.proto
+    sp[-2] = v.ctor
+    sp[-1] = v.proto
 
 # mark: Closing variable references =============================================================
 

@@ -6,8 +6,8 @@
 #
 #   DESCRIPTION:
 #       Port of quickjs.c JS_AddIntrinsicBasicObjects and JS_AddIntrinsicBaseObjects
-#       (lines 56379-56729). The builtin tables named here belong to the regions that port
-#       each class.
+#       (lines 56379-56729). The builtin tables named here are in the fragments of their
+#       classes.
 #
 #==============================================================================================
 

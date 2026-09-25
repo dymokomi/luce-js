@@ -14,6 +14,8 @@
 #
 #==============================================================================================
 
+# mark: Capturing the variables of the calling function =========================================
+
 # Capture the variables of scope `scope_level` of `s` and its enclosing scopes.
 func mark_eval_captured_variables(ctx: Context*, s: FunctionDef*, scope_level: i32):
     var idx = fd_scope(s, scope_level).first
@@ -151,6 +153,8 @@ func add_eval_variables(ctx: Context*, s: FunctionDef*):
                     cv.closure_type != ClosureType.global):
                     add_eval_closure_var(ctx, s, fd, ClosureType.ref, idx, cv.var_name,
                                          cv.is_const, cv.is_lexical, cv.var_kind)
+
+# mark: The closure variables of eval code ======================================================
 
 # Make `cv` refer to local variable `var_idx` of the calling function, described by `vd`.
 func set_closure_from_var(ctx: Context*, cv: ClosureVar*, vd: const BytecodeVarDef*,

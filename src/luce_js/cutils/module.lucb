@@ -5,7 +5,9 @@
 #   DESCRIPTION:
 #       Port of QuickJS cutils.h (lines 1-251: min/max, clz/ctz, unaligned access, byte
 #       swaps) and cutils.c (lines 32-80: pstrcpy, pstrcat, strstart). Also binds the C
-#       library's allocator and memory functions once for the whole port.
+#       library's allocator and memory functions once for the whole port, and holds the
+#       small helpers every module of the port shares: C strings as `str` views and
+#       comparisons.
 #
 #       C utilities
 #
@@ -26,7 +28,7 @@
 import memory
 from io import Writer
 
-# mark: The C library ==========================================================================
+# mark: The C library ===========================================================================
 
 ## C `malloc`: `size` uninitialised bytes, or none.
 pub extern func malloc(size: usize) -> void*?
@@ -45,7 +47,7 @@ pub extern func memcmp(s1: const void*?, s2: const void*?, n: usize) -> i32
 ## C `strlen`: the length of the NUL-terminated bytes at `s`.
 pub extern func strlen(s: const u8*) -> usize
 
-# mark: Strings ================================================================================
+# mark: Strings =================================================================================
 
 ## Copy the NUL-terminated `text` into `buf` of `buf_size` bytes, truncating, and always
 ## NUL-terminate (when `buf_size > 0`).
@@ -57,11 +59,11 @@ pub func pstrcpy(buf: u8*, buf_size: i32, text: const u8*):
     let last = buf + (usize)(buf_size - 1)
     while true:
         let c = *p
-        p = p + 1
+        p += 1
         if c == 0 or q >= last:
             break
         *q = c
-        q = q + 1
+        q += 1
     *q = 0
 
 ## strcat and truncate.
@@ -78,10 +80,22 @@ pub func strstart(text: const u8*, val: str, ptr: const u8**?) -> bool:
     for q in val.bytes:
         if *p != q:
             return false
-        p = p + 1
+        p += 1
     if let out = ptr:
         *out = p
     return true
+
+## The NUL-terminated `p` as a `str` viewing its bytes (no copy, no UTF-8 check). QuickJS's
+## C strings are UTF-8 except for lone surrogates, which only ever pass through as bytes.
+pub func c_str_view(p: const u8*) -> str:
+    return (str)u8[]((u8*)p, strlen(p))
+
+## Whether the NUL-terminated `p` is the text `text` (C's `!strcmp`).
+pub func c_str_equals(p: const u8*, text: str) -> bool:
+    for i in 0..<text.length:
+        if p[i] != text.bytes[i]:
+            return false
+    return p[text.length] == 0
 
 ## Copy `n` bytes; does nothing when `n == 0`, so `dest` and `src` may then be none.
 ## (Prevent UB when n == 0 and (src == NULL or dest == NULL).)
@@ -89,7 +103,7 @@ pub func memcpy_no_ub(dest: void*?, src: const void*?, n: usize):
     if n != 0:
         discard(memcpy(dest, src, n))
 
-# mark: Min and max ============================================================================
+# mark: Min and max =============================================================================
 
 ## The larger of two `i32`s.
 pub func max_int(a: i32, b: i32) -> i32:
@@ -133,7 +147,7 @@ pub func min_int64(a: i64, b: i64) -> i64:
     else:
         return b
 
-# mark: Leading and trailing zeros =============================================================
+# mark: Leading and trailing zeros ==============================================================
 
 # C uses __builtin_clz/__builtin_ctz; Luce has no intrinsic, so these are binary searches.
 # The C versions are undefined for 0; these answer the bit width.
@@ -196,7 +210,7 @@ pub func ctz64(a: u64) -> i32:
         return ctz32(lo)
     return 32 + ctz32((u32)(a >> 32))
 
-# mark: Unaligned access =======================================================================
+# mark: Unaligned access ========================================================================
 
 # The C code reads through packed structs; `memory.read`/`memory.write` make no alignment
 # assumption. Byte order is the host's, as in C.
@@ -249,7 +263,7 @@ pub func get_i8(tab: const u8*) -> i32:
 pub func put_u8(tab: u8*, val: u8):
     *tab = val
 
-# mark: Byte swaps =============================================================================
+# mark: Byte swaps ==============================================================================
 
 ## `x` with its two bytes swapped.
 pub func bswap16(x: u16) -> u16:

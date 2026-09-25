@@ -128,7 +128,7 @@ noinline func string_buffer_widen(s: StringBuffer*, size: i32) -> !:
     let old = string_buffer_str(s)
     let raw = js_realloc2(s.ctx, old, sizeof(String) + ((usize)size << 1), &slack) catch:
         try string_buffer_set_error(s)
-    # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+    # js_realloc2 of a non-zero size never answers none
     let text = (String*)(raw else trap("js_realloc2 answered none"))
     var i = s.len
     while i > 0:
@@ -157,8 +157,7 @@ noinline func string_buffer_realloc(s: StringBuffer*, new_len: i32, c: i32) -> !
         try string_buffer_set_error(s)
     new_size = cutils.min_int(new_size + (i32)(slack >> wide), js_string_len_max)
     s.size = new_size
-    # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
-    s.str = (String*)(raw else trap("js_realloc2 answered none"))
+    s.str = (String*?)raw
 
 noinline func string_buffer_putc16_slow(s: StringBuffer*, c: u32) -> !:
     if s.len >= s.size:

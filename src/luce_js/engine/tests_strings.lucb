@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r04 - Tests of the string helpers that need no runtime
+#   tests_strings - Tests of the string helpers that need no runtime
 #
 #   DESCRIPTION:
 #       Character access, code point decoding, code unit comparison, 16-bit copies and

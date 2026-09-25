@@ -22,11 +22,6 @@ func check_function(ctx: Context*, obj: Value) -> !:
         return
     try js_throw_type_error(ctx, "not a function")
 
-## Release `obj` and answer whether it was the exception marker.
-func check_exception_free(ctx: Context*, obj: Value) -> bool:
-    js_free_value(ctx, obj)
-    return js_is_exception(obj)
-
 ## The atom of a table entry's name: a new atom for a plain name, or the well-known symbol
 ## for a name written "[Symbol.x]".
 func find_atom(ctx: Context*, name: str) -> Atom!:

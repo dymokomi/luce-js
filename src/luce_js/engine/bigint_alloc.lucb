@@ -49,26 +49,6 @@ func js_bigint_set_si64(buf: BigIntBuf*, a: i64) -> BigInt*:
 func js_bigint_set_short(buf: BigIntBuf*, val: Value) -> BigInt*:
     return js_bigint_set_si(buf, js_value_get_short_big_int(val))
 
-# Debug output: the limbs of `tab`, most significant first, in hexadecimal.
-func js_bigint_dump1(ctx: Context*, text: str, tab: const u32*, len: i32):
-    var s: cutils.DynBuf = ---
-    cutils.dbuf_init(&s)
-    discard(cutils.dbuf_printf(&s, f"{text}: "))
-    var i = len - 1
-    while i >= 0:
-        discard(cutils.dbuf_putc(&s, ' '))
-        var shift: i32 = 28
-        while shift >= 0:
-            discard(cutils.dbuf_putc(&s, radix_digits[(tab[i] >> (u32)shift) & 0xf]))
-            shift -= 4
-        i -= 1
-    if let b = s.buf:
-        print((str)u8[](b, s.size))
-    cutils.dbuf_free(&s)
-
-func js_bigint_dump(ctx: Context*, text: str, p: const BigInt*):
-    js_bigint_dump1(ctx, text, js_bigint_tab(p), (i32)p.len)
-
 func js_bigint_new_si(ctx: Context*, a: i32) -> BigInt*!:
     let r = try js_bigint_new(ctx, 1)
     js_bigint_tab(r)[0] = (u32)a
@@ -126,7 +106,7 @@ func js_bigint_normalize1(ctx: Context*, a: BigInt*, l0: i32) -> BigInt*:
         # pending there too).
         let a1 = js_realloc(ctx, a, sizeof(BigInt) + (usize)l * sizeof(u32)) catch failure:
             recover (void*)a
-        # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+        # js_realloc of a non-zero size never answers none
         return (BigInt*)(a1 else trap("js_realloc answered none"))
     return a
 
@@ -152,7 +132,7 @@ func js_bigint_extend(ctx: Context*, r: BigInt*, op1: u32) -> BigInt*!:
     if (op1 != 0 and op1 != 0xffffffff) or (op1 & 1) != js_bigint_tab(r)[n2 - 1] >> 31:
         errdefer js_free(ctx, r)
         let r1_raw = try js_realloc(ctx, r, sizeof(BigInt) + (usize)(n2 + 1) * sizeof(u32))
-        # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+        # js_realloc of a non-zero size never answers none
         let r1 = (BigInt*)(r1_raw else trap("js_realloc answered none"))
         r1.len = (u32)(n2 + 1)
         js_bigint_tab(r1)[n2] = op1

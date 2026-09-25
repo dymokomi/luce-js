@@ -145,7 +145,7 @@ func js_throw_type_error_not_an_object(ctx: Context*) -> never!:
 func js_throw_type_error_not_a_constructor(ctx: Context*, func_obj: Value) -> never!:
     if js_is_function(ctx, func_obj):
         if let name = get_prop_string(ctx, func_obj, atom_name):
-            let text = c_str_view(name)
+            let text = cutils.c_str_view(name)
             js_throw_type_error(ctx, f"{text} is not a constructor") catch failure:
                 js_free_c_string(ctx, name)
                 error(failure.code, failure.message)

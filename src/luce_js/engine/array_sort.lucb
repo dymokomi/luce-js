@@ -186,12 +186,12 @@ func js_array_to_sorted(ctx: Context*, this_val: Value, argc: i32, argv: Value*)
             while i < len:
                 *pval = js_dup_value(ctx, arrp[(usize)i])
                 i += 1
-                pval = pval + 1
+                pval += 1
         else:
             while i < len:
                 try js_try_get_property_int64(ctx, obj, i, pval)
                 i += 1
-                pval = pval + 1
+                pval += 1
 
     let ret = try js_array_sort(ctx, arr, argc, argv)
     js_free_value(ctx, ret)

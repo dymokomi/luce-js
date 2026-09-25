@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r08 - Unit tests of the property read, own keys and extensibility helpers
+#   tests_property_read - Unit tests of the property read, own keys and extensibility helpers
 #
 #   DESCRIPTION:
 #       Tests of the parts of quickjs.c lines 8030-9000 that work on plain data without a

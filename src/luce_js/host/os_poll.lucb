@@ -95,7 +95,7 @@ func call_handler(ctx: Context*, func_: Value):
     js.js_free_value(ctx, func1)
     js.js_free_value(ctx, ret)
 
-# mark: The event loop's wait ==================================================================
+# mark: The event loop's wait ===================================================================
 
 func js_poll_expand(ts: ThreadState*) -> i32:
     let new_size = cutils.max_int(ts.poll_fds_size + ts.poll_fds_size // 2, 16)

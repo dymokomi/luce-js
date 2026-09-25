@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r28 - Tests of the typed array helpers that need no runtime
+#   tests_typed_arrays - Tests of the typed array helpers that need no runtime
 #
 #   DESCRIPTION:
 #       The base64 and hex encoders and decoders (expected results from the C functions

@@ -143,10 +143,10 @@ func js_iterator_close(ctx: Context*, enum_obj: Value, is_exception_pending: boo
 ## OP_for_of_start and OP_for_await_of_start: replace the object at sp[-1] by its
 ## iterator and push the iterator's `next` method.
 func js_for_of_start(ctx: Context*, sp: Value*, is_async: bool) -> !:
-    let op1 = *(sp - 1)
+    let op1 = sp[-1]
     let obj = try js_get_iterator(ctx, op1, is_async)
     js_free_value(ctx, op1)
-    *(sp - 1) = obj
+    sp[-1] = obj
     let method = try js_get_property(ctx, obj, atom_next)
     sp[0] = method
 
@@ -179,10 +179,10 @@ func js_for_of_next(ctx: Context*, sp: Value*, offset: i32) -> !:
 ## OP_for_await_of_next: call the iterator's `next` method (sp[-3], sp[-2]) and push the
 ## result, whose promise the bytecode awaits.
 func js_for_await_of_next(ctx: Context*, sp: Value*) -> !:
-    *(sp - 1) = js_undefined()      # disable the catch offset so that
+    sp[-1] = js_undefined()      # disable the catch offset so that
                                     # exceptions do not close the iterator
-    let iter = *(sp - 3)
-    let next = *(sp - 2)
+    let iter = sp[-3]
+    let next = sp[-2]
     var no_args = js_undefined()
     let obj = try js_call(ctx, next, iter, 0, &no_args)
     sp[0] = obj
@@ -203,7 +203,7 @@ func js_iterator_get_complete_value(ctx: Context*, obj: Value, pdone: bool*) -> 
 ## OP_iterator_get_value_done: replace the awaited result object at sp[-1] by its value
 ## and done flag.
 func js_iterator_get_value_done(ctx: Context*, sp: Value*) -> !:
-    let obj = *(sp - 1)
+    let obj = sp[-1]
     if not js_is_object(obj):
         try js_throw_type_error(ctx, "iterator must return an object")
     var done = false
@@ -211,8 +211,8 @@ func js_iterator_get_value_done(ctx: Context*, sp: Value*) -> !:
     js_free_value(ctx, obj)
     # put again the catch offset so that exceptions close the
     # iterator
-    *(sp - 2) = js_new_catch_offset(0)
-    *(sp - 1) = value
+    sp[-2] = js_new_catch_offset(0)
+    sp[-1] = value
     sp[0] = js_new_bool(done)
 
 ## A new iterator result object { value, done }, taking ownership of `val`.
@@ -252,24 +252,24 @@ func js_append_enumerate_close(ctx: Context*, enumobj: Value, method: Value):
 ## OP_append: append the values of the iterable sp[-1] to the array sp[-3] from the
 ## index sp[-2], leaving the next index at sp[-2].
 func js_append_enumerate(ctx: Context*, sp: Value*) -> !:
-    if (*(sp - 2)).tag != Tag.int:
+    if (sp[-2]).tag != Tag.int:
         try js_throw_internal_error(ctx, "invalid index for append")
 
-    var pos = (u32)js_value_get_int(*(sp - 2))
+    var pos = (u32)js_value_get_int(sp[-2])
 
     # XXX: further optimisations:
     # - use ctx->array_proto_values?
     # - check if array_iterator_prototype next method is built-in and
     #   avoid constructing actual iterator object?
     # - build this into js_for_of_start and use in all `for (x of o)` loops
-    let iterator = try js_get_property(ctx, *(sp - 1), atom_Symbol_iterator)
+    let iterator = try js_get_property(ctx, sp[-1], atom_Symbol_iterator)
     var ft: CFunctionType = ---
     ft.generic_magic = js_create_array_iterator
     let is_array_iterator = js_is_c_function(ctx, iterator, ft.generic,
         (i32)IteratorKind.value)
     js_free_value(ctx, iterator)
 
-    let enumobj = try js_get_iterator(ctx, *(sp - 1), false)
+    let enumobj = try js_get_iterator(ctx, sp[-1], false)
     let method = js_get_property(ctx, enumobj, atom_next) catch failure:
         js_free_value(ctx, enumobj)
         error(failure.code, failure.message)
@@ -280,9 +280,9 @@ func js_append_enumerate(ctx: Context*, sp: Value*) -> !:
     var count32: u32 = 0
     var general_case = true
     if (is_array_iterator and js_is_c_function(ctx, method, ft.generic, 0) and
-            js_get_fast_array(ctx, *(sp - 1), &arrp, &count32)):
+            js_get_fast_array(ctx, sp[-1], &arrp, &count32)):
         var len: u32 = 0
-        try js_get_length32(ctx, &len, *(sp - 1))
+        try js_get_length32(ctx, &len, sp[-1])
         # if len > count32, the elements >= count32 might be read in
         # the prototypes and might have side effects
         if len == count32:
@@ -290,7 +290,7 @@ func js_append_enumerate(ctx: Context*, sp: Value*) -> !:
             # Handle fast arrays explicitly
             for i in 0..<count32:
                 let arr = arrp else trap("js_append_enumerate: no elements")
-                discard(try js_define_property_value_uint32(ctx, *(sp - 3), pos,
+                discard(try js_define_property_value_uint32(ctx, sp[-3], pos,
                     js_dup_value(ctx, arr[(usize)i]), prop_c_w_e))
                 pos += 1
     if general_case:
@@ -301,10 +301,10 @@ func js_append_enumerate(ctx: Context*, sp: Value*) -> !:
             if done:
                 # value is JS_UNDEFINED
                 break
-            discard(try js_define_property_value_uint32(ctx, *(sp - 3), pos, value, prop_c_w_e))
+            discard(try js_define_property_value_uint32(ctx, sp[-3], pos, value, prop_c_w_e))
             pos += 1
     # Note: could raise an error if too many elements
-    *(sp - 2) = js_new_int32((i32)pos)
+    sp[-2] = js_new_int32((i32)pos)
     js_free_value(ctx, enumobj)
     js_free_value(ctx, method)
 

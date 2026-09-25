@@ -10,8 +10,8 @@ test files pass, and test262 fails exactly the 58 tests C QuickJS fails (83,558 
 Known limits: the interpreter is about 12x slower than C QuickJS on call-heavy code (fib) and
 about 3x on the test262 mix, until the luce-base native backend shares stack slots and
 compiles `match` to jump tables; for the same reason the default JavaScript stack limit is
-4 MB instead of QuickJS's 1 MB. How the port was done and its
-conventions: `docs/PORTING.md`; compiler problems met on the way: `docs/compiler-issues/`.
+4 MB instead of QuickJS's 1 MB. The port's layout, organization and
+conventions: `docs/PORTING.md`; compiler problems still worked around: `docs/compiler-issues/`.
 
 Embedding, in short:
 

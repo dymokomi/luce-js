@@ -10,9 +10,43 @@
 #       definitions of variables, arguments and global variables.
 #
 #       Opcodes are bytes: `emit_op(s, (u8)Op.push_const)` for an opcode of the final
-#       bytecode, `(u8)TempOp.label` for a temporary one of phases 1 and 2.
+#       bytecode, `(u8)TempOp.label` for a temporary one of phases 1 and 2. The `dbuf_*`
+#       writers at the top append opcodes and operands to any bytecode buffer; the later
+#       passes (resolve_variables, resolve_labels) write their output with them.
 #
 #==============================================================================================
+
+# mark: Bytecode output =========================================================================
+
+# dbuf_putc(bc, OP_x): append the opcode `op` to the bytecode `bc`.
+func dbuf_op(bc: cutils.DynBuf*, op: Op):
+    discard(cutils.dbuf_putc(bc, (u8)op))
+
+# dbuf_putc(bc, OP_x) for a temporary opcode.
+func dbuf_temp_op(bc: cutils.DynBuf*, op: TempOp):
+    discard(cutils.dbuf_putc(bc, (u8)op))
+
+# dbuf_putc(bc, v): append the byte `v`.
+func dbuf_byte(bc: cutils.DynBuf*, v: u8):
+    discard(cutils.dbuf_putc(bc, v))
+
+# dbuf_put_u16(bc, v): append the low 16 bits of `v`, as C converts its int argument.
+func dbuf_u16(bc: cutils.DynBuf*, v: i32):
+    discard(cutils.dbuf_put_u16(bc, (u16)v))
+
+# dbuf_put_u32(bc, v).
+func dbuf_u32(bc: cutils.DynBuf*, v: u32):
+    discard(cutils.dbuf_put_u32(bc, v))
+
+# The bytes of the bytecode buffer `bc`; a buffer that never grew has none, and its size
+# is then zero.
+func dbuf_bytes_or_empty(bc: cutils.DynBuf*) -> u8*:
+    if let buf = bc.buf:
+        return buf
+    return &empty_bytecode[0]
+
+# The storage dbuf_bytes_or_empty answers for an empty buffer.
+var empty_bytecode: u8[1]
 
 # mark: Array accessors =========================================================================
 
@@ -61,13 +95,13 @@ func js_is_live_code(s: ParseState*) -> bool:
             return true
 
 func emit_u8(s: ParseState*, val: u8):
-    discard(cutils.dbuf_putc(&s.fd().byte_code, val))
+    dbuf_byte(&s.fd().byte_code, val)
 
 func emit_u16(s: ParseState*, val: u16):
     discard(cutils.dbuf_put_u16(&s.fd().byte_code, val))
 
 func emit_u32(s: ParseState*, val: u32):
-    discard(cutils.dbuf_put_u32(&s.fd().byte_code, val))
+    dbuf_u32(&s.fd().byte_code, val)
 
 # Emit a line number opcode for `source_ptr` if it moved since the last opcode.
 func emit_source_pos(s: ParseState*, source_ptr: const u8*):
@@ -77,8 +111,8 @@ func emit_source_pos(s: ParseState*, source_ptr: const u8*):
     if let last = fd.last_opcode_source_ptr:
         moved = last != source_ptr
     if moved:
-        discard(cutils.dbuf_putc(bc, (u8)TempOp.line_num))
-        discard(cutils.dbuf_put_u32(bc, (u32)(source_ptr - s.buf_start)))
+        dbuf_temp_op(bc, TempOp.line_num)
+        dbuf_u32(bc, (u32)(source_ptr - s.buf_start))
         fd.last_opcode_source_ptr = source_ptr
 
 # Emit the opcode byte `val` and remember its position as the last opcode.
@@ -86,7 +120,7 @@ func emit_op(s: ParseState*, val: u8):
     let fd = s.fd()
     let bc = &fd.byte_code
     fd.last_opcode_pos = (i32)bc.size
-    discard(cutils.dbuf_putc(bc, val))
+    dbuf_byte(bc, val)
 
 # Emit a reference to the atom `name`, which is duplicated.
 func emit_atom(s: ParseState*, name: Atom):

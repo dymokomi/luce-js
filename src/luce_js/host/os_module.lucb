@@ -69,7 +69,7 @@ func js_os_isatty(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
     try js.js_to_int32(ctx, &fd, argv[0])
     return js.js_new_bool(isatty(fd) != 0)
 
-# mark: ttys ===================================================================================
+# mark: ttys ====================================================================================
 
 func js_os_tty_get_win_size(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var fd: i32 = 0

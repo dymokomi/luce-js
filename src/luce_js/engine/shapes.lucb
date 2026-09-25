@@ -210,7 +210,7 @@ func resize_properties(ctx: Context*, psh: Shape**, p: Object*?, count: u32) -> 
     # in case of memory allocation failure
     if let obj = p:
         let new_prop = try js_realloc(ctx, obj.prop, sizeof(Property) * (usize)new_size)
-        # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+        # js_realloc of a non-zero size never answers none
         obj.prop = (Property*)(new_prop else trap("js_realloc answered none"))
     var new_hash_size = sh.prop_hash_mask + 1
     while new_hash_size < new_size:
@@ -299,7 +299,7 @@ func compact_properties(ctx: Context*, p: Object*) -> !:
     # (a failure is not reported, as in QuickJS: the larger array stays in place)
     let new_prop = js_realloc(ctx, p.prop, sizeof(Property) * (usize)new_size) catch failure:
         return
-    # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+    # js_realloc of a non-zero size never answers none
     p.prop = (Property*)(new_prop else trap("js_realloc answered none"))
 
 ## Append the property (`atom`, `prop_flags`) to `*psh`, growing it (and `p`'s property

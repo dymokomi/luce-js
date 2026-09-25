@@ -11,7 +11,6 @@
 
 import io
 import math
-import memory
 import os
 import luce_js.cutils as cutils
 import luce_js.dtoa as dtoa
@@ -43,7 +42,6 @@ let js_string_rope_short2_len: i32 = 8192
 # Rope depth at which we rebalance.
 let js_string_rope_max_depth: i32 = 60
 
-## The default maximum stack size of a runtime (JS_DEFAULT_STACK_SIZE).
 # workaround: compiler-issues/frame-slots-not-shared. quickjs.h lets a build choose this
 # value (#ifndef JS_DEFAULT_STACK_SIZE) and defaults it to 1 MB. luce-base's native backend
 # gives the engine's recursive functions (the parser, JS_CallInternal) frames several times
@@ -51,4 +49,5 @@ let js_string_rope_max_depth: i32 = 60
 # (test262 language/statements/function/S13.2.1_A1_T1.js needs 32). With 4 MB the parser
 # takes about 100 levels and the interpreter about 3000 recursive calls (QuickJS: 256 and
 # 2000); the host threads (ljs's main thread, run-test262's workers) have 8 MB.
+## The default maximum stack size of a runtime (JS_DEFAULT_STACK_SIZE).
 pub let js_default_stack_size: usize = 4 * 1024 * 1024

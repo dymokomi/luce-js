@@ -1,12 +1,13 @@
 #==============================================================================================
 #
-#   interpreter - JS_CallInternal: the bytecode interpreter's dispatch loop and frames
+#   interpreter - JS_CallInternal: the bytecode interpreter's dispatch loop
 #
 #   DESCRIPTION:
-#       Port of quickjs.c lines 17746-20709: the frame setup of a bytecode call (or the
-#       resumption of a suspended generator frame), the dispatch loop over every opcode,
-#       the call opcodes, the exception unwinding and the frame's release. The bodies of
-#       the other opcodes are in the interp_ops_*.lucb fragments that follow.
+#       Port of quickjs.c lines 17746-20709: js_call_internal and its dispatch loop over
+#       every opcode. The frame setup of a bytecode call (or the resumption of a suspended
+#       generator frame), the call opcodes, the exception unwinding and the frame's
+#       release are in interp_frames.lucb; the bodies of the other opcodes are in the
+#       interp_ops_*.lucb fragments that follow.
 #
 #       State. C keeps pc, sp, the frame buffers, b, ctx, ... in locals of JS_CallInternal.
 #       Here they are the fields of one InterpState (interpreter_support.lucb), a local of
@@ -53,13 +54,11 @@
 #         selects the shared tail of the body. The opcodes that share a body (call0 to
 #         call3 with call, get_var_undef with get_var, ...) are one arm, as in C.
 #       - The large macros are inline functions of interpreter_support.lucb.
-#       - pc, sp and the frame buffers are pointers, exactly as in C; `sp[-1]` is written
-#         `sp[(isize)-1]` (workaround: compiler-issues/negative-pointer-index).
+#       - pc, sp and the frame buffers are pointers, exactly as in C: `sp[-1]` is the top
+#         of the stack.
 #       - C allocates the frame with alloca. Base has no alloca: a frame that fits
 #         `frame_space` (js_call_inline_frame_values values) lives in js_call_internal's
 #         frame, a larger one is js_malloc'ed and released when the call returns.
-#       - rt.current_stack_frame is set through js_push_stack_frame (workaround:
-#         compiler-issues/local_address_store).
 #
 #==============================================================================================
 
@@ -93,7 +92,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
         if not throwing:
             dispatch: while true:
                 st.opcode = (Op)*st.pc
-                st.pc = st.pc + 1
+                st.pc += 1
                 match st.opcode:
                     .push_i32:
                         interp_push_i32(&st)
@@ -191,7 +190,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                     .apply:
                         if not interp_apply(&st): break dispatch
                     .return_:
-                        st.sp = st.sp - 1
+                        st.sp -= 1
                         st.ret_val = *st.sp
                         exit = FrameExit.done
                         break frame
@@ -588,234 +587,3 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
     if exit == FrameExit.exception:
         error(exception, "")
     return st.ret_val
-
-# mark: Calls =================================================================================
-
-# The bodies of the call opcodes. The callee runs in js_call_internal, called from here:
-# the recursion of JavaScript calls then holds this small frame beside the dispatch loop's.
-
-## The argument count of a call opcode: the u16 operand of OP_call, OP_tail_call,
-## OP_call_constructor, OP_call_method and OP_tail_call_method, or `opcode - OP_call0`
-## for the short forms (SHORT_OPCODES).
-func interp_call_argc(st: InterpState*) -> i32:
-    if st.opcode == Op.call0 or st.opcode == Op.call1 or st.opcode == Op.call2 or st.opcode == Op.call3:
-        return (i32)(u8)st.opcode - (i32)(u8)Op.call0
-    let call_argc = (i32)cutils.get_u16(st.pc)
-    st.pc = st.pc + 2
-    return call_argc
-
-## After a call returned st.ret_val: release the function (and `this`, or new.target,
-## when `extra` is 2) and the arguments, and push the result in their place.
-func interp_call_done(st: InterpState*, call_argc: i32, extra: i32):
-    let call_argv = st.sp - (usize)call_argc
-    var i: isize = -(isize)extra
-    while i < (isize)call_argc:
-        js_free_value(st.ctx, call_argv[i])
-        i += 1
-    st.sp = st.sp - (usize)(call_argc + extra)
-    *st.sp = st.ret_val
-    st.sp = st.sp + 1
-
-## The body of OP_call0 to OP_call3 (SHORT_OPCODES), OP_call and OP_tail_call. After a
-## tail call the stack is left as it is: the frame returns st.ret_val (C: goto done).
-noinline func interp_call(st: InterpState*) -> bool:
-    let call_argc = interp_call_argc(st)
-    # has_call_argc:
-    let call_argv = st.sp - (usize)call_argc
-    st.sf.cur_pc = st.pc
-    st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], js_undefined(), js_undefined(), call_argc, call_argv, 0) catch: return false
-    if st.opcode == Op.tail_call:
-        return true
-    interp_call_done(st, call_argc, 1)
-    return true
-
-## The body of OP_call_constructor.
-noinline func interp_call_constructor(st: InterpState*) -> bool:
-    let call_argc = interp_call_argc(st)
-    let call_argv = st.sp - (usize)call_argc
-    st.sf.cur_pc = st.pc
-    st.ret_val = js_call_constructor_internal(st.ctx, call_argv[(isize)-2], call_argv[(isize)-1], call_argc, call_argv, 0) catch: return false
-    interp_call_done(st, call_argc, 2)
-    return true
-
-## The body of OP_call_method and OP_tail_call_method; after a tail call the frame
-## returns st.ret_val (C: goto done).
-noinline func interp_call_method(st: InterpState*) -> bool:
-    let call_argc = interp_call_argc(st)
-    let call_argv = st.sp - (usize)call_argc
-    st.sf.cur_pc = st.pc
-    st.ret_val = js_call_internal(st.ctx, call_argv[(isize)-1], call_argv[(isize)-2], js_undefined(), call_argc, call_argv, 0) catch: return false
-    if st.opcode == Op.tail_call_method:
-        return true
-    interp_call_done(st, call_argc, 2)
-    return true
-
-# mark: Entering and leaving a frame ============================================================
-
-## What interp_enter leaves js_call_internal to do.
-enum InterpEntry:
-    ## Run the frame from st.pc.
-    run
-    ## Resume a generator frame at the exception handler (its throw_flag is set).
-    throwing
-    ## The object was not a bytecode function: its class's call hook ran and st.ret_val
-    ## is its result.
-    returned
-
-## The start of JS_CallInternal: fill `st` from the call, then set up the frame of a
-## bytecode function (its arguments, variables, stack and variable references in
-## `frame_space`, or on the heap when they do not fit), or take the suspended frame of a
-## generator, and make it the runtime's current frame.
-noinline func interp_enter(st: InterpState*, caller_ctx: Context*, func_obj: Value, this_obj: Value, new_target: Value, argc: i32, argv: Value*, flags: i32, frame_space: Value*) -> InterpEntry!:
-    st.caller_ctx = caller_ctx
-    st.rt = caller_ctx.rt
-    st.ctx = caller_ctx
-    st.func_obj = func_obj
-    st.this_obj = this_obj
-    st.new_target = new_target
-    st.argc = argc
-    st.argv = argv
-    st.opcode = Op.invalid
-    st.ret_val = js_undefined()
-    st.var_refs = none
-    st.heap_frame = none
-    try js_poll_interrupts(st.caller_ctx)
-    if st.func_obj.tag != Tag.object:
-        if (flags & call_flag_generator) == 0:
-            # not_a_function
-            try js_throw_type_error(st.caller_ctx, "not a function")
-        let s = (AsyncFunctionState*)st.func_obj.u.ptr
-        # func_obj get contains a pointer to JSFuncAsyncState
-        # the stack frame is already allocated
-        st.sf = &s.frame
-        st.p = st.sf.cur_func.u.obj
-        st.b = st.p.u.func_.function_bytecode
-        st.bc_buf = st.b.byte_code_buf
-        st.ctx = st.b.realm
-        st.var_refs = st.p.u.func_.var_refs
-        st.arg_buf = st.sf.arg_buf else trap("generator frame without arguments")
-        st.local_buf = st.arg_buf
-        st.var_buf = st.sf.var_buf else trap("generator frame without variables")
-        st.stack_buf = st.var_buf + (usize)st.b.var_count
-        st.sp = st.sf.cur_sp else trap("generator frame is running")
-        st.sf.cur_sp = none # cur_sp is NULL if the function is running
-        st.pc = st.sf.cur_pc else trap("generator frame without pc")
-        st.sf.prev_frame = st.rt.current_stack_frame
-        # workaround: compiler-issues/local_address_store
-        js_push_stack_frame(st.rt, st.sf)
-        if s.throw_flag:
-            return InterpEntry.throwing
-    else:
-        st.p = st.func_obj.u.obj
-        if st.p.class_id != ClassId.bytecode_function:
-            let class_array = st.rt.class_array else trap("the class array is not allocated")
-            let call_func = class_array[(usize)(u16)st.p.class_id].call else try js_throw_type_error(st.caller_ctx, "not a function")
-            st.ret_val = try call_func(st.caller_ctx, st.func_obj, st.this_obj, st.argc, st.argv, flags)
-            return InterpEntry.returned
-        st.b = st.p.u.func_.function_bytecode
-        st.bc_buf = st.b.byte_code_buf
-
-        var arg_allocated_size: i32 = 0
-        if st.argc < (i32)st.b.arg_count or (flags & call_flag_copy_argv) != 0:
-            arg_allocated_size = (i32)st.b.arg_count
-
-        let alloca_size = sizeof(Value) * ((usize)arg_allocated_size + (usize)st.b.var_count + (usize)st.b.stack_size) + sizeof(VarRef*) * (usize)st.b.var_ref_count
-        if js_check_stack_overflow(st.rt, alloca_size):
-            try js_throw_stack_overflow(st.caller_ctx)
-
-        st.sf.js_mode = (i32)st.b.js_mode
-        st.arg_buf = st.argv
-        st.sf.arg_count = st.argc
-        st.sf.cur_func = st.func_obj
-        st.var_refs = st.p.u.func_.var_refs
-
-        if alloca_size <= sizeof(Value) * js_call_inline_frame_values:
-            st.local_buf = frame_space
-        else:
-            let block = try js_malloc(st.caller_ctx, alloca_size)
-            st.heap_frame = block
-            st.local_buf = (Value*)block
-        if arg_allocated_size != 0:
-            let n = cutils.min_int(st.argc, (i32)st.b.arg_count)
-            st.arg_buf = st.local_buf
-            for i in 0..<(usize)n:
-                st.arg_buf[i] = js_dup_value(st.caller_ctx, st.argv[i])
-            for i in (usize)n..<(usize)st.b.arg_count:
-                st.arg_buf[i] = js_undefined()
-            st.sf.arg_count = (i32)st.b.arg_count
-        st.var_buf = st.local_buf + (usize)arg_allocated_size
-        st.sf.var_buf = st.var_buf
-        st.sf.arg_buf = st.arg_buf
-
-        for i in 0..<(usize)st.b.var_count:
-            st.var_buf[i] = js_undefined()
-
-        st.stack_buf = st.var_buf + (usize)st.b.var_count
-        let frame_var_refs = (VarRef*?*)(st.stack_buf + (usize)st.b.stack_size)
-        st.sf.var_refs = frame_var_refs
-        for i in 0..<(usize)st.b.var_ref_count:
-            frame_var_refs[i] = none
-        st.sp = st.stack_buf
-        st.pc = st.b.byte_code_buf
-        st.sf.prev_frame = st.rt.current_stack_frame
-        # workaround: compiler-issues/local_address_store
-        js_push_stack_frame(st.rt, st.sf)
-        st.ctx = st.b.realm # set the current realm
-
-    return InterpEntry.run
-
-## The `exception:` label of JS_CallInternal: record the backtrace, then unwind the stack
-## to the innermost catch offset, closing the iterators of for-of loops on the way. True
-## when a handler was found: the exception is pushed and st.pc is the handler.
-noinline func interp_unwind(st: InterpState*) -> bool:
-    if is_backtrace_needed(st.ctx, st.rt.current_exception):
-        # add the backtrace information now (it is not done
-        # before if the exception happens in a bytecode
-        # operation
-        st.sf.cur_pc = st.pc
-        build_backtrace(st.ctx, st.rt.current_exception, none, 0, 0, 0)
-    if not st.rt.current_exception_is_uncatchable:
-        while st.sp > st.stack_buf:
-            st.sp = st.sp - 1
-            let val = *st.sp
-            js_free_value(st.ctx, val)
-            if val.tag == Tag.catch_offset:
-                let pos = js_value_get_int(val)
-                if pos == 0:
-                    # enumerator: close it with a throw
-                    js_free_value(st.ctx, st.sp[(isize)-1]) # drop the next method
-                    st.sp = st.sp - 1
-                    js_iterator_close(st.ctx, st.sp[(isize)-1], true) catch: recover ()
-                else:
-                    *st.sp = st.rt.current_exception
-                    st.sp = st.sp + 1
-                    st.rt.current_exception = js_uninitialized()
-                    st.pc = st.bc_buf + (usize)pos
-                    return true
-    return false
-
-## The exits of JS_CallInternal: a suspended generator keeps its frame (pc and sp are
-## saved); otherwise the variable references are closed and the locals and stack are
-## released. Then the caller's frame becomes current again.
-noinline func interp_leave(st: InterpState*, exit: FrameExit):
-    # ret_val = JS_EXCEPTION on the exception exit.
-    # the local variables are freed by the caller in the generator
-    # case. Hence the label 'done' should never be reached in a
-    # generator function.
-    if exit == FrameExit.done_generator or (exit == FrameExit.exception and st.b.func_kind != js_func_normal):
-        # done_generator:
-        st.sf.cur_pc = st.pc
-        st.sf.cur_sp = st.sp
-    else:
-        # done:
-        if st.b.var_ref_count != 0:
-            # variable references reference the stack: must close them
-            close_var_refs(st.rt, st.b, st.sf)
-        # free the local variables and stack
-        var pval = st.local_buf
-        while pval < st.sp:
-            js_free_value(st.ctx, *pval)
-            pval = pval + 1
-    st.rt.current_stack_frame = st.sf.prev_frame
-    if let block = st.heap_frame:
-        js_free_rt(st.rt, block)

@@ -7,8 +7,7 @@
 #       atom numbers), the failure of reads past the end, the encodings of short big
 #       integers and 8-bit strings, and the byte swap of bytecode operands. Expected bytes
 #       are QuickJS's. None of these paths uses the context: the states hold the address
-#       of a placeholder that is never dereferenced. The paths that go through is_be
-#       (multi-byte integers) wait for its region.
+#       of a placeholder that is never dereferenced.
 #
 #==============================================================================================
 

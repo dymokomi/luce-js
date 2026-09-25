@@ -213,13 +213,13 @@ func js_array_to_reversed(ctx: Context*, this_val: Value, argc: i32, argv: Value
             while i >= 0:
                 *pval = js_dup_value(ctx, arrp[(usize)i])
                 i -= 1
-                pval = pval + 1
+                pval += 1
         else:
             # Query order is observable; test262 expects descending order.
             while i >= 0:
                 try js_try_get_property_int64(ctx, obj, i, pval)
                 i -= 1
-                pval = pval + 1
+                pval += 1
     return arr
 
 # mark: slice ===================================================================================

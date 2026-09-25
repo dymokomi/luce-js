@@ -13,7 +13,7 @@ pub type CmpF = func(const void*, const void*, void*?) -> i32
 
 type ExchangeF = func(void*, void*, usize) -> unit
 
-# mark: Exchange functions =====================================================================
+# mark: Exchange functions ======================================================================
 
 func exchange_bytes(a: void*, b: void*, size: usize):
     var ap = (u8*)a
@@ -24,8 +24,8 @@ func exchange_bytes(a: void*, b: void*, size: usize):
         let t = *ap
         *ap = *bp
         *bp = t
-        ap = ap + 1
-        bp = bp + 1
+        ap += 1
+        bp += 1
 
 func exchange_one_byte(a: void*, b: void*, size: usize):
     let ap = (u8*)a
@@ -43,8 +43,8 @@ func exchange_int16s(a: void*, b: void*, size: usize):
         let t = *ap
         *ap = *bp
         *bp = t
-        ap = ap + 1
-        bp = bp + 1
+        ap += 1
+        bp += 1
 
 func exchange_one_int16(a: void*, b: void*, size: usize):
     let ap = (u16*)a
@@ -62,8 +62,8 @@ func exchange_int32s(a: void*, b: void*, size: usize):
         let t = *ap
         *ap = *bp
         *bp = t
-        ap = ap + 1
-        bp = bp + 1
+        ap += 1
+        bp += 1
 
 func exchange_one_int32(a: void*, b: void*, size: usize):
     let ap = (u32*)a
@@ -81,8 +81,8 @@ func exchange_int64s(a: void*, b: void*, size: usize):
         let t = *ap
         *ap = *bp
         *bp = t
-        ap = ap + 1
-        bp = bp + 1
+        ap += 1
+        bp += 1
 
 func exchange_one_int64(a: void*, b: void*, size: usize):
     let ap = (u64*)a
@@ -103,8 +103,8 @@ func exchange_int128s(a: void*, b: void*, size: usize):
         ap[1] = bp[1]
         bp[0] = t
         bp[1] = u
-        ap = ap + 2
-        bp = bp + 2
+        ap += 2
+        bp += 2
 
 func exchange_one_int128(a: void*, b: void*, size: usize):
     let ap = (u64*)a
@@ -144,7 +144,7 @@ func exchange_func(base: const void*, size: usize) -> ExchangeF:
             else:
                 return exchange_bytes
 
-# mark: Heapsort ===============================================================================
+# mark: Heapsort ================================================================================
 
 func heapsortx(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*?):
     let basep = (u8*)base
@@ -189,7 +189,7 @@ func med3(a: u8*, b: u8*, c: u8*, cmp: CmpF, opaque: void*?) -> u8*:
         return b if cmp(b, c, opaque) < 0 else (c if cmp(a, c, opaque) < 0 else a)
     return b if cmp(b, c, opaque) > 0 else (a if cmp(a, c, opaque) < 0 else c)
 
-# mark: rqsort =================================================================================
+# mark: rqsort ==================================================================================
 
 struct RqsortSegment:
     var base: u8*?
@@ -244,11 +244,11 @@ pub func rqsort(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*
                     if c == 0:
                         swap(plt, pi, size)
                         lt += 1
-                        plt = plt + size
+                        plt += size
                     i += 1
-                    pi = pi + size
+                    pi += size
                 while true:
-                    pj = pj - size
+                    pj -= size
                     if pi >= pj:
                         break
                     let c = cmp(ptr, pj, opaque)
@@ -256,13 +256,13 @@ pub func rqsort(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*
                         break
                     if c == 0:
                         gt -= 1
-                        pgt = pgt - size
+                        pgt -= size
                         swap(pgt, pj, size)
                 if pi >= pj:
                     break
                 swap(pi, pj, size)
                 i += 1
-                pi = pi + size
+                pi += size
             # array has 4 parts:
             # from 0 to lt excluded: elements identical to pivot
             # from lt to pi excluded: elements smaller than pivot
@@ -311,5 +311,5 @@ pub func rqsort(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*
             var pj = pi
             while pj > ptr and cmp(pj - size, pj, opaque) > 0:
                 swap(pj, pj - size, size)
-                pj = pj - size
-            pi = pi + size
+                pj -= size
+            pi += size

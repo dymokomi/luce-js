@@ -9,6 +9,8 @@
 #
 #==============================================================================================
 
+# mark: Requests and headers ====================================================================
+
 let url_get_program = "curl -s -i --"
 let url_get_buf_size: usize = 4096
 
@@ -34,11 +36,11 @@ func http_get_header_line(f: void*, buf: u8*, buf_size: usize, dbuf: DynBuf*?) -
 func http_get_status(buf: const u8*) -> i32:
     var p = buf
     while *p != ' ' and *p != 0:
-        p = p + 1
+        p += 1
     if *p != ' ':
         return 0
     while *p == ' ':
-        p = p + 1
+        p += 1
     return atoi(p)
 
 ## The command that downloads `url`: curl with the URL single-quoted for the shell.
@@ -81,6 +83,8 @@ func url_get_headers(f: void*, buf: u8*, header_buf: DynBuf*, full_flag: bool, p
         if strcmp(buf, "\r\n".bytes.data) == 0:
             break
     return true
+
+# mark: std.urlGet ==============================================================================
 
 ## urlGet(url[, options]) -> the response text, ArrayBuffer (`binary`) or, with `full`,
 ## `{response, responseHeaders, status}`; null (or response null) on a failed request.

@@ -93,9 +93,10 @@ let js_os_funcs: CFunctionListEntry[70] = [
 func os_platform() -> str:
     if platform.windows:
         return "win32"
-    if platform.macos:
+    elif platform.macos:
         return "darwin"
-    return "linux"
+    else:
+        return "linux"
 
 func js_os_init(ctx: Context*, m: ModuleDef*) -> !:
     os_poll_func = js_os_poll

@@ -219,4 +219,3 @@ pub func js_std_await(ctx: Context*, obj: Value) -> Value!:
                         discard(poll(ctx))
             _:
                 trap("js_std_await: unknown promise state")
-    return obj

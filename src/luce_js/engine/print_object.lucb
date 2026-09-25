@@ -1,13 +1,13 @@
 #==============================================================================================
 #
-#   print_object - Printing objects and values, JS_PrintValue and the debug dumps
+#   print_object - Printing objects and values, and JS_PrintValue
 #
 #   DESCRIPTION:
 #       Port of quickjs.c lines 14028-14553: js_print_object (arrays, typed arrays,
 #       functions, Map and Set, RegExp, Date, Error and plain objects with their
 #       properties), js_print_value (the dispatch on the tag, with cycle detection and a
-#       depth limit), the public JS_PrintValue entry points, and the debug dumps to
-#       standard output (JS_DumpValue, JS_DumpObject, JS_DumpGCObject, ...).
+#       depth limit), and the public JS_PrintValue entry points. The debug dumps to
+#       standard output (JS_DumpValue, JS_DumpObject, ...) are not ported.
 #
 #==============================================================================================
 
@@ -377,84 +377,3 @@ pub func js_print_value_rt(rt: Runtime*, write_func: PrintValueWrite, write_opaq
 pub func js_print_value(ctx: Context*, write_func: PrintValueWrite, write_opaque: void*?,
                         val: Value, options: const PrintValueOptions*?):
     js_print_value_internal(ctx.rt, ctx, write_func, write_opaque, val, options)
-
-# mark: Debug dumps =============================================================================
-
-# QuickJS writes to the FILE* in `opaque`; the port's dumps all go to standard output, so
-# the opaque is not used.
-func js_dump_value_write(opaque: void*?, buf: const u8*, len: usize):
-    print((str)u8[]((u8*)buf, len))
-
-func print_atom(ctx: Context*, atom: Atom):
-    var ss = PrintValueState(rt = ctx.rt, ctx = ctx, write_func = js_dump_value_write)
-    js_print_atom(&ss, atom)
-
-func js_dump_atom(ctx: Context*, text: str, atom: Atom):
-    print(f"{text}=")
-    print_atom(ctx, atom)
-    print("\n")
-
-func js_dump_value(ctx: Context*, text: str, val: Value):
-    print(f"{text}=")
-    js_print_value(ctx, js_dump_value_write, none, val, none)
-    print("\n")
-
-func js_dump_value_rt(rt: Runtime*, text: str, val: Value):
-    print(f"{text}=")
-    js_print_value_rt(rt, js_dump_value_write, none, val, none)
-    print("\n")
-
-func js_dump_object_header(rt: Runtime*):
-    print(f"{pad("ADDRESS", 14)} {pad("REFS", 4)} {pad("SHRF", 4)} {pad("PROTO", 14)} CONTENT\n")
-
-# printf's "%14p": the address `addr` in hexadecimal, right-aligned on 14 columns.
-func js_dump_ptr(addr: usize):
-    var buf: u8[24] = ---
-    let text = format(buf, f"0x{hex(addr)}") else "0x?"
-    print(f"{pad(text, 14)}")
-
-# for debug only: dump an object without side effect
-func js_dump_object(rt: Runtime*, p: Object*):
-    # XXX: should encode atoms with special characters
-    let sh = p.shape # the shape can be NULL while freeing an object in QuickJS
-    js_dump_ptr((usize)p)
-    print(f" {pad(js_rc(p).ref_count, 4)} ")
-    var proto: usize = 0
-    if let pr = sh.proto:
-        proto = (usize)pr
-    print(f"{pad(js_rc(sh).ref_count, 3)}{"*" if sh.is_hashed != 0 else " "} ")
-    js_dump_ptr(proto)
-    print(" ")
-
-    var options: PrintValueOptions = ---
-    js_print_value_set_default_options(&options)
-    options.max_depth = 1
-    options.show_hidden = true
-    options.raw_dump = true
-    js_print_value_rt(rt, js_dump_value_write, none, js_mkptr(Tag.object, p), &options)
-
-    print("\n")
-
-func js_dump_gc_object(rt: Runtime*, p: GCObjectHeader*):
-    let gc_obj_type = (GCObjectType)(js_rc(p).gc_bits & 0x7f)
-    if gc_obj_type == GCObjectType.js_object:
-        js_dump_object(rt, (Object*)p)
-    else:
-        js_dump_ptr((usize)p)
-        print(f" {pad(js_rc(p).ref_count, 4)} ")
-        match gc_obj_type:
-            .function_bytecode:
-                print("[function bytecode]")
-            .shape:
-                print("[shape]")
-            .var_ref:
-                print("[var_ref]")
-            .async_function:
-                print("[async_function]")
-            .js_context:
-                print("[js_context]")
-            .module:
-                print("[module]")
-            _:
-                print(f"[unknown {(i32)gc_obj_type}]")
-        print("\n")

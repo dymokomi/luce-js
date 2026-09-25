@@ -7,7 +7,7 @@
 #       from objects to their index in insertion order, used by the bytecode writer to
 #       find objects it already wrote. Also is_be (line 37551), the byte order test of
 #       the bytecode writer and reader. The writer's own declarations (BCTagEnum,
-#       BCWriterState) belong to the bytecode I/O region.
+#       BCWriterState) are in bytecode_writer.lucb.
 #
 #==============================================================================================
 

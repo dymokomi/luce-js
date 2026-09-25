@@ -16,8 +16,8 @@
 ## The `exception:` label of the slow operators: the operands were consumed, so both stack
 ## slots are cleared.
 func js_clear_binary_operands(sp: Value*):
-    *(sp - 2) = js_undefined()
-    *(sp - 1) = js_undefined()
+    sp[-2] = js_undefined()
+    sp[-1] = js_undefined()
 
 ## Whether a tag is a string or a rope.
 func tag_is_string(tag: Tag) -> bool:
@@ -44,8 +44,8 @@ func js_fits_short_bigint(v: i64) -> bool:
 ## The `+` operator when the operands are not two integers (js_add_slow).
 func js_add_slow(ctx: Context*, sp: Value*) -> !:
     errdefer js_clear_binary_operands(sp)
-    var op1 = *(sp - 2)
-    var op2 = *(sp - 1)
+    var op1 = sp[-2]
+    var op2 = sp[-1]
 
     var tag1 = op1.tag
     var tag2 = op2.tag
@@ -53,7 +53,7 @@ func js_add_slow(ctx: Context*, sp: Value*) -> !:
     if tag1 == Tag.float64 and tag2 == Tag.float64:
         let d1 = js_value_get_float64(op1)
         let d2 = js_value_get_float64(op2)
-        *(sp - 2) = js_new_float64_raw(d1 + d2)
+        sp[-2] = js_new_float64_raw(d1 + d2)
         return
     # fast path for short bigint
     if tag1 == Tag.short_big_int and tag2 == Tag.short_big_int:
@@ -61,10 +61,10 @@ func js_add_slow(ctx: Context*, sp: Value*) -> !:
         let v2 = js_value_get_short_big_int(op2)
         let v = (i64)v1 + (i64)v2
         if js_fits_short_bigint(v):
-            *(sp - 2) = js_new_short_big_int_raw((i32)v)
+            sp[-2] = js_new_short_big_int_raw((i32)v)
         else:
             let r = try js_bigint_new_di(ctx, v)
-            *(sp - 2) = js_mkptr(Tag.big_int, r)
+            sp[-2] = js_mkptr(Tag.big_int, r)
         return
 
     if tag1 == Tag.object or tag2 == Tag.object:
@@ -78,7 +78,7 @@ func js_add_slow(ctx: Context*, sp: Value*) -> !:
         tag2 = op2.tag
 
     if tag_is_string(tag1) or tag_is_string(tag2):
-        *(sp - 2) = try js_concat_string(ctx, op1, op2)
+        sp[-2] = try js_concat_string(ctx, op1, op2)
         return
 
     op1 = js_to_numeric_free(ctx, op1) catch failure:
@@ -94,7 +94,7 @@ func js_add_slow(ctx: Context*, sp: Value*) -> !:
         let v1 = js_value_get_int(op1)
         let v2 = js_value_get_int(op2)
         let v = (i64)v1 + (i64)v2
-        *(sp - 2) = js_new_int64(v)
+        sp[-2] = js_new_int64(v)
     elif tag_is_bigint(tag1) and tag_is_bigint(tag2):
         # bigint result
         var buf1: BigIntBuf = ---
@@ -105,7 +105,7 @@ func js_add_slow(ctx: Context*, sp: Value*) -> !:
         js_free_value(ctx, op1)
         js_free_value(ctx, op2)
         let res = r else error(exception, "")
-        *(sp - 2) = js_compact_bigint(ctx, res)
+        sp[-2] = js_compact_bigint(ctx, res)
     else:
         # float64 result
         var d1: f64 = 0.0
@@ -114,7 +114,7 @@ func js_add_slow(ctx: Context*, sp: Value*) -> !:
             js_free_value(ctx, op2)
             error(failure.code, failure.message)
         try js_to_float64_free(ctx, &d2, op2)
-        *(sp - 2) = js_new_float64_raw(d1 + d2)
+        sp[-2] = js_new_float64_raw(d1 + d2)
 
 # mark: Bitwise operators =======================================================================
 
@@ -122,8 +122,8 @@ func js_add_slow(ctx: Context*, sp: Value*) -> !:
 ## (js_binary_logic_slow).
 func js_binary_logic_slow(ctx: Context*, sp: Value*, op: Op) -> !:
     errdefer js_clear_binary_operands(sp)
-    var op1 = *(sp - 2)
-    var op2 = *(sp - 1)
+    var op1 = sp[-2]
+    var op2 = sp[-1]
     let tag1 = op1.tag
     let tag2 = op2.tag
 
@@ -159,16 +159,16 @@ func js_binary_logic_slow(ctx: Context*, sp: Value*, op: Op) -> !:
                             v = (i32)vd
                         else:
                             let r = try js_bigint_new_di(ctx, vd)
-                            *(sp - 2) = js_mkptr(Tag.big_int, r)
+                            sp[-2] = js_mkptr(Tag.big_int, r)
                             return
                     else:
                         v = v1 >> v2
             _:
                 trap("js_binary_logic_slow: not a bitwise operator")
         if not slow_big_int:
-            *(sp - 2) = js_new_short_big_int_raw(v)
+            sp[-2] = js_new_short_big_int_raw(v)
             return
-        *(sp - 2) = try js_binary_logic_bigint(ctx, op, op1, op2)
+        sp[-2] = try js_binary_logic_bigint(ctx, op, op1, op2)
         return
 
     op1 = js_to_numeric_free(ctx, op1) catch failure:
@@ -179,7 +179,7 @@ func js_binary_logic_slow(ctx: Context*, sp: Value*, op: Op) -> !:
         error(failure.code, failure.message)
 
     if tag_is_bigint(op1.tag) and tag_is_bigint(op2.tag):
-        *(sp - 2) = try js_binary_logic_bigint(ctx, op, op1, op2)
+        sp[-2] = try js_binary_logic_bigint(ctx, op, op1, op2)
     else:
         var v1: i32 = 0
         var v2: i32 = 0
@@ -203,7 +203,7 @@ func js_binary_logic_slow(ctx: Context*, sp: Value*, op: Op) -> !:
                 r = u1 ^ u2
             _:
                 trap("js_binary_logic_slow: not a bitwise operator")
-        *(sp - 2) = js_new_int32((i32)r)
+        sp[-2] = js_new_int32((i32)r)
 
 ## The `slow_big_int:` label of js_binary_logic_slow: the bitwise operator `op` on two big
 ## integers, consuming them.
@@ -322,8 +322,8 @@ func tag_is_int_bool_or_null(tag: Tag) -> bool:
 ## `<`, `<=`, `>` and `>=` when the operands are not two integers (js_relational_slow).
 func js_relational_slow(ctx: Context*, sp: Value*, op: Op) -> !:
     errdefer js_clear_binary_operands(sp)
-    var op1 = *(sp - 2)
-    var op2 = *(sp - 1)
+    var op1 = sp[-2]
+    var op2 = sp[-1]
     op1 = js_to_primitive_free(ctx, op1, hint_number) catch failure:
         js_free_value(ctx, op2)
         error(failure.code, failure.message)
@@ -388,7 +388,7 @@ func js_relational_slow(ctx: Context*, sp: Value*, op: Op) -> !:
                 res = js_compare_bigint(ctx, op, op1, op2)
             else:
                 res = js_float64_compare(op, op1, op2)
-    *(sp - 2) = js_new_bool(res)
+    sp[-2] = js_new_bool(res)
 
 # mark: Equality ================================================================================
 
@@ -399,8 +399,8 @@ func tag_is_number(tag: Tag) -> bool:
 ## `==` and `!=` (`is_neq`) when the operands are not two integers (js_eq_slow).
 func js_eq_slow(ctx: Context*, sp: Value*, is_neq: bool) -> !:
     errdefer js_clear_binary_operands(sp)
-    var op1 = *(sp - 2)
-    var op2 = *(sp - 1)
+    var op1 = sp[-2]
+    var op2 = sp[-1]
     var res = false
     # redo
     while true:
@@ -478,15 +478,15 @@ func js_eq_slow(ctx: Context*, sp: Value*, is_neq: bool) -> !:
             js_free_value(ctx, op1)
             js_free_value(ctx, op2)
         break
-    *(sp - 2) = js_new_bool(res != is_neq)
+    sp[-2] = js_new_bool(res != is_neq)
 
 # mark: Unsigned right shift ====================================================================
 
 ## `>>>` when the operands are not two integers (js_shr_slow).
 func js_shr_slow(ctx: Context*, sp: Value*) -> !:
     errdefer js_clear_binary_operands(sp)
-    var op1 = *(sp - 2)
-    var op2 = *(sp - 1)
+    var op1 = sp[-2]
+    var op2 = sp[-1]
     op1 = js_to_numeric_free(ctx, op1) catch failure:
         js_free_value(ctx, op2)
         error(failure.code, failure.message)
@@ -504,4 +504,4 @@ func js_shr_slow(ctx: Context*, sp: Value*) -> !:
     try js_to_uint32_free(ctx, &v1, op1)
     try js_to_uint32_free(ctx, &v2, op2)
     let r = v1 >> (v2 & 0x1f)
-    *(sp - 2) = js_new_uint32(r)
+    sp[-2] = js_new_uint32(r)

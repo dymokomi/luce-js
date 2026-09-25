@@ -253,15 +253,8 @@ func find_last_byte(s: const u8*, c: u8) -> const u8*?:
     while *p != 0:
         if *p == c:
             found = p
-        p = p + 1
+        p += 1
     return found
-
-# Whether the NUL-terminated text at `s` is `text` (!strcmp).
-func c_str_equals(s: const u8*, text: str) -> bool:
-    for i in 0..<text.length:
-        if s[i] != text.bytes[i]:
-            return false
-    return s[text.length] == 0
 
 # The path part of js_default_module_normalize_name: write into `filename` (`cap` bytes,
 # at least len(dirname(base_name)) + strlen(name) + 2) the name of `name` relative to
@@ -277,7 +270,7 @@ func module_normalize_path(filename: u8*, cap: i32, base_name: const u8*, name: 
     var r = name
     while true:
         if r[0] == '.' and r[1] == '/':
-            r = r + 2
+            r += 2
         elif r[0] == '.' and r[1] == '.' and r[2] == '/':
             # remove the last path element of filename, except if "." or ".."
             if filename[0] == 0:
@@ -285,12 +278,12 @@ func module_normalize_path(filename: u8*, cap: i32, base_name: const u8*, name: 
             var p = filename
             if let q = find_last_byte(filename, '/'):
                 p = (u8*)q + 1
-            if c_str_equals(p, ".") or c_str_equals(p, ".."):
+            if cutils.c_str_equals(p, ".") or cutils.c_str_equals(p, ".."):
                 break
             if p > filename:
-                p = p - 1
+                p -= 1
             *p = 0
-            r = r + 3
+            r += 3
         else:
             break
     if filename[0] != 0:
@@ -349,7 +342,7 @@ func js_host_resolve_imported_module(ctx: Context*, base_cname: const u8*, cname
     elif let loader = rt.module_loader_func:
         return try loader(ctx, cname, rt.module_loader_opaque)
     # XXX: use a syntax error ?
-    try js_throw_reference_error(ctx, f"could not load module '{c_str_view(cname)}'")
+    try js_throw_reference_error(ctx, f"could not load module '{cutils.c_str_view(cname)}'")
 
 func js_host_resolve_imported_module_atom(ctx: Context*, base_module_name: Atom,
                                           module_name1: Atom, attributes: Value) -> ModuleDef*!:

@@ -94,7 +94,7 @@ func mark_children(rt: Runtime*, gp: GCObjectHeader*, mark_func: MarkFunc):
                     var sp = sf.arg_buf else trap("mark_children: no argument buffer")
                     while sp < cur_sp:
                         js_mark_value(rt, *sp, mark_func)
-                        sp = sp + 1
+                        sp += 1
             js_mark_value(rt, s.resolving_funcs[0], mark_func)
             js_mark_value(rt, s.resolving_funcs[1], mark_func)
         .shape:
@@ -133,7 +133,7 @@ func mark_object_children(rt: Runtime*, p: Object*, mark_func: MarkFunc):
                     js_autoinit_mark(rt, pr, mark_func)
             else:
                 js_mark_value(rt, pr.u.value, mark_func)
-        prs = prs + 1
+        prs += 1
 
     if p.class_id != ClassId.object:
         let class_array = rt.class_array else trap("mark_children: no class array")

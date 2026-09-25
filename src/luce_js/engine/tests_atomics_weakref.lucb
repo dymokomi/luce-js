@@ -1,9 +1,9 @@
 #==============================================================================================
 #
-#   tests_r29 - Tests of the Atomics waiter list and the WeakRef tables
+#   tests_atomics_weakref - Tests of the Atomics waiter list and the WeakRef tables
 #
 #   DESCRIPTION:
-#       Unit tests for the parts of region r29 (quickjs.c 60820-end) that run without a
+#       Unit tests for the parts of quickjs.c lines 60820-end that run without a
 #       JavaScript runtime: the timeout arithmetic of Atomics.wait, the waiter list of
 #       Atomics.wait / Atomics.notify driven by real threads, and the builtin tables.
 #

@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   calls - Calling functions and constructors, and async function frames
+#   call_entry - Calling functions and constructors, and async function frames
 #
 #   DESCRIPTION:
 #       Port of quickjs.c lines 20711-20951: the entry points around the interpreter
@@ -173,6 +173,6 @@ func async_func_free_frame(rt: Runtime*, s: AsyncFunctionState*):
     var sp = sf.arg_buf else trap("async_func_free_frame: frame without arguments")
     while sp < cur_sp:
         js_free_value_rt(rt, *sp)
-        sp = sp + 1
+        sp += 1
     js_free_value_rt(rt, sf.cur_func)
     js_free_value_rt(rt, s.this_val)

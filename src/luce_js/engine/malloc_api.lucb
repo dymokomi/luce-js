@@ -77,10 +77,7 @@ pub func js_realloc2(ctx: Context*, ptr: void*?, size: usize, pslack: usize*?) -
     if ret == none and size != 0:
         try js_throw_out_of_memory(ctx)
     if let slack = pslack:
-        # workaround: compiler-issues/nullable_pointer_cast (void*? to const void*?)
-        var new_size: usize = 0
-        if let r = ret:
-            new_size = js_malloc_usable_size_rt(ctx.rt, r)
+        let new_size = js_malloc_usable_size_rt(ctx.rt, ret)
         *slack = new_size - size if new_size > size else 0
     return ret
 

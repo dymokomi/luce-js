@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r27 - Tests of the pure helpers of the Promise and Date region
+#   tests_date_uri - Tests of the pure helpers of Date and the URI functions
 #
 #   DESCRIPTION:
 #       The Date calendar arithmetic, the conversions between time values and fields,

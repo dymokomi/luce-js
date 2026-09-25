@@ -17,6 +17,8 @@ import c
 import js
 import host
 
+# mark: Helpers =================================================================================
+
 ## Print `text` to standard error.
 func report(text: str):
     discard(host_fwrite(text.bytes.data, 1, text.length, c.stderr()))
@@ -24,6 +26,8 @@ func report(text: str):
 extern func host_fwrite as "fwrite"(ptr: const void*, size: usize, n: usize, f: void*) -> usize
 extern func c_exit as "exit"(status: i32) -> never
 extern func perror(text: const u8*)
+
+# mark: Evaluation ==============================================================================
 
 func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const u8*, eval_flags: i32) -> i32:
     var failed = false
@@ -87,6 +91,8 @@ func new_custom_context(rt: js.Runtime*) -> js.Context*?:
     host.js_init_module_os(ctx, "os".bytes.data) catch: return ctx
     return ctx
 
+# mark: Options =================================================================================
+
 func fatal(text: str) -> never:
     report(text)
     c_exit(2)
@@ -123,6 +129,8 @@ func parse_size(text: str) -> usize:
             report("ljs: invalid size\n")
             c_exit(1)
     return n
+
+# mark: main ====================================================================================
 
 pub func main(arguments: str[]) -> i32:
     var expr: str? = none

@@ -32,7 +32,7 @@
 
 import luce_js.cutils as cutils
 
-# mark: Public flags and types =================================================================
+# mark: Public flags and types ==================================================================
 
 ## Maximum number of digits for fixed and frac formats.
 pub let dtoa_max_digits: i32 = 101
@@ -78,7 +78,7 @@ pub struct ATODTempMem:
     ## The storage.
     pub var mem: u64[27]
 
-# mark: Limbs ==================================================================================
+# mark: Limbs ===================================================================================
 
 # #define USE_POW5_TABLE and USE_FAST_INT: both are always on in this port.
 #
@@ -101,7 +101,7 @@ struct Mpb:
 func mpb_tab(r: const Mpb*) -> u32*:
     return (u32*)((u8*)r + sizeof(Mpb))
 
-# mark: Multi-precision primitives =============================================================
+# mark: Multi-precision primitives ==============================================================
 
 func mp_add_ui(tab: u32*, b: u32, n: usize) -> u32:
     var k = b

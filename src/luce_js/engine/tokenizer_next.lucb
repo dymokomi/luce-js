@@ -58,9 +58,9 @@ func skip_line_comment(s: ParseState*, p0: const u8*) -> const u8*:
                 break
             elif c == -1:
                 # skip invalid UTF-8
-                p = p + 1
+                p += 1
         else:
-            p = p + 1
+            p += 1
     return p
 
 # mark: next_token ==============================================================================
@@ -86,7 +86,7 @@ func next_token(s: ParseState*) -> !:
                     s.token.val = TokenType.eof
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '`':
                 try js_parse_template_part(s, p + 1)
                 p = s.buf_ptr
@@ -95,28 +95,28 @@ func next_token(s: ParseState*) -> !:
             '\r', '\n':
                 # accept DOS and MAC newline sequences
                 if c == '\r' and p[1] == '\n':
-                    p = p + 1
-                p = p + 1
+                    p += 1
+                p += 1
                 # line_terminator:
                 s.got_lf = true
                 continue
             0x0c, 0x0b, ' ', '\t':
-                p = p + 1
+                p += 1
                 continue
             '/':
                 if p[1] == '*':
                     # comment
-                    p = p + 2
+                    p += 2
                     while true:
                         if *p == 0 and p >= s.buf_end:
                             try js_parse_error(s, "unexpected end of comment")
                         if p[0] == '*' and p[1] == '/':
-                            p = p + 2
+                            p += 2
                             break
                         if *p == '\n' or *p == '\r':
                             # considered as LF for ASI
                             s.got_lf = true
-                            p = p + 1
+                            p += 1
                         elif *p >= 0x80:
                             let c1 = cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p)
                             if c1 == (i32)cp_ls or c1 == (i32)cp_ps:
@@ -124,19 +124,19 @@ func next_token(s: ParseState*) -> !:
                                 s.got_lf = true
                             elif c1 == -1:
                                 # skip invalid UTF-8
-                                p = p + 1
+                                p += 1
                         else:
-                            p = p + 1
+                            p += 1
                     continue
                 elif p[1] == '/':
                     # line comment
                     p = skip_line_comment(s, p + 2)
                     continue
                 elif p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.div_assign
                 else:
-                    p = p + 1
+                    p += 1
                     s.token.val = (TokenType)(i32)c
             '\\':
                 var is_ident = false
@@ -150,17 +150,17 @@ func next_token(s: ParseState*) -> !:
                     # else XXX: syntax error?
                 if not is_ident:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             'a'..='z', 'A'..='Z', '_', '$':
                 # identifier
-                p = p + 1
+                p += 1
                 try next_token_ident(s, &p, (i32)c, false)
             '#':
                 # private name
-                p = p + 1
+                p += 1
                 var p1 = p
                 var c1 = (i32)*p1
-                p1 = p1 + 1
+                p1 += 1
                 if c1 == (i32)'\\' and *p1 == 'u':
                     c1 = lre_parse_escape(&p1, 1)
                 elif c1 >= 128:
@@ -175,13 +175,13 @@ func next_token(s: ParseState*) -> !:
                 s.token.val = TokenType.private_name
             '.':
                 if p[1] == '.' and p[2] == '.':
-                    p = p + 3
+                    p += 3
                     s.token.val = TokenType.ellipsis
                 elif p[1] >= '0' and p[1] <= '9':
                     try next_token_number(s, &p)
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '0':
                 # in strict mode, octal literals are not accepted
                 if is_digit((i32)p[1]) and ((i32)s.fd().js_mode & js_mode_strict) != 0:
@@ -192,38 +192,38 @@ func next_token(s: ParseState*) -> !:
                 try next_token_number(s, &p)
             '*':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.mul_assign
                 elif p[1] == '*':
                     if p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.pow_assign
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.pow
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '%':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.mod_assign
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '+':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.plus_assign
                 elif p[1] == '+':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.inc
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '-':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.minus_assign
                 elif p[1] == '-':
                     if (s.allow_html_comments and p[2] == '>' and
@@ -232,21 +232,21 @@ func next_token(s: ParseState*) -> !:
                         # It extends to the end of the line.
                         p = skip_line_comment(s, p)
                         continue
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.dec
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '<':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.lte
                 elif p[1] == '<':
                     if p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.shl_assign
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.shl
                 elif s.allow_html_comments and p[1] == '!' and p[2] == '-' and p[3] == '-':
                     # Annex B: handle `<!--` single line html comments
@@ -254,102 +254,102 @@ func next_token(s: ParseState*) -> !:
                     continue
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '>':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.gte
                 elif p[1] == '>':
                     if p[2] == '>':
                         if p[3] == '=':
-                            p = p + 4
+                            p += 4
                             s.token.val = TokenType.shr_assign
                         else:
-                            p = p + 3
+                            p += 3
                             s.token.val = TokenType.shr
                     elif p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.sar_assign
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.sar
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '=':
                 if p[1] == '=':
                     if p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.strict_eq
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.eq
                 elif p[1] == '>':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.arrow
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '!':
                 if p[1] == '=':
                     if p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.strict_neq
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.neq
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '&':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.and_assign
                 elif p[1] == '&':
                     if p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.land_assign
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.land
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '^':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.xor_assign
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '|':
                 if p[1] == '=':
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.or_assign
                 elif p[1] == '|':
                     if p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.lor_assign
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.lor
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             '?':
                 if p[1] == '?':
                     if p[2] == '=':
-                        p = p + 3
+                        p += 3
                         s.token.val = TokenType.double_question_mark_assign
                     else:
-                        p = p + 2
+                        p += 2
                         s.token.val = TokenType.double_question_mark
                 elif p[1] == '.' and not (p[2] >= '0' and p[2] <= '9'):
-                    p = p + 2
+                    p += 2
                     s.token.val = TokenType.question_mark_dot
                 else:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
             _:
                 if c >= 128:
                     # unicode value
@@ -369,7 +369,7 @@ func next_token(s: ParseState*) -> !:
                 else:
                     # def_token:
                     s.token.val = (TokenType)(i32)c
-                    p = p + 1
+                    p += 1
         break
     s.buf_ptr = p
 

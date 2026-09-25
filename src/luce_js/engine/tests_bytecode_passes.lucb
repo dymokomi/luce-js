@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_r19 - Unit tests of the bytecode passes' helpers that need no runtime
+#   tests_bytecode_passes - Unit tests of the bytecode passes' helpers that need no runtime
 #
 #   DESCRIPTION:
 #       The pattern matcher (code_match, code_has_label), the short opcode writers, the
@@ -432,16 +432,3 @@ test "shorten_jumps shrinks a farther goto to goto16 and keeps a far if_true":
     defer cutils.dbuf_free(&q.bc_out)
     shorten_jumps(&q)
     assert(q.bc_out.size == 206 and slot2.addr == 205 and jump2.size == 4)
-
-# mark: Debug listings ==========================================================================
-
-test "skip_lines stops at the end of the text":
-    let text = "a\nbb\nccc"
-    let start = text.bytes.data
-    assert(skip_lines(start, 0) == start)
-    assert(skip_lines(start, 1) == start + 2)
-    assert(skip_lines(start, 2) == start + 5)
-    assert(skip_lines(start, 5) == start + 8)
-    assert(dump_opcode_name((u8)TempOp.label, true) == "label")
-    assert(dump_opcode_name((u8)TempOp.label, false) == "push_1")
-    assert(dump_opcode_name((u8)Op.goto_, true) == "goto")

@@ -116,8 +116,8 @@ pub func js_same_value_zero(ctx: Context*, op1: Value, op2: Value) -> bool:
 
 ## `key in obj` on sp[-2] and sp[-1], leaving the boolean at sp[-2].
 func js_operator_in(ctx: Context*, sp: Value*) -> !:
-    let op1 = *(sp - 2)
-    let op2 = *(sp - 1)
+    let op1 = sp[-2]
+    let op2 = sp[-1]
 
     if op2.tag != Tag.object:
         try js_throw_type_error(ctx, "invalid 'in' operand")
@@ -128,12 +128,12 @@ func js_operator_in(ctx: Context*, sp: Value*) -> !:
     js_free_atom(ctx, atom)
     js_free_value(ctx, op1)
     js_free_value(ctx, op2)
-    *(sp - 2) = js_new_bool(ret)
+    sp[-2] = js_new_bool(ret)
 
 ## `#field in obj`: sp[-2] is the object, sp[-1] the field name or the method function.
 func js_operator_private_in(ctx: Context*, sp: Value*) -> !:
-    let op1 = *(sp - 2)     # object
-    let op2 = *(sp - 1)     # field name or method function
+    let op1 = sp[-2]     # object
+    let op2 = sp[-1]     # field name or method function
 
     if op1.tag != Tag.object:
         try js_throw_type_error(ctx, "invalid 'in' operand")
@@ -151,7 +151,7 @@ func js_operator_private_in(ctx: Context*, sp: Value*) -> !:
         ret = prs != none
     js_free_value(ctx, op1)
     js_free_value(ctx, op2)
-    *(sp - 2) = js_new_bool(ret)
+    sp[-2] = js_new_bool(ret)
 
 ## Whether `obj[Symbol.unscopables][atom]` is truthy (a `with` binding is hidden).
 func js_has_unscopable(ctx: Context*, obj: Value, atom: Atom) -> bool!:
@@ -165,12 +165,12 @@ func js_has_unscopable(ctx: Context*, obj: Value, atom: Atom) -> bool!:
 
 ## `val instanceof obj` on sp[-2] and sp[-1].
 func js_operator_instanceof(ctx: Context*, sp: Value*) -> !:
-    let op1 = *(sp - 2)
-    let op2 = *(sp - 1)
+    let op1 = sp[-2]
+    let op2 = sp[-1]
     let ret = try js_is_instance_of(ctx, op1, op2)
     js_free_value(ctx, op1)
     js_free_value(ctx, op2)
-    *(sp - 2) = js_new_bool(ret)
+    sp[-2] = js_new_bool(ret)
 
 ## The atom of `typeof op1`.
 func js_operator_typeof(ctx: Context*, op1: Value) -> Atom:
@@ -201,8 +201,8 @@ func js_operator_typeof(ctx: Context*, op1: Value) -> Atom:
 
 ## `delete obj[key]` on sp[-2] and sp[-1].
 func js_operator_delete(ctx: Context*, sp: Value*) -> !:
-    let op1 = *(sp - 2)
-    let op2 = *(sp - 1)
+    let op1 = sp[-2]
+    let op2 = sp[-1]
     let atom = try js_value_to_atom(ctx, op2)
     let ret = js_delete_property(ctx, op1, atom, prop_throw_strict) catch failure:
         js_free_atom(ctx, atom)
@@ -210,7 +210,7 @@ func js_operator_delete(ctx: Context*, sp: Value*) -> !:
     js_free_atom(ctx, atom)
     js_free_value(ctx, op1)
     js_free_value(ctx, op2)
-    *(sp - 2) = js_new_bool(ret)
+    sp[-2] = js_new_bool(ret)
 
 # mark: Function.prototype helpers ==============================================================
 

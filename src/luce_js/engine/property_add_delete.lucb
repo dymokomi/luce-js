@@ -42,7 +42,7 @@ func add_property(ctx: Context*, p: Object*, prop: Atom, prop_flags: i32) -> Pro
             #  the property array may need to be resized
             if new_sh.prop_size != sh.prop_size:
                 let new_prop = try js_realloc(ctx, p.prop, sizeof(Property) * (usize)new_sh.prop_size)
-                # workaround: compiler-issues/nullable_pointer_cast (a non-zero size never answers none)
+                # js_realloc of a non-zero size never answers none
                 p.prop = (Property*)(new_prop else trap("js_realloc answered none"))
             p.shape = js_dup_shape(new_sh)
             js_free_shape(ctx.rt, sh)

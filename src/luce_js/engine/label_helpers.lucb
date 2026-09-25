@@ -66,10 +66,10 @@ func compute_pc2line_info(s: FunctionDef*):
                 diff_line < pc2line_base + pc2line_range and
                 diff_pc <= pc2line_diff_pc_max):
                 let code = (diff_line - pc2line_base) + diff_pc * pc2line_range + pc2line_op_first
-                discard(cutils.dbuf_putc(&s.pc2line, (u8)code))
+                dbuf_byte(&s.pc2line, (u8)code)
             else:
                 # longer encoding
-                discard(cutils.dbuf_putc(&s.pc2line, 0))
+                dbuf_byte(&s.pc2line, 0)
                 dbuf_put_leb128(&s.pc2line, (u32)diff_pc)
                 dbuf_put_sleb128(&s.pc2line, diff_line)
             dbuf_put_sleb128(&s.pc2line, diff_col)

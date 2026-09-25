@@ -1,13 +1,14 @@
 #==============================================================================================
 #
-#   tests_r26 - Tests of the Map/Set key hash and the proxy key search
+#   tests_map_proxy - Tests of the Map/Set key hash and the proxy key search
 #
 #   DESCRIPTION:
-#       The parts of region r26 that run without a context: the multiplicative hashes
-#       and map_hash_key on numbers, booleans, short BigInts and strings (the expected
-#       values come from the C functions compiled as upstream has them), weak reference
-#       liveness of undefined, and find_prop_key. Strings are made on a real runtime,
-#       which is left allocated as in tests_r12.
+#       The parts of the Proxy and Map support (quickjs.c "Proxy" and
+#       "Set/Map/WeakSet/WeakMap") that run without a context: the multiplicative hashes and
+#       map_hash_key on numbers, booleans, short BigInts and strings (the expected values come
+#       from the C functions compiled as upstream has them), weak reference liveness of
+#       undefined, and find_prop_key. Strings are made on a real runtime, which is left
+#       allocated as in tests_print_value.
 #
 #==============================================================================================
 

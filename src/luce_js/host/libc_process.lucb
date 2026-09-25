@@ -39,7 +39,8 @@ extern func _NSGetEnviron() -> CStringEntry**
 func environment() -> CStringEntry*:
     if platform.macos:
         return *_NSGetEnviron()
-    return environ
+    else:
+        return environ
 
 let wnohang: i32 = 1
 let sc_open_max: i32 = is_mac * 5 + is_linux * 4
@@ -133,7 +134,8 @@ let termios_size: usize = 128
 func termios_flag_offset(index: usize) -> usize:
     if platform.macos:
         return index * 8
-    return index * 4
+    else:
+        return index * 4
 
 let termios_cc_offset: usize = (usize)is_mac * 32 + (usize)is_linux * 17
 

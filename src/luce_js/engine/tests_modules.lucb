@@ -1,6 +1,6 @@
 #==============================================================================================
 #
-#   tests_modules - Unit tests of the modules region's plain helpers
+#   tests_modules - Unit tests of the module helpers that need no runtime
 #
 #   DESCRIPTION:
 #       What runs without a runtime: the default module name normalizer's path logic
@@ -10,7 +10,7 @@
 #
 #==============================================================================================
 
-# mark: Helpers ================================================================================
+# mark: Helpers =================================================================================
 
 # The name js_default_module_normalize_name gives `name` imported from `base`, built in
 # `buf` with the capacity the C function allocates.
@@ -21,9 +21,9 @@ func normalized(buf: u8[], base: str, name: str) -> str:
     let cap = len + (i32)name.length + 1 + 1
     assert((usize)cap <= buf.length)
     module_normalize_path(&buf[0], cap, base.bytes.data, name.bytes.data)
-    return c_str_view(&buf[0])
+    return cutils.c_str_view(&buf[0])
 
-# mark: Module names ===========================================================================
+# mark: Module names ============================================================================
 
 test "relative module names are resolved against the importing module's directory":
     var buf: u8[64]
@@ -46,11 +46,11 @@ test "C string helpers":
     let last = find_last_byte(text.bytes.data, '/') else trap("no slash")
     assert(last - text.bytes.data == 3)
     assert(find_last_byte(text.bytes.data, 'z') == none)
-    assert(c_str_equals("..".bytes.data, ".."))
-    assert(not c_str_equals("...".bytes.data, ".."))
-    assert(not c_str_equals(".".bytes.data, ".."))
+    assert(cutils.c_str_equals("..".bytes.data, ".."))
+    assert(not cutils.c_str_equals("...".bytes.data, ".."))
+    assert(not cutils.c_str_equals(".".bytes.data, ".."))
 
-# mark: Lookups ================================================================================
+# mark: Lookups =================================================================================
 
 test "resolve state lookups match the module and the name":
     var m1: ModuleDef = ---
@@ -81,7 +81,7 @@ test "exported names are found by name":
     assert(find_exported_name(&s, atom_default) == 0)
     assert(find_exported_name(&s, atom_as) == -1)
 
-# mark: Ready modules ==========================================================================
+# mark: Ready modules ===========================================================================
 
 test "ready modules sort by their async evaluation order":
     var mods: ModuleDef[4] = ---

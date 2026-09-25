@@ -11,7 +11,7 @@
 #
 #==============================================================================================
 
-# mark: Redefining and creating properties =====================================================
+# mark: Redefining and creating properties ======================================================
 
 # The "property is not configurable" answer of JS_DefineProperty: a TypeError with
 # prop_throw (or prop_throw_strict in strict mode), else false.

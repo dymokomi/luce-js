@@ -7,7 +7,7 @@
 #       by the String Iterator), its finalizer and marker, js_create_array_iterator
 #       (Array.prototype.values/keys/entries and String.prototype[Symbol.iterator]) and
 #       its `next`. The JS_IteratorClose helpers below serve the array and iterator
-#       builtins of this region.
+#       builtins.
 #
 #==============================================================================================
 

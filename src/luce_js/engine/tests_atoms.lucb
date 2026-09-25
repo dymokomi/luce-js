@@ -56,11 +56,11 @@ test "hash_string reads the characters after the header":
     p.len = 6
     p.is_wide_char = false
     let text = b"length"
-    discard(cutils.memcpy(atom_str8(p), &text[0], 6))
+    discard(cutils.memcpy(str8(p), &text[0], 6))
     assert(hash_string(p, 1) == 3338202615)
     p.len = 3
     p.is_wide_char = true
-    let wide = atom_str16(p)
+    let wide = str16(p)
     wide[0] = 0x3b1
     wide[1] = 0x3b2
     wide[2] = 0xffff
