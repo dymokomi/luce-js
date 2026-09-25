@@ -1,0 +1,382 @@
+#==============================================================================================
+#
+#   host262 - print, the $262 host object, agents, realms and the module loader
+#
+#   DESCRIPTION:
+#       Port of run-test262.c lines 518-1024: print (which also counts the async test
+#       completion messages), $262 (detachArrayBuffer, evalScript, codePointRange, agent,
+#       global, createRealm, IsHTMLDDA, gc), the agent threads with their broadcast and
+#       report queues, and the module loader that resolves bare names next to the test.
+#
+#==============================================================================================
+
+# mark: print ===================================================================================
+
+func js_print_value_write(opaque: void*?, buf: const u8*, len: usize):
+    let fo = opaque else return
+    discard(fwrite(buf, 1, len, fo))
+
+## The per-thread state, the opaque pointer of every runtime of the thread.
+func tls_of(ctx: js.Context*) -> ThreadLocalStorage*:
+    let opaque = js.js_get_runtime_opaque(js.js_get_runtime(ctx)) else trap("run-test262: runtime without thread state")
+    return (ThreadLocalStorage*)opaque
+
+func js_print(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    let tls = tls_of(ctx)
+    for i in 0..<(usize)argc:
+        if i != 0:
+            if let fo = outfile:
+                discard(fputc((i32)' ', fo))
+        let v = argv[i]
+        if js.js_is_string(v):
+            var len: usize = 0
+            let text = try js.js_to_c_string_len(ctx, &len, v)
+            if str_equal(text, z("Test262:AsyncTestComplete")):
+                tls.async_done += 1
+            elif strstart(text, z("Test262:AsyncTestFailure"), none):
+                tls.async_done = 2  # force an error
+            if let fo = outfile:
+                discard(fwrite(text, 1, len, fo))
+            js.js_free_c_string(ctx, text)
+        else:
+            if let fo = outfile:
+                js.js_print_value(ctx, js_print_value_write, fo, v, none)
+    if let fo = outfile:
+        discard(fputc((i32)'\n', fo))
+    return js.js_undefined()
+
+# mark: $262 ====================================================================================
+
+func js_detach_array_buffer_262(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    js.js_detach_array_buffer(ctx, argv[0])
+    return js.js_undefined()
+
+func js_eval_script(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    var len: usize = 0
+    let text = try js.js_to_c_string_len(ctx, &len, argv[0])
+    defer js.js_free_c_string(ctx, text)
+    return try js.js_eval(ctx, text, len, z("<evalScript>"), js.eval_type_global)
+
+func context_failure(rt: js.Runtime*) -> never:
+    js.js_free_runtime(rt)
+    fatal(1, "JS_NewContext failure")
+
+func agent_start(arg: void*?):
+    let agent = (Test262Agent*)(arg else return)
+    let tls = agent.tls
+
+    let rt = js.js_new_runtime() else fatal(1, "JS_NewRuntime failure")
+    js.js_set_runtime_opaque(rt, tls)
+    let ctx = js.js_new_context(rt) else context_failure(rt)
+    js.js_set_context_opaque(ctx, agent)
+    js.js_set_runtime_info(rt, z("agent"))
+    js.js_set_can_block(rt, true)
+
+    add_helpers(ctx)
+    let script = agent.script else trap("run-test262: agent without script")
+    let ret_val = js.js_eval(ctx, script, strlen(script), z("<evalScript>"), js.eval_type_global) catch:
+        host.js_std_dump_error(ctx)
+        recover js.js_undefined()
+    c_free(script)
+    agent.script = none
+    js.js_free_value(ctx, ret_val)
+
+    while true:
+        var failed = false
+        let ran = js.js_execute_pending_job(js.js_get_runtime(ctx), none) catch:
+            failed = true
+            recover false
+        if failed:
+            host.js_std_dump_error(ctx)
+            break
+        if not ran:
+            if js.js_is_undefined(agent.broadcast_func):
+                break
+            tls.agent_mutex.lock()
+            while not agent.broadcast_pending:
+                tls.agent_cond.wait(&tls.agent_mutex)
+
+            agent.broadcast_pending = false
+            tls.agent_cond.signal()
+
+            tls.agent_mutex.unlock()
+
+            var args: js.Value[2] = ---
+            args[0] = js.js_new_array_buffer(ctx, agent.broadcast_sab_buf, agent.broadcast_sab_size,
+                                             none, none, true) catch: recover js.js_undefined()
+            args[1] = js.js_new_int32(agent.broadcast_val)
+            let r = js.js_call(ctx, agent.broadcast_func, js.js_undefined(), 2, &args[0]) catch:
+                host.js_std_dump_error(ctx)
+                recover js.js_undefined()
+            js.js_free_value(ctx, args[0])
+            js.js_free_value(ctx, args[1])
+            js.js_free_value(ctx, r)
+            js.js_free_value(ctx, agent.broadcast_func)
+            agent.broadcast_func = js.js_undefined()
+    js.js_free_value(ctx, agent.broadcast_func)
+
+    js.js_free_context(ctx)
+    js.js_free_runtime(rt)
+
+func js_agent_start(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    let tls = tls_of(ctx)
+    if js.js_get_context_opaque(ctx) != none:
+        try js.js_throw_type_error(ctx, "cannot be called inside an agent")
+
+    let script = try js.js_to_c_string(ctx, argv[0])
+    let agent = (Test262Agent*)xmalloc(sizeof(Test262Agent))
+    discard(memset(agent, 0, sizeof(Test262Agent)))
+    agent.tls = tls
+    agent.broadcast_func = js.js_undefined()
+    agent.broadcast_sab = js.js_undefined()
+    agent.script = strdup(script)
+    js.js_free_c_string(ctx, script)
+    # list_add_tail(&agent->link, &tls->agent_list)
+    if let tail = tls.agent_tail:
+        tail.next = agent
+    else:
+        tls.agent_list = agent
+    tls.agent_tail = agent
+    # musl libc gives threads 80 kb stacks, much smaller than
+    # JS_DEFAULT_STACK_SIZE (256 kb)
+    agent.tid = thread.spawn(agent_start, agent, thread_stack_size) catch: fatal(1, "cannot start an agent thread")
+    return js.js_undefined()
+
+## The stack of the test and agent threads. run-test262.c uses 2 MB (glibc's default);
+## luce-js frames are larger than QuickJS's, so the threads get 8 MB and the engine's
+## own stack limit (JS_DEFAULT_STACK_SIZE) is reached first, as in C.
+let thread_stack_size: usize = 8 << 20
+
+func js_agent_free(ctx: js.Context*):
+    let tls = tls_of(ctx)
+    var el = tls.agent_list
+    while let agent = el:
+        el = agent.next
+        agent.tid.join() catch: recover ()
+        js.js_free_value(ctx, agent.broadcast_sab)
+        c_free((u8*)agent)
+    tls.agent_list = none
+    tls.agent_tail = none
+
+func js_agent_leaving(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    if js.js_get_context_opaque(ctx) == none:
+        try js.js_throw_type_error(ctx, "must be called inside an agent")
+    # nothing to do
+    return js.js_undefined()
+
+func is_broadcast_pending(tls: ThreadLocalStorage*) -> bool:
+    var el = tls.agent_list
+    while let agent = el:
+        if agent.broadcast_pending:
+            return true
+        el = agent.next
+    return false
+
+func js_agent_broadcast(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    let tls = tls_of(ctx)
+    let sab = argv[0]
+
+    if js.js_get_context_opaque(ctx) != none:
+        try js.js_throw_type_error(ctx, "cannot be called inside an agent")
+
+    var buf_size: usize = 0
+    # a null data pointer (an empty buffer) is passed on as is
+    let buf = try js.js_get_array_buffer(ctx, &buf_size, sab)
+    var val: i32 = 0
+    try js.js_to_int32(ctx, &val, argv[1])
+
+    # broadcast the values and wait until all agents have started
+    # calling their callbacks
+    tls.agent_mutex.lock()
+    var el = tls.agent_list
+    while let agent = el:
+        agent.broadcast_pending = true
+        # the shared array buffer is used by the thread, so increment
+        # its refcount
+        agent.broadcast_sab = js.js_dup_value(ctx, sab)
+        agent.broadcast_sab_buf = buf
+        agent.broadcast_sab_size = buf_size
+        agent.broadcast_val = val
+        el = agent.next
+    tls.agent_cond.broadcast()
+
+    while is_broadcast_pending(tls):
+        tls.agent_cond.wait(&tls.agent_mutex)
+    tls.agent_mutex.unlock()
+    return js.js_undefined()
+
+func js_agent_receive_broadcast(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    let opaque = js.js_get_context_opaque(ctx) else try js.js_throw_type_error(ctx, "must be called inside an agent")
+    let agent = (Test262Agent*)opaque
+    if not js.js_is_function(ctx, argv[0]):
+        try js.js_throw_type_error(ctx, "expecting function")
+    js.js_free_value(ctx, agent.broadcast_func)
+    agent.broadcast_func = js.js_dup_value(ctx, argv[0])
+    return js.js_undefined()
+
+func js_agent_sleep(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    var duration: u32 = 0
+    try js.js_to_uint32(ctx, &duration, argv[0])
+    discard(usleep(duration *% 1000))
+    return js.js_undefined()
+
+func get_clock_ms() -> i64:
+    return (i64)(time.now() // 1000000)
+
+func js_agent_monotonic_now(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    return js.js_new_int64(get_clock_ms())
+
+func js_agent_get_report(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    let tls = tls_of(ctx)
+    tls.report_mutex.lock()
+    let rep = tls.report_list
+    if let r = rep:
+        tls.report_list = r.next
+        if tls.report_list == none:
+            tls.report_tail = none
+    tls.report_mutex.unlock()
+    let r = rep else return js.js_null()
+    defer c_free((u8*)r)
+    defer c_free(r.text)
+    return try js.js_new_string(ctx, r.text)
+
+func js_agent_report(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    let tls = tls_of(ctx)
+    let text = try js.js_to_c_string(ctx, argv[0])
+    let rep = (AgentReport*)xmalloc(sizeof(AgentReport))
+    rep.next = none
+    rep.text = strdup(text)
+    js.js_free_c_string(ctx, text)
+
+    tls.report_mutex.lock()
+    if let tail = tls.report_tail:
+        tail.next = rep
+    else:
+        tls.report_list = rep
+    tls.report_tail = rep
+    tls.report_mutex.unlock()
+    return js.js_undefined()
+
+let js_agent_funcs: js.CFunctionListEntry[8] = [
+    # only in main
+    js.CFunctionListEntry(name = "start", def_type = js.def_cfunc, length = 1, generic = js_agent_start),
+    js.CFunctionListEntry(name = "getReport", def_type = js.def_cfunc, length = 0, generic = js_agent_get_report),
+    js.CFunctionListEntry(name = "broadcast", def_type = js.def_cfunc, length = 2, generic = js_agent_broadcast),
+    # only in agent
+    js.CFunctionListEntry(name = "report", def_type = js.def_cfunc, length = 1, generic = js_agent_report),
+    js.CFunctionListEntry(name = "leaving", def_type = js.def_cfunc, length = 0, generic = js_agent_leaving),
+    js.CFunctionListEntry(name = "receiveBroadcast", def_type = js.def_cfunc, length = 1,
+                          generic = js_agent_receive_broadcast),
+    # in both
+    js.CFunctionListEntry(name = "sleep", def_type = js.def_cfunc, length = 1, generic = js_agent_sleep),
+    js.CFunctionListEntry(name = "monotonicNow", def_type = js.def_cfunc, length = 0,
+                          generic = js_agent_monotonic_now),
+]
+
+func js_new_agent(ctx: js.Context*) -> js.Value!:
+    let agent = try js.js_new_object(ctx)
+    try js.js_set_property_function_list(ctx, agent, js_agent_funcs)
+    return agent
+
+func js_create_realm(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    let ctx1 = js.js_new_context(js.js_get_runtime(ctx)) else try js.js_throw_out_of_memory(ctx)
+    # ctx1 has a refcount so it stays alive
+    defer js.js_free_context(ctx1)
+    return try add_helpers1(ctx1)
+
+func js_is_htmldda(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    return js.js_null()
+
+func js_gc(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
+    js.js_run_gc(js.js_get_runtime(ctx))
+    return js.js_undefined()
+
+func new_function(ctx: js.Context*, f: js.CFunction, name: str, length: i32) -> js.Value!:
+    return try js.js_new_c_function(ctx, f, z(name), length)
+
+func add_helpers1(ctx: js.Context*) -> js.Value!:
+    let global_obj = js.js_get_global_object(ctx)
+    defer js.js_free_value(ctx, global_obj)
+
+    discard(try js.js_set_property_str(ctx, global_obj, "print", try new_function(ctx, js_print, "print", 1)))
+
+    # $262 special object used by the tests
+    let obj262 = try js.js_new_object(ctx)
+    errdefer js.js_free_value(ctx, obj262)
+    discard(try js.js_set_property_str(ctx, obj262, "detachArrayBuffer",
+                                       try new_function(ctx, js_detach_array_buffer_262, "detachArrayBuffer", 1)))
+    discard(try js.js_set_property_str(ctx, obj262, "evalScript",
+                                       try new_function(ctx, js_eval_script, "evalScript", 1)))
+    discard(try js.js_set_property_str(ctx, obj262, "codePointRange",
+                                       try new_function(ctx, js.js_string_code_point_range, "codePointRange", 2)))
+    discard(try js.js_set_property_str(ctx, obj262, "agent", try js_new_agent(ctx)))
+
+    discard(try js.js_set_property_str(ctx, obj262, "global", js.js_dup_value(ctx, global_obj)))
+    discard(try js.js_set_property_str(ctx, obj262, "createRealm",
+                                       try new_function(ctx, js_create_realm, "createRealm", 0)))
+    let obj = try new_function(ctx, js_is_htmldda, "IsHTMLDDA", 0)
+    js.js_set_is_htmldda(ctx, obj)
+    discard(try js.js_set_property_str(ctx, obj262, "IsHTMLDDA", obj))
+    discard(try js.js_set_property_str(ctx, obj262, "gc", try new_function(ctx, js_gc, "gc", 0)))
+
+    discard(try js.js_set_property_str(ctx, global_obj, "$262", js.js_dup_value(ctx, obj262)))
+    return obj262
+
+func add_helpers(ctx: js.Context*):
+    let obj262 = add_helpers1(ctx) catch:
+        host.js_std_dump_error(ctx)
+        return
+    js.js_free_value(ctx, obj262)
+
+# mark: Files and modules =======================================================================
+
+func load_file(filename: const u8*, lenp: usize*?) -> u8*:
+    var buf_len: usize = 0
+    let buf = host.js_load_file(none, &buf_len, filename) else perror_exit(1, filename)
+    if let out = lenp:
+        *out = buf_len
+    return buf
+
+func json_module_init_test(ctx: js.Context*, m: js.ModuleDef*) -> !:
+    let val = js.js_get_module_private_value(ctx, m)
+    discard(try js.js_set_module_export(ctx, m, z("default"), val))
+
+func js_module_loader_test(ctx: js.Context*, module_name0: const u8*, opaque: void*?,
+                           attributes: js.Value) -> js.ModuleDef*!:
+    var module_name = module_name0
+    var path: u8[1024] = ---
+
+    # interpret import("bar.js") from path/to/foo.js as
+    # import("path/to/bar.js") but leave import("./bar.js") untouched
+    let filename = (const u8*)(opaque else trap("run-test262: module loader without file name"))
+    if strchr(module_name, (i32)'/') == none:
+        if let slash = strrchr(filename, (i32)'/'):
+            discard(snprintf(&path[0], 1024, z("%.*s/%s"), (i32)(slash - filename), filename, module_name))
+            module_name = &path[0]
+
+    var buf_len: usize = 0
+    let buf = host.js_load_file(ctx, &buf_len, module_name) else try js.js_throw_reference_error(ctx, f"could not load module filename '{view(module_name)}'")
+
+    if host.js_module_test_json(ctx, attributes) == 1:
+        # compile as JSON
+        let val = js.js_parse_json(ctx, buf, buf_len, module_name) catch failure:
+            js.js_free(ctx, buf)
+            error(failure.code, failure.message)
+        js.js_free(ctx, buf)
+        let m = js.js_new_c_module(ctx, module_name, json_module_init_test) catch failure:
+            js.js_free_value(ctx, val)
+            error(failure.code, failure.message)
+        # only export the "default" symbol which will contain the JSON object
+        try js.js_add_module_export(ctx, m, z("default"))
+        discard(js.js_set_module_private_value(ctx, m, val))
+        return m
+    # compile the module
+    let func_val = js.js_eval(ctx, buf, buf_len, module_name,
+                              js.eval_type_module | js.eval_flag_compile_only) catch failure:
+        js.js_free(ctx, buf)
+        error(failure.code, failure.message)
+    js.js_free(ctx, buf)
+    # the module is already referenced, so we must free it
+    let m = (js.ModuleDef*)js.js_value_get_ptr(func_val)
+    js.js_free_value(ctx, func_val)
+    return m

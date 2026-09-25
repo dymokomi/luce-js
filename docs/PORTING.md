@@ -219,7 +219,11 @@ Engine idioms:
 - Every support module has unit tests in its `tests.lucb`, driven by the upstream
   behaviour: port the C test tables where upstream has them, otherwise write cases that pin
   the C results (compile the C and compare when in doubt).
-- The engine is tested by running upstream's `tests/*.js` and, later, test262.
+- The engine is tested by running upstream's `tests/*.js` (`tests/run.py`) and test262
+  (`tests/test262.py`, see the README). A test262 test that fails in luce-js and not in
+  QuickJS (a line that is not in `tests/test262_errors.txt`) is a port or compiler bug;
+  reduce it, fix it, and add the reduction to `tests/js/test_conformance.js`. A test that
+  traps is reported as CRASH by the split run.
 - A test run must be green before a change is committed. Never commit on a pipeline whose
   exit status is not the test's own.
 

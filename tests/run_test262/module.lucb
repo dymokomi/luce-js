@@ -1,0 +1,478 @@
+#==============================================================================================
+#
+#   run_test262 - The ECMA test262 runner for luce-js
+#
+#   DESCRIPTION:
+#       Port of QuickJS's run-test262.c (QuickJS 2026-06-04): runs test262 with the same
+#       configuration files (test262.conf), the same harness semantics (includes, the
+#       flags onlyStrict/noStrict/raw/module/async/CanBlockIsFalse, negative tests, the
+#       $262 host object with its agents and realms), the same known-errors file
+#       comparison (test262_errors.txt, updated with -u) and the same progress output.
+#       Tests run on worker threads, one JSRuntime per test, as upstream does. This
+#       fragment holds the imports, the C library bindings, the global state and the
+#       string and name-list helpers; the others follow run-test262.c in order.
+#
+#       Differences from the C: the agent and report lists are singly linked lists with
+#       a tail instead of list_head; the progress thread polls every 50 ms instead of a
+#       timed condition wait; print_error takes a formatted line (Base functions are not
+#       variadic); threads get 8 MB stacks instead of 2 MB (compiler-issues/
+#       frame-slots-not-shared). Everything else, including every option, is ported.
+#
+#       Build: luce-base build tests/run_test262 -o build/run-test262 --release
+#       Run from tests/: ../build/run-test262 -c test262.conf -a (or tests/test262.py,
+#       which also fetches test262 and can split the run over processes)
+#
+#       ECMA Test 262 Runner for QuickJS
+#
+#       Copyright (c) 2017-2021 Fabrice Bellard
+#       Copyright (c) 2017-2021 Charlie Gordon
+#
+#       Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#       software and associated documentation files (the "Software"), to deal in the Software
+#       without restriction, including without limitation the rights to use, copy, modify,
+#       merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#       permit persons to whom the Software is furnished to do so, subject to the following
+#       conditions: the above copyright notice and this permission notice shall be included
+#       in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS
+#       IS", WITHOUT WARRANTY OF ANY KIND.
+#
+#==============================================================================================
+
+import c
+import platform
+import sync
+import thread
+import time
+import js
+import host
+
+# mark: C library ===============================================================================
+
+extern func malloc(size: usize) -> void*?
+extern func realloc(ptr: void*?, size: usize) -> void*?
+extern func c_free as "free"(ptr: u8*?)
+extern func memcpy(dest: void*, src: const void*, n: usize) -> void*
+extern func memset(dest: void*, ch: i32, n: usize) -> void*
+extern func strlen(s: const u8*) -> usize
+extern func strcmp(a: const u8*, b: const u8*) -> i32
+extern func strncmp(a: const u8*, b: const u8*, n: usize) -> i32
+extern func strstr(haystack: const u8*, needle: const u8*) -> u8*?
+extern func strchr(s: const u8*, ch: i32) -> u8*?
+extern func strrchr(s: const u8*, ch: i32) -> u8*?
+extern func strcspn(s: const u8*, reject: const u8*) -> usize
+extern func strtol(s: const u8*, endp: u8**?, base: i32) -> i64
+extern func atoi(s: const u8*) -> i32
+extern func isspace(ch: i32) -> i32
+extern func isdigit(ch: i32) -> i32
+extern func qsort(base: void*?, n: usize, size: usize, compar: func(const void*, const void*) -> i32)
+extern func ftw(path: const u8*, callback: func(const u8*, const void*?, i32) -> i32, depth: i32) -> i32
+extern func fopen(path: const u8*, mode: const u8*) -> void*?
+extern func fclose(f: void*) -> i32
+extern func fgets(buf: u8*, size: i32, f: void*) -> u8*?
+extern func fputs(s: const u8*, f: void*) -> i32
+extern func fputc(ch: i32, f: void*) -> i32
+extern func fwrite(ptr: const void*, size: usize, n: usize, f: void*) -> usize
+extern func fflush(f: void*?) -> i32
+extern func printf(cformat: const u8*, ...) -> i32
+extern func fprintf(f: void*, cformat: const u8*, ...) -> i32
+extern func snprintf(buf: u8*, size: usize, cformat: const u8*, ...) -> i32
+extern func putchar(ch: i32) -> i32
+extern func perror(s: const u8*)
+extern func c_exit as "exit"(status: i32) -> never
+extern func setenv(name: const u8*, value: const u8*, overwrite: i32) -> i32
+extern func isatty(fd: i32) -> i32
+extern func sysconf(name: i32) -> i64
+extern func clock() -> u64
+extern func usleep(usec: u32) -> i32
+
+## _SC_NPROCESSORS_ONLN (macOS 58, Linux 84).
+let sc_nprocessors_onln: i32 = (i32)platform.macos * 58 + (i32)platform.linux * 84
+
+## CLOCKS_PER_SEC (POSIX requires one million).
+let clocks_per_sec: u64 = 1000000
+
+let stderr_fileno: i32 = 2
+
+## The NUL-terminated text of a literal.
+func z(text: str) -> const u8*:
+    return text.bytes.data
+
+## The NUL-terminated `text` as a `str` view, without a check.
+func view(text: const u8*) -> str:
+    return (str)u8[]((u8*)text, strlen(text))
+
+func stdout() -> void*:
+    return c.stdout()
+
+func stderr() -> void*:
+    return c.stderr()
+
+# mark: Global state ============================================================================
+
+## A growable array of malloc'ed names (namelist_t).
+struct NameList:
+    var array: (u8*)*?
+    var count: i32
+    var size: i32
+
+## An agent's report waiting for $262.agent.getReport (AgentReport).
+struct AgentReport:
+    var next: AgentReport*?
+    var text: u8*
+
+## An agent thread started by $262.agent.start (Test262Agent). The C links agents and
+## reports with list_head; this port uses singly linked lists with a tail, in the same
+## order.
+struct Test262Agent:
+    var next: Test262Agent*?
+    var tls: ThreadLocalStorage*
+    var tid: thread.Handle
+    var script: u8*?
+    var broadcast_func: js.Value
+    var broadcast_pending: bool
+    ## in the main context
+    var broadcast_sab: js.Value
+    var broadcast_sab_buf: u8*?
+    var broadcast_sab_size: usize
+    var broadcast_val: i32
+
+## per execution thread context
+struct ThreadLocalStorage:
+    var agent_mutex: sync.Mutex
+    var agent_cond: sync.Condition
+    ## list of Test262Agent
+    var agent_list: Test262Agent*?
+    var agent_tail: Test262Agent*?
+
+    var report_mutex: sync.Mutex
+    ## list of AgentReport
+    var report_list: AgentReport*?
+    var report_tail: AgentReport*?
+
+    var async_done: i32
+
+var test_list: NameList
+var exclude_list: NameList
+var exclude_dir_list: NameList
+var error_list: NameList
+var error_list_mutex: sync.Mutex
+
+var nthreads: i32
+var progress_exit_request: @bool
+
+var outfile: void*?
+
+## run tests as nostrict unless test is flagged as strictonly
+let test_default_nostrict: i32 = 0
+## run tests as strict unless test is flagged as nostrict
+let test_default_strict: i32 = 1
+## run tests as nostrict, skip strictonly tests
+let test_nostrict: i32 = 2
+## run tests as strict, skip nostrict tests
+let test_strict: i32 = 3
+## run tests in both strict and nostrict, unless restricted by spec
+let test_all: i32 = 4
+
+var test_mode: i32 = 0
+var compact: bool
+var show_timings: i32
+var skip_async: bool
+var skip_module: bool
+var new_style: bool
+var dump_memory: i32
+var stats_count: i32
+var stats_all: js.MemoryUsage
+var stats_avg: js.MemoryUsage
+var stats_min: js.MemoryUsage
+var stats_max: js.MemoryUsage
+var stats_min_filename: u8*?
+var stats_max_filename: u8*?
+var stats_mutex: sync.Mutex
+var verbose: bool
+var harness_dir: u8*?
+var harness_exclude: u8*?
+var harness_features: u8*?
+var harness_skip_features: u8*?
+var harness_skip_features_count: i32*?
+var error_filename: u8*?
+var error_file: u8*?
+var report_filename: u8*?
+var update_errors: i32
+var slow_test_threshold: i32
+var start_index: i32
+var stop_index: i32
+var test_excluded: i32
+var test_count: @i32
+var test_failed: @i32
+var test_skipped: @i32
+var new_errors: @i32
+var changed_errors: @i32
+var fixed_errors: @i32
+
+let cmd_name: str = "run-test262"
+
+# mark: Messages ================================================================================
+
+func warning(message: fmt):
+    var buf: u8[1024] = ---
+    let text = format(buf, message) catch: recover "(message too long)"
+    discard(fflush(stdout()))
+    discard(fprintf(stderr(), z("%s: %.*s\n"), z(cmd_name), (i32)text.length, text.bytes.data))
+
+func fatal(errcode: i32, message: fmt) -> never:
+    var buf: u8[1024] = ---
+    let text = format(buf, message) catch: recover "(message too long)"
+    discard(fflush(stdout()))
+    discard(fprintf(stderr(), z("%s: %.*s\n"), z(cmd_name), (i32)text.length, text.bytes.data))
+    c_exit(errcode)
+
+## free() of a nullable pointer.
+func free_opt(p: u8*?):
+    if let q = p:
+        c_free(q)
+
+## A nullable pointer as a read-only one.
+func cnull(p: u8*?) -> const u8*?:
+    if let q = p:
+        return q
+    return none
+
+func perror_exit(errcode: i32, s: const u8*) -> never:
+    discard(fflush(stdout()))
+    discard(fprintf(stderr(), z("%s: "), z(cmd_name)))
+    perror(s)
+    c_exit(errcode)
+
+# mark: Strings =================================================================================
+
+func xmalloc(size: usize) -> u8*:
+    return (u8*)(malloc(size) else fatal(1, "allocation failure"))
+
+func strdup_len(text: const u8*, len: usize) -> u8*:
+    let p = xmalloc(len + 1)
+    if len > 0:
+        discard(memcpy(p, text, len))
+    p[len] = 0
+    return p
+
+func strdup(text: const u8*) -> u8*:
+    return strdup_len(text, strlen(text))
+
+func str_equal(a: const u8*, b: const u8*) -> bool:
+    return strcmp(a, b) == 0
+
+func str_append(pp: (u8*?)*, sep: const u8*, text: const u8*) -> u8*:
+    var len: usize = 0
+    let old = *pp
+    if let p = old:
+        len = strlen(p) + strlen(sep)
+    let res = xmalloc(len + strlen(text) + 1)
+    if let p = old:
+        discard(memcpy(res, p, strlen(p)))
+        discard(memcpy(res + strlen(p), sep, strlen(sep) + 1))
+    discard(memcpy(res + len, text, strlen(text) + 1))
+    c_free(old)
+    *pp = res
+    return res
+
+func is_space(ch: u8) -> bool:
+    return isspace((i32)ch) != 0
+
+func is_digit(ch: u8) -> bool:
+    return isdigit((i32)ch) != 0
+
+func str_strip(text: u8*) -> u8*:
+    var p = text
+    var len = strlen(p)
+    while len > 0 and is_space(p[len - 1]):
+        len -= 1
+        p[len] = 0
+    while is_space(*p):
+        p = p + 1
+    return p
+
+func has_prefix(text: const u8*, prefix: const u8*) -> bool:
+    return strncmp(text, prefix, strlen(prefix)) == 0
+
+func has_suffix(text: const u8*, suffix: const u8*) -> bool:
+    let len = strlen(text)
+    let slen = strlen(suffix)
+    return len >= slen and strcmp(text + (len - slen), suffix) == 0
+
+## `text` past `prefix` when it starts with it, else `text` (skip_prefix).
+func skip_prefix(text: const u8*, prefix: const u8*) -> const u8*:
+    var i: usize = 0
+    while true:
+        if prefix[i] == 0:
+            # skip the prefix
+            return text + i
+        if text[i] != prefix[i]:
+            return text
+        i += 1
+
+## Whether `text` starts with `prefix`, and where it continues (strstart of cutils.c).
+func strstart(text: const u8*, prefix: const u8*, ptr: (const u8*)*?) -> bool:
+    var p = text
+    var q = prefix
+    while *q != 0:
+        if *p != *q:
+            return false
+        p = p + 1
+        q = q + 1
+    if let out = ptr:
+        *out = p
+    return true
+
+func get_basename(filename: const u8*) -> u8*?:
+    let p = strrchr(filename, (i32)'/') else return none
+    return strdup_len(filename, (usize)(p - filename))
+
+func compose_path(path: const u8*?, name: const u8*) -> u8*:
+    let dir = path else return strdup(name)
+    if dir[0] == 0 or *name == '/':
+        return strdup(name)
+    let path_len = strlen(dir)
+    let name_len = strlen(name)
+    let d = xmalloc(path_len + 1 + name_len + 1)
+    var q = d
+    discard(memcpy(q, dir, path_len))
+    q = q + path_len
+    if dir[path_len - 1] != '/':
+        *q = '/'
+        q = q + 1
+    discard(memcpy(q, name, name_len + 1))
+    return d
+
+# mark: Name lists ==============================================================================
+
+func namelist_cmp(a0: const u8*, b0: const u8*) -> i32:
+    # compare strings in modified lexicographical order
+    var a = a0
+    var b = b0
+    while true:
+        var ca = (i32)*a
+        a = a + 1
+        var cb = (i32)*b
+        b = b + 1
+        if isdigit(ca) != 0 and isdigit(cb) != 0:
+            var na = ca - (i32)'0'
+            var nb = cb - (i32)'0'
+            while true:
+                ca = (i32)*a
+                a = a + 1
+                if isdigit(ca) == 0:
+                    break
+                na = na *% 10 +% ca -% (i32)'0'
+            while true:
+                cb = (i32)*b
+                b = b + 1
+                if isdigit(cb) == 0:
+                    break
+                nb = nb *% 10 +% cb -% (i32)'0'
+            if na < nb:
+                return -1
+            if na > nb:
+                return 1
+        if ca < cb:
+            return -1
+        if ca > cb:
+            return 1
+        if ca == 0:
+            return 0
+    trap("unreachable")
+
+func namelist_cmp_indirect(a: const void*, b: const void*) -> i32:
+    return namelist_cmp(*(u8**)a, *(u8**)b)
+
+func namelist_sort(lp: NameList*, remove_duplicates: bool):
+    if lp.count > 1:
+        let arr = lp.array else return
+        qsort(arr, (usize)lp.count, sizeof(u8*), namelist_cmp_indirect)
+        # remove duplicates
+        if remove_duplicates:
+            var count: i32 = 1
+            for i in 1..<lp.count:
+                if namelist_cmp(arr[(usize)(count - 1)], arr[(usize)i]) == 0:
+                    c_free(arr[(usize)i])
+                else:
+                    arr[(usize)count] = arr[(usize)i]
+                    count += 1
+            lp.count = count
+
+## the list must be sorted
+func namelist_find(lp: const NameList*, name: const u8*) -> i32:
+    let arr = lp.array else return -1
+    var a: i32 = 0
+    var b = lp.count
+    while a < b:
+        let m = a + (b - a) // 2
+        let cmp = namelist_cmp(arr[(usize)m], name)
+        if cmp < 0:
+            a = m + 1
+        elif cmp > 0:
+            b = m
+        else:
+            return m
+    return -1
+
+func namelist_add(lp: NameList*, base: const u8*?, name: const u8*):
+    let s = compose_path(base, name)
+    if lp.count == lp.size:
+        let newsize = lp.size + (lp.size >> 1) + 4
+        var old: void*? = none
+        if let arr = lp.array:
+            old = arr
+        let a = realloc(old, sizeof(u8*) * (usize)newsize) else fatal(1, "allocation failure\n")
+        lp.array = (u8**)a
+        lp.size = newsize
+    let arr = lp.array else fatal(1, "allocation failure\n")
+    arr[(usize)lp.count] = s
+    lp.count += 1
+
+func namelist_load(lp: NameList*, filename: const u8*):
+    var buf: u8[1024] = ---
+    let f = fopen(filename, z("rb")) else perror_exit(1, filename)
+    let base_name = get_basename(filename)
+    while fgets(&buf[0], 1024, f) != none:
+        let p = str_strip(&buf[0])
+        if *p == '#' or *p == ';' or *p == 0:
+            continue  # line comment
+        namelist_add(lp, cnull(base_name), p)
+    c_free(base_name)
+    discard(fclose(f))
+
+func namelist_add_from_error_file(lp: NameList*, file: const u8*):
+    var p: const u8* = file
+    while true:
+        let found = strstr(p, z(".js:")) else break
+        p = found
+        var p0 = p
+        while p0 > file and *(p0 - 1) != '\n':
+            p0 = p0 - 1
+        let pp = strdup_len(p0, (usize)(p + 3 - p0))
+        namelist_add(lp, none, pp)
+        c_free(pp)
+        p = p + 1
+
+func namelist_free(lp: NameList*):
+    if let arr = lp.array:
+        while lp.count > 0:
+            lp.count -= 1
+            c_free(arr[(usize)lp.count])
+    if let arr = lp.array:
+        c_free((u8*)arr)
+    lp.array = none
+    lp.size = 0
+    lp.count = 0
+
+func add_test_file(filename: const u8*, ptr: const void*?, flag: i32) -> i32:
+    if has_suffix(filename, z(".js")) and not has_suffix(filename, z("_FIXTURE.js")):
+        namelist_add(&test_list, none, filename)
+    return 0
+
+## find js files from the directory tree and sort the list
+func enumerate_tests(path: const u8*):
+    let start = test_list.count
+    discard(ftw(path, add_test_file, 100))
+    if let arr = test_list.array:
+        qsort(arr + (usize)start, (usize)(test_list.count - start), sizeof(u8*), namelist_cmp_indirect)

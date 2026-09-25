@@ -1,0 +1,402 @@
+#==============================================================================================
+#
+#   main - The progress indicator, the worker threads and the command line
+#
+#   DESCRIPTION:
+#       Port of run-test262.c lines 2110-2555: the progress thread (compact dots when
+#       standard error is not a terminal), the selection of the tests by index and exclude
+#       list, the worker threads that share the test list by index modulo the thread count,
+#       the options and the final summary and error file update.
+#
+#==============================================================================================
+
+# mark: Progress ================================================================================
+
+var last_test_skipped: i32
+var last_test_failed: i32
+var dots: i32
+
+func show_progress(opaque: void*?):
+    while true:
+        # C waits on a condition for 50 ms or the exit request
+        let exiting = progress_exit_request.load()
+        if not exiting:
+            thread.sleep(50)
+
+        let test_failed1 = test_failed.load()
+        let test_count1 = test_count.load()
+        let test_skipped1 = test_skipped.load()
+
+        if compact:
+            var ch: u8 = '.'
+
+            if test_skipped1 > last_test_skipped:
+                ch = '-'
+            if test_failed1 > last_test_failed:
+                ch = '!'
+            last_test_skipped = test_skipped1
+            last_test_failed = test_failed1
+
+            discard(fputc((i32)ch, stderr()))
+            dots += 1
+            if exiting or dots % 60 == 0:
+                discard(fprintf(stderr(), z(" %d/%d/%d\n"), test_failed1, test_count1, test_skipped1))
+        else:
+            # output progress indicator: erase end of line and return to col 0
+            discard(fprintf(stderr(), z("%d/%d/%d\u{1b}[K\r"), test_failed1, test_count1, test_skipped1))
+        discard(fflush(stderr()))
+        if exiting:
+            break
+
+let include_test: i32 = 0
+let exclude_test: i32 = 1
+let skip_test: i32 = 2
+
+func include_exclude_or_skip(i: i32) -> i32:  # naming is hard...
+    let arr = test_list.array else return skip_test
+    if namelist_find(&exclude_list, arr[(usize)i]) >= 0:
+        return exclude_test
+    if i < start_index:
+        return skip_test
+    if stop_index >= 0 and i > stop_index:
+        return skip_test
+    return include_test
+
+## One worker thread (RunTestDirThread).
+struct RunTestDirThread:
+    var tid: thread.Handle
+    var thread_index: i32
+
+func run_test_dir_list(opaque: void*?):
+    let th = (RunTestDirThread*)(opaque else return)
+    var tls_s: ThreadLocalStorage = ---
+    let tls = &tls_s
+    discard(memset(tls, 0, sizeof(ThreadLocalStorage)))
+
+    let lp = &test_list
+    let arr = lp.array else return
+    var i = th.thread_index
+    while i < lp.count:
+        let p = arr[(usize)i]
+        if include_exclude_or_skip(i) == include_test:
+            var ti: i64 = 0
+            if slow_test_threshold != 0:
+                ti = get_clock_ms()
+            discard(run_test(tls, p, i))
+            if slow_test_threshold != 0:
+                ti = get_clock_ms() - ti
+                if ti >= (i64)slow_test_threshold:
+                    discard(fprintf(stderr(), z("\n%s (%d ms)\n"), p, (i32)ti))
+        i += nthreads
+
+func help() -> never:
+    discard(fputs(z("""
+        run-test262 version 2026-06-04 (luce-js)
+        usage: run-test262 [options] {-f file ... | [dir_list] [index range]}
+        -h             help
+        -a             run tests in strict and nostrict modes
+        -m             print memory usage summary
+        -n             use new style harness
+        -N             run test prepared by test262-harness+eshost
+        -s             run tests in strict mode, skip @nostrict tests
+        -E             only run tests from the error file
+        -C             use compact progress indicator
+        -t             show timings
+        -u             update error file
+        -v             verbose: output error messages
+        -D duration    display tests taking more than 'duration' ms
+        -T threads     number of parallel threads
+        -c file        read configuration from 'file'
+        -d dir         run all test files in directory tree 'dir'
+        -e file        load the known errors from 'file'
+        -f file        execute single test from 'file'
+        -r file        set the report file name (default=none)
+        -x file        exclude tests listed in 'file'
+        --no-can-block set [[CanBlock]] to false (Atomics.wait will throw)
+        """), stdout()))
+    c_exit(1)
+
+func get_opt_arg(option: const u8*, argv: const u8*[], index: usize) -> const u8*:
+    if index >= argv.length:
+        fatal(2, f"missing argument for option {view(option)}")
+    return argv[index]
+
+func cpu_count() -> i32:
+    return (i32)sysconf(sc_nprocessors_onln)
+
+pub func main(arguments: c.str[]) -> i32:
+    var args: (const u8*)[256] = ---
+    if arguments.length > 256:
+        fatal(1, "too many arguments")
+    for (i, a) in arguments.indexed():
+        args[i] = (const u8*)a
+    let argv = args[0..<arguments.length]
+    let argc = argv.length
+
+    var tls_s: ThreadLocalStorage = ---
+    let tls = &tls_s
+    discard(memset(tls, 0, sizeof(ThreadLocalStorage)))
+    var only_check_errors = false
+    var ignore: const u8* = z("")
+    var is_test262_harness = false
+    var is_module = false
+    var can_block = true
+    var count_skipped_features = false
+
+    compact = isatty(stderr_fileno) == 0
+    # Date tests assume California local time
+    discard(setenv(z("TZ"), z("America/Los_Angeles"), 1))
+
+    var optind: usize = 1
+    while optind < argc:
+        let arg = argv[optind]
+        if *arg != '-':
+            break
+        optind += 1
+        if strstr(z("-c -d -e -x -f -r -E -D -T"), arg) != none:
+            optind += 1
+        if strstr(z("-d -f"), arg) != none:
+            ignore = z("testdir")  # run only the tests from -d or -f
+
+    # cannot use getopt because we want to pass the command line to
+    # the script
+    optind = 1
+    var is_dir_list = true
+    while optind < argc:
+        let arg = argv[optind]
+        if *arg != '-':
+            break
+        optind += 1
+        if str_equal(arg, z("-h")):
+            help()
+        elif str_equal(arg, z("-m")):
+            dump_memory += 1
+        elif str_equal(arg, z("-n")):
+            new_style = true
+        elif str_equal(arg, z("-s")):
+            test_mode = test_strict
+        elif str_equal(arg, z("-a")):
+            test_mode = test_all
+        elif str_equal(arg, z("-t")):
+            show_timings += 1
+        elif str_equal(arg, z("-u")):
+            update_errors += 1
+        elif str_equal(arg, z("-v")):
+            verbose = true
+        elif str_equal(arg, z("-C")):
+            compact = true
+        elif str_equal(arg, z("-c")):
+            load_config(get_opt_arg(arg, argv, optind), ignore)
+            optind += 1
+        elif str_equal(arg, z("-d")):
+            enumerate_tests(get_opt_arg(arg, argv, optind))
+            optind += 1
+        elif str_equal(arg, z("-e")):
+            error_filename = strdup(get_opt_arg(arg, argv, optind))
+            optind += 1
+        elif str_equal(arg, z("-x")):
+            namelist_load(&exclude_list, get_opt_arg(arg, argv, optind))
+            optind += 1
+        elif str_equal(arg, z("-f")):
+            is_dir_list = false
+        elif str_equal(arg, z("-r")):
+            report_filename = strdup(get_opt_arg(arg, argv, optind))
+            optind += 1
+        elif str_equal(arg, z("-E")):
+            only_check_errors = true
+        elif str_equal(arg, z("-D")):
+            slow_test_threshold = atoi(get_opt_arg(arg, argv, optind))
+            optind += 1
+        elif str_equal(arg, z("-T")):
+            nthreads = atoi(get_opt_arg(arg, argv, optind))
+            optind += 1
+        elif str_equal(arg, z("-N")):
+            is_test262_harness = true
+        elif str_equal(arg, z("--module")):
+            is_module = true
+        elif str_equal(arg, z("--no-can-block")):
+            can_block = false
+        elif str_equal(arg, z("--count_skipped_features")):
+            count_skipped_features = true
+        else:
+            fatal(1, f"unknown option: {view(arg)}")
+
+    if optind >= argc and test_list.count == 0:
+        help()
+
+    if is_test262_harness:
+        return run_test262_harness_test(tls, argv[optind], is_module, can_block)
+
+    if nthreads == 0:
+        nthreads = cpu_count()
+        if nthreads >= 8:
+            # minus one to not (over)commit the system completely
+            nthreads -= 1
+    if nthreads < 1:
+        nthreads = 1
+
+    if let name = error_filename:
+        error_file = load_file(name, none)
+        if only_check_errors:
+            if let ef = error_file:
+                namelist_free(&test_list)
+                namelist_add_from_error_file(&test_list, ef)
+        if update_errors != 0:
+            c_free(error_file)
+            error_file = none
+
+    update_exclude_dirs()
+
+    let clocks = clock()
+
+    if count_skipped_features:
+        # not storage efficient but it is simple
+        let skip_len = strlen(cnull(harness_skip_features) else z(""))
+        let size = sizeof(i32) * skip_len
+        let counts = (i32*)xmalloc(size + 1)
+        discard(memset(counts, 0, size))
+        harness_skip_features_count = counts
+
+    if is_dir_list:
+        if optind < argc and not is_digit(*argv[optind]):
+            let filename = argv[optind]
+            optind += 1
+            namelist_load(&test_list, filename)
+
+        start_index = 0
+        stop_index = -1
+        if optind < argc:
+            start_index = atoi(argv[optind])
+            optind += 1
+            if optind < argc:
+                stop_index = atoi(argv[optind])
+                optind += 1
+        # XXX: could reorder the report and the errors when nthreads > 1
+        let report = cnull(report_filename)
+        if report == none or str_equal(report else z(""), z("none")) or nthreads > 1:
+            outfile = none
+        elif str_equal(report else z(""), z("-")):
+            outfile = stdout()
+        else:
+            let name = report else z("")
+            outfile = fopen(name, z("wb")) else perror_exit(1, name)
+
+        # exclude_dir_list has already been sorted by update_exclude_dirs()
+        namelist_sort(&test_list, true)
+        namelist_sort(&exclude_list, true)
+
+        for i in 0..<test_list.count:
+            let what = include_exclude_or_skip(i)
+            if what == exclude_test:
+                test_excluded += 1
+            elif what == skip_test:
+                test_skipped += 1
+
+        let progress_thread = thread.spawn(show_progress, none) catch: fatal(1, "cannot start a thread")
+
+        let threads = (RunTestDirThread*)xmalloc(sizeof(RunTestDirThread) * (usize)nthreads)
+        for i in 0..<nthreads:
+            let th = threads + (usize)i
+            th.thread_index = i
+            th.tid = thread.spawn(run_test_dir_list, th, thread_stack_size) catch: fatal(1, "cannot start a thread")
+        for i in 0..<nthreads:
+            (threads + (usize)i).tid.join() catch: recover ()
+        c_free((u8*)threads)
+
+        progress_exit_request.store(true)
+        progress_thread.join() catch: recover ()
+
+        if let fo = outfile:
+            if fo != stdout():
+                discard(fclose(fo))
+            outfile = none
+    else:
+        outfile = stdout()
+        while optind < argc:
+            discard(run_test(tls, argv[optind], -1))
+            optind += 1
+
+    let elapsed = clock() -% clocks
+
+    if dump_memory != 0:
+        if dump_memory > 1 and stats_count > 1:
+            discard(printf(z("\nMininum memory statistics for %s:\n\n"), cnull(stats_min_filename) else z("")))
+            discard(fflush(stdout()))  # the engine prints with its own writer
+            js.js_dump_memory_usage(&stats_min, none)
+            discard(printf(z("\nMaximum memory statistics for %s:\n\n"), cnull(stats_max_filename) else z("")))
+            discard(fflush(stdout()))
+            js.js_dump_memory_usage(&stats_max, none)
+        discard(printf(z("\nAverage memory statistics for %d tests:\n\n"), stats_count))
+        discard(fflush(stdout()))
+        js.js_dump_memory_usage(&stats_avg, none)
+        discard(printf(z("\n")))
+
+    if count_skipped_features:
+        let features = cnull(harness_skip_features) else z("")
+        let counts = harness_skip_features_count else trap("run-test262: no feature counts")
+        let len = strlen(features)
+        var disp = false
+        for i in 0..<len:
+            if counts[i] != 0:
+                if not disp:
+                    disp = true
+                    discard(printf(z("%-30s %7s\n"), z("SKIPPED FEATURE"), z("COUNT")))
+                var n: usize = 0
+                while n < 30:
+                    let ch = features[i + n]
+                    if is_word_sep(ch):
+                        break
+                    discard(putchar((i32)ch))
+                    n += 1
+                while n < 30:
+                    discard(putchar((i32)' '))
+                    n += 1
+                discard(printf(z(" %7d\n"), counts[i]))
+        discard(printf(z("\n")))
+
+    if is_dir_list:
+        let failed_count = test_failed.load()
+        let total = test_count.load()
+        discard(fprintf(stderr(), z("Result: %d/%d error%s"), failed_count, total,
+                        z("s") if total != 1 else z("")))
+        if test_excluded != 0:
+            discard(fprintf(stderr(), z(", %d excluded"), test_excluded))
+        if test_skipped.load() != 0:
+            discard(fprintf(stderr(), z(", %d skipped"), test_skipped.load()))
+        if error_file != none:
+            if new_errors.load() != 0:
+                discard(fprintf(stderr(), z(", %d new"), new_errors.load()))
+            if changed_errors.load() != 0:
+                discard(fprintf(stderr(), z(", %d changed"), changed_errors.load()))
+            if fixed_errors.load() != 0:
+                discard(fprintf(stderr(), z(", %d fixed"), fixed_errors.load()))
+        discard(fprintf(stderr(), z("\n")))
+        if show_timings != 0:
+            discard(fprintf(stderr(), z("Total user time: %.3fs (nthreads=%d)\n"),
+                            f64(elapsed) / f64(clocks_per_sec), nthreads))
+
+    if update_errors != 0:
+        let name = error_filename else fatal(1, "no error file to update")
+        let error_out = fopen(name, z("w")) else perror_exit(1, name)
+        # sort the error list so that its order does not depend on
+        # the thread scheduling
+        namelist_sort(&error_list, false)
+        if let arr = error_list.array:
+            for i in 0..<error_list.count:
+                discard(fputs(arr[(usize)i], error_out))
+        discard(fclose(error_out))
+
+    namelist_free(&test_list)
+    namelist_free(&exclude_list)
+    namelist_free(&exclude_dir_list)
+    namelist_free(&error_list)
+    c_free(harness_dir)
+    c_free(harness_skip_features)
+    if let counts = harness_skip_features_count:
+        c_free((u8*)counts)
+    c_free(harness_features)
+    c_free(harness_exclude)
+    c_free(error_file)
+
+    # Signal that the error file is out of date.
+    return (i32)(new_errors.load() != 0 or changed_errors.load() != 0 or fixed_errors.load() != 0)

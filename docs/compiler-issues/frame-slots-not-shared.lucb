@@ -1,0 +1,52 @@
+# Stack slots are not shared between the call sites of one function: every f-string
+# argument reserves its own buffer of about 1.1 KB in the caller's frame, and the locals of
+# inlined callees are laid out side by side, so frames grow with the number of call sites
+# instead of with the deepest one.
+#
+# Expected: a frame about the size of the largest single call site, as a C compiler lays
+#           it out (the three f-string calls below are on disjoint paths).
+# Actual:   with `luce-base build --release --emit=asm` (native backend, arm64 macOS):
+#               _lb_..._plain3: sub sp, sp, #400     (three plain-literal calls)
+#               _lb_..._fstr3:  sub sp, sp, #3552    (three f-string calls)
+#           In luce_js.engine the parser's recursive functions get frames of 0.5-5 KB
+#           (js_parse_statement_body 4832 bytes, js_parse_primary_expr 2752,
+#           js_parse_expr_binary 544 per precedence level), so one level of nested
+#           function expressions costs about 37 KB of stack against about 4 KB in C.
+# Workaround: luce_js.engine module.lucb raises js_default_stack_size (QuickJS's
+#           JS_DEFAULT_STACK_SIZE, a build option in quickjs.h) from 1 MB to 4 MB, and the
+#           threads that run the engine get 8 MB stacks.
+
+noinline func sink(n: i32, message: fmt) -> i32!:
+    var buf: u8[64] = ---
+    let t = try format(buf, message)
+    return (i32)t.length + n
+
+func fwd(message: fmt) -> i32!:
+    return try sink(1, message)
+
+func plain3(x: i32) -> i32!:
+    if x > 5:
+        return try fwd("value")
+    if x > 6:
+        return try fwd("value2")
+    if x > 7:
+        return try fwd("value3")
+    if x < -100:
+        return try plain3(x + 1)
+    return x
+
+func fstr3(x: i32) -> i32!:
+    if x > 5:
+        return try fwd(f"value {x}")
+    if x > 6:
+        return try fwd(f"value2 {x}")
+    if x > 7:
+        return try fwd(f"value3 {x}")
+    if x < -100:
+        return try fstr3(x + 1)
+    return x
+
+pub func main(arguments: str[]) -> i32:
+    let c = plain3(3) catch: recover 0
+    let d = fstr3(3) catch: recover 0
+    return c + d

@@ -33,6 +33,8 @@ TESTS = [
     ("test_cyclic_import.js", []),
     ("test_std.js", []),
     ("test_rw_handler.js", []),
+    # not upstream: regressions found by test262 (tests/test262.py)
+    ("test_conformance.js", []),
 ]
 
 # file -> why it cannot pass yet. Keep the classification: (a) needs an unported region,

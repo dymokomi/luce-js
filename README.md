@@ -6,10 +6,11 @@ interpreter, garbage collector and built-in library, spelled in luce-base. It is
 the JavaScript engine of the Luce web browser.
 
 Status: **complete port, being hardened.** All of `quickjs.c` is ported and QuickJS's own
-test files pass; test262 conformance runs are under way.
-Known limits: the interpreter is about 20x slower than C QuickJS until the luce-base native
-backend compiles dense `match` to jump tables, and deep recursion reaches ~700 levels in the
-default 1 MB JavaScript stack (C QuickJS: 1000-2000). How the port was done and its
+test files pass, and test262 fails exactly the 58 tests C QuickJS fails (83,558 run).
+Known limits: the interpreter is about 12x slower than C QuickJS on call-heavy code (fib) and
+about 3x on the test262 mix, until the luce-base native backend shares stack slots and
+compiles `match` to jump tables; for the same reason the default JavaScript stack limit is
+4 MB instead of QuickJS's 1 MB. How the port was done and its
 conventions: `docs/PORTING.md`; compiler problems met on the way: `docs/compiler-issues/`.
 
 Embedding, in short:
@@ -36,6 +37,16 @@ a JavaScript exception is a Luce failure (`!`) and the thrown value is `js_get_e
 
 Run the tests of a module with `luce-base test src/luce_js/<module>`; `./test.sh` runs every
 module's tests and then QuickJS's own JavaScript tests (`tests/run.py`).
+
+**test262**: luce-js passes test262 exactly as QuickJS does. `tests/test262.py` clones
+tc39/test262 at the commit QuickJS 2026-06-04 pins (outside the repository), applies
+QuickJS's `tests/test262.patch`, builds `build/run-test262` (`tests/run_test262/`, a port
+of QuickJS's `run-test262.c`) and runs the suite with QuickJS's `tests/test262.conf`;
+the expected failures are QuickJS's own list, `tests/test262_errors.txt` (58 lines; the
+conf, errors and patch files are copied from QuickJS, MIT). Result:
+`58/83558 errors, 3356 excluded, 6000 skipped`, the same as QuickJS. By default the run is
+split over processes so that a trap in one test cannot hide the others; `--direct` (or
+runner options after `--`) runs one threaded runner exactly as `make test2` does.
 
 `tests/ljs.lucb` is a small `qjs`: `luce-base build tests/ljs.lucb -o build/ljs`, then
 `build/ljs [--std] [-m] file.js [args]` or `build/ljs -e EXPR`.
