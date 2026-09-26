@@ -365,6 +365,14 @@ func row(this: const M*) -> const f32[4]*:
 
 Expected: `const` qualifies the pointee (base.md §5.3), as for the parenthesised spelling.
 
+### 26. No vector fused multiply-add (backend / language)
+
+Skia's highp pipeline computes `a * b + c` fused, per lane (NEON `fmla`). luce-base has no
+vector FMA, so luce-browser's Skia-exact raster calls `fmaf` once per lane: radial gradients
+got 45% slower when made bit-exact with Skia m144. Expected: a vector FMA (e.g. an `f32x4`
+`mul_add` lowering to `fmla`/`vfmadd`), and scalar `f32.mul_add`/`f64.mul_add` lowering to one
+instruction instead of a libm call.
+
 ## Fixed
 
 - Luce 0.8.12 (luce-base ca67a3e):
