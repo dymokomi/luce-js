@@ -18,7 +18,7 @@ for r in luce-js luce-regex luce-std luce-compress luce-base \
 done
 ```
 
-The compiler is Luce 0.8.12 (luce-base `ca67a3e`, pinned in every repo's `bootstrap/BASE`):
+The repositories are pinned to Luce 0.8.12 (luce-base `ca67a3e`, in every repo's `bootstrap/BASE`); 0.8.13 is out and adopting it is open item 3 below:
 
 ```sh
 git -C luce-base checkout ca67a3e && (cd luce-base && ./build.sh)
@@ -101,16 +101,17 @@ Pitfalls learned:
 2. **luce-std 0.1.2** (`6550a6f`, warning-free) is published. Moving the pins to it is on hold
    until the owner decides how. After that, web_fonts' own directory walk (nftw/_findfirst64 in
    `font_database`) can use luce-std's `files`.
-3. **Next Luce release.** luce-base has fixes for most of `docs/COMPILER-REQUESTS.md` on the
-   local branch `compiler-requests` (63b2798, d9c6dc7, eca8ab7), gated green here on arm64
-   against luce-js and every browser package. LUCED-2D also wants its `crash-unwind` branch in
-   0.8.13. Pushing and releasing are the owner's call. When a release lands:
-   - pin it in every `bootstrap/BASE`;
-   - rerun all gates, plus x86-64 through CI or the LINUX session;
+3. **Adopt Luce 0.8.13** (tag `luce-0.8.13`, luce-base `6af76f1`). It contains the compiler
+   fixes for most of `docs/COMPILER-REQUESTS.md` (63b2798, d9c6dc7, eca8ab7), which were gated
+   green on arm64 against luce-js and every browser package before release, plus crash reports
+   that unwind from the faulting frame. To adopt it:
+   - pin 0.8.13 in every `bootstrap/BASE`, together with the luce-std it needs;
+   - rerun all gates on macOS and on x86-64 (CI);
    - drop the workarounds marked `# workaround: compiler-issues/...`: noinline test bodies,
      float bits through a pointer, `sizeof(T)`, generic function values, the asm x19 test,
      `const (T[N])*`;
-   - update `COMPILER-REQUESTS.md`.
+   - consider `mul_add` for item 1;
+   - move the fixed items in `COMPILER-REQUESTS.md` to "Fixed".
 4. **The engine (luce-browser-engine), phase 1.** Static rendering with scripting disabled:
    HTML parser → DOM → CSS → layout → paintables → display list → CPU raster. The exit bar is
    in DESIGN §1/§3: Layout 854 runnable tests (target ≥ 95%), Ref 627, Crash 47. There are 44
@@ -140,11 +141,15 @@ Pitfalls learned:
 ## 6. People and sessions
 
 Other Claude sessions on the owner's machines take messages by name:
-- **LUCE_AND_LUCE_BASE** fixes luce-base compiler bugs. Send it new items and the numbers from
-  `docs/COMPILER-REQUESTS.md`, which stays the written list.
-- **LUCED-2D** is the main development session: luce-std, releases, luced-2d.
+- **LUCE_BASE_ONLY_MACHINE** owns the language and its libraries: luce-base, luce-std and
+  luce-regex, including luce-regex's integration and publishing. Send compiler and library bugs
+  there with the item numbers of `docs/COMPILER-REQUESTS.md`, which stays the written list. It
+  took over from LUCE_AND_LUCE_BASE.
+- **LUCED-2D** is the main session of the luced-2d application (the machine this work started
+  on).
 - **LINUX** (Ubuntu x86-64) and **WINDOWS** run tests on their platforms. Send them exact steps
   and pushed commits, and ask them not to commit or publish.
 
-The owner decides on pushes to luce-base, Luce releases and anything outside luce-js and the
-luce-browser repositories.
+The owner decides on Luce releases and anything outside luce-js and the luce-browser
+repositories. As of 2026-09-26 the luce-js and luce-browser work is paused. These repositories
+hold all of it; nothing is left on the old machine.
