@@ -53,51 +53,55 @@ code. The numbers below were taken this way (arm64, macOS, Apple M-series).
 
 ## Current numbers
 
-The seven programs, best of 5 runs (seconds; `before` is the port at the start of this
-round, commit 42675e4, and `ljs/qjs now` is against qjs in the same run). Times move by
-5-10% between runs on a loaded machine; loop_sum and string_concat are unchanged within
-that (loop_sum's cycles move with the code layout, see below).
+Measured with Luce 0.8.12 (luce-base ca67a3e: jump-table matches, fallible results copied
+inline, parameters used from their registers, frame addresses formed at their use, `inline`
+honoured, one-instruction float casts). `before` is the same port built with Luce 0.8.11
+(luce-base 8eb0c28) in the microbenchmark table; qjs and `ljs now` are from one run. Times move by 5-10% with the
+machine's load.
 
-| benchmark | qjs | ljs before | ljs/qjs before | ljs now | ljs/qjs now | speed-up |
+The seven programs, best of 5 runs (seconds; `42675e4` is the port before the first
+performance round, `0.8.11` the port after it, built with Luce 0.8.11, from an earlier run):
+
+| benchmark | qjs | ljs 42675e4 | ljs 0.8.11 | ljs now | ljs/qjs now | speed-up over 0.8.11 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| fib | 0.201 | 0.927 | 4.6 | 0.734 | 3.4 | 1.26 |
-| loop_sum | 0.290 | 0.680 | 2.3 | 0.737 | 2.4 | 0.92 |
-| array_ops | 0.160 | 0.845 | 5.3 | 0.573 | 3.4 | 1.47 |
-| closure_calls | 0.087 | 0.488 | 5.6 | 0.344 | 3.7 | 1.42 |
-| property_access | 0.131 | 0.810 | 6.2 | 0.293 | 2.2 | 2.76 |
-| method_calls | 0.129 | 1.037 | 8.1 | 0.470 | 3.6 | 2.21 |
-| string_concat | 0.195 | 1.155 | 5.9 | 1.211 | 5.9 | 0.95 |
+| fib | 0.221 | 0.948 | 0.734 | 0.476 | 2.2 | 1.54 |
+| loop_sum | 0.324 | 0.689 | 0.737 | 0.357 | 1.1 | 2.06 |
+| array_ops | 0.171 | 0.862 | 0.573 | 0.347 | 2.0 | 1.65 |
+| closure_calls | 0.094 | 0.500 | 0.344 | 0.218 | 2.3 | 1.58 |
+| property_access | 0.137 | 0.829 | 0.293 | 0.185 | 1.3 | 1.58 |
+| method_calls | 0.136 | 1.047 | 0.470 | 0.316 | 2.3 | 1.49 |
+| string_concat | 0.211 | 1.181 | 1.211 | 0.738 | 3.5 | 1.64 |
 
-microbench.js, ns per operation (qjs and ljs now from one run; `before` is ljs at
-42675e4). Geometric mean of ljs/qjs over the 71 microbenchmarks: **6.0 before, 4.75 now**.
+microbench.js, ns per operation. Geometric mean of ljs/qjs over the 71 microbenchmarks:
+**6.0 at 42675e4, 4.75 with Luce 0.8.11, 2.86 with Luce 0.8.12**. A selection (the rest are
+between 1.1 and 8 times qjs; run `tests/bench.py --micro` for all):
 
 | microbenchmark | qjs | ljs before | ljs now | ljs/qjs now | speed-up |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| empty_loop | 5.32 | 17.75 | 13.35 | 2.5 | 1.33 |
-| date_now (a C function call) | 20.56 | 138.00 | 71.48 | 3.5 | 1.93 |
-| prop_read | 5.70 | 26.61 | 13.38 | 2.3 | 1.99 |
-| prop_update | 7.46 | 35.11 | 15.73 | 2.1 | 2.23 |
-| array_length_read | 6.25 | 24.45 | 14.44 | 2.3 | 1.69 |
-| array_push | 19.15 | 146.40 | 108.08 | 5.6 | 1.35 |
-| func_call | 13.14 | 67.25 | 50.75 | 3.9 | 1.33 |
-| func_closure_call | 12.18 | 82.70 | 52.20 | 4.3 | 1.58 |
-| float_arith | 12.26 | 45.00 | 29.28 | 2.4 | 1.54 |
-| map_set_int | 57.20 | 419.00 | 322.80 | 5.6 | 1.30 |
-| math_min | 15.86 | 115.60 | 69.42 | 4.4 | 1.67 |
-| regexp_ascii | 94.30 | 3267.00 | 667.00 | 7.1 | 4.90 |
-| regexp_replace | 382.00 | 2602.00 | 1561.50 | 4.1 | 1.67 |
-| string_length | 6.83 | 36.33 | 25.97 | 3.8 | 1.40 |
-| int_toString | 25.13 | 234.00 | 175.00 | 7.0 | 1.34 |
-| prop_create | 24.70 | 146.70 | 167.00 | 6.8 | 0.88 |
-| string_build3 | 26.80 | 146.65 | 177.60 | 6.6 | 0.83 |
-| array_for_of | 11.36 | 145.60 | 161.80 | 14.2 | 0.90 |
-| global_destruct | 19.13 | 220.75 | 235.50 | 12.3 | 0.94 |
-| bigint64_arith | 24.00 | 234.80 | 243.00 | 10.1 | 0.97 |
+| empty_loop | 5.56 | 13.35 | 7.09 | 1.3 | 1.88 |
+| date_now | 21.20 | 71.48 | 54.32 | 2.6 | 1.32 |
+| prop_read | 6.47 | 13.38 | 7.16 | 1.1 | 1.87 |
+| prop_update | 7.65 | 15.73 | 8.65 | 1.1 | 1.82 |
+| array_length_read | 6.47 | 14.44 | 7.40 | 1.1 | 1.95 |
+| array_push | 19.18 | 108.08 | 60.12 | 3.1 | 1.80 |
+| func_call | 12.90 | 50.75 | 32.70 | 2.5 | 1.55 |
+| func_closure_call | 13.15 | 52.20 | 32.30 | 2.5 | 1.62 |
+| float_arith | 13.20 | 29.28 | 16.02 | 1.2 | 1.83 |
+| map_set_int | 58.78 | 322.80 | 214.00 | 3.6 | 1.51 |
+| math_min | 16.00 | 69.42 | 36.39 | 2.3 | 1.91 |
+| regexp_ascii | 94.40 | 667.00 | 416.00 | 4.4 | 1.60 |
+| regexp_replace | 385.30 | 1561.50 | 966.00 | 2.5 | 1.62 |
+| string_length | 7.03 | 25.97 | 18.15 | 2.6 | 1.43 |
+| int_toString | 25.57 | 175.00 | 109.67 | 4.3 | 1.60 |
+| prop_create | 25.54 | 167.00 | 89.45 | 3.5 | 1.87 |
+| string_build3 | 26.65 | 177.60 | 96.72 | 3.6 | 1.84 |
+| array_for_of | 12.31 | 161.80 | 99.38 | 8.1 | 1.63 |
+| global_destruct | 19.56 | 235.50 | 145.00 | 7.4 | 1.62 |
+| bigint64_arith | 23.70 | 243.00 | 146.85 | 6.2 | 1.65 |
 
-The rows below 1.0 are the machine's load (the `before` column was measured at a quieter
-moment; qjs's own times in the same run were 5-10% slower than in the earlier one): their
-cycle counts are unchanged (prop_create, string_build3, checked with `/usr/bin/time -l`). The largest remaining ratios are listed under "Remaining
-port-side gaps".
+Property, array and global access and int/float arithmetic are now within 1.1-1.4× of qjs.
+The largest remaining ratios (array_for_of, destructuring, arguments, bigint, Map, regexp
+execution) are listed under "Remaining port-side gaps" and the open compiler items below.
 
 ## What the port does on its hot paths
 
@@ -129,8 +133,7 @@ techniques, each checked against the generated code:
   about five instructions, so the hot helpers read as C reads: `var_ref_at` reads the
   closure variables without the nullable checks, the reference-count helpers address the
   count by integer arithmetic, find_own_property uses wrapping arithmetic.
-- **Workarounds for two compiler gaps** (below): `f64_to_i32_small` for the float-to-int
-  casts of JS_NewFloat64 and JS_ToInt32, and the engine's flag constants written as
+- **A workaround for a compiler gap** (below): the engine's flag constants are written as
   literals.
 - **A regular expression literal compiles once**: its program is kept by the function
   (FunctionBytecode.regexp_cache) and shared by the RegExp objects it makes, as QuickJS's
@@ -154,6 +157,12 @@ Measured on `build/ljs-release` (luce-base 8eb0c28, arm64 macOS). The instructio
 come from `/usr/bin/time -l`: per fib call, ljs runs 1420 instructions and qjs 358; ljs
 retires them at 6.2 instructions per cycle and qjs at 5.5. The gap is the number of
 instructions, not stalls, and the items below are where those instructions come from.
+
+**Status with Luce 0.8.12:** items 1, 2 and 6 are fixed (the float-cast workaround is
+removed); 3 is fixed as an inline copy (results in registers remain an ABI change); 4 is
+fixed on arm64 and System V (Windows x64 still spills parameters); 5 is fixed (`inline`
+honoured up to 1024 instructions, traps not counted). 7 and 8 remain open. The analyses
+below are kept as they were measured on 8eb0c28; the live list is docs/COMPILER-REQUESTS.md.
 
 ### 1. `match` is a binary search, not a jump table
 
@@ -275,12 +284,12 @@ large. The port keeps its hot helpers under the limit by hand (see above).
 - Expected: `inline` honoured (C's `force_inline`), or a larger limit for single-call-site
   and hot helpers; traps kept out of line so that they do not count against the budget.
 
-### 6. Float-to-integer casts are calls (worked around)
+### 6. Float-to-integer casts are calls (fixed in Luce 0.8.12)
 
 `(i32)d`, `(i64)d` and `i32(d)` lower to a call of std/core's `f_to_s` (about 60
 instructions with its frame) where arm64 has `fcvtzs` (which already saturates and maps NaN
 to 0). JS_NewFloat64 runs it for every number result: 1.9% of a loop of Math.abs calls.
-Reduction and workaround: `docs/compiler-issues/float-to-int-cast.lucb`.
+Luce 0.8.12 emits `fcvtzs` / `cvttsd2si`, and the port's `f64_to_i32_small` workaround is gone.
 
 ### 7. Constants initialised by an expression are not folded (worked around)
 

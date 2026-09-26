@@ -232,7 +232,7 @@ func js_to_int32_free(ctx: Context*, pres: i32*, val0: Value) -> !:
                 let e = (i32)((bits >> 52) & 0x7ff)
                 if e <= 1023 + 30:
                     # fast case
-                    ret = f64_to_i32_small(d)
+                    ret = (i32)d
                 elif e <= 1023 + 30 + 53:
                     # remainder modulo 2^32
                     var v = (bits & (((u64)1 << 52) - 1)) | ((u64)1 << 52)

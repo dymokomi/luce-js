@@ -6,68 +6,22 @@ Evidence and profiles for the performance items are in `docs/PERFORMANCE.md` ("W
 compiler can close"). The gate for any backend change: luce-js `./test.sh` passes and
 `python3 tests/test262.py` prints `Result: 58/83558 errors` with 0 crashes.
 
-Status as of 2026-09-25. Items 1–12 are ordered by priority; 13 onwards were found by the
+Status as of 2026-09-25 (Luce 0.8.12). Numbers are stable, so fixed items leave gaps. Items 2–12 are ordered by priority; 13 onwards were found by the
 luce-browser ports (correctness first) and are not yet ranked against them. Fixed items move to the bottom list with the fixing commit.
 
 ## Open
 
-### 1. Checking an integer-backed enum is cubic in its number of cases (front end)
+### 2. Fallible results are returned through memory (backend, remaining part)
 
-`luce-base check` of an `enum ... as u16` with explicit values: 200 cases 0.10 s, 400 0.79 s,
-800 6.3 s, 1600 51 s (×8 per doubling). A plain enum or an 800-field struct checks in 0.02 s.
-Ladybird's generated CSS enums have 850 (Keyword) and 409 (PropertyID) cases, so the browser's
-css module takes ~9 s to check and every module importing it pays that again (9 of the
-engine's 12 s).
+Luce 0.8.12 copies a fallible result inline instead of calling memcpy. Returning a small
+`T!` in registers, with the failure flag in a register, is the remaining part (an ABI
+change). `Value!` is 48 bytes today.
 
-```luce
-pub enum Big as u16:
-    case_0 = 0
-    case_1 = 1
-    # ... generate case_N = N up to case_799 = 799
-```
+### 3. Windows x64 still spills parameters at entry (backend, remaining part)
 
-Expected: linear (or n log n) time, like a plain enum.
-
-### 2. Fallible results are returned through memory with a call to memcpy (backend)
-
-Every `T!` return builds the result record in the frame and copies it to the caller with
-`bl memcpy` (48 bytes for `Value!`, 32 for `!`/`bool!`), on the success path too.
-`_platform_memmove` is 8.6% of all luce-js microbench samples and 13–16% of string code.
-
-```luce
-let exc: ErrorCode = ErrorCode.package(1)
-struct V:
-    var a: u64
-    var b: i64
-noinline func f1(x: i64) -> V!:
-    if x == 3:
-        error(exc, "bad")
-    return V(a = 1, b = x)
-noinline func f2(x: i64) -> !:
-    if x == 3:
-        error(exc, "bad")
-```
-
-Actual (arm64, `--release`): f1 ends `mov x2, #0x30; bl memcpy`, f2 `mov x2, #0x20; bl memcpy`.
-Expected: the value in registers with the failure flag in a register, or at least an inline
-copy of the few words.
-
-### 3. Parameters are always spilled; large functions hoist and spill addresses (backend)
-
-Every function stores its register parameters at entry and reloads them at first use. Large
-functions compute the address of each local/field/global they use at entry and keep it in a
-stack slot (`add x9, x19, #0x80; str x9, [sp, #0x38]`), reloading it at each use; the prologue
-saves all ten callee-saved registers. luce-js's js_call_internal does 74 stores before its
-first opcode; an empty JS call costs 983 instructions against 242 in C QuickJS.
-Expected: parameters used from their registers, addresses formed at the use
-(`[x19, #0x80]`), only the callee-saved registers that are used saved.
-
-### 4. The inliner stops at 32 instructions and ignores `inline` (backend)
-
-A function is expanded only when its optimised body is at most 32 instructions, `inline` or
-not; each `trap` path adds about 5 instructions toward that limit; a function whose only call
-is on a cold path is never a leaf. Expected: honour `inline` (up to a generous limit), and
-count cold trap/call paths less.
+Luce 0.8.12 uses parameters from their registers on arm64 and System V, forms frame
+addresses at their use, and saves only the callee-saved registers it uses. The Windows x64
+calling convention still stores parameters at entry.
 
 ### 5. Constant-expression top-level `let`s are not folded (backend)
 
@@ -116,16 +70,6 @@ Expected: one buffer per disjoint path, or share them like other slots.
 registers. Lower priority than 2–4; measure after those. The tiny-skia port measured passing
 32-byte values between functions 3–6× slower than 16-byte ones; its pipelines are 5–30× slower
 than tiny-skia (tests/raster/bench.lucb in luce-browser-render).
-
-### 8. `luce-base fmt` refuses `u8[128]*` (formatter)
-
-```luce
-func convert_unsigned_to_string(value: u64, buffer: u8[128]*) -> usize:
-    return 0
-```
-
-`check` accepts it; `fmt` exits 1 with "the layout reads back as a different tree".
-`(u8[128])*` formats fine. Expected: `fmt` prints a spelling that reads back as the same type.
 
 ### 9. Diagnostics in directory modules use concatenated line numbers (tooling)
 
@@ -357,25 +301,17 @@ so `luce-base check -W mod && git commit` commits with warnings. luce-browser's 
 around it by failing on any output. Expected: a non-zero exit when `-W` printed a warning (or a
 `-Werror` flag).
 
-## Done on a branch, waiting for merge and release (x86_64 runs on LINUX/WINDOWS pending)
-
-- **Dense `match` → jump table; u8 match subject kept in a register; `(i32)`/`(i64)` float
-  casts as one instruction** (fcvtzs / cvttsd2si with fix-ups): luce-base branch
-  `perf-match` a84393d. ljs instruction counts −10…−45% per benchmark. Narrow and unsigned
-  saturating float casts still call the helper.
-
-- **Enum case check linear** (800 cases 6.9 s → 0.02 s) and **`fmt` accepts `u8[128]*`**
-  (items 1 and 8 above): branch `check-fixes` d568164.
-- **Fallible results copied inline instead of memcpy** (ljs memcpy calls 7193 → 901; item 2,
-  partly: returning them in registers is an ABI change still to do), **parameters moved
-  straight from their registers** (System V and arm64; not yet Windows x64), **frame addresses
-  formed at their use** with base+offset folding (item 3), **`inline` honoured up to 1024
-  instructions, traps not counted** (item 4): branch `perf-calls` fa4fc10 (includes
-  perf-match). ljs: fib 15.11G → 12.21G instructions, empty-call loop 3.59G → 2.89G,
-  string_concat 16.13G → 11.61G.
-
 ## Fixed
 
+- Luce 0.8.12 (luce-base ca67a3e):
+  - Dense `match` is a jump table; a u8 match subject stays in a register; `(i32)`/`(i64)`
+    float casts are one instruction (perf-match).
+  - Fallible results copied inline (ljs memcpy calls 7193 → 901); parameters used from their
+    registers (arm64, System V); frame addresses formed at their use; `inline` honoured up
+    to 1024 instructions, traps not counted (perf-calls). ljs fib 15.11G → 12.21G
+    instructions; microbench geometric mean 4.75 → 2.86 × qjs.
+  - Integer-backed enum checks are linear (800 cases 6.9 s → 0.02 s); `fmt` accepts
+    `u8[128]*` (check-fixes).
 - 0450da6: nullable pointer conversions; `sp[-1]`; `p += n`; storing `&local` through a
   pointer read from a parameter's field; optional fallible function-pointer adapter.
 - 25914a4: `(const (T*)*)p` cast; bare `return` in a parenthesised catch handler; extern

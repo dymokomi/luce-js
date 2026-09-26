@@ -164,27 +164,11 @@ pub func js_new_uint32(val: u32) -> Value:
         return js_new_int32((i32)val)
     return js_new_float64_raw(f64(val))
 
-## `(i32)d` for a `d` of magnitude at most 2^31 (2^31 itself wraps to INT32_MIN, as C's
-## `(int32_t)-2147483648.0` is): the integer part, computed from the representation.
-# workaround: compiler-issues/float-to-int-cast: the cast is a call of the runtime's
-# saturating conversion routine (about 60 instructions); this is the handful of integer
-# instructions of a truncating conversion.
-func f64_to_i32_small(d: f64) -> i32:
-    let bits = d.bits()
-    let e = (i32)((bits >> 52) & 0x7ff)
-    if e < 1023:
-        return 0
-    # the mantissa with its implicit bit, shifted to the units (e - 1023 is at most 31)
-    let v = (i32)(u32)(((bits & 0xfffffffffffff) | 0x10000000000000) >> (u64)(1075 - e))
-    if (bits >> 63) != 0:
-        return -%v
-    return v
-
 ## A number value: an integer when `d` is exactly one (never -0), else a float
 ## (JS_NewFloat64).
 pub func js_new_float64(d: f64) -> Value:
     if d >= -2147483648.0 and d <= 2147483647.0:
-        let val = f64_to_i32_small(d)
+        let val = (i32)d
         # -0 cannot be represented as integer, so we compare the bit representation
         if d.bits() == f64(val).bits():
             return js_new_int32(val)

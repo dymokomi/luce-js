@@ -20,18 +20,6 @@ func test_other_nan() -> f64:
 
 # mark: Numbers =================================================================================
 
-test "f64_to_i32_small truncates as C's (int32_t) cast does":
-    assert(f64_to_i32_small(0.0) == 0 and f64_to_i32_small(-0.0) == 0)
-    assert(f64_to_i32_small(0.75) == 0 and f64_to_i32_small(-0.75) == 0)
-    assert(f64_to_i32_small(1.0) == 1 and f64_to_i32_small(-1.0) == -1)
-    assert(f64_to_i32_small(2.5) == 2 and f64_to_i32_small(-2.5) == -2)
-    assert(f64_to_i32_small(1e-310) == 0)
-    assert(f64_to_i32_small(123456789.9) == 123456789)
-    assert(f64_to_i32_small(2147483647.0) == 2147483647)
-    assert(f64_to_i32_small(2147483646.5) == 2147483646)
-    assert(f64_to_i32_small(-2147483647.5) == -2147483647)
-    assert(f64_to_i32_small(-2147483648.0) == -2147483648)
-
 test "JS_NewFloat64 answers an int exactly for the integers of the int range":
     assert(js_new_float64(5.0).tag == Tag.int and js_value_get_int(js_new_float64(5.0)) == 5)
     assert(js_value_get_int(js_new_float64(-2147483648.0)) == -2147483648)
