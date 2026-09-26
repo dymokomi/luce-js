@@ -321,6 +321,13 @@ func sum(values: const u64[], indexes: const usize[]) -> u64:
 Expected: roughly linear (bound the facts searched per check, or index them by value); and
 test blocks not inlined into the runner's `main`.
 
+### 23. `luce-base check` cannot check for another target (tooling)
+
+`build` takes `--target x86_64-linux`, but `check` does not, and warnings depend on the target:
+`if os.x86_64: return a` followed by `return b` warns "unreachable code" only when checking on
+x86-64. A warning-free gate on macOS then fails on Linux CI. Expected: `check --target T`
+(and `-W` per target), so one machine can lint every platform.
+
 ## Fixed
 
 - Luce 0.8.12 (luce-base ca67a3e):
