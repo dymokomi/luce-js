@@ -391,6 +391,20 @@ test "long str hole":
 
 Expected: the full text (grow the buffer), or a visible truncation, never silence.
 
+## Done on a branch, waiting for a release
+
+luce-base branch `compiler-requests` (local, not yet pushed), gated on arm64 macOS against luce-js
+(test262 58/83558, 0 crashes) and every luce-browser package:
+- 63b2798: item 27. print/trap f-strings stream with no limit, and a `fmt`/Writer f-string keeps
+  1024 bytes ending in "...". Regression found in the gate: luce-regex's `regex` module fails
+  `test --backend=c` with "a formatted text outside a function body".
+- d9c6dc7: items 12 (asm callee-saved registers saved), 13 (float methods through a pointer),
+  14 (`sizeof(T)` per instance), 15 (C backend `&local_array`), 17 (`indexed()` loops don't
+  allocate), 21 (`check -W` exits 1 on warnings), 22 (range facts indexed: 2000 checks
+  27 s → 0.9 s), 23 (`check --target`; branches ruled out by a target constant don't warn);
+  build.sh fetches luce-std at its own pin.
+- In the gate: 9, 16, 19, 20, 24, 25, 26 (`mul_add` on f32/f64 and their vectors).
+
 ## Fixed
 
 - Luce 0.8.12 (luce-base ca67a3e):
