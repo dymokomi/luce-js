@@ -393,17 +393,23 @@ Expected: the full text (grow the buffer), or a visible truncation, never silenc
 
 ## Done on a branch, waiting for a release
 
-luce-base branch `compiler-requests` (local, not yet pushed), gated on arm64 macOS against luce-js
-(test262 58/83558, 0 crashes) and every luce-browser package:
+luce-base local branch `compiler-requests`, gated on arm64 macOS against luce-js (test262
+58/83558, 0 crashes), luce-regex (both backends) and every luce-browser package; x86-64 not yet
+run:
 - 63b2798: item 27. print/trap f-strings stream with no limit, and a `fmt`/Writer f-string keeps
-  1024 bytes ending in "...". Regression found in the gate: luce-regex's `regex` module fails
-  `test --backend=c` with "a formatted text outside a function body".
+  1024 bytes ending in "...".
 - d9c6dc7: items 12 (asm callee-saved registers saved), 13 (float methods through a pointer),
   14 (`sizeof(T)` per instance), 15 (C backend `&local_array`), 17 (`indexed()` loops don't
   allocate), 21 (`check -W` exits 1 on warnings), 22 (range facts indexed: 2000 checks
   27 s → 0.9 s), 23 (`check --target`; branches ruled out by a target constant don't warn);
   build.sh fetches luce-std at its own pin.
-- In the gate: 9, 16, 19, 20, 24, 25, 26 (`mul_add` on f32/f64 and their vectors).
+- eca8ab7: items 5 (integer constant lets fold), 9 (warnings name the fragment and line),
+  10 (test builds compile only what tests reach), 16 (C backend `-ffp-contract=off`),
+  18 (generic function values), 19, 20, 24, 25 (`const T[N]*`), 26 (`mul_add` on f32/f64
+  and their vectors); C-backend test bodies get format buffers (the luce-regex regression);
+  a global initialised with `~` compiles in the C backend.
+
+Still open: 2, 3, 6, 7 (ABI and frame work), 11 (interpreter start-up).
 
 ## Fixed
 
