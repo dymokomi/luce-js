@@ -301,6 +301,26 @@ so `luce-base check -W mod && git commit` commits with warnings. luce-browser's 
 around it by failing on any output. Expected: a non-zero exit when `-W` printed a warning (or a
 `-Werror` flag).
 
+### 22. The native range pass is cubic in dominating bounds checks (backend, compile time)
+
+Each bounds check the range pass keeps adds a fact, and every later check searches all facts
+(recursively, depth 3). One function with 500 checked loads builds in 0.7 s, 1000 in 3.9 s,
+2000 in 27.7 s. `luce-base test` inlines every test block into the runner's `main`, so a
+module with 600 small tests takes 24 s to build and 1200 take 188 s; luce-browser's ak tests
+took over 25 minutes until every test body was made a `noinline` function.
+
+```luce
+func sum(values: const u64[], indexes: const usize[]) -> u64:
+    var total: u64 = 0
+    total +%= values[indexes[0]]
+    total +%= values[indexes[1]]
+    # ... one line per index, up to indexes[999]
+    return total
+```
+
+Expected: roughly linear (bound the facts searched per check, or index them by value); and
+test blocks not inlined into the runner's `main`.
+
 ## Fixed
 
 - Luce 0.8.12 (luce-base ca67a3e):
