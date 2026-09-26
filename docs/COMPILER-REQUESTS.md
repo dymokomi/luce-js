@@ -328,6 +328,43 @@ test blocks not inlined into the runner's `main`.
 x86-64. A warning-free gate on macOS then fails on Linux CI. Expected: `check --target T`
 (and `-W` per target), so one machine can lint every platform.
 
+### 24. A lambda body does not see its module's types (front end)
+
+A cast to the module's enum inside a capture-free lambda is rejected (`unknown type `Color``)
+though the same cast compiles in a named function. A lambda that calls a module function also
+draws "a lambda captures nothing; pass the value as a parameter (§9.6)", which describes nothing
+wrong, and after the first error that message repeats for unrelated lines.
+
+```luce
+enum Color as u8:
+    red = 0
+    green = 1
+
+func apply(convert: func(u64) -> Color, value: u64) -> Color:
+    return convert(value)
+
+test "a lambda casts to its module's enum":
+    let color = apply((v: u64) => (Color)(u8)v, 1)
+    assert((u64)(u8)color == 1)
+```
+
+Expected: passes. Workaround in luce-browser-css: named functions.
+
+### 25. `const T[N]*` silently drops the `const` (front end)
+
+`const f32[4]*` is read as `f32[4]*`; `const (f32[4])*` works. The error then prints the
+value's type with the spelling the declaration failed to mean.
+
+```luce
+struct M:
+    var v: f32[4]
+
+func row(this: const M*) -> const f32[4]*:
+    return &this.v   # expected `f32[4]*`, got `const f32[4]*`
+```
+
+Expected: `const` qualifies the pointee (base.md §5.3), as for the parenthesised spelling.
+
 ## Fixed
 
 - Luce 0.8.12 (luce-base ca67a3e):
