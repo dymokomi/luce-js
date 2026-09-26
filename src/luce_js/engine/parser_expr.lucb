@@ -237,8 +237,7 @@ func js_parse_expr_binary(s: ParseState*, level: i32, parse_flags: i32) -> !:
     if level == 0:
         try js_parse_unary(s, pf_pow_allowed)
         return
-    elif (s.token.val == TokenType.private_name and (parse_flags & pf_in_accepted) != 0 and
-          level == 4 and peek_token(s, false) == TokenType.in_):
+    elif (s.token.val == TokenType.private_name and (parse_flags & pf_in_accepted) != 0 and level == 4 and peek_token(s, false) == TokenType.in_):
         let atom = js_dup_atom(s.ctx, s.token.u.ident.atom)
         errdefer js_free_atom(s.ctx, atom)
         try next_token(s)

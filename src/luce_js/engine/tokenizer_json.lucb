@@ -315,7 +315,7 @@ func json_next_token(s: ParseState*) -> !:
         break
     s.buf_ptr = p
 
-    # dump_token(s, &s.token)
+# dump_token(s, &s.token)
 
 # mark: Look-ahead ==============================================================================
 

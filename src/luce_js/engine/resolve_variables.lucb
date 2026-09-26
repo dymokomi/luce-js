@@ -243,12 +243,8 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
         # check if global variable (XXX: simplify)
         for idx in 0..<s.closure_var_count:
             let cv = fd_closure_var(s, idx)
-            if (cv.closure_type == ClosureType.global_ref or
-                cv.closure_type == ClosureType.global_decl or
-                cv.closure_type == ClosureType.global or
-                cv.closure_type == ClosureType.module_decl or
-                cv.closure_type == ClosureType.module_import):
-                break # don't look at global variables (they are at the end)
+            if (cv.closure_type == ClosureType.global_ref or cv.closure_type == ClosureType.global_decl or cv.closure_type == ClosureType.global or cv.closure_type == ClosureType.module_decl or cv.closure_type == ClosureType.module_import):
+                break  # don't look at global variables (they are at the end)
             if cv.var_name == hf.var_name:
                 if s.eval_type == eval_type_direct and cv.is_lexical:
                     # Check if a lexical variable is redefined as 'var'. XXX: Could abort
@@ -261,7 +257,7 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
             if cv.var_name == atom__var_ or cv.var_name == atom__arg_var_:
                 break
 
-    var line_num: i32 = 0 # avoid warning
+    var line_num: i32 = 0  # avoid warning
     var pos: i32 = 0
     while pos < bc_len:
         let op = bc_buf[pos]
@@ -288,7 +284,7 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
                     let label = (i32)cutils.get_u32(bc_buf + pos + 5)
                     let scope = (i32)cutils.get_u16(bc_buf + pos + 9)
                     let ls = fd_label(s, label)
-                    ls.ref_count -= 1 # always remove label reference
+                    ls.ref_count -= 1  # always remove label reference
                     pos_next = resolve_scope_var(ctx, s, var_name, scope, temp_op, &bc_out, bc_buf,
                                                  ls, pos_next) catch failure:
                         resolve_variables_fail(s, &bc_out, bc_buf, bc_len, pos)

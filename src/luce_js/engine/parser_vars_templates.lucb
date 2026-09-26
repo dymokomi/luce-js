@@ -52,9 +52,7 @@ func define_var(s: ParseState*, fd: FunctionDef*, name: Atom, var_def_type: VarD
                     if vd.scope_level == fd.scope_level:
                         # same scope: in non strict mode, functions can be redefined
                         # (annex B.3.3.4).
-                        if not (((i32)fd.js_mode & js_mode_strict) == 0 and
-                                var_def_type == VarDefKind.function_decl and
-                                vd.var_kind == VarKind.function_decl):
+                        if not (((i32)fd.js_mode & js_mode_strict) == 0 and var_def_type == VarDefKind.function_decl and vd.var_kind == VarKind.function_decl):
                             # redefining a scoped var in the same scope: error
                             try js_parse_error(s, "invalid redefinition of lexical identifier")
                     elif vd.var_kind == VarKind.catch_ and (vd.scope_level + 2) == fd.scope_level:
@@ -63,10 +61,7 @@ func define_var(s: ParseState*, fd: FunctionDef*, name: Atom, var_def_type: VarD
                     if fd.scope_level == fd.body_scope:
                         # redefining a scoped var in the same scope: error
                         try js_parse_error(s, "invalid redefinition of lexical identifier")
-            if (var_def_type != VarDefKind.function_decl and
-                var_def_type != VarDefKind.new_function_decl and
-                fd.scope_level == fd.body_scope and
-                find_arg(ctx, fd, name) >= 0):
+            if (var_def_type != VarDefKind.function_decl and var_def_type != VarDefKind.new_function_decl and fd.scope_level == fd.body_scope and find_arg(ctx, fd, name) >= 0):
                 # lexical variable redefines a parameter name
                 try js_parse_error(s, "invalid redefinition of parameter name")
 
@@ -78,9 +73,7 @@ func define_var(s: ParseState*, fd: FunctionDef*, name: Atom, var_def_type: VarD
                     if is_child_scope(ctx, fd, hf.scope_level, fd.scope_level):
                         try js_parse_error(s, "invalid redefinition of global identifier")
 
-            if (fd.is_eval and
-                (fd.eval_type == eval_type_global or fd.eval_type == eval_type_module) and
-                fd.scope_level == fd.body_scope):
+            if (fd.is_eval and (fd.eval_type == eval_type_global or fd.eval_type == eval_type_module) and fd.scope_level == fd.body_scope):
                 let hf = try add_global_var(s.ctx, fd, name)
                 hf.is_lexical = true
                 hf.is_const = var_def_type == VarDefKind.const_
@@ -105,8 +98,7 @@ func define_var(s: ParseState*, fd: FunctionDef*, name: Atom, var_def_type: VarD
                 try js_parse_error(s, "invalid redefinition of lexical identifier")
             if fd.is_global_var:
                 if let hf = find_global_var(fd, name):
-                    if (hf.is_lexical and hf.scope_level == fd.scope_level and
-                        fd.eval_type == eval_type_module):
+                    if (hf.is_lexical and hf.scope_level == fd.scope_level and fd.eval_type == eval_type_module):
                         try js_parse_error(s, "invalid redefinition of lexical identifier")
                 discard(try add_global_var(s.ctx, fd, name))
                 idx = global_var_offset

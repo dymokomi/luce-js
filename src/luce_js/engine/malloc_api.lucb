@@ -145,4 +145,3 @@ func js_dbuf_bytecode_init(ctx: Context*, s: cutils.DynBuf*):
 ## Whether `c` is an ASCII decimal digit.
 func is_digit(c: i32) -> bool:
     return c >= (i32)'0' and c <= (i32)'9'
-

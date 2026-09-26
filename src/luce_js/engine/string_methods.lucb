@@ -211,7 +211,7 @@ func js_string_to_lower_case(ctx: Context*, this_val: Value, argc: i32, argv: Va
         let c = string_getc(p, &i)
         var l: i32 = 0
         if c == 0x3a3 and to_lower != 0 and test_final_sigma(p, i - 1):
-            res[0] = 0x3c2 # final sigma
+            res[0] = 0x3c2  # final sigma
             l = 1
         else:
             l = unicode.lre_case_conv(res, (u32)c, to_lower)

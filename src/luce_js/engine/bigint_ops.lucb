@@ -221,7 +221,7 @@ func js_bigint_not(ctx: Context*, a: const BigInt*) -> BigInt*!:
 func js_bigint_shl(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*!:
     let a_tab = js_bigint_tab(a)
     if a.len == 1 and a_tab[0] == 0:
-        return try js_bigint_new_si(ctx, 0) # zero case
+        return try js_bigint_new_si(ctx, 0)  # zero case
     let d = (i32)(shift1 // (u32)js_limb_bits)
     let shift = (i32)(shift1 % (u32)js_limb_bits)
     var r = try js_bigint_new(ctx, (i32)a.len + d)
@@ -255,7 +255,7 @@ func js_bigint_shr(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*!:
         while i < n1:
             r_tab[i] = a_tab[i + d]
             i += 1
-        # no normalization is needed
+    # no normalization is needed
     else:
         discard(mp_shr(r_tab, a_tab + (usize)d, n1, shift, -%(u32)a_sign))
         r = js_bigint_normalize(ctx, r)
@@ -286,26 +286,26 @@ func js_bigint_pow(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*
             # v = 2^n
             let n = js_limb_bits - 1 - (i32)js_limb_clz(v)
             if b.len > 1:
-                try js_throw_range_error(ctx, "BigInt is too large") # overflow
+                try js_throw_range_error(ctx, "BigInt is too large")  # overflow
             if b_tab[0] > 0x7fffffff:
-                try js_throw_range_error(ctx, "BigInt is too large") # overflow
+                try js_throw_range_error(ctx, "BigInt is too large")  # overflow
             let e1 = (u64)b_tab[0] * (u64)n
             if e1 > (u64)(bigint_max_size * js_limb_bits):
-                try js_throw_range_error(ctx, "BigInt is too large") # overflow
+                try js_throw_range_error(ctx, "BigInt is too large")  # overflow
             let e = (u32)e1
             if is_neg:
                 is_neg = (b_tab[0] & 1) != 0
             let r = try js_bigint_new(ctx,
-                (i32)((e + (u32)js_limb_bits + 1 - (u32)is_neg) // (u32)js_limb_bits))
+                                      (i32)((e + (u32)js_limb_bits + 1 - (u32)is_neg) // (u32)js_limb_bits))
             let r_tab = js_bigint_tab(r)
             discard(cutils.memset(r_tab, 0, sizeof(u32) * (usize)r.len))
             let top = (u32)(1 - 2 * (i32)is_neg) << (e % (u32)js_limb_bits)
             r_tab[e // (u32)js_limb_bits] = top
             return r
     if b.len > 1:
-        try js_throw_range_error(ctx, "BigInt is too large") # overflow
+        try js_throw_range_error(ctx, "BigInt is too large")  # overflow
     if b_tab[0] > 0x7fffffff:
-        try js_throw_range_error(ctx, "BigInt is too large") # overflow
+        try js_throw_range_error(ctx, "BigInt is too large")  # overflow
     let e = b_tab[0]
     let n_bits = 32 - cutils.clz32(e)
 

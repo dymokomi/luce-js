@@ -76,7 +76,7 @@ pub func js_module_set_import_meta(ctx: Context*, func_val: Value, use_realpath:
     assert(js.js_value_get_tag(func_val) == js.Tag.module)
     let m = (ModuleDef*)js.js_value_get_ptr(func_val)
 
-    var buf: u8[4112] = ---    # PATH_MAX + 16
+    var buf: u8[4112] = ---  # PATH_MAX + 16
     let module_name_atom = js.js_get_module_name(ctx, m)
     let module_name = js.js_atom_to_c_string(ctx, module_name_atom) catch failure:
         js.js_free_atom(ctx, module_name_atom)

@@ -23,7 +23,7 @@ func js_arguments_define_own_property(ctx: Context*, this_obj: Value, prop: Atom
         try convert_fast_array_to_array(ctx, p)
     # run the default define own property
     return try js_define_property(ctx, this_obj, prop, val, getter, setter,
-        flags | prop_no_exotic)
+                                  flags | prop_no_exotic)
 
 ## The exotic methods of ClassId.arguments and ClassId.mapped_arguments.
 let js_arguments_exotic_methods: ClassExoticMethods = ClassExoticMethods(
@@ -35,14 +35,14 @@ let js_arguments_exotic_methods: ClassExoticMethods = ClassExoticMethods(
 ## A new unmapped arguments object holding copies of `argv[0..argc]` (strict mode).
 func js_build_arguments(ctx: Context*, argc: i32, argv: Value*) -> Value!:
     var props: Property[3] = ---
-    props[0].u.value = js_new_int32(argc)       # length
-    props[1].u.value = js_dup_value(ctx, ctx.array_proto_values)    # Symbol.iterator
-    props[2].u.getset.getter = js_dup_value(ctx, ctx.throw_type_error).u.obj    # callee
-    props[2].u.getset.setter = js_dup_value(ctx, ctx.throw_type_error).u.obj    # callee
+    props[0].u.value = js_new_int32(argc)  # length
+    props[1].u.value = js_dup_value(ctx, ctx.array_proto_values)  # Symbol.iterator
+    props[2].u.getset.getter = js_dup_value(ctx, ctx.throw_type_error).u.obj  # callee
+    props[2].u.getset.setter = js_dup_value(ctx, ctx.throw_type_error).u.obj  # callee
 
     let arguments_shape = ctx.arguments_shape else trap("js_build_arguments: no arguments shape")
     let val = try js_new_object_from_shape(ctx, js_dup_shape(arguments_shape),
-        (u32)ClassId.arguments, &props[0])
+                                           (u32)ClassId.arguments, &props[0])
     let p = val.u.obj
 
     # initialize the fast array part
@@ -94,13 +94,13 @@ func js_free_var_ref_tab(ctx: Context*, tab: VarRef**, count: i32):
 func js_build_mapped_arguments(ctx: Context*, argc: i32, argv: Value*, sf: StackFrame*, arg_count: i32) -> Value!:
     let cur_sf = ctx.rt.current_stack_frame else trap("js_build_mapped_arguments: no frame")
     var props: Property[3] = ---
-    props[0].u.value = js_new_int32(argc)       # length
-    props[1].u.value = js_dup_value(ctx, ctx.array_proto_values)    # Symbol.iterator
-    props[2].u.value = js_dup_value(ctx, cur_sf.cur_func)           # callee
+    props[0].u.value = js_new_int32(argc)  # length
+    props[1].u.value = js_dup_value(ctx, ctx.array_proto_values)  # Symbol.iterator
+    props[2].u.value = js_dup_value(ctx, cur_sf.cur_func)  # callee
 
     let mapped_arguments_shape = ctx.mapped_arguments_shape else trap("js_build_mapped_arguments: no shape")
     let val = try js_new_object_from_shape(ctx, js_dup_shape(mapped_arguments_shape),
-        (u32)ClassId.mapped_arguments, &props[0])
+                                           (u32)ClassId.mapped_arguments, &props[0])
     errdefer js_free_value(ctx, val)
     let p = val.u.obj
 

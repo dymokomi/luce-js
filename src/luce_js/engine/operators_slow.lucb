@@ -257,8 +257,7 @@ func js_compare_bigint(ctx: Context*, op: Op, op1: Value, op2: Value) -> bool:
     var val: i32 = 0
     let tag1 = op1.tag
     let tag2 = op2.tag
-    if ((tag1 == Tag.short_big_int or tag1 == Tag.int) and
-            (tag2 == Tag.short_big_int or tag2 == Tag.int)):
+    if ((tag1 == Tag.short_big_int or tag1 == Tag.int) and (tag2 == Tag.short_big_int or tag2 == Tag.int)):
         # fast path
         let v1 = js_value_get_int(op1) if tag1 == Tag.int else js_value_get_short_big_int(op1)
         let v2 = js_value_get_int(op2) if tag2 == Tag.int else js_value_get_short_big_int(op2)
@@ -306,13 +305,13 @@ func js_float64_compare(op: Op, op1: Value, op2: Value) -> bool:
     let d2 = js_value_get_float64(op2) if op2.tag == Tag.float64 else f64(js_value_get_int(op2))
     match op:
         .lt:
-            return d1 < d2      # if NaN return false
+            return d1 < d2  # if NaN return false
         .lte:
-            return d1 <= d2     # if NaN return false
+            return d1 <= d2  # if NaN return false
         .gt:
-            return d1 > d2      # if NaN return false
+            return d1 > d2  # if NaN return false
         _:
-            return d1 >= d2     # OP_gte; if NaN return false
+            return d1 >= d2  # OP_gte; if NaN return false
 
 ## Whether a tag is int, boolean or null: QuickJS's `tag <= JS_TAG_NULL` on an unsigned
 ## tag, where the negative (reference-counted) tags compare above.
@@ -348,17 +347,15 @@ func js_relational_slow(ctx: Context*, sp: Value*, op: Op) -> !:
             .gt:
                 res = cmp > 0
             _:
-                res = cmp >= 0      # OP_gte
+                res = cmp >= 0  # OP_gte
         js_free_value(ctx, op1)
         js_free_value(ctx, op2)
-    elif ((tag_is_int_bool_or_null(tag1) or tag1 == Tag.float64) and
-            (tag_is_int_bool_or_null(tag2) or tag2 == Tag.float64)):
+    elif ((tag_is_int_bool_or_null(tag1) or tag1 == Tag.float64) and (tag_is_int_bool_or_null(tag2) or tag2 == Tag.float64)):
         # fast path for float64/int
         res = js_float64_compare(op, op1, op2)
     else:
         var invalid_bigint_string = false
-        if ((tag_is_bigint(tag1) and tag_is_string(tag2)) or
-                (tag_is_bigint(tag2) and tag_is_string(tag1))):
+        if ((tag_is_bigint(tag1) and tag_is_string(tag2)) or (tag_is_bigint(tag2) and tag_is_string(tag1))):
             # As in QuickJS, a conversion that throws reads as an invalid string (the
             # exception stays pending).
             if tag_is_string(tag1):
@@ -409,8 +406,7 @@ func js_eq_slow(ctx: Context*, sp: Value*, is_neq: bool) -> !:
         if tag_is_number(tag1) and tag_is_number(tag2):
             if tag1 == Tag.int and tag2 == Tag.int:
                 res = js_value_get_int(op1) == js_value_get_int(op2)
-            elif ((tag1 == Tag.float64 and (tag2 == Tag.int or tag2 == Tag.float64)) or
-                    (tag2 == Tag.float64 and (tag1 == Tag.int or tag1 == Tag.float64))):
+            elif ((tag1 == Tag.float64 and (tag2 == Tag.int or tag2 == Tag.float64)) or (tag2 == Tag.float64 and (tag1 == Tag.int or tag1 == Tag.float64))):
                 let d1 = js_value_get_float64(op1) if tag1 == Tag.float64 else f64(js_value_get_int(op1))
                 let d2 = js_value_get_float64(op2) if tag2 == Tag.float64 else f64(js_value_get_int(op2))
                 res = d1 == d2
@@ -420,16 +416,14 @@ func js_eq_slow(ctx: Context*, sp: Value*, is_neq: bool) -> !:
             res = js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
             js_free_value(ctx, op1)
             js_free_value(ctx, op2)
-        elif ((tag1 == Tag.null and tag2 == Tag.undefined) or
-                (tag2 == Tag.null and tag1 == Tag.undefined)):
+        elif ((tag1 == Tag.null and tag2 == Tag.undefined) or (tag2 == Tag.null and tag1 == Tag.undefined)):
             res = true
         elif tag_is_string(tag1) and tag_is_string(tag2):
             # needed when comparing strings and ropes
             res = js_strict_eq2(ctx, op1, op2, StrictEqMode.strict)
             js_free_value(ctx, op1)
             js_free_value(ctx, op2)
-        elif ((tag_is_string(tag1) and tag_is_number(tag2)) or
-                (tag_is_string(tag2) and tag_is_number(tag1))):
+        elif ((tag_is_string(tag1) and tag_is_number(tag2)) or (tag_is_string(tag2) and tag_is_number(tag1))):
             var invalid_bigint_string = false
             if tag_is_bigint(tag1) or tag_is_bigint(tag2):
                 # As in QuickJS, a conversion that throws reads as an invalid string.
@@ -460,10 +454,7 @@ func js_eq_slow(ctx: Context*, sp: Value*, is_neq: bool) -> !:
         elif tag2 == Tag.boolean:
             op2 = js_new_int32(js_value_get_int(op2))
             continue
-        elif ((tag1 == Tag.object and
-                    (tag_is_number(tag2) or tag_is_string(tag2) or tag2 == Tag.symbol)) or
-                (tag2 == Tag.object and
-                    (tag_is_number(tag1) or tag_is_string(tag1) or tag1 == Tag.symbol))):
+        elif ((tag1 == Tag.object and (tag_is_number(tag2) or tag_is_string(tag2) or tag2 == Tag.symbol)) or (tag2 == Tag.object and (tag_is_number(tag1) or tag_is_string(tag1) or tag1 == Tag.symbol))):
             op1 = js_to_primitive_free(ctx, op1, hint_none) catch failure:
                 js_free_value(ctx, op2)
                 error(failure.code, failure.message)
@@ -473,8 +464,7 @@ func js_eq_slow(ctx: Context*, sp: Value*, is_neq: bool) -> !:
             continue
         else:
             # IsHTMLDDA object is equivalent to undefined for '==' and '!='
-            res = ((js_is_htmldda(ctx, op1) and (tag2 == Tag.null or tag2 == Tag.undefined)) or
-                (js_is_htmldda(ctx, op2) and (tag1 == Tag.null or tag1 == Tag.undefined)))
+            res = ((js_is_htmldda(ctx, op1) and (tag2 == Tag.null or tag2 == Tag.undefined)) or (js_is_htmldda(ctx, op2) and (tag1 == Tag.null or tag1 == Tag.undefined)))
             js_free_value(ctx, op1)
             js_free_value(ctx, op2)
         break

@@ -42,11 +42,11 @@ func js_bigint_from_string(ctx: Context*, text: const u8*, radix: i32) -> BigInt
     if n_digits1 > (usize)(bigint_max_size * js_limb_bits):
         try js_throw_range_error(ctx, "BigInt is too large to allocate")
     let n_digits = (i32)n_digits1
-    let log2_radix = 32 - cutils.clz32((u32)(radix - 1)) # ceil(log2(radix))
+    let log2_radix = 32 - cutils.clz32((u32)(radix - 1))  # ceil(log2(radix))
     # compute the maximum number of limbs
     var n_bits: i32 = 0
     if radix == 10:
-        n_bits = (n_digits * 27 + 7) // 8 # >= ceil(n_digits * log2(10))
+        n_bits = (n_digits * 27 + 7) // 8  # >= ceil(n_digits * log2(10))
     else:
         n_bits = n_digits * log2_radix
     # we add one extra bit for the sign
@@ -211,7 +211,7 @@ func js_bigint_to_string1(ctx: Context*, val: Value, radix: i32) -> Value!:
         tmp = t
         r = t
     let r_tab = js_bigint_tab(r)
-    let log2_radix = 31 - cutils.clz32((u32)radix) # floor(log2(radix))
+    let log2_radix = 31 - cutils.clz32((u32)radix)  # floor(log2(radix))
     let n_bits = (i32)r.len * js_limb_bits - (i32)js_limb_safe_clz(r_tab[r.len - 1])
     # n_digits is exact only if radix is a power of two. Otherwise it is >= the exact
     # number of digits

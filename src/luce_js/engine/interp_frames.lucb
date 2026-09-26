@@ -150,7 +150,7 @@ noinline func interp_enter(st: InterpState*, flags: i32, frame_space: Value*) ->
         st.var_buf = st.sf.var_buf else trap("generator frame without variables")
         st.stack_buf = st.var_buf + (usize)st.b.var_count
         st.sp = st.sf.cur_sp else trap("generator frame is running")
-        st.sf.cur_sp = none # cur_sp is NULL if the function is running
+        st.sf.cur_sp = none  # cur_sp is NULL if the function is running
         st.pc = st.sf.cur_pc else trap("generator frame without pc")
         st.sf.prev_frame = rt.current_stack_frame
         rt.current_stack_frame = st.sf
@@ -231,7 +231,7 @@ noinline func interp_enter(st: InterpState*, flags: i32, frame_space: Value*) ->
     st.pc = b.byte_code_buf
     sf.prev_frame = rt.current_stack_frame
     rt.current_stack_frame = sf
-    st.ctx = b.realm # set the current realm
+    st.ctx = b.realm  # set the current realm
     return InterpEntry.run
 
 ## The `exception:` label of JS_CallInternal: record the backtrace, then unwind the stack
@@ -253,7 +253,7 @@ noinline func interp_unwind(st: InterpState*) -> bool:
                 let pos = js_value_get_int(val)
                 if pos == 0:
                     # enumerator: close it with a throw
-                    js_free_value(st.ctx, st.sp[-1]) # drop the next method
+                    js_free_value(st.ctx, st.sp[-1])  # drop the next method
                     st.sp -= 1
                     js_iterator_close(st.ctx, st.sp[-1], true) catch: recover ()
                 else:

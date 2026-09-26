@@ -74,12 +74,7 @@ func js_parse_class_getset(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*,
             let vd = fd_var(fd, idx)
             let var_kind = (i32)vd.var_kind
             let is_static1 = vd.is_static_private
-            if (var_kind == (i32)VarKind.private_field or
-                var_kind == (i32)VarKind.private_method or
-                var_kind == (i32)VarKind.private_getter_setter or
-                var_kind == ((i32)VarKind.private_getter + is_set) or
-                (var_kind == ((i32)VarKind.private_getter + 1 - is_set) and
-                 is_static != is_static1)):
+            if (var_kind == (i32)VarKind.private_field or var_kind == (i32)VarKind.private_method or var_kind == (i32)VarKind.private_getter_setter or var_kind == ((i32)VarKind.private_getter + is_set) or (var_kind == ((i32)VarKind.private_getter + 1 - is_set) and is_static != is_static1)):
                 try private_field_already_defined(s)
             vd.var_kind = VarKind.private_getter_setter
         else:
@@ -211,8 +206,7 @@ func js_parse_class_method(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*,
     try js_parse_function_decl2(s, func_type, func_kind, no_atom, start_ptr,
                                 ParseExportKind.none_, &method_fd_opt)
     let method_fd = method_fd_opt else trap("js_parse_class: no method")
-    if (func_type == ParseFunctionKind.derived_class_constructor or
-        func_type == ParseFunctionKind.class_constructor):
+    if (func_type == ParseFunctionKind.derived_class_constructor or func_type == ParseFunctionKind.class_constructor):
         return method_fd
     elif is_private:
         # needed for brand check
@@ -245,8 +239,7 @@ func js_parse_class_element(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*
     var is_static = false
     if s.token.val == TokenType.static_:
         let next = peek_token(s, true)
-        if not (next == TokenType.semicolon or next == TokenType.rbrace or
-                next == TokenType.lparen or next == TokenType.assign):
+        if not (next == TokenType.semicolon or next == TokenType.rbrace or next == TokenType.lparen or next == TokenType.assign):
             is_static = true
     var prop_type: i32 = -1
     if is_static:
@@ -268,9 +261,7 @@ func js_parse_class_element(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*
     prop_type &= ~prop_type_private
 
     let name = atoms.name
-    if ((name == atom_constructor and not is_static and prop_type != prop_type_ident) or
-        (name == atom_prototype and is_static) or
-        name == atom_hash_constructor):
+    if ((name == atom_constructor and not is_static and prop_type != prop_type_ident) or (name == atom_prototype and is_static) or name == atom_hash_constructor):
         try js_parse_error(s, "invalid method name")
     if prop_type == prop_type_get or prop_type == prop_type_set:
         try js_parse_class_getset(s, fd, atoms, class_fields, prop_type, is_static, is_private,

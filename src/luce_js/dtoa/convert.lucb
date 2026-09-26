@@ -124,7 +124,7 @@ func mul_pow(a: Mpb*, radix1: i32, radix_shift: i32, f0: i32, is_int: bool, e: i
                 f -= n
         else:
             f = -f
-            let l = (f + d - 1) // d # high bound for the number of limbs (XXX: make it better)
+            let l = (f + d - 1) // d  # high bound for the number of limbs (XXX: make it better)
             e_offset += l * limb_bits
             var extra_bits: i32
             if not is_int:
@@ -168,7 +168,7 @@ func round_to_d(pe: i32*, a: Mpb*, e_offset: i32, rnd_mode: RndMode) -> u64:
     if mpb_tab(a)[0] == 0 and a.len == 1:
         # zero result
         m = 0
-        e = 0 # don't care
+        e = 0  # don't care
     else:
         e = mpb_floor_log2(a) + 1 - e_offset
         let prec1: i32 = 53

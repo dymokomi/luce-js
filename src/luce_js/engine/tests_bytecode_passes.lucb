@@ -61,16 +61,16 @@ test "code_match skips line numbers and reads operands":
     var code: cutils.DynBuf
     cutils.dbuf_init(&code)
     defer cutils.dbuf_free(&code)
-    dbuf_temp_op(&code, TempOp.line_num)     # 0
+    dbuf_temp_op(&code, TempOp.line_num)  # 0
     dbuf_u32(&code, 7)
-    dbuf_op(&code, Op.get_loc)               # 5
+    dbuf_op(&code, Op.get_loc)  # 5
     dbuf_u16(&code, 3)
-    dbuf_op(&code, Op.put_loc)               # 8
+    dbuf_op(&code, Op.put_loc)  # 8
     dbuf_u16(&code, 3)
-    dbuf_op(&code, Op.drop)                  # 11
-    dbuf_op(&code, Op.if_false)              # 12
+    dbuf_op(&code, Op.drop)  # 11
+    dbuf_op(&code, Op.if_false)  # 12
     dbuf_u32(&code, 9)
-    dbuf_op(&code, Op.push_atom_value)       # 17
+    dbuf_op(&code, Op.push_atom_value)  # 17
     dbuf_u32(&code, 0x55)
     assert(code.size == 22)
     var cc = CodeContext(bc_buf = dbuf_bytes_or_empty(&code), bc_len = 22)
@@ -258,15 +258,15 @@ test "labels are followed through gotos, line numbers and drops":
     cutils.dbuf_init(&fd.byte_code)
     defer cutils.dbuf_free(&fd.byte_code)
     let code = &fd.byte_code
-    dbuf_temp_op(code, TempOp.label)     # 0: label 0
+    dbuf_temp_op(code, TempOp.label)  # 0: label 0
     dbuf_u32(code, 0)
     dbuf_temp_op(code, TempOp.line_num)  # 5
     dbuf_u32(code, 3)
-    dbuf_op(code, Op.goto_)              # 10: goto label 1
+    dbuf_op(code, Op.goto_)  # 10: goto label 1
     dbuf_u32(code, 1)
-    dbuf_temp_op(code, TempOp.label)     # 15: label 1
+    dbuf_temp_op(code, TempOp.label)  # 15: label 1
     dbuf_u32(code, 1)
-    dbuf_op(code, Op.drop)               # 20
+    dbuf_op(code, Op.drop)  # 20
     dbuf_op(code, Op.drop)
     dbuf_op(code, Op.return_undef)
     var slots: LabelSlot[2]
@@ -287,17 +287,17 @@ test "skip_dead_code stops at a referenced label":
     var code: cutils.DynBuf
     cutils.dbuf_init(&code)
     defer cutils.dbuf_free(&code)
-    dbuf_op(&code, Op.push_i32)            # 0
+    dbuf_op(&code, Op.push_i32)  # 0
     dbuf_u32(&code, 5)
-    dbuf_op(&code, Op.goto_)               # 5: goto label 1
+    dbuf_op(&code, Op.goto_)  # 5: goto label 1
     dbuf_u32(&code, 1)
-    dbuf_temp_op(&code, TempOp.label)      # 10: label 0, unreferenced
+    dbuf_temp_op(&code, TempOp.label)  # 10: label 0, unreferenced
     dbuf_u32(&code, 0)
-    dbuf_temp_op(&code, TempOp.line_num)   # 15
+    dbuf_temp_op(&code, TempOp.line_num)  # 15
     dbuf_u32(&code, 9)
-    dbuf_temp_op(&code, TempOp.label)      # 20: label 1
+    dbuf_temp_op(&code, TempOp.label)  # 20: label 1
     dbuf_u32(&code, 1)
-    dbuf_op(&code, Op.drop)                # 25
+    dbuf_op(&code, Op.drop)  # 25
     var slots: LabelSlot[2]
     slots[0] = LabelSlot(ref_count = 0, pos = 15, pos2 = -1, addr = -1)
     slots[1] = LabelSlot(ref_count = 2, pos = 25, pos2 = -1, addr = -1)

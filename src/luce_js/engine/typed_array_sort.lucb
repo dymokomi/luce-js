@@ -235,7 +235,7 @@ func js_typed_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*
             if tsc.exception != 0:
                 if tsc.exception == 1:
                     error(exception, "")
-                # detached typed array during the sort: no error
+            # detached typed array during the sort: no error
             elif let array_ptr = p.u.array.u.ptr:
                 len = cutils.min_int(len, (i32)p.u.array.count)
                 match elt_size:

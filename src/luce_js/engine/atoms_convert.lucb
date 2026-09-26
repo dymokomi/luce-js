@@ -246,9 +246,7 @@ func js_atom_symbol_has_description(ctx: Context*, v: Atom) -> bool:
     if js_atom_is_tagged_int_raw(v):
         return false
     let p = atom_array_get(rt, v)
-    return (((p.atom_type == js_atom_type_symbol and p.hash != js_atom_hash_private) or
-             p.atom_type == js_atom_type_global_symbol) and
-            not (p.len == 0 and p.is_wide_char))
+    return (((p.atom_type == js_atom_type_symbol and p.hash != js_atom_hash_private) or p.atom_type == js_atom_type_global_symbol) and not (p.len == 0 and p.is_wide_char))
 
 ## The text of `atom` as a NUL-terminated UTF-8 string, its length in `plen` when given
 ## (JS_AtomToCStringLen). Free it with `js_free_c_string`.

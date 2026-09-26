@@ -17,9 +17,7 @@
 # the pc2line table gives a source position for each PC value
 func add_pc2line_info(s: FunctionDef*, pc: u32, source_pos: u32):
     if let slots = s.line_number_slots:
-        if (s.line_number_count < s.line_number_size and
-            pc >= (u32)s.line_number_last_pc and
-            source_pos != (u32)s.line_number_last):
+        if (s.line_number_count < s.line_number_size and pc >= (u32)s.line_number_last_pc and source_pos != (u32)s.line_number_last):
             let slot = slots + (isize)s.line_number_count
             slot.pc = pc
             slot.source_pos = source_pos
@@ -41,8 +39,8 @@ func compute_pc2line_info(s: FunctionDef*):
 
         var last_line_num = get_line_col_cached(cache, &last_col_num,
                                                 buf_start + s.source_pos)
-        dbuf_put_leb128(&s.pc2line, (u32)last_line_num) # line number minus 1
-        dbuf_put_leb128(&s.pc2line, (u32)last_col_num) # column number minus 1
+        dbuf_put_leb128(&s.pc2line, (u32)last_line_num)  # line number minus 1
+        dbuf_put_leb128(&s.pc2line, (u32)last_col_num)  # column number minus 1
 
         for i in 0..<s.line_number_count:
             let slots = s.line_number_slots else trap("compute_pc2line_info: no line numbers")
@@ -62,9 +60,7 @@ func compute_pc2line_info(s: FunctionDef*):
             if diff_line == 0 and diff_col == 0:
                 continue
 
-            if (diff_line >= pc2line_base and
-                diff_line < pc2line_base + pc2line_range and
-                diff_pc <= pc2line_diff_pc_max):
+            if (diff_line >= pc2line_base and diff_line < pc2line_base + pc2line_range and diff_pc <= pc2line_diff_pc_max):
                 let code = (diff_line - pc2line_base) + diff_pc * pc2line_range + pc2line_op_first
                 dbuf_byte(&s.pc2line, (u8)code)
             else:

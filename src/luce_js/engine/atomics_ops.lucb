@@ -34,11 +34,9 @@ func js_atomics_get_buf(ctx: Context*, obj: Value, idx_val: Value, pidx: u64*, i
     let p = obj.u.obj
     var err = false
     if is_waitable != 0:
-        err = (p.class_id != ClassId.int32_array and
-               p.class_id != ClassId.big_int64_array)
+        err = (p.class_id != ClassId.int32_array and p.class_id != ClassId.big_int64_array)
     else:
-        err = not ((u16)p.class_id >= (u16)ClassId.int8_array and
-                   (u16)p.class_id <= (u16)ClassId.big_uint64_array)
+        err = not ((u16)p.class_id >= (u16)ClassId.int8_array and (u16)p.class_id <= (u16)ClassId.big_uint64_array)
     if err:
         try js_throw_type_error(ctx, "integer TypedArray expected")
     let ta = p.u.typed_array

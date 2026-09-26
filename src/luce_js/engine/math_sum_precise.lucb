@@ -73,9 +73,7 @@ func sum_precise_add(s: SumPreciseState*, d: f64):
     if e == 2047:
         if m == 0:
             # +/- infinity
-            if (s.state == SumPreciseStateEnum.nan or
-                (s.state == SumPreciseStateEnum.minus_infinity and sgn == 0) or
-                (s.state == SumPreciseStateEnum.infinity and sgn != 0)):
+            if (s.state == SumPreciseStateEnum.nan or (s.state == SumPreciseStateEnum.minus_infinity and sgn == 0) or (s.state == SumPreciseStateEnum.infinity and sgn != 0)):
                 s.state = SumPreciseStateEnum.nan
             else:
                 s.state = (SumPreciseStateEnum)((i32)SumPreciseStateEnum.infinity + sgn)

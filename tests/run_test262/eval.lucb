@@ -158,7 +158,8 @@ func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const 
                                          filename, error_line, strict_mode))
                     print_error(&line_buf[0])
                     new_errors += 1
-        else:  # should not have error
+        # should not have error
+        else:
             if let m = msg:
                 if s == none or not str_equal(cnull(s) else z(""), m):
                     if not has_error_line:

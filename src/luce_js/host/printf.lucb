@@ -19,7 +19,7 @@ func dbuf_put_formatted(s: DynBuf*, tmp: u8*, tmp_size: usize, len: i32) -> i32:
         return -1
     if (usize)len < tmp_size:
         return cutils.dbuf_put(s, tmp, (usize)len)
-    return 1    # too long for `tmp`: the caller formats into the buffer itself
+    return 1  # too long for `tmp`: the caller formats into the buffer itself
 
 ## Grow `s` for `len` more bytes and a NUL; the destination of a long conversion.
 func dbuf_long_destination(s: DynBuf*, len: i32) -> u8*?:
@@ -138,11 +138,11 @@ func js_printf_internal(ctx: Context*, argc: i32, argv: Value*, fp: void*?) -> V
 func printf_conversions(ctx: Context*, argc: i32, argv: Value*, fmt_str: const u8*, fmt_len: usize,
                         dbuf: DynBuf*, failure: PrintfFailure*) -> !:
     var fmtbuf: u8[32] = ---
-    var cbuf: u8[7] = ---    # UTF8_CHAR_LEN_MAX + 1
+    var cbuf: u8[7] = ---  # UTF8_CHAR_LEN_MAX + 1
     var i: i32 = 1
     var fmtp = fmt_str
     let fmt_end = fmt_str + fmt_len
-    let fmt_last: usize = 31    # the index of the last byte of fmtbuf
+    let fmt_last: usize = 31  # the index of the last byte of fmtbuf
     while fmtp < fmt_end:
         let p = fmtp
         while fmtp < fmt_end and *fmtp != '%':
@@ -151,7 +151,7 @@ func printf_conversions(ctx: Context*, argc: i32, argv: Value*, fmt_str: const u
         if fmtp >= fmt_end:
             break
         var q: usize = 0
-        fmtbuf[q] = *fmtp    # copy '%'
+        fmtbuf[q] = *fmtp  # copy '%'
         q += 1
         fmtp += 1
 

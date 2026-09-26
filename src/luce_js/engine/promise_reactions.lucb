@@ -111,7 +111,7 @@ func promise_reaction_of(el: cutils.ListHead*) -> PromiseReactionData*:
 ## Settle the pending `promise` with `value`: queue a job for each reaction of the outcome
 ## and drop the others (fulfill_or_reject_promise).
 func fulfill_or_reject_promise(ctx: Context*, promise: Value, value: Value, is_reject: bool):
-    let raw = js_get_opaque(promise, (u32)ClassId.promise) else return   # should never happen
+    let raw = js_get_opaque(promise, (u32)ClassId.promise) else return  # should never happen
     let s = (PromiseData*)raw
     if s.promise_state != PromiseState.pending:
         return  # should never happen

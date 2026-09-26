@@ -368,8 +368,7 @@ func js_parse_callee(s: ParseState*, call_type: FuncCallType,
 # Whether a call with the callee opcode `opcode` is a method call (the object is on the
 # stack below the function).
 func is_method_call_opcode(opcode: i32) -> bool:
-    return (opcode == (i32)Op.get_field or opcode == (i32)TempOp.scope_get_private_field or
-            opcode == (i32)Op.get_array_el or opcode == (i32)TempOp.scope_get_ref)
+    return (opcode == (i32)Op.get_field or opcode == (i32)TempOp.scope_get_private_field or opcode == (i32)Op.get_array_el or opcode == (i32)TempOp.scope_get_ref)
 
 # The arguments of a call and the call (parse_func_call2 onwards). The token after the
 # '(' is current, or the template of a tagged template; `op_token_ptr` is the position

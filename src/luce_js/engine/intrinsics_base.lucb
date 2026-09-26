@@ -58,9 +58,9 @@ func js_add_intrinsic_basic_objects(ctx: Context*) -> !:
         let func_obj = js_new_c_constructor(ctx, -1, name,
                                             ft.generic, n_args, CFunctionEnum.constructor_or_func_magic,
                                             (i32)i, obj,
-                                            funcs[0..<0], # no constructor fields (NULL, 0)
-                                            funcs,
+                                            funcs[0..<0], funcs,
                                             0) catch failure:
+            # no constructor fields (NULL, 0)
             js_free_value(ctx, obj)
             error(failure.code, failure.message)
         let proto = js_get_property(ctx, func_obj, atom_prototype) catch failure:
@@ -127,12 +127,10 @@ pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
     # add caller and arguments properties to throw a TypeError
     discard(try js_define_property(ctx, ctx.function_proto, atom_caller, js_undefined(),
                                    ctx.throw_type_error, ctx.throw_type_error,
-                                   prop_has_get | prop_has_set |
-                                   prop_has_configurable | prop_configurable))
+                                   prop_has_get | prop_has_set | prop_has_configurable | prop_configurable))
     discard(try js_define_property(ctx, ctx.function_proto, atom_arguments, js_undefined(),
                                    ctx.throw_type_error, ctx.throw_type_error,
-                                   prop_has_get | prop_has_set |
-                                   prop_has_configurable | prop_configurable))
+                                   prop_has_get | prop_has_set | prop_has_configurable | prop_configurable))
     # (C ignores a failure of the seal)
     let sealed = js_object_seal(ctx, js_undefined(), 1, &ctx.throw_type_error, 1) catch failure:
         recover js_exception()
@@ -154,9 +152,9 @@ pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
                                                  ft.generic, 1, CFunctionEnum.constructor_or_func_magic,
                                                  (i32)js_func_normal,
                                                  js_undefined(),
-                                                 js_function_proto_funcs[0..<0], # (NULL, 0)
-                                                 js_function_proto_funcs,
+                                                 js_function_proto_funcs[0..<0], js_function_proto_funcs,
                                                  js_new_ctor_proto_exist)
+    # (NULL, 0)
 
     # Iterator
     var obj2 = try js_new_c_constructor(ctx, (i32)ClassId.iterator, "Iterator",
@@ -210,9 +208,9 @@ pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
     obj1 = try js_new_c_constructor(ctx, (i32)ClassId.boolean, "Boolean",
                                     js_boolean_constructor, 1, CFunctionEnum.constructor_or_func, 0,
                                     js_undefined(),
-                                    js_boolean_proto_funcs[0..<0], # (NULL, 0)
-                                    js_boolean_proto_funcs,
+                                    js_boolean_proto_funcs[0..<0], js_boolean_proto_funcs,
                                     js_new_ctor_proto_class)
+    # (NULL, 0)
     js_free_value(ctx, obj1)
     try js_set_object_data(ctx, protos[(usize)ClassId.boolean], js_new_bool(false))
 
@@ -252,9 +250,9 @@ pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
                                     ft.generic, 1, CFunctionEnum.constructor_or_func_magic,
                                     (i32)js_func_generator,
                                     ctx.function_ctor,
-                                    js_generator_function_proto_funcs[0..<0], # (NULL, 0)
-                                    js_generator_function_proto_funcs,
+                                    js_generator_function_proto_funcs[0..<0], js_generator_function_proto_funcs,
                                     js_new_ctor_no_global | js_new_ctor_readonly)
+    # (NULL, 0)
     js_free_value(ctx, obj1)
     discard(try js_set_constructor2(ctx, protos[(usize)ClassId.generator_function],
                                     protos[(usize)ClassId.generator],

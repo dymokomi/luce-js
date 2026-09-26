@@ -218,11 +218,11 @@ func stat_info(buf: const u8*) -> StatInfo:
 ## The NUL-terminated `d_name` of the `struct dirent` readdir() answered.
 func dirent_name(d: void*) -> const u8*:
     if platform.windows:
-        return (const u8*)d + 8     # MinGW-w64: d_ino (long), d_reclen, d_namlen
+        return (const u8*)d + 8  # MinGW-w64: d_ino (long), d_reclen, d_namlen
     elif platform.macos:
-        return (const u8*)d + 21    # d_ino, d_seekoff, d_reclen, d_namlen, d_type
+        return (const u8*)d + 21  # d_ino, d_seekoff, d_reclen, d_namlen, d_type
     else:
-        return (const u8*)d + 19    # d_ino, d_off, d_reclen, d_type
+        return (const u8*)d + 19  # d_ino, d_off, d_reclen, d_type
 
 # mark: Time ====================================================================================
 

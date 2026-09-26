@@ -196,7 +196,7 @@ func js_to_int64_free(ctx: Context*, pres: i64*, val0: Value) -> !:
                     if (bits >> 63) != 0:
                         ret = -%ret
                 else:
-                    ret = 0 # also handles NaN and +inf
+                    ret = 0  # also handles NaN and +inf
             _:
                 val = js_to_number_free(ctx, val) catch failure:
                     *pres = 0
@@ -242,7 +242,7 @@ func js_to_int32_free(ctx: Context*, pres: i32*, val0: Value) -> !:
                     if (bits >> 63) != 0:
                         ret = -%ret
                 else:
-                    ret = 0 # also handles NaN and +inf
+                    ret = 0  # also handles NaN and +inf
             _:
                 val = js_to_number_free(ctx, val) catch failure:
                     *pres = 0

@@ -18,8 +18,8 @@ pub enum Tag as i64:
     symbol = -8
     string = -7
     string_rope = -6
-    module = -3                     # used internally
-    function_bytecode = -2          # used internally
+    module = -3  # used internally
+    function_bytecode = -2  # used internally
     object = -1
     int = 0
     boolean = 1

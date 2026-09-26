@@ -31,10 +31,10 @@ func js_strict_eq_number(d1: f64, d2: f64, eq_mode: StrictEqMode) -> bool:
         if nan1 or nan2:
             return nan1 == nan2
         elif eq_mode == StrictEqMode.same_value_zero:
-            return d1 == d2     # +0 == -0
+            return d1 == d2  # +0 == -0
         else:
-            return d1.bits() == d2.bits()   # +0 != -0
-    return d1 == d2     # if NaN return false and +0 == -0
+            return d1.bits() == d2.bits()  # +0 != -0
+    return d1 == d2  # if NaN return false and +0 == -0
 
 ## Compare two values without conversion in `eq_mode`; the operands are not consumed.
 func js_strict_eq2(ctx: Context*, op1: Value, op2: Value, eq_mode: StrictEqMode) -> bool:
@@ -132,8 +132,8 @@ func js_operator_in(ctx: Context*, sp: Value*) -> !:
 
 ## `#field in obj`: sp[-2] is the object, sp[-1] the field name or the method function.
 func js_operator_private_in(ctx: Context*, sp: Value*) -> !:
-    let op1 = sp[-2]     # object
-    let op2 = sp[-1]     # field name or method function
+    let op1 = sp[-2]  # object
+    let op2 = sp[-1]  # field name or method function
 
     if op1.tag != Tag.object:
         try js_throw_type_error(ctx, "invalid 'in' operand")
@@ -191,7 +191,7 @@ func js_operator_typeof(ctx: Context*, op1: Value) -> Atom:
                 return atom_undefined
             elif js_is_function(ctx, op1):
                 return atom_function
-            return atom_object      # obj_type
+            return atom_object  # obj_type
         .null:
             return atom_object
         .symbol:
@@ -221,8 +221,7 @@ func js_operator_delete(ctx: Context*, sp: Value*) -> !:
 func js_throw_type_error_internal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var must_throw = true
     if let b = js_get_function_bytecode(this_val):
-        must_throw = (((i32)b.js_mode & js_mode_strict) != 0 or not b.has_prototype or
-            argc >= 1)
+        must_throw = (((i32)b.js_mode & js_mode_strict) != 0 or not b.has_prototype or argc >= 1)
     if must_throw:
         try js_throw_type_error(ctx, "invalid property access")
     return js_undefined()
@@ -239,7 +238,7 @@ func js_function_proto_line_number(ctx: Context*, this_val: Value, is_col: i32) 
     if let b = js_get_function_bytecode(this_val):
         if b.has_debug:
             var col_num: i32 = 0
-            let line_num = find_line_num(ctx, b, 0xffffffff, &col_num)     # pc_value -1
+            let line_num = find_line_num(ctx, b, 0xffffffff, &col_num)  # pc_value -1
             if is_col != 0:
                 return js_new_int32(col_num)
             else:

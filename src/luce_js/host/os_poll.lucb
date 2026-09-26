@@ -144,9 +144,8 @@ func js_os_poll(ctx: Context*) -> i32:
                     return 0
                 el = el.next else return -1
 
-        if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers)
-                and cutils.list_empty(&ts.port_list)):
-            return -1 # no more events
+        if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers) and cutils.list_empty(&ts.port_list)):
+            return -1  # no more events
 
         var min_delay: i32 = 0
         if not cutils.list_empty(&ts.os_timers):
@@ -168,7 +167,7 @@ func js_os_poll(ctx: Context*) -> i32:
                     min_delay = (i32)delay
                 el = el.next else return -1
         else:
-            min_delay = -1 # infinite
+            min_delay = -1  # infinite
 
         var nfds: i32 = 0
         var el = ts.os_rw_handlers.next else return -1
@@ -232,9 +231,8 @@ func js_os_poll_windows(ctx: Context*) -> i32:
 
         # XXX: handle signals if useful
 
-        if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers)
-                and cutils.list_empty(&ts.port_list)):
-            return -1 # no more events
+        if (cutils.list_empty(&ts.os_rw_handlers) and cutils.list_empty(&ts.os_timers) and cutils.list_empty(&ts.port_list)):
+            return -1  # no more events
 
         var min_delay: i32 = 0
         if not cutils.list_empty(&ts.os_timers):
@@ -263,7 +261,7 @@ func js_os_poll_windows(ctx: Context*) -> i32:
         while el != &ts.os_rw_handlers:
             let rh = rw_handler_of(el)
             if rh.fd == 0 and not js.js_is_null(rh.rw_func[0]):
-                handles[count] = (void*?)(usize)win_get_osfhandle(rh.fd) # stdin
+                handles[count] = (void*?)(usize)win_get_osfhandle(rh.fd)  # stdin
                 count += 1
                 if count == maximum_wait_objects:
                     break
@@ -282,7 +280,7 @@ func js_os_poll_windows(ctx: Context*) -> i32:
                 break
 
         if count > 0:
-            var timeout: u32 = 0xffffffff # INFINITE
+            var timeout: u32 = 0xffffffff  # INFINITE
             if min_delay != -1:
                 timeout = (u32)min_delay
             let ret = WaitForMultipleObjects((u32)count, &handles[0], 0, timeout)

@@ -4,6 +4,13 @@
 set -e
 cd "$(dirname "$0")"
 
+# Every fragment is laid out as the pinned compiler's formatter lays it out (tests/repl.lucb is ljsc's output, compared as
+# generated).
+echo "== luce-base fmt --check"
+for file in $(git ls-files '*.lucb' | grep -v '^tests/repl.lucb$'); do
+    luce-base fmt "$file" --check > /dev/null || { echo "$file is not formatted (luce-base fmt $file --write)"; exit 1; }
+done
+
 for module in cutils dtoa engine host; do
     echo "== luce-base test src/luce_js/$module"
     luce-base test "src/luce_js/$module"

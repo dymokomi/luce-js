@@ -38,17 +38,17 @@ func js_to_quoted_string(ctx: Context*, b: StringBuffer*, val1: Value) -> !:
         let c = (u32)string_getc(p, &i)
         var quote: u32 = 0
         match c:
-            9: # '\t'
+            9:  # '\t'
                 quote = (u32)'t'
-            13: # '\r'
+            13:  # '\r'
                 quote = (u32)'r'
-            10: # '\n'
+            10:  # '\n'
                 quote = (u32)'n'
-            8: # '\b'
+            8:  # '\b'
                 quote = (u32)'b'
-            12: # '\f'
+            12:  # '\f'
                 quote = (u32)'f'
-            34, 92: # '"', '\\'
+            34, 92:  # '"', '\\'
                 quote = c
             _:
                 discard(0)

@@ -153,11 +153,11 @@ test "small bigints on the stack":
     assert(a.len == 1 and js_bigint_tab(a)[0] == 7)
 
 test "shr_rndn rounds to nearest, ties to even":
-    assert(shr_rndn(0x600, 10) == 2)     # 1.5 -> 2
-    assert(shr_rndn(0xa00, 10) == 2)     # 2.5 -> 2
+    assert(shr_rndn(0x600, 10) == 2)  # 1.5 -> 2
+    assert(shr_rndn(0xa00, 10) == 2)  # 2.5 -> 2
     assert(shr_rndn(0xa01, 10) == 3)
     assert(shr_rndn(0x5ff, 10) == 1)
-    assert(shr_rndn(0xe00, 10) == 4)     # 3.5 -> 4
+    assert(shr_rndn(0xe00, 10) == 4)  # 3.5 -> 4
 
 test "mantissa and exponent":
     var mem: u32[8]

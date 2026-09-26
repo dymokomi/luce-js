@@ -72,7 +72,7 @@ func js_proxy_own_keys(ctx: Context*, s: ProxyData*, prop_array: Value, ptab: Pr
                 error(failure.code, failure.message)
             js_free_value(ctx, val)
             t[(usize)i].atom = atom
-            t[(usize)i].is_enumerable = false     # XXX: redundant?
+            t[(usize)i].is_enumerable = false  # XXX: redundant?
 
         # check duplicate properties (XXX: inefficient, could store the properties an a
         # temporary object to use the hash)
@@ -95,7 +95,7 @@ func js_proxy_own_keys(ctx: Context*, s: ProxyData*, prop_array: Value, ptab: Pr
         let tab2 = *ptab2 else trap("js_proxy_own_keys: keys without a table")
         var desc: PropertyDescriptor = ---
         let res = try js_get_own_property_internal(ctx, &desc, s.target.u.obj, tab2[i].atom)
-        if res:     # safety, property should be found
+        if res:  # safety, property should be found
             js_free_desc(ctx, &desc)
             if (desc.flags & prop_configurable) == 0 or not is_extensible:
                 let idx = find_prop_key(tab, (i32)len, tab2[i].atom)

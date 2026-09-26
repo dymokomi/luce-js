@@ -52,7 +52,7 @@ pub func js_atod(text: const u8*, pnext: const u8**?, radix: i32, flags: i32,
         dval = cutils.uint64_as_float64(a)
     else:
         # fail:
-        dval = cutils.uint64_as_float64(0x7ff8000000000000) # NAN
+        dval = cutils.uint64_as_float64(0x7ff8000000000000)  # NAN
     # done1:
     if let next = pnext:
         *next = p
@@ -85,33 +85,30 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
         if (p[1] == 'x' or p[1] == 'X') and (radix == 0 or radix == 16):
             p += 2
             radix = 16
-        elif ((p[1] == 'o' or p[1] == 'O') and radix == 0 and
-                (flags & atod_accept_bin_oct) != 0):
+        elif ((p[1] == 'o' or p[1] == 'O') and radix == 0 and (flags & atod_accept_bin_oct) != 0):
             p += 2
             radix = 8
-        elif ((p[1] == 'b' or p[1] == 'B') and radix == 0 and
-                (flags & atod_accept_bin_oct) != 0):
+        elif ((p[1] == 'b' or p[1] == 'B') and radix == 0 and (flags & atod_accept_bin_oct) != 0):
             p += 2
             radix = 2
-        elif ((p[1] >= '0' and p[1] <= '9') and radix == 0 and
-                (flags & atod_accept_legacy_octal) != 0):
+        elif ((p[1] >= '0' and p[1] <= '9') and radix == 0 and (flags & atod_accept_legacy_octal) != 0):
             sep = 256
             var i: usize = 1
             while p[i] >= '0' and p[i] <= '7':
                 i += 1
             if p[i] == '8' or p[i] == '9':
-                has_prefix = false # goto no_prefix
+                has_prefix = false  # goto no_prefix
             else:
                 p += 1
                 radix = 8
         else:
-            has_prefix = false # goto no_prefix
+            has_prefix = false  # goto no_prefix
         # there must be a digit after the prefix
         if has_prefix and to_digit(*p) >= radix:
             return (none, p)
     else:
         if (flags & atod_int_only) == 0 and cutils.strstart(p, "Infinity", &p):
-            return (infinity | (is_neg << 63), p) # goto overflow
+            return (infinity | (is_neg << 63), p)  # goto overflow
     if radix == 0:
         radix = 10
 
@@ -136,8 +133,7 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
     var dot_pos: i32 = -1
     # skip leading zeros
     while true:
-        if (*p == '.' and (p > p_start or to_digit(p[1]) < radix) and
-                (flags & atod_int_only) == 0):
+        if (*p == '.' and (p > p_start or to_digit(p[1]) < radix) and (flags & atod_int_only) == 0):
             if (i32)*p == sep:
                 return (none, p)
             if dot_pos >= 0:
@@ -153,8 +149,7 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
 
     let sig_pos = pos
     while true:
-        if (*p == '.' and (p > p_start or to_digit(p[1]) < radix) and
-                (flags & atod_int_only) == 0):
+        if (*p == '.' and (p > p_start or to_digit(p[1]) < radix) and (flags & atod_int_only) == 0):
             if (i32)*p == sep:
                 return (none, p)
             if dot_pos >= 0:
@@ -201,12 +196,7 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
     var expn: i32 = 0
     var expn_overflow = false
     var is_bin_exp = false
-    if ((flags & atod_int_only) == 0 and
-            ((radix == 10 and (*p == 'e' or *p == 'E')) or
-             (radix != 10 and (*p == '@' or
-                               (radix_bits >= 1 and radix_bits <= 4 and
-                                (*p == 'p' or *p == 'P'))))) and
-            p > p_start):
+    if ((flags & atod_int_only) == 0 and ((radix == 10 and (*p == 'e' or *p == 'E')) or (radix != 10 and (*p == '@' or (radix_bits >= 1 and radix_bits <= 4 and (*p == 'p' or *p == 'P'))))) and p > p_start):
         is_bin_exp = *p == 'p' or *p == 'P'
         p += 1
         var exp_is_neg = false
@@ -217,7 +207,7 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
             p += 1
         var c = to_digit(*p)
         if c >= 10:
-            return (none, p) # XXX: could stop before the exponent part
+            return (none, p)  # XXX: could stop before the exponent part
         expn = c
         p += 1
         while true:
@@ -239,7 +229,7 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
             if exp_is_neg:
                 return (0 | (is_neg << 63), p)
             else:
-                return (infinity | (is_neg << 63), p) # infinity
+                return (infinity | (is_neg << 63), p)  # infinity
     if p == p_start:
         return (none, p)
 
@@ -255,17 +245,17 @@ func atod_bits(text: const u8*, radix0: i32, flags: i32,
             expn -= expn_offset * radix_bits
             let expn1 = expn + digit_count * radix_bits
             if expn1 >= 1024 + radix_bits:
-                return (infinity | (is_neg << 63), p) # goto overflow
+                return (infinity | (is_neg << 63), p)  # goto overflow
             elif expn1 <= -1075:
-                return (0 | (is_neg << 63), p) # goto underflow
+                return (0 | (is_neg << 63), p)  # goto underflow
             m = round_to_d(&e, tmp0, -expn, .rndn)
         else:
             expn -= expn_offset
             let expn1 = expn + digit_count
             if expn1 >= (i32)max_exponent[(usize)(radix - 2)] + 1:
-                return (infinity | (is_neg << 63), p) # goto overflow
+                return (infinity | (is_neg << 63), p)  # goto overflow
             elif expn1 <= (i32)min_exponent[(usize)(radix - 2)]:
-                return (0 | (is_neg << 63), p) # goto underflow
+                return (0 | (is_neg << 63), p)  # goto underflow
             m = mul_pow_round_to_d(&e, tmp0, radix1, radix_shift, expn, .rndn)
         if m == 0:
             # underflow:

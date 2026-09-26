@@ -298,8 +298,7 @@ func js_binary_arith_slow1(ctx: Context*, sp: Value*, op: Op) -> !:
             _:
                 trap("js_binary_arith_slow: unexpected operator")
         sp[-2] = js_new_int64(v)
-    elif ((tag1 == Tag.short_big_int or tag1 == Tag.big_int) and
-          (tag2 == Tag.short_big_int or tag2 == Tag.big_int)):
+    elif ((tag1 == Tag.short_big_int or tag1 == Tag.big_int) and (tag2 == Tag.short_big_int or tag2 == Tag.big_int)):
         try js_binary_arith_bigint(ctx, sp, op, op1, op2)
     else:
         var d1: f64 = 0.0

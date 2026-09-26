@@ -90,13 +90,14 @@ let limb_bits: i32 = 1 << limb_log2_bits
 
 let radix_max: i32 = 36
 
-let dbignum_len_max: usize = 52 # ~ 2^(1072+53)*36^100 (dtoa)
-let mant_len_max: usize = 18 # < 36^100
+let dbignum_len_max: usize = 52  # ~ 2^(1072+53)*36^100 (dtoa)
+let mant_len_max: usize = 18  # < 36^100
 
 # the represented number is sum(i, tab[i]*2^(LIMB_BITS * i)) (C mpb_t)
 struct Mpb:
-    var len: i32 # >= 1
-    # limb_t tab[] follows the struct: reached through mpb_tab
+    var len: i32  # >= 1
+
+# limb_t tab[] follows the struct: reached through mpb_tab
 
 func mpb_tab(r: const Mpb*) -> u32*:
     return (u32*)((u8*)r + sizeof(Mpb))

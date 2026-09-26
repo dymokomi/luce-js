@@ -26,12 +26,7 @@ func mark_eval_captured_variables(ctx: Context*, s: FunctionDef*, scope_level: i
 
 # XXX: should handle the argument scope generically
 func is_var_in_arg_scope(var_name: Atom, var_kind: VarKind) -> bool:
-    return (var_name == atom_home_object or
-            var_name == atom_this_active_func or
-            var_name == atom_new_target or
-            var_name == atom_this or
-            var_name == atom__arg_var_ or
-            var_kind == VarKind.function_name)
+    return (var_name == atom_home_object or var_name == atom_this_active_func or var_name == atom_new_target or var_name == atom_this or var_name == atom__arg_var_ or var_kind == VarKind.function_name)
 
 # add_var(ctx, fd, name) where QuickJS keeps the -1 of a failure.
 func add_var_unchecked(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32:
@@ -148,9 +143,7 @@ func add_eval_variables(ctx: Context*, s: FunctionDef*):
             for idx in 0..<fd.closure_var_count:
                 let cv = fd_closure_var(fd, idx)
                 # Global variables are removed but module definitions are kept.
-                if (cv.closure_type != ClosureType.global_ref and
-                    cv.closure_type != ClosureType.global_decl and
-                    cv.closure_type != ClosureType.global):
+                if (cv.closure_type != ClosureType.global_ref and cv.closure_type != ClosureType.global_decl and cv.closure_type != ClosureType.global):
                     add_eval_closure_var(ctx, s, fd, ClosureType.ref, idx, cv.var_name,
                                          cv.is_const, cv.is_lexical, cv.var_kind)
 
@@ -225,7 +218,7 @@ func add_closure_variables(ctx: Context*, s: FunctionDef*, b: FunctionBytecode*,
             .local_, .arg, .ref, .module_decl, .module_import:
                 discard(0)
             .global_ref, .global_decl, .global:
-                continue # not necessary to add global variables
+                continue  # not necessary to add global variables
             _:
                 trap("add_closure_variables: bad closure type")
         let cv = push_eval_closure_var(s)

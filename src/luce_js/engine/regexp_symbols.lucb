@@ -38,8 +38,7 @@ func js_regexp_symbol_match(ctx: Context*, this_val: Value, argc: i32, argv: Val
     if not global:
         a = try js_reg_exp_exec(ctx, rx, s)
     else:
-        let full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or
-                            string_indexof_char(p, (i32)'v', 0) >= 0)
+        let full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or string_indexof_char(p, (i32)'v', 0) >= 0)
 
         discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0)))
         a = try js_new_array(ctx)
@@ -159,8 +158,7 @@ func js_regexp_symbol_match_all(ctx: Context*, this_val: Value, argc: i32, argv:
     it.iterated_string = s
     let strp = flags.u.string
     it.global = string_indexof_char(strp, (i32)'g', 0) >= 0
-    it.unicode = (string_indexof_char(strp, (i32)'u', 0) >= 0 or
-                  string_indexof_char(strp, (i32)'v', 0) >= 0)
+    it.unicode = (string_indexof_char(strp, (i32)'u', 0) >= 0 or string_indexof_char(strp, (i32)'v', 0) >= 0)
     it.done = false
     js_set_opaque(iter, it)
     return iter
@@ -341,8 +339,7 @@ func js_regexp_symbol_replace(ctx: Context*, this_val: Value, argc: i32, argv: V
     var full_unicode = false
     let is_global = -1 != string_indexof_char(p, (i32)'g', 0)
     if is_global:
-        full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or
-                        string_indexof_char(p, (i32)'v', 0) >= 0)
+        full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or string_indexof_char(p, (i32)'v', 0) >= 0)
         discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0)))
 
     while true:

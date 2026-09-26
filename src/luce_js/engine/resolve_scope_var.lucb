@@ -58,8 +58,7 @@ func emit_local_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op: T
                            label_done: i32, var_idx0: i32) -> i32:
     var var_idx = var_idx0
     let is_arg = (var_idx & argument_var_offset) != 0
-    if ((op == TempOp.scope_put_var or op == TempOp.scope_make_ref) and
-        not is_arg and fd_var(s, var_idx).is_const):
+    if ((op == TempOp.scope_put_var or op == TempOp.scope_make_ref) and not is_arg and fd_var(s, var_idx).is_const):
         # only happens when assigning a function expression name in strict mode
         emit_throw_var_ro(ctx, bc, var_name)
         return pos_next
@@ -234,9 +233,7 @@ func emit_global_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op: 
 
 # Whether closure variable `cv` refers to a global variable.
 func is_global_closure_var(cv: const ClosureVar*) -> bool:
-    return (cv.closure_type == ClosureType.global or
-            cv.closure_type == ClosureType.global_decl or
-            cv.closure_type == ClosureType.global_ref)
+    return (cv.closure_type == ClosureType.global or cv.closure_type == ClosureType.global_decl or cv.closure_type == ClosureType.global_ref)
 
 # mark: resolve_scope_var =======================================================================
 
@@ -261,10 +258,7 @@ func resolve_scope_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom,
                               bc_buf: u8*?, ls: LabelSlot*?, pos_next: i32,
                               plabel_done: i32*) -> i32!:
     # XXX: could be simpler to use a specific function to resolve the pseudo variables
-    let is_pseudo_var = (var_name == atom_home_object or
-                         var_name == atom_this_active_func or
-                         var_name == atom_new_target or
-                         var_name == atom_this)
+    let is_pseudo_var = (var_name == atom_home_object or var_name == atom_this_active_func or var_name == atom_new_target or var_name == atom_this)
     let is_put_or_ref = op == TempOp.scope_put_var or op == TempOp.scope_make_ref
 
     # resolve local scoped variables
@@ -377,7 +371,7 @@ func resolve_scope_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom,
             var_object_test(ctx, s, var_name, op, bc, plabel_done, false)
 
         if fd.is_eval:
-            break # it it necessarily the top level function
+            break  # it it necessarily the top level function
 
     # check direct eval scope (in the closure of the eval function which is necessarily
     # at the top level)
@@ -397,9 +391,7 @@ func resolve_scope_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom,
                                                   pos_next, *plabel_done, cidx)
                 return emit_closure_var_access(ctx, s, var_name, op, bc, bc_buf, ls, pos_next,
                                                *plabel_done, cidx)
-            elif ((cv.var_name == atom__var_ or
-                   cv.var_name == atom__arg_var_ or
-                   cv.var_name == atom__with_) and not is_pseudo_var):
+            elif ((cv.var_name == atom__var_ or cv.var_name == atom__arg_var_ or cv.var_name == atom__with_) and not is_pseudo_var):
                 let is_with = cv.var_name == atom__with_
                 var cidx = idx1
                 if fd != s:

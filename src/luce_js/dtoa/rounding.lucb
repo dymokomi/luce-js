@@ -73,8 +73,8 @@ func pow_ui_inv(pr_inv: u32*, pshift: i32*, a: u32, b: u32) -> u32:
 # mark: Rounding ================================================================================
 
 enum RndMode as i32:
-    rndn = 0 # round to nearest, ties to even
-    rndna = 1 # round to nearest, ties away from zero
+    rndn = 0  # round to nearest, ties to even
+    rndna = 1  # round to nearest, ties away from zero
     rndz = 2
 
 func mpb_get_bit(r: const Mpb*, k0: i32) -> i32:

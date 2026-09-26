@@ -207,7 +207,7 @@ func js_parse_string_chars(s: ParseState*, b: StringBuffer*, sep: i32, do_throw:
                     if p[1] == '\n':
                         p += 1
                     c = (u32)'\n'
-                # do not update s->line_num
+            # do not update s->line_num
             elif c == (u32)'\n' or c == (u32)'\r':
                 try js_parse_string_fail(s, do_throw, s.token.ptr, "unexpected end of string")
         p += 1
@@ -298,8 +298,7 @@ func js_parse_string(s: ParseState*, sep: i32, do_throw: bool, p: const u8*, tok
     *pp = p_end
 
 func token_is_pseudo_keyword(s: ParseState*, atom: Atom) -> bool:
-    return (s.token.val == TokenType.ident and s.token.u.ident.atom == atom and
-            not s.token.u.ident.has_escape)
+    return (s.token.val == TokenType.ident and s.token.u.ident.atom == atom and not s.token.u.ident.has_escape)
 
 # mark: Regular expression literals =============================================================
 
@@ -424,17 +423,9 @@ func update_token_ident(s: ParseState*):
     var parent_async = false
     if let parent = fd.parent:
         parent_generator = (parent.func_kind & js_func_generator) != 0
-        parent_async = ((parent.func_kind & js_func_async) != 0 or
-                        parent.func_type == ParseFunctionKind.class_static_init)
+        parent_async = ((parent.func_kind & js_func_async) != 0 or parent.func_type == ParseFunctionKind.class_static_init)
     let in_arrow_params = fd.func_type == ParseFunctionKind.arrow and not fd.in_function_body
-    if (atom <= atom_last_keyword or
-        (atom <= atom_last_strict_keyword and ((i32)fd.js_mode & js_mode_strict) != 0) or
-        (atom == atom_yield and
-         ((fd.func_kind & js_func_generator) != 0 or (in_arrow_params and parent_generator))) or
-        (atom == atom_await and
-         (s.is_module or (fd.func_kind & js_func_async) != 0 or
-          fd.func_type == ParseFunctionKind.class_static_init or
-          (in_arrow_params and parent_async)))):
+    if (atom <= atom_last_keyword or (atom <= atom_last_strict_keyword and ((i32)fd.js_mode & js_mode_strict) != 0) or (atom == atom_yield and ((fd.func_kind & js_func_generator) != 0 or (in_arrow_params and parent_generator))) or (atom == atom_await and (s.is_module or (fd.func_kind & js_func_async) != 0 or fd.func_type == ParseFunctionKind.class_static_init or (in_arrow_params and parent_async)))):
         if s.token.u.ident.has_escape:
             s.token.u.ident.is_reserved = true
             s.token.val = TokenType.ident

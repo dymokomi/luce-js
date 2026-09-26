@@ -16,66 +16,66 @@
 ## The predefined classes (JS_CLASS_*). A class allocated at run time has an id at or above
 ## `class_init_count` and is carried in the same field by cast.
 pub enum ClassId as u16:
-    object = 1                      # must be first
-    array = 2                       # u.array       | length
+    object = 1  # must be first
+    array = 2  # u.array       | length
     error_ = 3
-    number = 4                      # u.object_data
-    string = 5                      # u.object_data
-    boolean = 6                     # u.object_data
-    symbol = 7                      # u.object_data
-    arguments = 8                   # u.array       | length
-    mapped_arguments = 9            # u.array       | length
-    date = 10                       # u.object_data
+    number = 4  # u.object_data
+    string = 5  # u.object_data
+    boolean = 6  # u.object_data
+    symbol = 7  # u.object_data
+    arguments = 8  # u.array       | length
+    mapped_arguments = 9  # u.array       | length
+    date = 10  # u.object_data
     module_ns = 11
-    c_function = 12                 # u.cfunc
-    bytecode_function = 13          # u.func
-    bound_function = 14             # u.bound_function
-    c_function_data = 15            # u.c_function_data_record
-    generator_function = 16         # u.func
-    for_in_iterator = 17            # u.for_in_iterator
-    regexp = 18                     # u.regexp
-    array_buffer = 19               # u.array_buffer
-    shared_array_buffer = 20        # u.array_buffer
-    uint8c_array = 21               # u.array (typed_array)
-    int8_array = 22                 # u.array (typed_array)
-    uint8_array = 23                # u.array (typed_array)
-    int16_array = 24                # u.array (typed_array)
-    uint16_array = 25               # u.array (typed_array)
-    int32_array = 26                # u.array (typed_array)
-    uint32_array = 27               # u.array (typed_array)
-    big_int64_array = 28            # u.array (typed_array)
-    big_uint64_array = 29           # u.array (typed_array)
-    float16_array = 30              # u.array (typed_array)
-    float32_array = 31              # u.array (typed_array)
-    float64_array = 32              # u.array (typed_array)
-    dataview = 33                   # u.typed_array
-    big_int = 34                    # u.object_data
-    map = 35                        # u.map_state
-    set = 36                        # u.map_state
-    weakmap = 37                    # u.map_state
-    weakset = 38                    # u.map_state
-    iterator = 39                   # u.map_iterator_data
-    iterator_concat = 40            # u.iterator_concat_data
-    iterator_helper = 41            # u.iterator_helper_data
-    iterator_wrap = 42              # u.iterator_wrap_data
-    map_iterator = 43               # u.map_iterator_data
-    set_iterator = 44               # u.map_iterator_data
-    array_iterator = 45             # u.array_iterator_data
-    string_iterator = 46            # u.array_iterator_data
-    regexp_string_iterator = 47     # u.regexp_string_iterator_data
-    generator = 48                  # u.generator_data
-    global_object = 49              # u.global_object
+    c_function = 12  # u.cfunc
+    bytecode_function = 13  # u.func
+    bound_function = 14  # u.bound_function
+    c_function_data = 15  # u.c_function_data_record
+    generator_function = 16  # u.func
+    for_in_iterator = 17  # u.for_in_iterator
+    regexp = 18  # u.regexp
+    array_buffer = 19  # u.array_buffer
+    shared_array_buffer = 20  # u.array_buffer
+    uint8c_array = 21  # u.array (typed_array)
+    int8_array = 22  # u.array (typed_array)
+    uint8_array = 23  # u.array (typed_array)
+    int16_array = 24  # u.array (typed_array)
+    uint16_array = 25  # u.array (typed_array)
+    int32_array = 26  # u.array (typed_array)
+    uint32_array = 27  # u.array (typed_array)
+    big_int64_array = 28  # u.array (typed_array)
+    big_uint64_array = 29  # u.array (typed_array)
+    float16_array = 30  # u.array (typed_array)
+    float32_array = 31  # u.array (typed_array)
+    float64_array = 32  # u.array (typed_array)
+    dataview = 33  # u.typed_array
+    big_int = 34  # u.object_data
+    map = 35  # u.map_state
+    set = 36  # u.map_state
+    weakmap = 37  # u.map_state
+    weakset = 38  # u.map_state
+    iterator = 39  # u.map_iterator_data
+    iterator_concat = 40  # u.iterator_concat_data
+    iterator_helper = 41  # u.iterator_helper_data
+    iterator_wrap = 42  # u.iterator_wrap_data
+    map_iterator = 43  # u.map_iterator_data
+    set_iterator = 44  # u.map_iterator_data
+    array_iterator = 45  # u.array_iterator_data
+    string_iterator = 46  # u.array_iterator_data
+    regexp_string_iterator = 47  # u.regexp_string_iterator_data
+    generator = 48  # u.generator_data
+    global_object = 49  # u.global_object
     rawjson = 50
-    proxy = 51                      # u.proxy_data
-    promise = 52                    # u.promise_data
-    promise_resolve_function = 53   # u.promise_function_data
-    promise_reject_function = 54    # u.promise_function_data
-    async_function = 55             # u.func
-    async_function_resolve = 56     # u.async_function_data
-    async_function_reject = 57      # u.async_function_data
-    async_from_sync_iterator = 58   # u.async_from_sync_iterator_data
-    async_generator_function = 59   # u.func
-    async_generator = 60            # u.async_generator_data
+    proxy = 51  # u.proxy_data
+    promise = 52  # u.promise_data
+    promise_resolve_function = 53  # u.promise_function_data
+    promise_reject_function = 54  # u.promise_function_data
+    async_function = 55  # u.func
+    async_function_resolve = 56  # u.async_function_data
+    async_function_reject = 57  # u.async_function_data
+    async_from_sync_iterator = 58  # u.async_from_sync_iterator_data
+    async_generator_function = 59  # u.func
+    async_generator = 60  # u.async_generator_data
     weak_ref = 61
     finalization_registry = 62
 
@@ -272,18 +272,18 @@ struct Class:
     var exotic: const ClassExoticMethods*?
 
 ## JS_MODE_STRICT.
-let js_mode_strict: i32 = 0x1    # 1 << 0
+let js_mode_strict: i32 = 0x1  # 1 << 0
 ## JS_MODE_ASYNC: an async function.
-let js_mode_async: i32 = 0x4    # 1 << 2
+let js_mode_async: i32 = 0x4  # 1 << 2
 ## JS_MODE_BACKTRACE_BARRIER: stop the backtrace before this frame.
-let js_mode_backtrace_barrier: i32 = 0x8    # 1 << 3
+let js_mode_backtrace_barrier: i32 = 0x8  # 1 << 3
 
 ## The hints of ToPrimitive (HINT_STRING, HINT_NUMBER, HINT_NONE).
 let hint_string: i32 = 0
 let hint_number: i32 = 1
 let hint_none: i32 = 2
 ## HINT_FORCE_ORDINARY: don't try Symbol.toPrimitive.
-let hint_force_ordinary: i32 = 0x10    # 1 << 4
+let hint_force_ordinary: i32 = 0x10  # 1 << 4
 
 ## A call's frame (JSStackFrame).
 struct StackFrame:

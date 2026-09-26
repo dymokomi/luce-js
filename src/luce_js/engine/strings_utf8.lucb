@@ -157,9 +157,9 @@ pub func js_to_c_string_len2(ctx: Context*, plen: usize*?, val1: Value, cesu8: b
                         if cutils.is_lo_surrogate(c1):
                             pos += 1
                             c = cutils.from_surrogate(c, c1)
-                        # else: keep unmatched surrogate code points (c = 0xfffd would
-                        # be an error)
-                    # else: keep unmatched surrogate code points
+                # else: keep unmatched surrogate code points (c = 0xfffd would
+                # be an error)
+                # else: keep unmatched surrogate code points
                 q += cutils.unicode_to_utf8(q, c)
 
     *q = 0

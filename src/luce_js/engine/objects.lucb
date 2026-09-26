@@ -131,7 +131,7 @@ func js_new_object_proto_class_alloc(ctx: Context*, proto_val: Value, class_id: 
         n_props = js_prop_initial_size
         hash_size = js_prop_initial_hash_size
     else:
-        let hash_bits = 32 - cutils.clz32((u32)(n_props - 1))   # ceil(log2(radix))
+        let hash_bits = 32 - cutils.clz32((u32)(n_props - 1))  # ceil(log2(radix))
         hash_size = 1 << hash_bits
     let proto = get_proto_obj(proto_val)
     let sh = try js_new_shape_nohash(ctx, proto, hash_size, n_props)
@@ -181,16 +181,13 @@ pub func js_new_object(ctx: Context*) -> Value!:
 func js_function_set_properties(ctx: Context*, func_obj: Value, name: Atom, len: i32):
     # ES6 feature non compatible with ES5.1: length is configurable
     discard(js_define_property_value(ctx, func_obj, atom_length, js_new_int32(len),
-        prop_configurable) else false)
+                                     prop_configurable) else false)
     let name_str = js_atom_to_string(ctx, name) else return
     discard(js_define_property_value(ctx, func_obj, atom_name, name_str, prop_configurable) else false)
 
 ## Whether objects of `class_id` are closures over bytecode (u.func_).
 func js_class_has_bytecode(class_id: u32) -> bool:
-    return (class_id == (u32)ClassId.bytecode_function or
-        class_id == (u32)ClassId.generator_function or
-        class_id == (u32)ClassId.async_function or
-        class_id == (u32)ClassId.async_generator_function)
+    return (class_id == (u32)ClassId.bytecode_function or class_id == (u32)ClassId.generator_function or class_id == (u32)ClassId.async_function or class_id == (u32)ClassId.async_generator_function)
 
 # return NULL without exception if not a function or no bytecode
 func js_get_function_bytecode(val: Value) -> FunctionBytecode*?:
@@ -256,10 +253,7 @@ func js_new_c_function3(ctx: Context*, func_: CFunction, name: const u8*?, lengt
     p.u.cfunc.length = (u8)length
     p.u.cfunc.cproto = cproto
     p.u.cfunc.magic = (i16)magic
-    p.is_constructor = (cproto == CFunctionEnum.constructor or
-        cproto == CFunctionEnum.constructor_magic or
-        cproto == CFunctionEnum.constructor_or_func or
-        cproto == CFunctionEnum.constructor_or_func_magic)
+    p.is_constructor = (cproto == CFunctionEnum.constructor or cproto == CFunctionEnum.constructor_magic or cproto == CFunctionEnum.constructor_or_func or cproto == CFunctionEnum.constructor_or_func_magic)
     let name_text = name else &empty_c_string[0]
     let name_atom = js_new_atom_len(ctx, name_text, cutils.strlen(name_text)) catch failure:
         js_free_value(ctx, func_obj)

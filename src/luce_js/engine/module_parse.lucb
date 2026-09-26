@@ -140,8 +140,7 @@ func js_parse_export(s: ParseState*) -> !:
     if tok == TokenType.class_:
         try js_parse_class(s, false, ParseExportKind.named)
         return
-    elif (tok == TokenType.function or
-            (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
+    elif (tok == TokenType.function or (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
         try js_parse_function_decl2(s, ParseFunctionKind.statement, js_func_normal, no_atom,
                                     s.token.ptr, ParseExportKind.named, none)
         return
@@ -175,8 +174,7 @@ func js_parse_export(s: ParseState*) -> !:
             if s.token.val == TokenType.class_:
                 try js_parse_class(s, false, ParseExportKind.default)
                 return
-            elif (s.token.val == TokenType.function or
-                    (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
+            elif (s.token.val == TokenType.function or (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
                 try js_parse_function_decl2(s, ParseFunctionKind.statement, js_func_normal, no_atom,
                                             s.token.ptr, ParseExportKind.default, none)
                 return
@@ -339,8 +337,7 @@ func js_parse_import(s: ParseState*) -> !:
 func js_parse_source_element(s: ParseState*) -> !:
     let fd = s.fd()
 
-    if (s.token.val == TokenType.function or
-            (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
+    if (s.token.val == TokenType.function or (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function)):
         try js_parse_function_decl(s, ParseFunctionKind.statement, js_func_normal, no_atom, s.token.ptr)
     elif s.token.val == TokenType.export_ and fd.module != none:
         try js_parse_export(s)

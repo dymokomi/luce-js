@@ -213,7 +213,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                             *(i32*)((usize)sp.u.uint64 -% 4) +%= 1
                         sp += 1
                         continue dispatch
-                    .swap: # a b -> b a
+                    .swap:  # a b -> b a
                         let tag = sp[-2].tag
                         let bits = sp[-2].u.uint64
                         sp[-2] = sp[-1]

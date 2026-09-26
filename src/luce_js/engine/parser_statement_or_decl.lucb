@@ -37,16 +37,14 @@ func js_parse_statement_or_decl(s: ParseState*, decl_mask: i32) -> !:
 
     try next_token(s)
     try js_parse_expect(s, TokenType.colon)
-    if (s.token.val != TokenType.for_ and s.token.val != TokenType.do and
-        s.token.val != TokenType.while_):
+    if (s.token.val != TokenType.for_ and s.token.val != TokenType.do and s.token.val != TokenType.while_):
         # labelled regular statement
         let label_break = new_label(s)
         var break_entry: BlockEnv = ---
         push_break_entry(s.fd(), &break_entry, label_name, label_break, -1, 0)
         break_entry.is_regular_stmt = true
         var mask: i32 = 0
-        if (((i32)s.fd().js_mode & js_mode_strict) == 0 and
-            (decl_mask & decl_mask_func_with_label) != 0):
+        if (((i32)s.fd().js_mode & js_mode_strict) == 0 and (decl_mask & decl_mask_func_with_label) != 0):
             mask = decl_mask_func | decl_mask_func_with_label
         try js_parse_statement_or_decl(s, mask)
         discard(emit_label(s, label_break))
@@ -116,8 +114,7 @@ func js_parse_statement_body(s: ParseState*, decl_mask: i32, label_name: Atom) -
             # Determine if `let` introduces a Declaration or an ExpressionStatement
             if try is_let(s, decl_mask):
                 try js_parse_lexical_decl(s, decl_mask, TokenType.let_)
-            elif (token_is_pseudo_keyword(s, atom_async) and
-                  peek_token(s, true) == TokenType.function):
+            elif (token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) == TokenType.function):
                 if (decl_mask & decl_mask_other) == 0:
                     try js_parse_func_decl_error(s)
                 try js_parse_func_var(s)
@@ -547,7 +544,6 @@ func js_parse_try(s: ParseState*) -> !:
         # catch value is at TOS, no need to push undefined
         discard(emit_goto(s, (i32)Op.gosub, label_finally))
         emit_op(s, (u8)Op.throw)
-
     elif s.token.val == TokenType.finally:
         # finally without catch : execute the finally clause and rethrow the exception
         discard(emit_label(s, label_catch))

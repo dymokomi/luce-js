@@ -69,8 +69,7 @@ func windows_timezone_offset(ti: i64) -> i32:
         let t = windows_supported_time(ti)
         let loc = win_localtime(&t) else return 0
         let local_days = days_from_year((i64)loc.tm_year + 1900) + (i64)loc.tm_yday
-        let local_ti = (local_days * 86400 + (i64)loc.tm_hour * 3600 + (i64)loc.tm_min * 60
-                        + (i64)loc.tm_sec)
+        let local_ti = (local_days * 86400 + (i64)loc.tm_hour * 3600 + (i64)loc.tm_min * 60 + (i64)loc.tm_sec)
         return (i32)floor_div(t - local_ti, 60)
     else:
         return 0
@@ -164,7 +163,7 @@ func js_regexp_literal_program(ctx: Context*, b: FunctionBytecode*, pattern: Val
         regex.free_ecmascript(program)
         error(failure.code, failure.message)
     let shared = (RegExpShared*)block
-    shared.ref_count = 1    # the function's
+    shared.ref_count = 1  # the function's
     shared.program = program
     shared.pattern = pattern.u.string
     shared.flags = flags.u.string
@@ -184,7 +183,7 @@ func js_new_regexp(ctx: Context*, b: FunctionBytecode*, pattern: Value, flags: V
     if flags.tag != Tag.string or pattern.tag != Tag.string:
         try js_throw_type_error(ctx, "string expected")
     let shared = try js_regexp_literal_program(ctx, b, pattern, flags)
-    props[0].u.value = js_new_int32(0) # lastIndex
+    props[0].u.value = js_new_int32(0)  # lastIndex
     let regexp_shape = ctx.regexp_shape else trap("js_new_regexp: no regexp shape")
     let obj = try js_new_object_from_shape(ctx, js_dup_shape(regexp_shape), (u32)ClassId.regexp, &props[0])
     let p = obj.u.obj

@@ -85,7 +85,7 @@ func convert_fast_array_to_array(ctx: Context*, p: Object*) -> !:
             pr.u.value = p.u.array.u.values[(usize)i]
     js_free(ctx, p.u.array.u.ptr)
     p.u.array.count = 0
-    p.u.array.u.ptr = none # fail safe
+    p.u.array.u.ptr = none  # fail safe
     p.u.array.u1.size = 0
     p.fast_array = false
     p.is_std_array_prototype = false
@@ -116,7 +116,7 @@ func delete_property(ctx: Context*, p: Object*, atom: Atom) -> bool!:
         var h = get_shape_hash_table(sh)[h1]
         let prop = get_shape_prop(sh)
         var lpr: ShapeProperty*? = none
-        var lpr_idx: usize = 0 # prevent warning
+        var lpr_idx: usize = 0  # prevent warning
         while h != 0:
             var pr = prop + (usize)(h - 1)
             if pr.atom == atom:
@@ -149,8 +149,7 @@ func delete_property(ctx: Context*, p: Object*, atom: Atom) -> bool!:
 
                 # compact the properties if too many deleted properties (as in QuickJS, a
                 # failure to compact is not reported)
-                if (sh.deleted_prop_count >= 8 and
-                        (u32)sh.deleted_prop_count >= (u32)sh.prop_count // 2):
+                if (sh.deleted_prop_count >= 8 and (u32)sh.deleted_prop_count >= (u32)sh.prop_count // 2):
                     compact_properties(ctx, p) catch: recover ()
                 return true
             lpr = pr
@@ -160,8 +159,7 @@ func delete_property(ctx: Context*, p: Object*, atom: Atom) -> bool!:
             if p.fast_array:
                 var idx: u32 = 0
                 if js_atom_is_array_index(ctx, &idx, atom) and idx < p.u.array.count:
-                    if (p.class_id == ClassId.array or p.class_id == ClassId.arguments or
-                            p.class_id == ClassId.mapped_arguments):
+                    if (p.class_id == ClassId.array or p.class_id == ClassId.arguments or p.class_id == ClassId.mapped_arguments):
                         # Special case deleting the last element of a fast Array
                         if idx == p.u.array.count - 1:
                             if p.class_id == ClassId.mapped_arguments:

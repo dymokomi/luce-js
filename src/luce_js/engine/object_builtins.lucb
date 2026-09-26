@@ -45,7 +45,7 @@ func js_object_prevent_extensions(ctx: Context*, this_val: Value, argc: i32, arg
 
 ## Object.prototype.hasOwnProperty(prop).
 func js_object_has_own_property(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
-    let atom = try js_value_to_atom(ctx, argv[0]) # must be done first
+    let atom = try js_value_to_atom(ctx, argv[0])  # must be done first
     defer js_free_atom(ctx, atom)
     let obj = try js_to_object(ctx, this_val)
     defer js_free_value(ctx, obj)
@@ -172,8 +172,7 @@ func js_object_is_sealed(ctx: Context*, this_val: Value, argc: i32, argv: Value*
         var desc: PropertyDescriptor = ---
         if try js_get_own_property_internal(ctx, &desc, p, prop):
             js_free_desc(ctx, &desc)
-            if ((desc.flags & prop_configurable) != 0 or
-                    (is_frozen != 0 and (desc.flags & prop_writable) != 0)):
+            if ((desc.flags & prop_configurable) != 0 or (is_frozen != 0 and (desc.flags & prop_writable) != 0)):
                 return js_false()
     let res = try js_is_extensible(ctx, obj)
     return js_new_bool(not res)

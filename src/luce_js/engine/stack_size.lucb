@@ -78,7 +78,7 @@ func ss_check_catch(s: StackSizeState*, bc_buf: const u8*, catch_pos: i32, catch
     if catch_pos >= 0:
         var level = (i32)s.stack_level_tab[(usize)catch_pos]
         if bc_buf[(isize)catch_pos] != (u8)Op.catch_:
-            level += 1   # for_of_start, for_wait_of_start
+            level += 1  # for_of_start, for_wait_of_start
         # catch_level = stack_level before op_catch is executed ?
         if catch_level == level:
             return s.catch_pos_tab[(usize)catch_pos]
@@ -191,8 +191,8 @@ func compute_stack_size(ctx: Context*, fd: FunctionDef*) -> i32!:
                     try js_throw_internal_error(ctx, f"nip_catch: no catch op (pc={pos})")
                 stack_len = (i32)s.stack_level_tab[(usize)catch_pos]
                 if bc_buf[(isize)catch_pos] != (u8)Op.catch_:
-                    stack_len += 1   # for_of_start, for_wait_of_start
-                stack_len += 1   # no stack overflow is possible by construction
+                    stack_len += 1  # for_of_start, for_wait_of_start
+                stack_len += 1  # no stack overflow is possible by construction
                 catch_pos = s.catch_pos_tab[(usize)catch_pos]
             _:
                 discard(0)

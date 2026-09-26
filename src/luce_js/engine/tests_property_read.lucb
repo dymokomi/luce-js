@@ -111,7 +111,7 @@ test "property reads: own values, the prototype chain and missing keys":
 
     # own descriptors
     var desc = PropertyDescriptor(flags = 0, value = js_undefined(), getter = js_undefined(),
-        setter = js_undefined())
+                                  setter = js_undefined())
     assert(try js_get_own_property(ctx, &desc, obj, 61))
     assert(desc.flags == prop_writable and js_value_get_int(desc.value) == 7)
     assert(not try js_get_own_property(ctx, &desc, obj, 50))

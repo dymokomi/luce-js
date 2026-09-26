@@ -49,7 +49,7 @@ func js_to_object(ctx: Context*, val: Value) -> Value!:
             class_id = ClassId.number
         .string, .string_rope:
             # XXX: should call the string constructor
-            let text = try js_to_string(ctx, val) # ensure that we never store a rope
+            let text = try js_to_string(ctx, val)  # ensure that we never store a rope
             defer js_free_value(ctx, text)
             let obj = try js_new_object_class(ctx, (i32)ClassId.string)
             # as in C, failures to define the length and set the data are not reported
@@ -107,17 +107,14 @@ func js_obj_to_desc(ctx: Context*, d: PropertyDescriptor*, desc: Value) -> !:
         r.flags |= prop_has_get
         # as in C, an exception of the read is replaced by the TypeError
         r.getter = js_get_property(ctx, desc, atom_get) catch: recover js_exception()
-        if (js_is_exception(r.getter) or
-                not (js_is_undefined(r.getter) or js_is_function(ctx, r.getter))):
+        if (js_is_exception(r.getter) or not (js_is_undefined(r.getter) or js_is_function(ctx, r.getter))):
             try js_throw_type_error(ctx, "invalid getter")
     if try js_has_property(ctx, desc, atom_set):
         r.flags |= prop_has_set
         r.setter = js_get_property(ctx, desc, atom_set) catch: recover js_exception()
-        if (js_is_exception(r.setter) or
-                not (js_is_undefined(r.setter) or js_is_function(ctx, r.setter))):
+        if (js_is_exception(r.setter) or not (js_is_undefined(r.setter) or js_is_function(ctx, r.setter))):
             try js_throw_type_error(ctx, "invalid setter")
-    if ((r.flags & (prop_has_set | prop_has_get)) != 0 and
-            (r.flags & (prop_has_value | prop_has_writable)) != 0):
+    if ((r.flags & (prop_has_set | prop_has_get)) != 0 and (r.flags & (prop_has_value | prop_has_writable)) != 0):
         try js_throw_type_error(ctx, "cannot have setter/getter and value or writable")
     *d = r
 
@@ -230,8 +227,7 @@ func js_object__define_getter_(ctx: Context*, this_val: Value, argc: i32, argv: 
     discard(try check_function(ctx, value))
     let atom = try js_value_to_atom(ctx, prop)
     defer js_free_atom(ctx, atom)
-    var flags = (prop_throw | prop_has_enumerable | prop_enumerable |
-                 prop_has_configurable | prop_configurable)
+    var flags = (prop_throw | prop_has_enumerable | prop_enumerable | prop_has_configurable | prop_configurable)
     var get = js_undefined()
     var set = js_undefined()
     if magic != 0:

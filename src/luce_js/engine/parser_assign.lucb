@@ -24,9 +24,7 @@ func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
     try next_token(s)
     # XXX: is there a better method to detect 'yield' without parameters ?
     let tok = s.token.val
-    if (tok != TokenType.semicolon and tok != TokenType.rparen and tok != TokenType.rbracket and
-        tok != TokenType.rbrace and tok != TokenType.comma and tok != TokenType.colon and
-        not s.got_lf):
+    if (tok != TokenType.semicolon and tok != TokenType.rparen and tok != TokenType.rbracket and tok != TokenType.rbrace and tok != TokenType.comma and tok != TokenType.colon and not s.got_lf):
         if s.token.val == TokenType.star:
             is_star = true
             try next_token(s)
@@ -153,8 +151,7 @@ let assign_opcodes: u8[12] = [
 # of them is left current.
 func js_parse_assign_special(s: ParseState*) -> bool!:
     var bits_unused: i32 = 0
-    if (s.token.val == TokenType.lparen and
-        (try js_parse_skip_parens_token(s, &bits_unused, true)) == TokenType.arrow):
+    if (s.token.val == TokenType.lparen and (try js_parse_skip_parens_token(s, &bits_unused, true)) == TokenType.arrow):
         try js_parse_function_decl(s, ParseFunctionKind.arrow, js_func_normal, no_atom,
                                    s.token.ptr)
         return true
@@ -168,10 +165,7 @@ func js_parse_assign_special(s: ParseState*) -> bool!:
         var pos: ParsePos = ---
         discard(js_parse_get_pos(s, &pos))
         try next_token(s)
-        if ((s.token.val == TokenType.lparen and
-             (try js_parse_skip_parens_token(s, &bits_unused, true)) == TokenType.arrow) or
-            (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved and
-             peek_token(s, true) == TokenType.arrow)):
+        if ((s.token.val == TokenType.lparen and (try js_parse_skip_parens_token(s, &bits_unused, true)) == TokenType.arrow) or (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved and peek_token(s, true) == TokenType.arrow)):
             try js_parse_function_decl(s, ParseFunctionKind.arrow, js_func_async, no_atom,
                                        source_ptr)
             return true
@@ -210,8 +204,7 @@ func js_parse_assign_expr2(s: ParseState*, parse_flags: i32) -> !:
     var scope: i32 = 0
     var name = no_atom
     var label: i32 = 0
-    if (op == TokenType.assign or
-        ((i32)op >= (i32)TokenType.mul_assign and (i32)op <= (i32)TokenType.pow_assign)):
+    if (op == TokenType.assign or ((i32)op >= (i32)TokenType.mul_assign and (i32)op <= (i32)TokenType.pow_assign)):
         let op_token_ptr = s.token.ptr
         try next_token(s)
         var depth_unused: i32 = 0
@@ -223,16 +216,14 @@ func js_parse_assign_expr2(s: ParseState*, parse_flags: i32) -> !:
             error(failure.code, failure.message)
 
         if op == TokenType.assign:
-            if ((opcode == (i32)Op.get_ref_value or opcode == (i32)TempOp.scope_get_var) and
-                name == name0):
+            if ((opcode == (i32)Op.get_ref_value or opcode == (i32)TempOp.scope_get_var) and name == name0):
                 set_object_name(s, name)
         else:
             let assign_op = assign_opcodes[(usize)((i32)op - (i32)TokenType.mul_assign)]
             emit_source_pos(s, op_token_ptr)
             emit_op(s, assign_op)
         put_lvalue(s, opcode, scope, name, label, PutLValueKind.keep_top, false)
-    elif ((i32)op >= (i32)TokenType.land_assign and
-          (i32)op <= (i32)TokenType.double_question_mark_assign):
+    elif ((i32)op >= (i32)TokenType.land_assign and (i32)op <= (i32)TokenType.double_question_mark_assign):
         try next_token(s)
         var depth_lvalue: i32 = 0
         try get_lvalue(s, &opcode, &scope, &name, &label, &depth_lvalue, true, op)
@@ -248,8 +239,7 @@ func js_parse_assign_expr2(s: ParseState*, parse_flags: i32) -> !:
             js_free_atom(s.ctx, name)
             error(failure.code, failure.message)
 
-        if ((opcode == (i32)Op.get_ref_value or opcode == (i32)TempOp.scope_get_var) and
-            name == name0):
+        if ((opcode == (i32)Op.get_ref_value or opcode == (i32)TempOp.scope_get_var) and name == name0):
             set_object_name(s, name)
 
         match depth_lvalue:

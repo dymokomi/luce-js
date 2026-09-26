@@ -103,10 +103,10 @@ func js_regexp_exec(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
             if group_name_ptr != none:
                 indices_groups = try js_new_object_proto(ctx, js_null())
 
-        props[0].u.value = js_new_int32(capture_count) # length
-        props[1].u.value = js_new_int32(caps[0]) # index
-        props[2].u.value = str_val # input
-        props[3].u.value = js_dup_value(ctx, groups) # groups
+        props[0].u.value = js_new_int32(capture_count)  # length
+        props[1].u.value = js_new_int32(caps[0])  # index
+        props[2].u.value = str_val  # input
+        props[3].u.value = js_dup_value(ctx, groups)  # groups
 
         str_val = js_undefined()
         let result_shape = ctx.regexp_result_shape else trap("js_regexp_exec: no regexp result shape")
@@ -188,7 +188,7 @@ func js_regexp_replace(ctx: Context*, this_val: Value, arg: Value, rep_val: Valu
 
     let re_program = js_regexp_program(re)
     if lre_get_groupnames(re_program) != none:
-        return js_undefined() # group names are not supported yet
+        return js_undefined()  # group names are not supported yet
 
     # as upstream, a failed append is reported by string_buffer_end
     string_buffer_init(ctx, b, 0) catch: recover ()

@@ -16,7 +16,7 @@
 # return (mant, exp) so that abs(a) ~ mant*2^(exp - (limb_bits - 1). a must be != 0.
 func js_bigint_get_mant_exp(ctx: Context*, pexp: i32*, a: const BigInt*) -> u64:
     let a_tab = js_bigint_tab(a)
-    var t: u32[3] = --- # 4 - JS_LIMB_BITS / 32 limbs
+    var t: u32[3] = ---  # 4 - JS_LIMB_BITS / 32 limbs
     let n2: i32 = 4 - js_limb_bits // 32
     let n1 = (i32)a.len - n2
     let sgn = js_bigint_sign(a)
@@ -55,7 +55,7 @@ func js_bigint_get_mant_exp(ctx: Context*, pexp: i32*, a: const BigInt*) -> u64:
         if shift != 0:
             a1 = (a1 << (u64)shift) | (a0 >> (u64)(64 - shift))
             a0 <<= (u64)shift
-    a1 |= (u64)(a0 != 0) # keep the bits for the final rounding
+    a1 |= (u64)(a0 != 0)  # keep the bits for the final rounding
     # compute the exponent
     let e = (i32)a.len * js_limb_bits - shift - 1
     *pexp = e
@@ -80,7 +80,7 @@ func js_bigint_to_float64(ctx: Context*, a: const BigInt*) -> f64:
         mant = 0
         e = 1024
     else:
-        mant = (mant >> 1) | (mant & 1) # avoid overflow in rounding
+        mant = (mant >> 1) | (mant & 1)  # avoid overflow in rounding
         mant = shr_rndn(mant, 10)
         # rounding can cause an overflow
         if mant >= (u64)1 << 53:
@@ -109,14 +109,14 @@ func js_bigint_from_float64(ctx: Context*, pres: i32*, a1: f64) -> BigInt*?!:
     e -= 1023
     # 0 < a < 1 : not an integer
     if e < 0:
-        *pres = 1 # not_an_integer
+        *pres = 1  # not_an_integer
         return none
     mant |= (u64)1 << 52
     if e < 52:
         let shift = 52 - e
         # check that there is no fractional part
         if (mant & (((u64)1 << (u64)shift) - 1)) != 0:
-            *pres = 1 # not_an_integer
+            *pres = 1  # not_an_integer
             return none
         mant >>= (u64)shift
         e = 0
@@ -171,7 +171,7 @@ func js_bigint_float64_cmp(ctx: Context*, a: const BigInt*, b: f64) -> i32:
             else:
                 return 1
         else:
-            mant = (mant | ((u64)1 << 52)) << 11 # align to a_mant
+            mant = (mant | ((u64)1 << 52)) << 11  # align to a_mant
             if a_mant < mant:
                 return 2 * a_sign - 1
             elif a_mant > mant:

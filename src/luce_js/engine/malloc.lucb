@@ -158,7 +158,7 @@ func js_malloc_raw(s: MallocContext*, size: usize) -> void*?:
 
     let block_idx = ar.first_free_block
     let b = get_arena_block(ar, (u32)block_idx, block_size)
-    ar.first_free_block = b.block_idx     # free_next
+    ar.first_free_block = b.block_idx  # free_next
     b.block_idx = block_idx
     ar.n_used_blocks += 1
     if ar.n_used_blocks == ar.n_blocks:
@@ -182,7 +182,7 @@ func js_free_raw(s: MallocContext*, ptr: void*?):
         let block_size_idx = (usize)b.block_size_idx
         let block_size = (usize)js_malloc_block_sizes[block_size_idx]
         let ar = (MallocArena*)((u8*)b - block_size * block_idx - sizeof(MallocArena))
-        b.block_idx = ar.first_free_block     # free_next
+        b.block_idx = ar.first_free_block  # free_next
         ar.first_free_block = (u16)block_idx
         # add back to the free list if needed
         if ar.n_used_blocks == ar.n_blocks:

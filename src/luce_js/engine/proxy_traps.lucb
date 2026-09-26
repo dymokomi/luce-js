@@ -208,15 +208,13 @@ func js_proxy_set(ctx: Context*, obj: Value, atom: Atom, value: Value, receiver:
             if (desc.flags & (prop_getset | prop_configurable | prop_writable)) == 0:
                 if not js_same_value(ctx, desc.value, value):
                     fail = true
-            elif ((desc.flags & (prop_getset | prop_configurable)) == prop_getset and
-                  js_is_undefined(desc.setter)):
+            elif ((desc.flags & (prop_getset | prop_configurable)) == prop_getset and js_is_undefined(desc.setter)):
                 fail = true
             js_free_desc(ctx, &desc)
             if fail:
                 try js_throw_type_error(ctx, "proxy: inconsistent set")
     else:
-        if ((flags & prop_throw) != 0 or
-            ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx))):
+        if ((flags & prop_throw) != 0 or ((flags & prop_throw_strict) != 0 and is_strict_mode(ctx))):
             try js_throw_type_error(ctx, "proxy: cannot set property")
     return ret
 
@@ -312,8 +310,7 @@ func js_proxy_get_own_property(ctx: Context*, pdesc: PropertyDescriptor*?, obj: 
     if not fail and (result_desc.flags & prop_configurable) == 0:
         if not target_desc_ret or (target_desc.flags & prop_configurable) != 0:
             fail = true
-        elif ((result_desc.flags & (prop_getset | prop_writable)) == 0 and
-              (target_desc.flags & prop_writable) != 0):
+        elif ((result_desc.flags & (prop_getset | prop_writable)) == 0 and (target_desc.flags & prop_writable) != 0):
             # proxy-missing-checks
             fail = true
     if fail:
@@ -350,9 +347,7 @@ func js_proxy_define_inconsistent(ctx: Context*, desc: const PropertyDescriptor*
     if (desc.flags & prop_configurable) != 0 and setting_not_configurable:
         return true
 
-    if ((desc.flags & prop_tmask) != prop_getset and
-        (desc.flags & (prop_configurable | prop_writable)) == prop_writable and
-        (flags & (prop_has_writable | prop_writable)) == prop_has_writable):
+    if ((desc.flags & prop_tmask) != prop_getset and (desc.flags & (prop_configurable | prop_writable)) == prop_writable and (flags & (prop_has_writable | prop_writable)) == prop_has_writable):
         return true
     return false
 
@@ -386,8 +381,7 @@ func js_proxy_define_own_property(ctx: Context*, obj: Value, prop: Atom, val: Va
     let p = s.target.u.obj
     var desc: PropertyDescriptor = ---
     let res = try js_get_own_property_internal(ctx, &desc, p, prop)
-    let setting_not_configurable = ((flags & (prop_has_configurable | prop_configurable)) ==
-                                    prop_has_configurable)
+    let setting_not_configurable = ((flags & (prop_has_configurable | prop_configurable)) == prop_has_configurable)
     if not res:
         if not p.extensible or setting_not_configurable:
             try js_throw_type_error(ctx, "proxy: inconsistent defineProperty")

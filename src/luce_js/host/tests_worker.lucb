@@ -58,7 +58,7 @@ test "a message posted to a pipe wakes its port and reaches onmessage":
     assert(cutils.list_empty(&ps.msg_queue))
     if platform.windows:
         var handle = ps.waker.handle
-        assert(WaitForMultipleObjects(1, &handle, 0, 0) == 258)    # WAIT_TIMEOUT
+        assert(WaitForMultipleObjects(1, &handle, 0, 0) == 258)  # WAIT_TIMEOUT
     else:
         var fds = PollFd(fd = ps.waker.read_fd, events = poll_in, revents = 0)
         assert(c_poll(&fds, 1, 0) == 0)

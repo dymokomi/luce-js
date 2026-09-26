@@ -21,7 +21,7 @@
 let throw_error_buf_size: usize = 256
 
 func js_throw_error2(ctx: Context*, error_num: ErrorKind, message: fmt,
-                    add_backtrace: bool) -> never!:
+                     add_backtrace: bool) -> never!:
     var buf: u8[throw_error_buf_size] = ---
     # vsnprintf: the text is cut to the buffer, keeping room for the NUL
     var writer = io.SliceWriter.over(buf[0..<throw_error_buf_size - 1])
@@ -35,12 +35,10 @@ func js_throw_error2(ctx: Context*, error_num: ErrorKind, message: fmt,
     if obj.tag == Tag.object:
         # C would store the JS_EXCEPTION marker as the message if the string cannot be
         # made; the message is left out instead.
-        let msg: Value? = (js_new_string_len(ctx, text.data, text.length)
-                           catch failure: recover none)
+        let msg: Value? = (js_new_string_len(ctx, text.data, text.length) catch failure: recover none)
         if let m = msg:
             discard(js_define_property_value(ctx, obj, atom_message, m,
-                                             prop_writable | prop_configurable)
-                    catch failure: recover false)
+                                             prop_writable | prop_configurable) catch failure: recover false)
         if add_backtrace:
             build_backtrace(ctx, obj, none, 0, 0, 0)
     try js_throw(ctx, obj)

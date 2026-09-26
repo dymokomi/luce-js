@@ -96,11 +96,11 @@ test "rehashing the properties into a larger table":
     let sh = test_shape_in(&shape_buf[0], 4, 4)
     test_shape_add(sh, 50, 3)
     test_shape_add(sh, 54, 1)
-    test_shape_add(sh, no_atom, 0)   # a deleted property is not rehashed
+    test_shape_add(sh, no_atom, 0)  # a deleted property is not rehashed
     test_shape_add(sh, 58, 0)
     # grow the table to 8 buckets in place: the properties move behind it
     discard(cutils.memmove((u8*)get_shape_prop(sh) + 4 * sizeof(u32), get_shape_prop(sh),
-        4 * sizeof(ShapeProperty)))
+                           4 * sizeof(ShapeProperty)))
     sh.prop_hash_mask = 7
     discard(cutils.memset(get_shape_hash_table(sh), 0, 8 * sizeof(u32)))
     rehash_shape_props(sh, 7, 4)

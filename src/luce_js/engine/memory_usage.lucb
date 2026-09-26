@@ -38,12 +38,11 @@ func pointer_word_is_null(p: const void*) -> bool:
     return *(const usize*)p == 0
 
 func compute_jsstring_size(text: String*, hp: MemoryUsageHelper*):
-    if text.atom_type == 0: # atoms are handled separately
+    if text.atom_type == 0:  # atoms are handled separately
         let s_ref_count = f64(js_rc(text).ref_count)
         let wide = (u32)text.is_wide_char
         hp.str_count += 1.0 / s_ref_count
-        hp.str_size += (f64(sizeof(String) + (usize)(text.len << wide) + 1 - (usize)wide) /
-                        s_ref_count)
+        hp.str_size += (f64(sizeof(String) + (usize)(text.len << wide) + 1 - (usize)wide) / s_ref_count)
 
 func compute_bytecode_size(b: FunctionBytecode*, hp: MemoryUsageHelper*):
     var memory_used_count: i32 = 0
@@ -76,7 +75,7 @@ func compute_bytecode_size(b: FunctionBytecode*, hp: MemoryUsageHelper*):
 func compute_value_size(val: Value, hp: MemoryUsageHelper*):
     match val.tag:
         .string: compute_jsstring_size(val.u.string, hp)
-        .big_int: return # should track JSBigInt usage
+        .big_int: return  # should track JSBigInt usage
         _: return
 
 # C's round(): half away from zero, here for the non-negative shares only.
@@ -102,13 +101,13 @@ pub func js_compute_memory_usage(rt: Runtime*, s: MemoryUsage*):
     s.malloc_size = (i64)rt.malloc_ctx.malloc_state.malloc_size
     s.malloc_limit = (i64)rt.malloc_ctx.malloc_state.malloc_limit
 
-    s.memory_used_count = 2 # rt + rt.class_array
+    s.memory_used_count = 2  # rt + rt.class_array
     s.memory_used_size = (i64)sizeof(Runtime) + (i64)sizeof(Value) * (i64)rt.class_count
 
     var el = rt.context_list.next else trap("js_compute_memory_usage: unlinked list")
     while el != &rt.context_list:
         let ctx = (Context*)((u8*)el - offsetof(Context, link))
-        s.memory_used_count += 2 # ctx + ctx.class_proto
+        s.memory_used_count += 2  # ctx + ctx.class_proto
         s.memory_used_size += (i64)sizeof(Context) + (i64)sizeof(Value) * (i64)rt.class_count
         s.binary_object_count += (i64)ctx.binary_object_count
         s.binary_object_size += (i64)ctx.binary_object_size
@@ -135,7 +134,7 @@ pub func js_compute_memory_usage(rt: Runtime*, s: MemoryUsage*):
     s.obj_size += s.obj_count * (i64)sizeof(Object)
 
     # hashed shapes
-    s.memory_used_count += 1 # rt.shape_hash
+    s.memory_used_count += 1  # rt.shape_hash
     s.memory_used_size += (i64)sizeof(Shape*?) * (i64)rt.shape_hash_size
     if let hash_table = rt.shape_hash:
         for i in 0..<(usize)rt.shape_hash_size:
@@ -147,10 +146,9 @@ pub func js_compute_memory_usage(rt: Runtime*, s: MemoryUsage*):
                 next = sh.shape_hash_next
 
     # atoms
-    s.memory_used_count += 2 # rt.atom_array, rt.atom_hash
+    s.memory_used_count += 2  # rt.atom_array, rt.atom_hash
     s.atom_count = (i64)rt.atom_count
-    s.atom_size = ((i64)sizeof(AtomStruct*) * (i64)rt.atom_size +
-                   (i64)sizeof(u32) * (i64)rt.atom_hash_size)
+    s.atom_size = ((i64)sizeof(AtomStruct*) * (i64)rt.atom_size + (i64)sizeof(u32) * (i64)rt.atom_hash_size)
     if let atom_array = rt.atom_array:
         for i in 0..<(usize)rt.atom_size:
             let p = atom_array[i]
@@ -164,13 +162,8 @@ pub func js_compute_memory_usage(rt: Runtime*, s: MemoryUsage*):
     s.js_func_code_size = mem.js_func_code_size
     s.js_func_pc2line_count = mem.js_func_pc2line_count
     s.js_func_pc2line_size = mem.js_func_pc2line_size
-    s.memory_used_count += (round_share(mem.memory_used_count) +
-                            s.atom_count + s.str_count +
-                            s.obj_count + s.shape_count +
-                            s.js_func_count + s.js_func_pc2line_count)
-    s.memory_used_size += (s.atom_size + s.str_size +
-                           s.obj_size + s.prop_size + s.shape_size +
-                           s.js_func_size + s.js_func_code_size + s.js_func_pc2line_size)
+    s.memory_used_count += (round_share(mem.memory_used_count) + s.atom_count + s.str_count + s.obj_count + s.shape_count + s.js_func_count + s.js_func_pc2line_count)
+    s.memory_used_size += (s.atom_size + s.str_size + s.obj_size + s.prop_size + s.shape_size + s.js_func_size + s.js_func_code_size + s.js_func_pc2line_size)
 
 # The loaded modules of `ctx` (the inner loop over ctx->loaded_modules).
 func compute_modules_usage(ctx: Context*, s: MemoryUsage*, hp: MemoryUsageHelper*):
@@ -194,8 +187,7 @@ func compute_modules_usage(ctx: Context*, s: MemoryUsage*, hp: MemoryUsageHelper
                         compute_value_size(var_ref.u.value, hp)
         if m.star_export_entries != none:
             s.memory_used_count += 1
-            s.memory_used_size += ((i64)m.star_export_entries_count *
-                                   (i64)sizeof(StarExportEntry))
+            s.memory_used_size += ((i64)m.star_export_entries_count * (i64)sizeof(StarExportEntry))
         if m.import_entries != none:
             s.memory_used_count += 1
             s.memory_used_size += (i64)m.import_entries_count * (i64)sizeof(ImportEntry)
@@ -224,7 +216,7 @@ func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
         s.shape_size += (i64)get_shape_size(hash_size, (usize)sh.prop_size)
 
     match p.class_id:
-        .array, .arguments: # u.array | length
+        .array, .arguments:  # u.array | length
             s.array_count += 1
             if p.fast_array:
                 s.fast_array_count += 1
@@ -235,7 +227,7 @@ func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
                     s.fast_array_elements += (i64)p.u.array.count
                     for i in 0..<(usize)p.u.array.count:
                         compute_value_size(values[i], hp)
-        .mapped_arguments: # u.array | length
+        .mapped_arguments:  # u.array | length
             if p.fast_array:
                 s.fast_array_count += 1
                 if not pointer_word_is_null(&p.u.array.u):
@@ -245,11 +237,11 @@ func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
                     s.fast_array_elements += (i64)p.u.array.count
                     for i in 0..<(usize)p.u.array.count:
                         compute_value_size(*var_refs[i].pvalue, hp)
-        .number, .string, .boolean, .symbol, .date, .big_int: # u.object_data
+        .number, .string, .boolean, .symbol, .date, .big_int:  # u.object_data
             compute_value_size(p.u.object_data, hp)
-        .c_function: # u.cfunc
+        .c_function:  # u.cfunc
             s.c_func_count += 1
-        .bytecode_function: # u.func
+        .bytecode_function:  # u.func
             let b = p.u.func_.function_bytecode
             # home_object: object will be accounted for in list scan
             if let var_refs = p.u.func_.var_refs:
@@ -265,7 +257,7 @@ func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
                         if var_ref.pvalue == &var_ref.u.value:
                             # potential multiple count
                             compute_value_size(var_ref.u.value, hp)
-        .bound_function: # u.bound_function
+        .bound_function:  # u.bound_function
             let bf = p.u.bound_function
             let argv = (Value*)((u8*)bf + sizeof(BoundFunction))
             # func_obj and this_val are objects
@@ -273,26 +265,25 @@ func compute_object_usage(p: Object*, s: MemoryUsage*, hp: MemoryUsageHelper*):
                 compute_value_size(argv[i], hp)
             s.memory_used_count += 1
             s.memory_used_size += (i64)sizeof(BoundFunction) + (i64)bf.argc * (i64)sizeof(Value)
-        .c_function_data: # u.c_function_data_record
+        .c_function_data:  # u.c_function_data_record
             if not pointer_word_is_null(&p.u):
                 let fd = p.u.c_function_data_record
                 let data = (Value*)((u8*)fd + sizeof(CFunctionDataRecord))
                 for i in 0..<(usize)fd.data_len:
                     compute_value_size(data[i], hp)
                 s.memory_used_count += 1
-                s.memory_used_size += ((i64)sizeof(CFunctionDataRecord) +
-                                       (i64)fd.data_len * (i64)sizeof(Value))
-        .regexp: # u.regexp
+                s.memory_used_size += ((i64)sizeof(CFunctionDataRecord) + (i64)fd.data_len * (i64)sizeof(Value))
+        .regexp:  # u.regexp
             compute_jsstring_size(p.u.regexp.pattern, hp)
-            # upstream also counts the bytecode string; the port's compiled program is
-            # not a JSString (regexp_bridge.lucb)
-        .for_in_iterator: # u.for_in_iterator
+        # upstream also counts the bytecode string; the port's compiled program is
+        # not a JSString (regexp_bridge.lucb)
+        .for_in_iterator:  # u.for_in_iterator
             if not pointer_word_is_null(&p.u):
                 let it = p.u.for_in_iterator
                 compute_value_size(it.obj, hp)
                 s.memory_used_count += 1
                 s.memory_used_size += (i64)sizeof(ForInIterator)
-        .array_buffer, .shared_array_buffer: # u.array_buffer
+        .array_buffer, .shared_array_buffer:  # u.array_buffer
             if not pointer_word_is_null(&p.u):
                 let abuf = p.u.array_buffer
                 s.memory_used_count += 1
@@ -438,7 +429,7 @@ func dump_runtime_sizes(rt: Runtime*):
     if not usage_size_ok:
         print("  malloc_usable_size unavailable")
 
-    var obj_classes: i32[64] # class_init_count + 1
+    var obj_classes: i32[64]  # class_init_count + 1
     var el = rt.gc_obj_list.next else trap("js_dump_memory_usage: unlinked list")
     while el != &rt.gc_obj_list:
         let gp = gc_header_of(el)

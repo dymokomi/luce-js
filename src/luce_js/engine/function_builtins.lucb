@@ -111,9 +111,7 @@ func build_arg_list(ctx: Context*, plen: u32*, array_arg: Value) -> Value*!:
     let tab_raw = try js_mallocz(ctx, sizeof(Value) * (usize)cutils.max_uint32(1, len))
     let tab = (Value*)tab_raw
     let p = array_arg.u.obj
-    if ((p.class_id == ClassId.array or p.class_id == ClassId.arguments or
-            p.class_id == ClassId.mapped_arguments) and
-            p.fast_array and len == p.u.array.count):
+    if ((p.class_id == ClassId.array or p.class_id == ClassId.arguments or p.class_id == ClassId.mapped_arguments) and p.fast_array and len == p.u.array.count):
         if p.class_id == ClassId.mapped_arguments:
             for i in 0..<(usize)len:
                 tab[i] = js_dup_value(ctx, *p.u.array.u.var_refs[i].pvalue)
@@ -187,7 +185,7 @@ func js_function_bind_length(ctx: Context*, len_val: Value, arg_count: i32) -> V
             if d <= f64(arg_count):
                 d = 0.0
             else:
-                d -= f64(arg_count) # also converts -0 to +0
+                d -= f64(arg_count)  # also converts -0 to +0
         return js_new_float64(d)
     else:
         js_free_value(ctx, len_val)

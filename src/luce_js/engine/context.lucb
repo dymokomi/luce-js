@@ -37,8 +37,8 @@ func js_alloc_string_rt(rt: Runtime*, max_len: i32, is_wide_char: bool) -> Strin
     s.is_wide_char = is_wide_char
     s.len = (u32)max_len
     s.atom_type = 0
-    s.hash = 0          # optional but costless
-    s.hash_next = 0     # optional
+    s.hash = 0  # optional but costless
+    s.hash_next = 0  # optional
     return s
 
 ## As js_alloc_string_rt; throw out of memory in case of error.

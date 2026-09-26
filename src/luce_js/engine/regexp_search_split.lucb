@@ -79,8 +79,7 @@ func js_regexp_symbol_split(ctx: Context*, this_val: Value, argc: i32, argv: Val
     ctor = try js_species_constructor(ctx, rx, ctx.regexp_ctor)
     flags = try js_to_string_free(ctx, js_get_property(ctx, rx, atom_flags))
     var strp = flags.u.string
-    let unicode_matching = (string_indexof_char(strp, (i32)'u', 0) >= 0 or
-                            string_indexof_char(strp, (i32)'v', 0) >= 0)
+    let unicode_matching = (string_indexof_char(strp, (i32)'u', 0) >= 0 or string_indexof_char(strp, (i32)'v', 0) >= 0)
     if string_indexof_char(strp, (i32)'y', 0) < 0:
         let flags0 = flags
         flags = js_undefined()

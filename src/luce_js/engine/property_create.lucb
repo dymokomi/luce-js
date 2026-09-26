@@ -81,8 +81,7 @@ func js_create_property(ctx: Context*, p: Object*, prop: Atom, val: Value, gette
             if generic_array:
                 if not try create_property_array_length(ctx, p, idx, flags):
                     return false
-        elif ((u16)p.class_id >= (u16)ClassId.uint8c_array and
-                (u16)p.class_id <= (u16)ClassId.float64_array):
+        elif ((u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array):
             if try js_atom_is_numeric_index(ctx, prop):
                 return try js_throw_type_error_or_false(ctx, flags, "cannot create numeric index in typed array")
         elif (flags & prop_no_exotic) == 0:
@@ -149,11 +148,9 @@ func js_create_property(ctx: Context*, p: Object*, prop: Atom, val: Value, gette
 ## Whether a define with `flags` may change a property of flags `prop_flags`.
 func check_define_prop_flags(prop_flags: i32, flags: i32) -> bool:
     if (prop_flags & prop_configurable) == 0:
-        if ((flags & (prop_has_configurable | prop_configurable)) ==
-                (prop_has_configurable | prop_configurable)):
+        if ((flags & (prop_has_configurable | prop_configurable)) == (prop_has_configurable | prop_configurable)):
             return false
-        if ((flags & prop_has_enumerable) != 0 and
-                (flags & prop_enumerable) != (prop_flags & prop_enumerable)):
+        if ((flags & prop_has_enumerable) != 0 and (flags & prop_enumerable) != (prop_flags & prop_enumerable)):
             return false
         if (flags & (prop_has_value | prop_has_writable | prop_has_get | prop_has_set)) != 0:
             let has_accessor = (flags & (prop_has_get | prop_has_set)) != 0
@@ -162,8 +159,7 @@ func check_define_prop_flags(prop_flags: i32, flags: i32) -> bool:
                 return false
             if not is_getset and (prop_flags & prop_writable) == 0:
                 # not writable: cannot set the writable bit
-                if ((flags & (prop_has_writable | prop_writable)) ==
-                        (prop_has_writable | prop_writable)):
+                if ((flags & (prop_has_writable | prop_writable)) == (prop_has_writable | prop_writable)):
                     return false
     return true
 
@@ -174,7 +170,7 @@ func js_shape_prepare_update(ctx: Context*, p: Object*, pprs: ShapeProperty**?) 
     var sh = p.shape
     if sh.is_hashed != 0:
         if js_rc(sh).ref_count != 1:
-            var idx: usize = 0 # prevent warning
+            var idx: usize = 0  # prevent warning
             if let pp = pprs:
                 idx = (usize)(*pp - get_shape_prop(sh))
             # clone the shape (the resulting one is no longer hashed)

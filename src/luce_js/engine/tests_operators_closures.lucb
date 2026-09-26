@@ -109,8 +109,7 @@ test "a closure's class follows the function kind":
     assert(func_kind_to_class_id[(usize)js_func_normal] == ClassId.bytecode_function)
     assert(func_kind_to_class_id[(usize)js_func_generator] == ClassId.generator_function)
     assert(func_kind_to_class_id[(usize)js_func_async] == ClassId.async_function)
-    assert(func_kind_to_class_id[(usize)js_func_async_generator] ==
-        ClassId.async_generator_function)
+    assert(func_kind_to_class_id[(usize)js_func_async_generator] == ClassId.async_generator_function)
 
 test "an async function's state contains its frame":
     var buf: u64[64] = ---

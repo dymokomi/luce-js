@@ -151,7 +151,7 @@ noinline func interp_mul(st: InterpState*) -> bool:
             fp_res = true
         elif r == 0 and (v1 | v2) < 0:
             # need to test zero case for -0 result
-            d = f64.bits(0x8000000000000000) # -0.0
+            d = f64.bits(0x8000000000000000)  # -0.0
             fp_res = true
         else:
             st.sp[-2] = js_new_int32((i32)r)
@@ -256,7 +256,7 @@ noinline func interp_neg(st: InterpState*) -> bool:
         let val = js_value_get_int(op1)
         # Note: -0 cannot be expressed as integer
         if val == 0:
-            d = f64.bits(0x8000000000000000) # -0.0
+            d = f64.bits(0x8000000000000000)  # -0.0
             fp_res = true
         elif val == -2147483648:
             d = -f64(val)

@@ -227,7 +227,7 @@ pub func rqsort(base: void*, nmemb: usize, size: usize, cmp: CmpF, opaque: void*
             # should use median of 5 or 9?
             let m4 = (n >> 2) * size
             let m = med3(ptr + m4, ptr + 2 * m4, ptr + 3 * m4, cmp, opaque)
-            swap(ptr, m, size) # move the pivot to the start or the array
+            swap(ptr, m, size)  # move the pivot to the start or the array
             var i: usize = 1
             var lt: usize = 1
             var pi = ptr + size

@@ -236,7 +236,7 @@ pub func js_add_intrinsic_weak_ref(ctx: Context*) -> !:
     # WeakRef
     if not js_is_registered_class(rt, (u32)ClassId.weak_ref):
         if init_class_range(rt, js_weakref_class_def, (i32)ClassId.weak_ref) != 0:
-            error(exception, "")   # C returns -1 with no exception pending
+            error(exception, "")  # C returns -1 with no exception pending
     var obj = try js_new_c_constructor_tables(ctx, (i32)ClassId.weak_ref, "WeakRef",
                                               js_weakref_constructor, 1, CFunctionEnum.constructor_or_func, 0,
                                               js_undefined(),
@@ -248,7 +248,7 @@ pub func js_add_intrinsic_weak_ref(ctx: Context*) -> !:
     # FinalizationRegistry
     if not js_is_registered_class(rt, (u32)ClassId.finalization_registry):
         if init_class_range(rt, js_finrec_class_def, (i32)ClassId.finalization_registry) != 0:
-            error(exception, "")   # C returns -1 with no exception pending
+            error(exception, "")  # C returns -1 with no exception pending
 
     obj = try js_new_c_constructor_tables(ctx, (i32)ClassId.finalization_registry, "FinalizationRegistry",
                                           js_finrec_constructor, 1, CFunctionEnum.constructor_or_func, 0,

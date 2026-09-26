@@ -110,7 +110,7 @@ func js_instantiate_function_list_item2(ctx: Context*, p: Object*, atom: Atom, o
             proto = class_proto[(usize)ClassId.object]
         let prop_list = e.prop_list else trap(f"{e.name}: no property list")
         return try js_new_object_proto_list(ctx, proto, prop_list)
-    trap(f"{e.name}: not an auto-init entry")   # abort()
+    trap(f"{e.name}: not an auto-init entry")  # abort()
 
 ## The property flags of a function named by a well-known symbol: Symbol.toPrimitive
 ## functions are not writable, Function.prototype[Symbol.hasInstance] is not writable nor
@@ -151,7 +151,7 @@ func js_instantiate_function_list_item(ctx: Context*, obj: Value, atom: Atom, e:
     var val = js_undefined()
     var prop_flags = (i32)e.prop_flags
 
-    if e.def_type == def_alias:   # using autoinit for aliases is not safe
+    if e.def_type == def_alias:  # using autoinit for aliases is not safe
         let atom1 = try find_atom(ctx, e.alias_name)
         var target = obj
         match e.alias_base:
@@ -163,7 +163,7 @@ func js_instantiate_function_list_item(ctx: Context*, obj: Value, atom: Atom, e:
                 let class_proto = ctx.class_proto else trap("no class prototypes")
                 target = class_proto[(usize)ClassId.array]
             _:
-                trap(f"{e.name}: invalid alias base")   # abort()
+                trap(f"{e.name}: invalid alias base")  # abort()
         val = js_get_property(ctx, target, atom1) catch failure:
             js_free_atom(ctx, atom1)
             error(failure.code, failure.message)
@@ -193,5 +193,5 @@ func js_instantiate_function_list_item(ctx: Context*, obj: Value, atom: Atom, e:
         discard(try js_define_auto_init_property(ctx, obj, atom, AutoInitId.prop, (void*)e, prop_flags))
         return
     else:
-        trap(f"{e.name}: invalid entry type")   # abort()
+        trap(f"{e.name}: invalid entry type")  # abort()
     discard(try js_define_property_value(ctx, obj, atom, val, prop_flags))

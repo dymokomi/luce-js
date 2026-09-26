@@ -85,20 +85,12 @@ func get_with_scope_opcode(op: TempOp) -> Op:
 # ending with put_ref_value that optimize_scope_make_ref can rewrite.
 func can_opt_put_ref_value(bc_buf: const u8*, pos: i32) -> bool:
     let opcode = bc_buf[pos]
-    return (bc_buf[pos + 1] == (u8)Op.put_ref_value and
-            (opcode == (u8)Op.insert3 or
-             opcode == (u8)Op.perm4 or
-             opcode == (u8)Op.nop or
-             opcode == (u8)Op.rot3l))
+    return (bc_buf[pos + 1] == (u8)Op.put_ref_value and (opcode == (u8)Op.insert3 or opcode == (u8)Op.perm4 or opcode == (u8)Op.nop or opcode == (u8)Op.rot3l))
 
 # The same test for a global variable reference.
 func can_opt_put_global_ref_value(bc_buf: const u8*, pos: i32) -> bool:
     let opcode = bc_buf[pos]
-    return (bc_buf[pos + 1] == (u8)Op.put_ref_value and
-            (opcode == (u8)Op.insert3 or
-             opcode == (u8)Op.perm4 or
-             opcode == (u8)Op.nop or
-             opcode == (u8)Op.rot3l))
+    return (bc_buf[pos + 1] == (u8)Op.put_ref_value and (opcode == (u8)Op.insert3 or opcode == (u8)Op.perm4 or opcode == (u8)Op.nop or opcode == (u8)Op.rot3l))
 
 # Replace the reference made by scope_make_ref (whose label is `ls`) with direct accesses
 # of variable `var_idx`: `get_op` to read it, `get_op + 1` to write it. Answers the

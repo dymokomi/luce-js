@@ -116,12 +116,7 @@ func is_unescaped(c: i32) -> bool:
     return c < 0x100 and char_in_set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_+-./", c)
 
 func is_uri_unescaped(c: i32, is_component: i32) -> bool:
-    return c < 0x100 and (
-        (c >= 0x61 and c <= 0x7a) or
-        (c >= 0x41 and c <= 0x5a) or
-        (c >= 0x30 and c <= 0x39) or
-        char_in_set("-_.!~*'()", c) or
-        (is_component == 0 and is_uri_reserved(c)))
+    return c < 0x100 and ((c >= 0x61 and c <= 0x7a) or (c >= 0x41 and c <= 0x5a) or (c >= 0x30 and c <= 0x39) or char_in_set("-_.!~*'()", c) or (is_component == 0 and is_uri_reserved(c)))
 
 let uri_hex_digits: const u8[] = b"0123456789ABCDEF"
 

@@ -52,7 +52,7 @@ pub func js_dtoa_max_len(d: f64, radix: i32, n_digits: i32, flags: i32) -> i32:
                 n = 2 + mul_log2_radix(e - 1, radix)
             # sign, extra digit, 1 dot
             n += 1 + 1 + 1 + n_digits
-    return cutils.max_int(n, 9) # also include NaN and [-]Infinity
+    return cutils.max_int(n, 9)  # also include NaN and [-]Infinity
 
 # mark: Temporary memory ========================================================================
 
@@ -112,7 +112,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
         if sgn != 0 and (flags & dtoa_minus_zero) != 0:
             *q = '-'
             q += 1
-        # goto output
+    # goto output
     else:
         if e == 0:
             # denormal number: convert to a normal number
@@ -127,9 +127,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
         # remove the bias
         e -= 1022
         # d = 2^(e-53)*m
-        if (fmt_mode == dtoa_format_free and e >= 1 and e <= 53 and
-                (m & (((u64)1 << (u64)(53 - e)) - 1)) == 0 and
-                (flags & dtoa_exp_mask) != dtoa_exp_enabled):
+        if (fmt_mode == dtoa_format_free and e >= 1 and e <= 53 and (m & (((u64)1 << (u64)(53 - e)) - 1)) == 0 and (flags & dtoa_exp_mask) != dtoa_exp_enabled):
             m = m >> (u64)(53 - e)
             # 'm' is never zero
             q += u64toa_radix(q, m, (u32)radix)
@@ -147,7 +145,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
             var P_found: i32 = 0
             var mant_found: u64 = 0
             # find the minimum number of digits by successive tries
-            P = P_max # P_max is guarateed to work
+            P = P_max  # P_max is guarateed to work
             while true:
                 # mant_max always fits on 64 bits
                 let mant_max1 = pow_ui((u32)radix, (u32)P)
@@ -160,7 +158,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
                     mant = mpb_get_u64(tmp1)
                     if mant < mant_max1:
                         break
-                    E += 1 # at most one iteration is possible
+                    E += 1  # at most one iteration is possible
                 # remove useless trailing zero digits
                 while (mant % (u64)radix) == 0:
                     mant = mant // (u64)radix
@@ -182,7 +180,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
                     mant_found = mant
                     if P == 1:
                         break
-                    P -= 1 # try lower exponent
+                    P -= 1  # try lower exponent
                 else:
                     break
             P = P_found
@@ -217,7 +215,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
                 mul_pow_round(tmp1, m, e - 53, radix1, radix_shift, P - E, .rndna)
                 if mpb_cmp(tmp1, mant_max) < 0:
                     break
-                E += 1 # at most one iteration is possible
+                E += 1  # at most one iteration is possible
 
     # output:
     var E_max: i32
@@ -226,8 +224,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
     else:
         E_max = (i32)dtoa_max_digits_table[(usize)(radix - 2)] + 4
     let exp_mode = flags & dtoa_exp_mask
-    if (exp_mode == dtoa_exp_enabled or
-            (exp_mode == dtoa_exp_auto and (E <= -6 or E > E_max))):
+    if (exp_mode == dtoa_exp_enabled or (exp_mode == dtoa_exp_auto and (E <= -6 or E > E_max))):
         q += (usize)output_digits(q, tmp1, radix, P, 1)
         E -= 1
         if radix == 10:

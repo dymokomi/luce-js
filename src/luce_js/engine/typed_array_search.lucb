@@ -244,8 +244,7 @@ func js_typed_array_index_of(ctx: Context*, this_val: Value, argc: i32, argv: Va
         inc = 1
 
     # includes function: 'undefined' can be found if searching out of bounds
-    if (len > (i32)p.u.array.count and special == special_includes and
-            js_is_undefined(argv[0]) and k < len):
+    if (len > (i32)p.u.array.count and special == special_includes and js_is_undefined(argv[0]) and k < len):
         return typed_array_index_of_result(special, 0)
 
     # RAB may have been resized by evil .valueOf method

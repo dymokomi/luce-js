@@ -106,29 +106,29 @@ func js_string_get_length(val: Value) -> u32:
 
 # pretty print the first 'len' characters of 'p'
 func js_print_string1(s: PrintValueState*, p: const String*, len: i32, sep: i32):
-    var buf: u8[6] = ---    # UTF8_CHAR_LEN_MAX
+    var buf: u8[6] = ---  # UTF8_CHAR_LEN_MAX
     var i: i32 = 0
     while i < len:
         var c = string_get(p, i)
         var quote = false
         var escape = false
         match c:
-            9: # '\t'
+            9:  # '\t'
                 c = (i32)'t'
                 quote = true
-            13: # '\r'
+            13:  # '\r'
                 c = (i32)'r'
                 quote = true
-            10: # '\n'
+            10:  # '\n'
                 c = (i32)'n'
                 quote = true
-            8: # '\b'
+            8:  # '\b'
                 c = (i32)'b'
                 quote = true
-            12: # '\f'
+            12:  # '\f'
                 c = (i32)'f'
                 quote = true
-            92: # '\\'
+            92:  # '\\'
                 quote = true
             _:
                 if c == sep:
@@ -204,8 +204,7 @@ func is_ascii_ident(p: const String*) -> bool:
         return false
     for i in 0..<(i32)p.len:
         let c = string_get(p, i)
-        if not ((c >= (i32)'a' and c <= (i32)'z') or (c >= (i32)'A' and c <= (i32)'Z') or
-                (c == (i32)'_' or c == (i32)'$') or (c >= (i32)'0' and c <= (i32)'9' and i > 0)):
+        if not ((c >= (i32)'a' and c <= (i32)'z') or (c >= (i32)'A' and c <= (i32)'Z') or (c == (i32)'_' or c == (i32)'$') or (c >= (i32)'0' and c <= (i32)'9' and i > 0)):
             return false
     return true
 
@@ -286,25 +285,25 @@ func js_print_regexp(s: PrintValueState*, p1: Object*):
             var c = string_get(p, i)
             i += 1
             match c:
-                92: # '\\'
+                92:  # '\\'
                     if i < n:
                         c2 = string_get(p, i)
                         i += 1
-                93: # ']'
+                93:  # ']'
                     bra = false
-                91: # '['
+                91:  # '['
                     if not bra:
                         if i < n and string_get(p, i) == (i32)']':
                             c2 = string_get(p, i)
                             i += 1
                         bra = true
-                10: # '\n'
+                10:  # '\n'
                     c = (i32)'\\'
                     c2 = (i32)'n'
-                13: # '\r'
+                13:  # '\r'
                     c = (i32)'\\'
                     c2 = (i32)'r'
-                47: # '/'
+                47:  # '/'
                     if not bra:
                         c = (i32)'\\'
                         c2 = (i32)'/'

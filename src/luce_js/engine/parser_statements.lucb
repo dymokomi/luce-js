@@ -49,8 +49,7 @@ func emit_break(s: ParseState*, name: Atom, is_cont: bool) -> !:
             # continue stays inside the same block
             discard(emit_goto(s, (i32)Op.goto_, t.label_cont))
             return
-        if (not is_cont and t.label_break != -1 and
-            ((name == no_atom and not t.is_regular_stmt) or t.label_name == name)):
+        if (not is_cont and t.label_break != -1 and ((name == no_atom and not t.is_regular_stmt) or t.label_name == name)):
             discard(emit_goto(s, (i32)Op.goto_, t.label_break))
             return
         var i: i32 = 0
@@ -243,8 +242,7 @@ func js_parse_var(s: ParseState*, parse_flags: i32, tok: TokenType, export_flag:
             js_free_atom(ctx, name)
         else:
             var skip_bits: i32 = 0
-            if ((s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace) and
-                (try js_parse_skip_parens_token(s, &skip_bits, false)) == TokenType.assign):
+            if ((s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace) and (try js_parse_skip_parens_token(s, &skip_bits, false)) == TokenType.assign):
                 emit_op(s, (u8)Op.undefined)
                 discard(try js_parse_destructuring_element(s, tok, false, true,
                                                            skip_bits & skip_has_ellipsis,
@@ -259,8 +257,7 @@ func js_parse_var(s: ParseState*, parse_flags: i32, tok: TokenType, export_flag:
 
 # test if the current token is a label. Use simplistic look-ahead scanner
 func is_label(s: ParseState*) -> bool:
-    return (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved and
-            peek_token(s, false) == TokenType.colon)
+    return (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved and peek_token(s, false) == TokenType.colon)
 
 # test if the current token is a let keyword. Use simplistic look-ahead scanner
 func is_let(s: ParseState*, decl_mask: i32) -> bool!:
@@ -279,14 +276,11 @@ func is_let(s: ParseState*, decl_mask: i32) -> bool!:
                 # let [ is a syntax restriction: it never introduces an
                 # ExpressionStatement
                 res = true
-            elif (tok == TokenType.lbrace or
-                  (tok == TokenType.ident and not s.token.u.ident.is_reserved) or
-                  tok == TokenType.let_ or tok == TokenType.yield or tok == TokenType.await):
+            elif (tok == TokenType.lbrace or (tok == TokenType.ident and not s.token.u.ident.is_reserved) or tok == TokenType.let_ or tok == TokenType.yield or tok == TokenType.await):
                 # Check for possible ASI if not scanning for Declaration
                 # XXX: should also check that `{` introduces a BindingPattern, but Firefox
                 # does not and rejects eval("let=1;let\n{if(1)2;}")
-                if (not has_lf_in_range(last_token_ptr, s.token.ptr) or
-                    (decl_mask & decl_mask_other) != 0):
+                if (not has_lf_in_range(last_token_ptr, s.token.ptr) or (decl_mask & decl_mask_other) != 0):
                     res = true
         try js_parse_seek_token(s, &pos)
         if not next_ok:
@@ -355,8 +349,7 @@ func js_parse_for_in_of_binding(s: ParseState*, is_async: bool) -> (TokenType, A
         emit_atom(s, var_name)
         emit_u16(s, (u16)fd.scope_level)
         return (tok, var_name, false)
-    elif (not is_async and token_is_pseudo_keyword(s, atom_async) and
-          peek_token(s, false) == TokenType.of):
+    elif (not is_async and token_is_pseudo_keyword(s, atom_async) and peek_token(s, false) == TokenType.of):
         try js_parse_error(s, "'for of' expression cannot start with 'async'")
     else:
         var skip_bits: i32 = 0
@@ -436,9 +429,7 @@ func js_parse_for_in_of(s: ParseState*, label_name: Atom, is_async: bool) -> !:
     elif s.token.val == TokenType.in_:
         if is_async:
             try js_parse_error(s, "'for await' loop should be used with 'of'")
-        if (has_initializer and
-            (tok != TokenType.var_ or ((i32)fd.js_mode & js_mode_strict) != 0 or
-             has_destructuring)):
+        if (has_initializer and (tok != TokenType.var_ or ((i32)fd.js_mode & js_mode_strict) != 0 or has_destructuring)):
             try js_parse_for_initializer_error(s, is_for_of)
     else:
         try js_parse_error(s, "expected 'of' or 'in' in for control expression")
@@ -459,10 +450,10 @@ func js_parse_for_in_of(s: ParseState*, label_name: Atom, is_async: bool) -> !:
             emit_op(s, (u8)Op.for_await_of_start)
         else:
             emit_op(s, (u8)Op.for_of_start)
-        # on stack: enum_rec
+    # on stack: enum_rec
     else:
         emit_op(s, (u8)Op.for_in_start)
-        # on stack: enum_obj
+    # on stack: enum_obj
     discard(emit_goto(s, (i32)Op.goto_, label_cont))
 
     try js_parse_expect(s, TokenType.rparen)

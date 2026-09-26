@@ -164,8 +164,7 @@ func get_lvalue(s: ParseState*, popcode: i32*, pscope: i32*, pname: Atom*, plabe
     if op == (u8)TempOp.scope_get_var:
         name = cutils.get_u32(last_opcode_ptr(fd) + 1)
         scope = (i32)cutils.get_u16(last_opcode_ptr(fd) + 5)
-        if ((name == atom_arguments or name == atom_eval) and
-            ((i32)fd.js_mode & js_mode_strict) != 0):
+        if ((name == atom_arguments or name == atom_eval) and ((i32)fd.js_mode & js_mode_strict) != 0):
             try js_parse_error(s, "invalid lvalue in strict mode")
         if name == atom_this or name == atom_new_target:
             try invalid_lvalue(s, tok)

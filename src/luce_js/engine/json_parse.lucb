@@ -158,7 +158,7 @@ func json_free_parse_record(ctx: Context*, pr: JSONParseRecord*?):
             if let hash_table = r.u.obj.hash_table:
                 js_free(ctx, hash_table)
     js_free_value(ctx, r.value)
-    r.value = js_undefined() # fail safe
+    r.value = js_undefined()  # fail safe
 
 # mark: Parsing =================================================================================
 

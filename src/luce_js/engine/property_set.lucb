@@ -38,13 +38,11 @@ func set_property_typed_array_oob(ctx: Context*, is_receiver: bool, p1: Object*,
 func set_property_generic_create(ctx: Context*, p: Object*, prop: Atom, val: Value, flags: i32) -> bool!:
     defer js_free_value(ctx, val)
     return try js_create_property(ctx, p, prop, val, js_undefined(), js_undefined(),
-        flags | prop_has_value | prop_has_enumerable | prop_has_writable |
-        prop_has_configurable | prop_c_w_e)
+                                  flags | prop_has_value | prop_has_enumerable | prop_has_writable | prop_has_configurable | prop_c_w_e)
 
 ## Whether `p` is one of the typed array classes.
 func set_property_is_typed_array(p: Object*) -> bool:
-    return ((u16)p.class_id >= (u16)ClassId.uint8c_array and
-        (u16)p.class_id <= (u16)ClassId.float64_array)
+    return ((u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array)
 
 # mark: JS_SetPropertyInternal ==================================================================
 
@@ -117,7 +115,6 @@ pub func js_set_property_internal(ctx: Context*, obj: Value, prop: Atom, val: Va
                 continue retry
             else:
                 return try set_property_read_only(ctx, val, flags, prop)
-
     chain: while true:
         if not in_chain:
             let cur = p1 else trap("no object in the prototype chain")
@@ -171,7 +168,7 @@ pub func js_set_property_internal(ctx: Context*, obj: Value, prop: Atom, val: Va
                                     if p == cur:
                                         defer js_free_value(ctx, val)
                                         return try js_define_property(ctx, this_obj, prop, val,
-                                            js_undefined(), js_undefined(), prop_has_value)
+                                                                      js_undefined(), js_undefined(), prop_has_value)
                                     else:
                                         break chain
             p1 = cur.shape.proto
@@ -248,6 +245,6 @@ func set_property_on_receiver(ctx: Context*, obj: Value, p: Object*, prop: Atom,
                     return try set_property_read_only(ctx, val, flags, prop)
             defer js_free_value(ctx, val)
             return try js_define_property(ctx, this_obj, prop, val,
-                js_undefined(), js_undefined(), prop_has_value)
+                                          js_undefined(), js_undefined(), prop_has_value)
         else:
             return try set_property_generic_create(ctx, p, prop, val, flags)

@@ -119,8 +119,7 @@ func tty_set_raw_posix(fd: i32):
         discard(tcgetattr(fd, &tty[0]))
         oldtty = tty
 
-        termios_update_flag(&tty[0], 0, tc_ignbrk | tc_brkint | tc_parmrk | tc_istrip
-                                        | tc_inlcr | tc_igncr | tc_icrnl | tc_ixon, 0)
+        termios_update_flag(&tty[0], 0, tc_ignbrk | tc_brkint | tc_parmrk | tc_istrip | tc_inlcr | tc_igncr | tc_icrnl | tc_ixon, 0)
         termios_update_flag(&tty[0], 1, 0, tc_opost)
         termios_update_flag(&tty[0], 3, tc_echo | tc_echonl | tc_icanon | tc_iexten, 0)
         termios_update_flag(&tty[0], 2, tc_csize | tc_parenb, 0)
@@ -168,9 +167,8 @@ func js_os_tty_set_raw_windows(fd: i32):
         discard(SetConsoleMode(handle, enable_window_input | enable_virtual_terminal_input))
         discard(win_setmode(fd, o_binary))
         if fd == 0:
-            handle = (void*?)(usize)win_get_osfhandle(1) # corresponding output
-            discard(SetConsoleMode(handle, enable_processed_output | enable_wrap_at_eol_output
-                                           | enable_virtual_terminal_processing))
+            handle = (void*?)(usize)win_get_osfhandle(1)  # corresponding output
+            discard(SetConsoleMode(handle, enable_processed_output | enable_wrap_at_eol_output | enable_virtual_terminal_processing))
 
 func js_os_rename(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let oldpath = try js.js_to_c_string(ctx, argv[0])
@@ -278,7 +276,7 @@ func js_os_signal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
     if js.js_is_null(func_) or js.js_is_undefined(func_):
         if let sh = find_sh(ts, (i32)sig_num):
             free_sh(js.js_get_runtime(ctx), sh)
-        var handler: void*? = none   # SIG_DFL
+        var handler: void*? = none  # SIG_DFL
         if not js.js_is_null(func_):
             handler = sig_ign()
         discard(c_signal((i32)sig_num, handler))

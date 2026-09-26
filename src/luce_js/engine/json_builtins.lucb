@@ -123,18 +123,14 @@ func js_json_is_raw_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*
 
 # Whether `c` may start or end the text of JSON.rawJSON.
 func is_valid_raw_json_char(c: i32) -> bool:
-    return ((c >= (i32)'a' and c <= (i32)'z') or
-            (c >= (i32)'0' and c <= (i32)'9') or
-            c == (i32)'-' or
-            c == (i32)'"')
+    return ((c >= (i32)'a' and c <= (i32)'z') or (c >= (i32)'0' and c <= (i32)'9') or c == (i32)'-' or c == (i32)'"')
 
 # JSON.rawJSON(text)
 func js_json_raw_json(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let text = try js_to_string(ctx, argv[0])
     let p = text.u.string
     var valid = false
-    if (p.len != 0 and is_valid_raw_json_char(string_get(p, 0)) and
-        is_valid_raw_json_char(string_get(p, (i32)p.len - 1))):
+    if (p.len != 0 and is_valid_raw_json_char(string_get(p, 0)) and is_valid_raw_json_char(string_get(p, (i32)p.len - 1))):
         var arg = text
         let res = js_json_parse(ctx, js_undefined(), 1, &arg) catch: recover js_exception()
         if not js_is_exception(res):

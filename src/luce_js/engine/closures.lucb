@@ -195,8 +195,7 @@ func js_closure_define_global_var(ctx: Context*, cv: ClosureVar*, is_direct_or_i
             else:
                 var_ref = gpr.u.var_ref
                 js_rc(var_ref).ref_count += 1
-            if (cv.var_kind == VarKind.global_function_decl and
-                    ((i32)prs.flags & prop_configurable) != 0):
+            if (cv.var_kind == VarKind.global_function_decl and ((i32)prs.flags & prop_configurable) != 0):
                 # update the property flags if possible when
                 # declaring a global function
                 if ((i32)prs.flags & prop_tmask) == prop_getset:
@@ -322,7 +321,7 @@ func js_instantiate_prototype(ctx: Context*, p: Object*, atom: Atom, opaque: voi
     set_cycle_flag(ctx, obj)
     set_cycle_flag(ctx, this_val)
     js_define_property_value(ctx, obj, atom_constructor, js_dup_value(ctx, this_val),
-            prop_writable | prop_configurable) catch failure:
+                             prop_writable | prop_configurable) catch failure:
         js_free_value(ctx, obj)
         error(failure.code, failure.message)
     return obj
@@ -360,14 +359,14 @@ func js_closure(ctx: Context*, bfunc: Value, cur_var_refs: VarRef*?*?, sf: Stack
         let class_proto = ctx.class_proto else trap("js_closure: no class prototypes")
         let proto = try js_new_object_proto(ctx, class_proto[(usize)proto_class_id])
         js_define_property_value(ctx, func_obj, atom_prototype, proto,
-            prop_writable) catch: recover false
+                                 prop_writable) catch: recover false
     elif b.has_prototype:
         # add the 'prototype' property: delay instantiation to avoid
         # creating cycles for every javascript function. The prototype
         # object is created on the fly when first accessed
         discard(js_set_constructor_bit(ctx, func_obj, true))
         js_define_auto_init_property(ctx, func_obj, atom_prototype,
-            AutoInitId.prototype, none, prop_writable) catch: recover false
+                                     AutoInitId.prototype, none, prop_writable) catch: recover false
     return func_obj
 
 # mark: Classes =================================================================================
@@ -435,7 +434,7 @@ func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags
     discard(js_set_constructor_bit(ctx, v.ctor, true))
 
     js_define_property_value(ctx, v.ctor, atom_length,
-        js_new_int32((i32)b.defined_arg_count), prop_configurable) catch: recover false
+                             js_new_int32((i32)b.defined_arg_count), prop_configurable) catch: recover false
 
     if is_computed_name:
         try js_define_object_name_computed(ctx, v.ctor, sp[-3], prop_configurable)
@@ -445,10 +444,10 @@ func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags
     # the constructor property must be first. It can be overriden by
     # computed property names
     discard(try js_define_property_value(ctx, v.proto, atom_constructor,
-        js_dup_value(ctx, v.ctor), prop_configurable | prop_writable | prop_throw))
+                                         js_dup_value(ctx, v.ctor), prop_configurable | prop_writable | prop_throw))
     # set the prototype property
     discard(try js_define_property_value(ctx, v.ctor, atom_prototype,
-        js_dup_value(ctx, v.proto), prop_throw))
+                                         js_dup_value(ctx, v.proto), prop_throw))
     set_cycle_flag(ctx, v.ctor)
     set_cycle_flag(ctx, v.proto)
 

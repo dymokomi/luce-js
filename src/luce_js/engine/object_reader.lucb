@@ -105,7 +105,8 @@ func js_read_array_buffer(s: BCReaderState*) -> Value!:
     # makes a copy of the input
     let obj = try js_array_buffer_constructor3(ctx, js_undefined(), byte_length, pmax_byte_length,
                                                (u32)ClassId.array_buffer, (u8*)s.ptr,
-                                               js_array_buffer_free, none, true)   # alloc_flag
+                                               js_array_buffer_free, none, true)
+    # alloc_flag
     errdefer js_free_value(ctx, obj)
     try bc_add_object_ref(s, obj)
     s.ptr += (usize)byte_length
@@ -269,7 +270,7 @@ func js_read_object_atoms(s: BCReaderState*) -> !:
         let atoms = s.idx_to_atom else trap("js_read_object_atoms: no atom table")
         atoms[(usize)i] = atom
         if s.is_rom_data and atom != i +% s.first_atom:
-            s.is_rom_data = false   # atoms must be relocated
+            s.is_rom_data = false  # atoms must be relocated
 
 ## Release the reader's atom table and object table.
 func bc_reader_free(s: BCReaderState*):

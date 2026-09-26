@@ -95,7 +95,7 @@ func find_line_num(ctx: Context*, b: FunctionBytecode*, pc_value: u32, pcol_num:
 # find_line_num's walk of the pc2line table: none where C jumps to `fail`.
 func find_line_col(b: FunctionBytecode*, pc_value: u32) -> (i32, i32)?:
     if not b.has_debug:
-        return none # function was stripped
+        return none  # function was stripped
     var p: const u8* = b.debug.pc2line_buf else return none
     let p_end = p + (usize)b.debug.pc2line_len
 
@@ -200,7 +200,7 @@ func define_error_position(ctx: Context*, error_obj: Value, filename: const u8*,
 func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line_num: i32,
                      col_num: i32, backtrace_flags: i32):
     if not js_is_object(error_obj):
-        return # protection in the out of memory case
+        return  # protection in the out of memory case
 
     let flags = prop_writable | prop_configurable
     var dbuf: cutils.DynBuf = ---
@@ -238,8 +238,7 @@ func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line
             if b.has_debug:
                 var col_num1: i32 = 0
                 let line_num1 = find_line_num(ctx, b, frame_pc(sf, b), &col_num1)
-                let atom_str: const u8*? = (js_atom_to_c_string(ctx, b.debug.filename)
-                                            catch failure: recover none)
+                let atom_str: const u8*? = (js_atom_to_c_string(ctx, b.debug.filename) catch failure: recover none)
                 if let a = atom_str:
                     discard(cutils.dbuf_printf(&dbuf, f" ({cutils.c_str_view(a)}"))
                     js_free_c_string(ctx, a)
@@ -258,8 +257,7 @@ func build_backtrace(ctx: Context*, error_obj: Value, filename: const u8*?, line
         # C would store the JS_EXCEPTION marker when the string cannot be made; null is
         # stored instead, as when the buffer failed.
         stack = js_new_string(ctx, buf) catch failure: recover js_null()
-    discard(js_define_property_value(ctx, error_obj, atom_stack, stack, flags)
-            catch failure: recover false)
+    discard(js_define_property_value(ctx, error_obj, atom_stack, stack, flags) catch failure: recover false)
 
 # Whether `obj` is an Error object without a stack property yet.
 # Note: it is important that no exception is returned by this function

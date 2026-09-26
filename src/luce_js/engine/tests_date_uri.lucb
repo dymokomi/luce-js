@@ -22,8 +22,7 @@ func utc_fields_of(t: i64) -> f64[9]:
 # whether the string has no time zone.
 func parse_date_bytes(text: const u8[], is_local: bool*) -> f64:
     var fields: i32[9]
-    if not (js_date_parse_isostring(text, fields, is_local) or
-            js_date_parse_otherstring(text, fields, is_local)):
+    if not (js_date_parse_isostring(text, fields, is_local) or js_date_parse_otherstring(text, fields, is_local)):
         return math.nan
     var fields1: f64[9]
     for k: usize in 0..<7:
@@ -86,7 +85,7 @@ test "fields of a time value":
     let f = utc_fields_of(1514934176927)
     assert(f[0] == 2018.0 and f[1] == 0.0 and f[2] == 2.0)
     assert(f[3] == 23.0 and f[4] == 2.0 and f[5] == 56.0 and f[6] == 927.0)
-    assert(f[7] == 2.0) # Tuesday
+    assert(f[7] == 2.0)  # Tuesday
     let epoch = utc_fields_of(0)
     assert(epoch[0] == 1970.0 and epoch[1] == 0.0 and epoch[2] == 1.0 and epoch[7] == 4.0)
     let leap = utc_fields_of(951825600000)

@@ -83,19 +83,14 @@ func js_parse_function_check_names(s: ParseState*, fd: FunctionDef*, func_name: 
     if ((i32)fd.js_mode & js_mode_strict) != 0:
         if not fd.has_simple_parameter_list and fd.has_use_strict:
             try js_parse_error(s, "\"use strict\" not allowed in function with default or destructuring parameter")
-        if (func_name == atom_eval or func_name == atom_arguments or
-            is_strict_future_keyword(func_name)):
+        if (func_name == atom_eval or func_name == atom_arguments or is_strict_future_keyword(func_name)):
             try js_parse_error(s, "invalid function name in strict code")
         for idx in 0..<fd.arg_count:
             let name = fd_arg(fd, idx).var_name
             if name == atom_eval or name == atom_arguments or is_strict_future_keyword(name):
                 try js_parse_error(s, "invalid argument name in strict code")
     # check async_generator case
-    if (((i32)fd.js_mode & js_mode_strict) != 0 or
-        not fd.has_simple_parameter_list or
-        (fd.func_type == ParseFunctionKind.method and fd.func_kind == js_func_async) or
-        fd.func_type == ParseFunctionKind.arrow or
-        fd.func_type == ParseFunctionKind.method):
+    if (((i32)fd.js_mode & js_mode_strict) != 0 or not fd.has_simple_parameter_list or (fd.func_type == ParseFunctionKind.method and fd.func_kind == js_func_async) or fd.func_type == ParseFunctionKind.arrow or fd.func_type == ParseFunctionKind.method):
         for idx in 0..<fd.arg_count:
             let name = fd_arg(fd, idx).var_name
             if name != no_atom:

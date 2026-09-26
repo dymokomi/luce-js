@@ -217,8 +217,7 @@ pub func js_get_property_internal(ctx: Context*, obj: Value, prop: Atom, this_ob
         if p.is_exotic:
             # exotic behaviors
             if p.fast_array:
-                let is_typed_array = ((u16)p.class_id >= (u16)ClassId.uint8c_array and
-                    (u16)p.class_id <= (u16)ClassId.float64_array)
+                let is_typed_array = ((u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array)
                 if js_atom_is_tagged_int_raw(prop):
                     let idx = js_atom_to_uint32_raw(prop)
                     if idx < p.u.array.count:
@@ -238,7 +237,7 @@ pub func js_get_property_internal(ctx: Context*, obj: Value, prop: Atom, this_ob
                     return try method(ctx, obj1, prop, this_obj)
                 if let method = em.get_own_property:
                     var desc = PropertyDescriptor(flags = 0, value = js_undefined(),
-                        getter = js_undefined(), setter = js_undefined())
+                                                  getter = js_undefined(), setter = js_undefined())
                     # Note: if 'p' is a prototype, it can be freed in the called function
                     let obj1 = js_dup_value(ctx, js_mkptr(Tag.object, p))
                     let ret = method(ctx, &desc, obj1, prop) catch failure:

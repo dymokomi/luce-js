@@ -33,8 +33,7 @@ func js_copy_sub_array(ctx: Context*, obj: Value, to_pos: i64, from_pos: i64, co
             to = to_pos + i
         var done_fast = false
         if let p = fast:
-            if (p.fast_array and from_ >= 0 and from_ < (i64)p.u.array.count and
-                    to >= 0 and to < (i64)p.u.array.count):
+            if (p.fast_array and from_ >= 0 and from_ < (i64)p.u.array.count and to >= 0 and to < (i64)p.u.array.count):
                 let len = (i64)p.u.array.count
                 # Fast path for fast arrays. Since we don't look at the
                 # prototype chain, we can optimize only the cases where

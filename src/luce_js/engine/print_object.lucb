@@ -144,12 +144,10 @@ func js_print_object(s: PrintValueState*, p: Object*):
                 let n = len - p.u.array.count
                 js_print_comma(s, &comma_state)
                 js_printf(s, f"<{n} empty item{"s" if n > 1 else ""}>")
-    elif ((u16)p.class_id >= (u16)ClassId.uint8c_array and
-          (u16)p.class_id <= (u16)ClassId.float64_array):
+    elif ((u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array):
         is_array = true
         js_print_typed_array(s, p, &comma_state)
-    elif (p.class_id == ClassId.bytecode_function or
-          (class_array[(usize)p.class_id].call != none and p.class_id != ClassId.proxy)):
+    elif (p.class_id == ClassId.bytecode_function or (class_array[(usize)p.class_id].call != none and p.class_id != ClassId.proxy)):
         js_printf(s, "[Function")
         # XXX: allow dump without ctx
         if not s.options.raw_dump and s.ctx != none:
@@ -179,7 +177,7 @@ func js_print_object(s: PrintValueState*, p: Object*):
         # get_date_string() has no side effect
         var no_args = js_undefined()
         let date_str: Value? = get_date_string(ctx, js_mkptr(Tag.object, p), 0, &no_args,
-                                               0x23) catch: # toISOString()
+                                               0x23) catch:  # toISOString()
             recover none
         if let text = date_str:
             js_print_raw_string(s, text)

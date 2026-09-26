@@ -33,7 +33,7 @@ func js_write_array(s: BCWriterState*, obj: Value) -> !:
     else:
         bc_put_u8(s, (u8)BCTag.array)
         is_template = false
-    discard(try js_get_length32(ctx, &len, obj))   # no side effect
+    discard(try js_get_length32(ctx, &len, obj))  # no side effect
     bc_put_leb128(s, len)
     if p.fast_array:
         let values = p.u.array.u.values
@@ -80,8 +80,7 @@ func js_write_object_tag(s: BCWriterState*, obj: Value) -> !:
         var pr = get_shape_prop(sh)
         for i in 0..<(usize)sh.prop_count:
             let atom = pr.atom
-            if (atom != no_atom and js_atom_is_string(s.ctx, atom) and
-                    ((i32)pr.flags & prop_enumerable) != 0):
+            if (atom != no_atom and js_atom_is_string(s.ctx, atom) and ((i32)pr.flags & prop_enumerable) != 0):
                 if ((i32)pr.flags & prop_tmask) != 0:
                     try js_throw_type_error(s.ctx, "only value properties are supported")
                 if pass == 0:
@@ -121,7 +120,7 @@ func js_write_array_buffer(s: BCWriterState*, obj: Value) -> !:
 func js_write_shared_array_buffer(s: BCWriterState*, obj: Value) -> !:
     let p = obj.u.obj
     let abuf = p.u.array_buffer
-    assert(abuf.detached == 0)   # SharedArrayBuffer are never detached
+    assert(abuf.detached == 0)  # SharedArrayBuffer are never detached
     bc_put_u8(s, (u8)BCTag.shared_array_buffer)
     bc_put_leb128(s, (u32)abuf.byte_length)
     bc_put_leb128(s, (u32)abuf.max_byte_length)
@@ -162,8 +161,7 @@ func js_write_object_class(s: BCWriterState*, obj: Value, p: Object*) -> !:
             bc_put_u8(s, (u8)BCTag.object_value)
             try js_write_object_rec(s, p.u.object_data)
         _:
-            if ((u16)p.class_id >= (u16)ClassId.uint8c_array and
-                    (u16)p.class_id <= (u16)ClassId.float64_array):
+            if ((u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array):
                 try js_write_typed_array(s, obj)
             else:
                 try js_throw_type_error(s.ctx, "unsupported object class")

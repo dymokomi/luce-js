@@ -237,8 +237,8 @@ func js_for_in_iterator_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
 ## Free an object: its properties, its shape and its class data. The structure itself is
 ## kept while weak references (or, during cycle removal, references) point at it.
 func free_object(rt: Runtime*, p: Object*):
-    p.free_mark = true   # used to tell the object is invalid when
-                         # freeing cycles
+    p.free_mark = true  # used to tell the object is invalid when
+    # freeing cycles
     # free all the fields
     let sh = p.shape
     let pr = get_shape_prop(sh)
@@ -275,7 +275,7 @@ func free_object(rt: Runtime*, p: Object*):
         if p.weakref_count == 0:
             js_free_rt(rt, p)
         else:
-            js_rc(p).set_mark(0)   # reset the mark so that the weakref can be freed
+            js_rc(p).set_mark(0)  # reset the mark so that the weakref can be freed
 
 ## Free a GC object by its type (the gc_obj_type of its block header).
 func free_gc_object(rt: Runtime*, gp: GCObjectHeader*):
@@ -324,7 +324,7 @@ pub noinline func js_free_value_rt_raw(rt: Runtime*, v: Value):
             if rt.gc_phase != GCPhase.remove_cycles:
                 cutils.list_del(&p.link)
                 cutils.list_add(&p.link, &rt.gc_zero_ref_count_list)
-                js_rc(p).set_mark(1)   # indicate that the object is about to be freed
+                js_rc(p).set_mark(1)  # indicate that the object is about to be freed
                 if rt.gc_phase == GCPhase.none_:
                     free_zero_refcount(rt)
         .big_int:

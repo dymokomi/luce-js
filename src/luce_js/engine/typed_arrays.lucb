@@ -170,9 +170,9 @@ func js_typed_array_set_internal(ctx: Context*, dst: Value, src: Value, off: Val
                                    array_buffer_data_at(src_abuf.data, src_ta.offset),
                                    (usize)(src_len << shift)))
             return js_undefined()
-        # if dest_abuf.data == src_abuf.data: copying between the same buffer using
-        # different types of mappings would require a temporary buffer
-        # otherwise, default behavior is slow but correct
+    # if dest_abuf.data == src_abuf.data: copying between the same buffer using
+    # different types of mappings would require a temporary buffer
+    # otherwise, default behavior is slow but correct
     else:
         # can change |dst| as a side effect; per spec,
         # perform the range check against its old length

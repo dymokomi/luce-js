@@ -24,9 +24,7 @@
 
 # The name a destructuring pattern declares at the current token, which is consumed.
 func js_parse_destructuring_var(s: ParseState*, tok: TokenType, is_arg: bool) -> Atom!:
-    if (not (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved) or
-        (((i32)s.fd().js_mode & js_mode_strict) != 0 and
-         (s.token.u.ident.atom == atom_eval or s.token.u.ident.atom == atom_arguments))):
+    if (not (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved) or (((i32)s.fd().js_mode & js_mode_strict) != 0 and (s.token.u.ident.atom == atom_eval or s.token.u.ident.atom == atom_arguments))):
         try js_parse_error(s, "invalid destructuring target")
     var name = js_dup_atom(s.ctx, s.token.u.ident.atom)
     errdefer free_atom_at(s.ctx, &name)
@@ -158,7 +156,7 @@ func js_parse_destructuring_property(s: ParseState*, tok: TokenType, is_arg: boo
         emit_op(s, (u8)Op.object)
         emit_op(s, (u8)Op.copy_data_properties)
         emit_u8(s, (u8)(0 | ((depth_lvalue + 1) << 2) | ((depth_lvalue + 2) << 5)))
-        # goto set_val
+    # goto set_val
     else:
         let prop_type = try js_parse_property_name(s, &prop_name, false, true, false)
         if prop_type == prop_type_ident:
@@ -249,8 +247,7 @@ func js_parse_destructuring_property(s: ParseState*, tok: TokenType, is_arg: boo
             # prop_type = PROP_TYPE_VAR, cannot be a computed property
             if is_arg:
                 try js_parse_check_duplicate_parameter(s, prop_name)
-            if (((i32)s.fd().js_mode & js_mode_strict) != 0 and
-                (prop_name == atom_eval or prop_name == atom_arguments)):
+            if (((i32)s.fd().js_mode & js_mode_strict) != 0 and (prop_name == atom_eval or prop_name == atom_arguments)):
                 try js_parse_error(s, "invalid destructuring target")
             if has_ellipsis:
                 # define the property in excludeList
@@ -392,8 +389,7 @@ func js_parse_destructuring_array(s: ParseState*, tok: TokenType, is_arg: bool,
         var skip_bits: i32 = 0
         if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
             tok1 = destructuring_skip_parens(s, &skip_bits)
-            nested = (tok1 == TokenType.comma or tok1 == TokenType.assign or
-                      tok1 == TokenType.rbracket)
+            nested = (tok1 == TokenType.comma or tok1 == TokenType.assign or tok1 == TokenType.rbracket)
         if s.token.val == TokenType.comma:
             # do nothing, skip the value, has_spread is false
             emit_op(s, (u8)Op.for_of_next)

@@ -81,8 +81,7 @@ func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum*?*, pl
             if gpn_selects(flags, kind, is_enumerable):
                 # need to raise an exception in case of the module
                 # name space (implicit GetOwnProperty)
-                if (((i32)prs.flags & prop_tmask) == prop_varref and
-                        (flags & (gpn_set_enum | gpn_enum_only)) != 0):
+                if (((i32)prs.flags & prop_tmask) == prop_varref and (flags & (gpn_set_enum | gpn_enum_only)) != 0):
                     let var_ref = p.prop[i].u.var_ref
                     if js_is_uninitialized(*var_ref.pvalue):
                         try js_throw_reference_error_uninitialized(ctx, prs.atom)
@@ -111,7 +110,7 @@ func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum*?*, pl
                         var is_enumerable = false
                         if (flags & (gpn_set_enum | gpn_enum_only)) != 0:
                             var desc = PropertyDescriptor(flags = 0, value = js_undefined(),
-                                getter = js_undefined(), setter = js_undefined())
+                                                          getter = js_undefined(), setter = js_undefined())
                             # set the "is_enumerable" field if necessary
                             let res = js_get_own_property_internal(ctx, &desc, p, atom) catch failure:
                                 js_free_property_enum(ctx, tab_exotic, exotic_count)
@@ -310,8 +309,7 @@ pub func js_prevent_extensions(ctx: Context*, obj: Value) -> bool!:
         return false
     let p = obj.u.obj
     if p.is_exotic:
-        if ((u16)p.class_id >= (u16)ClassId.uint8c_array and
-                (u16)p.class_id <= (u16)ClassId.float64_array):
+        if ((u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array):
             # resizable type arrays return FALSE
             let ta = p.u.typed_array
             let abuf = ta.buffer.u.array_buffer
@@ -347,8 +345,7 @@ pub func js_has_property(ctx: Context*, obj: Value, prop: Atom) -> bool!:
         js_free_value(ctx, js_mkptr(Tag.object, p))
         if ret:
             return true
-        if ((u16)p.class_id >= (u16)ClassId.uint8c_array and
-                (u16)p.class_id <= (u16)ClassId.float64_array):
+        if ((u16)p.class_id >= (u16)ClassId.uint8c_array and (u16)p.class_id <= (u16)ClassId.float64_array):
             if try js_atom_is_numeric_index(ctx, prop):
                 return false
         if let proto = p.shape.proto:

@@ -146,17 +146,17 @@ test "reads past the end fail and store 0":
 test "the function flags pack as QuickJS packs them":
     var flags: u32 = 0
     var idx: i32 = 0
-    bc_set_flags(&flags, &idx, 1, 1)    # has_prototype
-    bc_set_flags(&flags, &idx, 0, 1)    # has_simple_parameter_list
-    bc_set_flags(&flags, &idx, 1, 1)    # is_derived_class_constructor
-    bc_set_flags(&flags, &idx, 0, 1)    # need_home_object
-    bc_set_flags(&flags, &idx, 3, 2)    # func_kind: async generator
-    bc_set_flags(&flags, &idx, 1, 1)    # new_target_allowed
-    bc_set_flags(&flags, &idx, 0, 1)    # super_call_allowed
-    bc_set_flags(&flags, &idx, 1, 1)    # super_allowed
-    bc_set_flags(&flags, &idx, 0, 1)    # arguments_allowed
-    bc_set_flags(&flags, &idx, 1, 1)    # has_debug
-    bc_set_flags(&flags, &idx, 1, 1)    # is_direct_or_indirect_eval
+    bc_set_flags(&flags, &idx, 1, 1)  # has_prototype
+    bc_set_flags(&flags, &idx, 0, 1)  # has_simple_parameter_list
+    bc_set_flags(&flags, &idx, 1, 1)  # is_derived_class_constructor
+    bc_set_flags(&flags, &idx, 0, 1)  # need_home_object
+    bc_set_flags(&flags, &idx, 3, 2)  # func_kind: async generator
+    bc_set_flags(&flags, &idx, 1, 1)  # new_target_allowed
+    bc_set_flags(&flags, &idx, 0, 1)  # super_call_allowed
+    bc_set_flags(&flags, &idx, 1, 1)  # super_allowed
+    bc_set_flags(&flags, &idx, 0, 1)  # arguments_allowed
+    bc_set_flags(&flags, &idx, 1, 1)  # has_debug
+    bc_set_flags(&flags, &idx, 1, 1)  # is_direct_or_indirect_eval
     assert(idx == 12)
     assert(flags == 0xd75)
 
@@ -178,7 +178,7 @@ test "tagged integer and predefined atoms are written as themselves":
     try bc_put_atom(&s, js_atom_from_uint32_raw(5))
     try bc_put_atom(&s, atom_length)
     try bc_put_atom(&s, js_atom_from_uint32_raw(1000000))
-    assert(written_bytes(&s)[0] == 11)                                   # (5 << 1) | 1
+    assert(written_bytes(&s)[0] == 11)  # (5 << 1) | 1
     assert(written_bytes(&s)[1] == (u8)(atom_length << 1))
     assert(s.idx_to_atom_count == 0)
 

@@ -69,8 +69,8 @@ pub func list_del(el: ListHead*):
     let next = el.next else trap("list_del: unlinked element")
     prev.next = next
     next.prev = prev
-    el.prev = none # fail safe
-    el.next = none # fail safe
+    el.prev = none  # fail safe
+    el.next = none  # fail safe
 
 ## Whether the list `el` is empty.
 pub func list_empty(el: const ListHead*) -> bool:

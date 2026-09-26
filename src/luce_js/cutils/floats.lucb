@@ -20,9 +20,9 @@ pub func uint64_as_float64(u64_bits: u64) -> f64:
 pub func fromfp16(v: u16) -> f64:
     var v1: u32 = v & 0x7fff
     if v1 >= 0x7c00:
-        v1 += 0x1f8000 # NaN or infinity
+        v1 += 0x1f8000  # NaN or infinity
     let d = uint64_as_float64(((u64)(v >> 15) << 63) | ((u64)v1 << (52 - 10)))
-    return d * uint64_as_float64((u64)(1023 + 1008) << 52) # 0x1p1008
+    return d * uint64_as_float64((u64)(1023 + 1008) << 52)  # 0x1p1008
 
 ## The IEEE binary16 nearest `d` (round to nearest even; NaN becomes 0x7c01).
 pub func tofp16(d: f64) -> u16:
@@ -33,10 +33,10 @@ pub func tofp16(d: f64) -> u16:
     if a > 0x7ff0000000000000:
         # nan
         v = 0x7c01
-    elif a < 0x3f10000000000000: # 0x1p-14
+    elif a < 0x3f10000000000000:  # 0x1p-14
         # subnormal f16 number or zero
-        if a <= 0x3e60000000000000: # 0x1p-25
-            v = 0x0000 # zero
+        if a <= 0x3e60000000000000:  # 0x1p-25
+            v = 0x0000  # zero
         else:
             let shift = 1051 - (i32)(a >> 52)
             a = ((u64)1 << 52) | (a & (((u64)1 << 52) - 1))
@@ -44,7 +44,7 @@ pub func tofp16(d: f64) -> u16:
             v = (u32)((a + addend) >> (u64)shift)
     else:
         # normal number or infinity
-        a -= 0x3f00000000000000 # adjust the exponent
+        a -= 0x3f00000000000000  # adjust the exponent
         # round
         let addend = ((a >> (52 - 10)) & 1) + (((u64)1 << (52 - 11)) - 1)
         v = (u32)((a + addend) >> (52 - 10))

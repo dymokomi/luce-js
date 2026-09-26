@@ -55,14 +55,14 @@ func bc_remaining(s: const BCReaderState*) -> isize:
 
 func bc_get_u8(s: BCReaderState*, pval: u8*) -> !:
     if bc_remaining(s) < 1:
-        *pval = 0   # avoid warning
+        *pval = 0  # avoid warning
         try bc_read_error_end(s)
     *pval = *s.ptr
     s.ptr += 1
 
 func bc_get_u16(s: BCReaderState*, pval: u16*) -> !:
     if bc_remaining(s) < 2:
-        *pval = 0   # avoid warning
+        *pval = 0  # avoid warning
         try bc_read_error_end(s)
     var v = (u16)cutils.get_u16(s.ptr)
     if is_be():
@@ -72,7 +72,7 @@ func bc_get_u16(s: BCReaderState*, pval: u16*) -> !:
 
 func bc_get_u32(s: BCReaderState*, pval: u32*) -> !:
     if bc_remaining(s) < 4:
-        *pval = 0   # avoid warning
+        *pval = 0  # avoid warning
         try bc_read_error_end(s)
     var v = cutils.get_u32(s.ptr)
     if is_be():
@@ -82,7 +82,7 @@ func bc_get_u32(s: BCReaderState*, pval: u32*) -> !:
 
 func bc_get_u64(s: BCReaderState*, pval: u64*) -> !:
     if bc_remaining(s) < 8:
-        *pval = 0   # avoid warning
+        *pval = 0  # avoid warning
         try bc_read_error_end(s)
     var v = cutils.get_u64(s.ptr)
     if is_be():
@@ -177,7 +177,7 @@ func js_read_string(s: BCReaderState*) -> String*!:
             for i in 0..<(usize)len:
                 chars[i] = cutils.bswap16(chars[i])
     else:
-        str8(p)[size] = 0   # add the trailing zero for 8 bit strings
+        str8(p)[size] = 0  # add the trailing zero for 8 bit strings
     return p
 
 ## The `n`-bit field at bit `*pidx` of `flags`; advances `*pidx`.
@@ -313,7 +313,7 @@ func js_read_function_tag(s: BCReaderState*) -> Value!:
     bc.read_only_bytecode = s.is_rom_data
     try bc_get_u8(s, &v8)
     bc.js_mode = v8
-    try bc_get_atom(s, &bc.func_name)   # @ atom leak if failure
+    try bc_get_atom(s, &bc.func_name)  # @ atom leak if failure
     try bc_get_leb128_u16(s, &bc.arg_count)
     try bc_get_leb128_u16(s, &bc.var_count)
     try bc_get_leb128_u16(s, &bc.defined_arg_count)

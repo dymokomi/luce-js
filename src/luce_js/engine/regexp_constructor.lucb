@@ -169,25 +169,25 @@ func js_regexp_get_source(ctx: Context*, this_val: Value) -> Value!:
         var c = string_get(p, i)
         i += 1
         match c:
-            92: # '\\'
+            92:  # '\\'
                 if i < n:
                     c2 = string_get(p, i)
                     i += 1
-            93: # ']'
+            93:  # ']'
                 bra = false
-            91: # '['
+            91:  # '['
                 if not bra:
                     if i < n and string_get(p, i) == (i32)']':
                         c2 = string_get(p, i)
                         i += 1
                     bra = true
-            10: # '\n'
+            10:  # '\n'
                 c = (i32)'\\'
                 c2 = (i32)'n'
-            13: # '\r'
+            13:  # '\r'
                 c = (i32)'\\'
                 c2 = (i32)'r'
-            47: # '/'
+            47:  # '/'
                 if not bra:
                     c = (i32)'\\'
                     c2 = (i32)'/'
@@ -283,7 +283,7 @@ func lre_realloc(opaque: void*?, ptr: void*?, size: usize) -> void*?:
 # The punctuators RegExp.escape writes as a hex escape (C's strchr(",-=<>#&!%:;@~'`\"", c)).
 func regexp_escape_is_hex_punctuator(c: u32) -> bool:
     match c:
-        44, 45, 61, 60, 62, 35, 38, 33, 37, 58, 59, 64, 126, 39, 96, 34: # , - = < > # & ! % : ; @ ~ ' ` "
+        44, 45, 61, 60, 62, 35, 38, 33, 37, 58, 59, 64, 126, 39, 96, 34:  # , - = < > # & ! % : ; @ ~ ' ` "
             return true
         _:
             return false
@@ -319,7 +319,7 @@ func js_regexp_escape(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -
 
     if not js_is_string(argv[0]):
         try js_throw_type_error(ctx, "not a string")
-    let text = try js_to_string(ctx, argv[0]) # must call it to linearlize ropes
+    let text = try js_to_string(ctx, argv[0])  # must call it to linearlize ropes
     defer js_free_value(ctx, text)
     let p = text.u.string
     # as upstream, a failed append is reported by string_buffer_end
@@ -336,8 +336,7 @@ func js_regexp_escape(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -
             else:
                 hex2 = true
         elif c < 128:
-            if ((c >= (u32)'0' and c <= (u32)'9') or (c >= (u32)'A' and c <= (u32)'Z') or
-                (c >= (u32)'a' and c <= (u32)'z')):
+            if ((c >= (u32)'0' and c <= (u32)'9') or (c >= (u32)'A' and c <= (u32)'Z') or (c >= (u32)'a' and c <= (u32)'z')):
                 if i0 == 0:
                     hex2 = true
             elif regexp_escape_is_hex_punctuator(c):

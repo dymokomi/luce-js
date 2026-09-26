@@ -77,8 +77,7 @@ func mark_children(rt: Runtime*, gp: GCObjectHeader*, mark_func: MarkFunc):
             else:
                 let sf = var_ref.u.frame.stack_frame
                 if (sf.js_mode & js_mode_async) != 0:
-                    let async_func = (AsyncFunctionState*)((u8*)sf -
-                        offsetof(AsyncFunctionState, frame))
+                    let async_func = (AsyncFunctionState*)((u8*)sf - offsetof(AsyncFunctionState, frame))
                     mark_func(rt, &async_func.header)
         .async_function:
             let s = (AsyncFunctionState*)gp
@@ -174,7 +173,7 @@ func gc_scan_incref_child(rt: Runtime*, p: GCObjectHeader*):
         # ref_count was 0: remove from tmp_obj_list and add at the end of gc_obj_list
         cutils.list_del(&p.link)
         cutils.list_add_tail(&p.link, &rt.gc_obj_list)
-        h.set_mark(0) # reset the mark for the next GC call
+        h.set_mark(0)  # reset the mark for the next GC call
 
 func gc_scan_incref_child2(rt: Runtime*, p: GCObjectHeader*):
     js_rc(p).ref_count += 1
@@ -185,7 +184,7 @@ func gc_scan(rt: Runtime*):
     while el != &rt.gc_obj_list:
         let p = gc_header_of(el)
         assert(js_rc(p).ref_count > 0)
-        js_rc(p).set_mark(0) # reset the mark for the next GC call
+        js_rc(p).set_mark(0)  # reset the mark for the next GC call
         mark_children(rt, p, gc_scan_incref_child)
         el = el.next else trap("gc_scan: unlinked list")
 
@@ -219,8 +218,7 @@ func gc_free_cycles(rt: Runtime*):
         let el1 = el.next else trap("gc_free_cycles: unlinked list")
         let p = gc_header_of(el)
         let type_ = js_rc(p).gc_obj_type()
-        assert(type_ == GCObjectType.js_object or type_ == GCObjectType.function_bytecode or
-               type_ == GCObjectType.async_function or type_ == GCObjectType.module)
+        assert(type_ == GCObjectType.js_object or type_ == GCObjectType.function_bytecode or type_ == GCObjectType.async_function or type_ == GCObjectType.module)
         if type_ == GCObjectType.js_object and ((Object*)p).weakref_count != 0:
             # keep the object because there are weak references to it
             js_rc(p).set_mark(0)

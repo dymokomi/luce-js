@@ -81,10 +81,7 @@ func code_match(s: CodeContext*, pos0: i32, pattern: const i32[]) -> bool:
         if op != op1:
             if op1 == (i32)(u8)op1 or op == 0:
                 return false
-            if (op != (i32)(u8)op1 and
-                op != (i32)(u8)(op1 >> 8) and
-                op != (i32)(u8)(op1 >> 16) and
-                op != (i32)(u8)(op1 >> 24)):
+            if (op != (i32)(u8)op1 and op != (i32)(u8)(op1 >> 8) and op != (i32)(u8)(op1 >> 16) and op != (i32)(u8)(op1 >> 24)):
                 return false
             s.op = op
 

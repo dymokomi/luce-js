@@ -71,8 +71,7 @@ func js_inner_module_linking(ctx: Context*, m: ModuleDef*, pstack_top: ModuleDef
     if js_check_stack_overflow(ctx.rt, 0):
         try js_throw_stack_overflow(ctx)
 
-    if (m.status == ModuleStatus.linking or m.status == ModuleStatus.linked or
-            m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated):
+    if (m.status == ModuleStatus.linking or m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated):
         return index
 
     assert(m.status == ModuleStatus.unlinked)
@@ -88,8 +87,7 @@ func js_inner_module_linking(ctx: Context*, m: ModuleDef*, pstack_top: ModuleDef
         let rme = module_req_entry(m, i)
         let m1 = req_entry_module(rme)
         next_index = try js_inner_module_linking(ctx, m1, pstack_top, next_index)
-        assert(m1.status == ModuleStatus.linking or m1.status == ModuleStatus.linked or
-               m1.status == ModuleStatus.evaluating_async or m1.status == ModuleStatus.evaluated)
+        assert(m1.status == ModuleStatus.linking or m1.status == ModuleStatus.linked or m1.status == ModuleStatus.evaluating_async or m1.status == ModuleStatus.evaluated)
         if m1.status == ModuleStatus.linking:
             m.dfs_ancestor_index = cutils.min_int(m.dfs_ancestor_index, m1.dfs_ancestor_index)
 
@@ -174,8 +172,7 @@ func js_inner_module_linking(ctx: Context*, m: ModuleDef*, pstack_top: ModuleDef
 
 # Prepare a module to be executed by resolving all the imported variables.
 func js_link_module(ctx: Context*, m: ModuleDef*) -> !:
-    assert(m.status == ModuleStatus.unlinked or m.status == ModuleStatus.linked or
-           m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated)
+    assert(m.status == ModuleStatus.unlinked or m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated)
     var stack_top: ModuleDef*? = none
     let last_index = js_inner_module_linking(ctx, m, &stack_top, 0) catch failure:
         while let m1 = stack_top:
@@ -185,8 +182,7 @@ func js_link_module(ctx: Context*, m: ModuleDef*) -> !:
         error(failure.code, failure.message)
     discard(last_index)
     assert(stack_top == none)
-    assert(m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or
-           m.status == ModuleStatus.evaluated)
+    assert(m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated)
 
 # mark: Accessors and import.meta ===============================================================
 

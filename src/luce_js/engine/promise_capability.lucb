@@ -43,7 +43,7 @@ func js_promise_resolve_function_free_resolved(rt: Runtime*, sr: PromiseFunction
 func js_create_resolving_functions(ctx: Context*, resolving_funcs: Value*, promise: Value) -> !:
     let sr = (PromiseFunctionDataResolved*)(try js_malloc(ctx, sizeof(PromiseFunctionDataResolved)))
     sr.ref_count = 1
-    sr.already_resolved = false # must be shared between the two functions
+    sr.already_resolved = false  # must be shared between the two functions
     defer js_promise_resolve_function_free_resolved(ctx.rt, sr)
     for i: usize in 0..<2:
         let class_id = (u32)ClassId.promise_resolve_function + (u32)i

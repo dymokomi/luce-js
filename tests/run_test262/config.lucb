@@ -128,7 +128,7 @@ func load_config(filename: const u8*, ignore: const u8*):
                 discard(str_append(&harness_skip_features, z(" "), p))
         elif section == section_tests:
             namelist_add(&test_list, cnull(base_name), p)
-        # ignore settings in other sections
+    # ignore settings in other sections
     discard(fclose(f))
     c_free(base_name)
 

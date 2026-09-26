@@ -33,8 +33,7 @@ func token_is_ident(tok: TokenType) -> bool:
 # itself.
 func token_ends_prefix_name(s: ParseState*) -> bool:
     let t = s.token.val
-    return (t == TokenType.colon or t == TokenType.comma or t == TokenType.rbrace or
-            t == TokenType.lparen or t == TokenType.assign)
+    return (t == TokenType.colon or t == TokenType.comma or t == TokenType.rbrace or t == TokenType.lparen or t == TokenType.assign)
 
 # Parse a property name into `*pname` and answer its kind: a prop_type_* value, with
 # prop_type_private for a private name. If the property is an expression (a computed
@@ -53,8 +52,7 @@ func js_parse_property_name(s: ParseState*, pname: Atom*, allow_method: bool, al
     if allow_method:
         # if allow_private is true (for class field parsing) and get/set is following by
         # ';' (or LF with ASI), then it is a field name
-        if ((token_is_pseudo_keyword(s, atom_get) or token_is_pseudo_keyword(s, atom_set)) and
-            (not allow_private or peek_token(s, true) != TokenType.newline)):
+        if ((token_is_pseudo_keyword(s, atom_get) or token_is_pseudo_keyword(s, atom_set)) and (not allow_private or peek_token(s, true) != TokenType.newline)):
             # get x(), set x()
             name = js_dup_atom(s.ctx, s.token.u.ident.atom)
             try next_token(s)
@@ -84,15 +82,13 @@ func js_parse_property_name(s: ParseState*, pname: Atom*, allow_method: bool, al
     if ident_found or token_is_ident(s.token.val):
         if not ident_found:
             # variable can only be a non-reserved identifier
-            is_non_reserved_ident = (s.token.val == TokenType.ident and
-                                     not s.token.u.ident.is_reserved)
+            is_non_reserved_ident = (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved)
             # keywords and reserved words have a valid atom
             name = js_dup_atom(s.ctx, s.token.u.ident.atom)
             try next_token(s)
         # ident_found:
         if is_non_reserved_ident and prop_type == prop_type_ident and allow_var:
-            if not (s.token.val == TokenType.colon or
-                    (s.token.val == TokenType.lparen and allow_method)):
+            if not (s.token.val == TokenType.colon or (s.token.val == TokenType.lparen and allow_method)):
                 prop_type = prop_type_var
     elif s.token.val == TokenType.string:
         name = try js_value_to_atom(s.ctx, s.token.u.str_.str)
@@ -254,8 +250,7 @@ func js_parse_skip_parens_token(s: ParseState*, pbits: i32*?, no_line_terminator
                 if not skip_parens_push(state, &level, '`'):
                     break tokens
         # last_tok is only used to recognize regexps
-        if (s.token.val == TokenType.ident and
-            (token_is_pseudo_keyword(s, atom_of) or token_is_pseudo_keyword(s, atom_yield))):
+        if (s.token.val == TokenType.ident and (token_is_pseudo_keyword(s, atom_of) or token_is_pseudo_keyword(s, atom_yield))):
             last_tok = TokenType.of
         else:
             last_tok = s.token.val
@@ -280,8 +275,7 @@ func js_parse_skip_parens_token(s: ParseState*, pbits: i32*?, no_line_terminator
 
 # The position of the OP_define_class whose OP_set_class_name was the last opcode.
 func set_class_name_define_pos(fd: FunctionDef*, buf: u8*) -> isize:
-    let define_class_pos = ((isize)fd.last_opcode_pos + 1 -
-                            (isize)cutils.get_u32(buf + (isize)(fd.last_opcode_pos + 1)))
+    let define_class_pos = ((isize)fd.last_opcode_pos + 1 - (isize)cutils.get_u32(buf + (isize)(fd.last_opcode_pos + 1)))
     assert(buf[define_class_pos] == (u8)Op.define_class)
     return define_class_pos
 

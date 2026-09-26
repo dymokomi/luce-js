@@ -30,7 +30,7 @@ func js_array_join(ctx: Context*, this_val: Value, argc: i32, argv: Value*, to_l
     var n: i64 = 0
     try js_get_length64(ctx, &n, obj)
 
-    var c: i32 = (i32)','    # default separator
+    var c: i32 = (i32)','  # default separator
     var sep = js_undefined()
     defer js_free_value_at(ctx, &sep)
     var p: String*? = none
@@ -101,10 +101,7 @@ func js_array_pop(ctx: Context*, this_val: Value, argc: i32, argv: Value*, shift
 func js_array_push(ctx: Context*, this_val: Value, argc: i32, argv: Value*, unshift: i32) -> Value!:
     if this_val.tag == Tag.object and unshift == 0:
         let p = this_val.u.obj
-        if (p.class_id == ClassId.array and p.fast_array and can_extend_fast_array(p) and
-                p.prop[0].u.value.tag == Tag.int and
-                (u32)js_value_get_int(p.prop[0].u.value) == p.u.array.count and
-                ((i32)get_shape_prop(p.shape).flags & prop_writable) != 0):
+        if (p.class_id == ClassId.array and p.fast_array and can_extend_fast_array(p) and p.prop[0].u.value.tag == Tag.int and (u32)js_value_get_int(p.prop[0].u.value) == p.u.array.count and ((i32)get_shape_prop(p.shape).flags & prop_writable) != 0):
             # fast case
             let new_len = p.u.array.count + (u32)argc
             if new_len <= 0x7fffffff:

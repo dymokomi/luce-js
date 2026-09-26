@@ -14,9 +14,9 @@
 
 # mark: Tagged integers =========================================================================
 
-let js_atom_tag_int: u32 = 0x80000000    # 1 << 31
-let js_atom_max_int: u32 = 0x7fffffff    # js_atom_tag_int - 1
-let js_atom_max: u32 = 0x3fffffff    # (1 << 30) - 1
+let js_atom_tag_int: u32 = 0x80000000  # 1 << 31
+let js_atom_max_int: u32 = 0x7fffffff  # js_atom_tag_int - 1
+let js_atom_max: u32 = 0x3fffffff  # (1 << 30) - 1
 
 ## The max count from the hash size (JS_ATOM_COUNT_RESIZE).
 func js_atom_count_resize(n: i32) -> i32:
@@ -108,7 +108,7 @@ func atom_hash_table(rt: Runtime*) -> u32*:
     return rt.atom_hash else trap("atom hash table not initialized")
 
 func js_resize_atom_hash(rt: Runtime*, new_hash_size: i32) -> i32:
-    assert((new_hash_size & (new_hash_size - 1)) == 0) # power of two
+    assert((new_hash_size & (new_hash_size - 1)) == 0)  # power of two
     let new_hash_mask = (u32)(new_hash_size - 1)
     let mem = js_mallocz_rt(rt, sizeof(u32) * (usize)new_hash_size) else return -1
     let new_hash = (u32*)mem
@@ -135,7 +135,7 @@ func js_init_atoms(rt: Runtime*) -> i32:
     rt.atom_count = 0
     rt.atom_size = 0
     rt.atom_free_index = 0
-    if js_resize_atom_hash(rt, 512) != 0: # there are at least 504 predefined atoms
+    if js_resize_atom_hash(rt, 512) != 0:  # there are at least 504 predefined atoms
         return -1
 
     var p: usize = 0
@@ -190,7 +190,7 @@ func js_atom_is_string(ctx: Context*, v: Atom) -> bool:
     return js_atom_get_kind(ctx, v) == AtomKind.string
 
 func js_get_atom_index(rt: Runtime*, p: AtomStruct*) -> Atom:
-    var i = p.hash_next # atom_index
+    var i = p.hash_next  # atom_index
     if p.atom_type != js_atom_type_symbol:
         let atom_hash = atom_hash_table(rt)
         i = atom_hash[p.hash & (u32)(rt.atom_hash_size - 1)]
@@ -239,14 +239,13 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
         i = atom_hash_table(rt)[h1]
         while i != 0:
             let p = atom_array_get(rt, i)
-            if (p.hash == h and p.atom_type == atom_type and p.len == len and
-                    js_string_memcmp(p, 0, s, 0, (i32)len) == 0):
+            if (p.hash == h and p.atom_type == atom_type and p.len == len and js_string_memcmp(p, 0, s, 0, (i32)len) == 0):
                 if not js_atom_is_const_raw(i):
                     js_rc(p).ref_count += 1
                 return js_new_atom_release(rt, str_, i)
             i = p.hash_next
     else:
-        h1 = 0 # avoid warning
+        h1 = 0  # avoid warning
         if atom_type == js_atom_type_symbol:
             h = 0
         else:
@@ -275,7 +274,7 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
             # no_atom entry
             if let pm = js_mallocz_rt(rt, sizeof(AtomStruct)):
                 let p = (AtomStruct*)pm
-                js_rc(p).ref_count = 1 # not refcounted
+                js_rc(p).ref_count = 1  # not refcounted
                 p.atom_type = js_atom_type_symbol
                 new_array[0] = p
                 rt.atom_count += 1
@@ -310,10 +309,10 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
             discard(cutils.memcpy(str8(p), str8(s), data_size))
             js_free_string(rt, s)
     else:
-        let pm = js_malloc_rt(rt, sizeof(AtomStruct)) else return no_atom # empty wide string
+        let pm = js_malloc_rt(rt, sizeof(AtomStruct)) else return no_atom  # empty wide string
         p = (AtomStruct*)pm
         js_rc(p).ref_count = 1
-        p.is_wide_char = true # Hack to represent NULL as a JSString
+        p.is_wide_char = true  # Hack to represent NULL as a JSString
         p.len = 0
 
     # use an already free entry
@@ -323,7 +322,7 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
     atom_array[i] = p
 
     p.hash = h
-    p.hash_next = i # atom_index
+    p.hash_next = i  # atom_index
     p.atom_type = atom_type
 
     rt.atom_count += 1
@@ -353,8 +352,7 @@ func js_find_atom_raw(rt: Runtime*, str_: const u8*, len: usize, atom_type: u8) 
     var i = atom_hash_table(rt)[h1]
     while i != 0:
         let p = atom_array_get(rt, i)
-        if (p.hash == h and p.atom_type == js_atom_type_string and (usize)p.len == len and
-                not p.is_wide_char and cutils.memcmp(str8(p), str_, len) == 0):
+        if (p.hash == h and p.atom_type == js_atom_type_string and (usize)p.len == len and not p.is_wide_char and cutils.memcmp(str8(p), str_, len) == 0):
             if not js_atom_is_const_raw(i):
                 js_rc(p).ref_count += 1
             return i
@@ -365,7 +363,7 @@ func js_find_atom_raw(rt: Runtime*, str_: const u8*, len: usize, atom_type: u8) 
 
 func js_free_atom_struct(rt: Runtime*, p: AtomStruct*):
     # no_atom is not refcounted: js_atom_is_const_raw() includes 0
-    var i = p.hash_next # atom_index
+    var i = p.hash_next  # atom_index
     if p.atom_type != js_atom_type_symbol:
         let atom_hash = atom_hash_table(rt)
         let h0 = p.hash & (u32)(rt.atom_hash_size - 1)
@@ -388,8 +386,7 @@ func js_free_atom_struct(rt: Runtime*, p: AtomStruct*):
     rt.atom_free_index = (i32)i
     # free the string structure, unless live weak references are still present on this
     # object (a symbol whose hash, its weakref_count, is not zero): keep it then
-    if not (p.atom_type == js_atom_type_symbol and p.hash != js_atom_hash_private and
-            p.hash != 0):
+    if not (p.atom_type == js_atom_type_symbol and p.hash != js_atom_hash_private and p.hash != 0):
         js_free_rt(rt, p)
     rt.atom_count -= 1
     assert(rt.atom_count >= 0)

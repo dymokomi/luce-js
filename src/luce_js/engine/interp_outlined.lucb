@@ -48,35 +48,35 @@ noinline func interp_outlined(st: InterpState*) -> OpResult:
             if not interp_special_object(st): return OpResult.exception
         .rest:
             if not interp_rest(st): return OpResult.exception
-        .nip1: # a b c -> b c
+        .nip1:  # a b c -> b c
             interp_nip1(st)
-        .dup2: # a b -> a b a b
+        .dup2:  # a b -> a b a b
             interp_dup2(st)
-        .dup3: # a b c -> a b c a b c
+        .dup3:  # a b c -> a b c a b c
             interp_dup3(st)
-        .dup1: # a b -> a a b
+        .dup1:  # a b -> a a b
             interp_dup1(st)
-        .insert2: # obj a -> a obj a (dup_x1)
+        .insert2:  # obj a -> a obj a (dup_x1)
             interp_insert2(st)
-        .insert3: # obj prop a -> a obj prop a (dup_x2)
+        .insert3:  # obj prop a -> a obj prop a (dup_x2)
             interp_insert3(st)
-        .insert4: # this obj prop a -> a this obj prop a
+        .insert4:  # this obj prop a -> a this obj prop a
             interp_insert4(st)
-        .perm3: # obj a b -> a obj b (213)
+        .perm3:  # obj a b -> a obj b (213)
             interp_perm3(st)
-        .rot3l: # x a b -> a b x (231)
+        .rot3l:  # x a b -> a b x (231)
             interp_rot3l(st)
-        .rot4l: # x a b c -> a b c x
+        .rot4l:  # x a b c -> a b c x
             interp_rot4l(st)
-        .rot5l: # x a b c d -> a b c d x
+        .rot5l:  # x a b c d -> a b c d x
             interp_rot5l(st)
-        .rot3r: # a b x -> x a b (312)
+        .rot3r:  # a b x -> x a b (312)
             interp_rot3r(st)
-        .perm4: # obj prop a b -> a obj prop b
+        .perm4:  # obj prop a b -> a obj prop b
             interp_perm4(st)
-        .perm5: # this obj prop a b -> a this obj prop b
+        .perm5:  # this obj prop a b -> a this obj prop b
             interp_perm5(st)
-        .swap2: # a b c d -> c d a b
+        .swap2:  # a b c d -> c d a b
             interp_swap2(st)
         .fclosure:
             if not interp_fclosure(st): return OpResult.exception
@@ -264,9 +264,9 @@ noinline func interp_outlined(st: InterpState*) -> OpResult:
             if not interp_put_super_value(st): return OpResult.exception
         .define_array_el:
             if not interp_define_array_el(st): return OpResult.exception
-        .append: # array pos enumobj -- array pos
+        .append:  # array pos enumobj -- array pos
             if not interp_append(st): return OpResult.exception
-        .copy_data_properties: # target source excludeList
+        .copy_data_properties:  # target source excludeList
             if not interp_copy_data_properties(st): return OpResult.exception
         .add:
             if not interp_add(st): return OpResult.exception

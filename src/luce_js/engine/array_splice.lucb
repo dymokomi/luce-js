@@ -43,12 +43,8 @@ func js_array_splice(ctx: Context*, this_val: Value, argc: i32, argv: Value*) ->
     let ctor = try js_array_species_get_ctor(ctx, obj)
 
     let p = obj.u.obj
-    if (js_is_undefined(ctor) and
-            p.class_id == ClassId.array and
-            p.fast_array and
-            final <= (i64)p.u.array.count and
-            ((i32)get_shape_prop(p.shape).flags & prop_writable) != 0 and # writable array length
-            can_extend_fast_array(p)):
+    if (js_is_undefined(ctor) and p.class_id == ClassId.array and p.fast_array and final <= (i64)p.u.array.count and ((i32)get_shape_prop(p.shape).flags & prop_writable) != 0 and can_extend_fast_array(p)):
+        # writable array length
         let count32 = p.u.array.count
         var arrp = p.u.array.u.values
 

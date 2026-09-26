@@ -305,8 +305,7 @@ func find_lexical_decl(ctx: Context*, fd: FunctionDef*, name: Atom, scope_idx0: 
     var scope_idx = scope_idx0
     while scope_idx >= 0:
         let vd = fd_var(fd, scope_idx)
-        if (vd.var_name == name and
-            (vd.is_lexical or (vd.var_kind == VarKind.catch_ and check_catch_var))):
+        if (vd.var_name == name and (vd.is_lexical or (vd.var_kind == VarKind.catch_ and check_catch_var))):
             return scope_idx
         scope_idx = vd.scope_next
 

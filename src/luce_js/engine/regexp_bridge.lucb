@@ -40,11 +40,7 @@ let lre_flag_indices: i32 = 1 << 6
 let lre_flag_named_groups: i32 = 1 << 7
 let lre_flag_unicode_sets: i32 = 1 << 8
 
-assert(lre_flag_global == regex.es_global and lre_flag_ignorecase == regex.es_ignore_case and
-       lre_flag_multiline == regex.es_multiline and lre_flag_dotall == regex.es_dotall and
-       lre_flag_unicode == regex.es_unicode and lre_flag_sticky == regex.es_sticky and
-       lre_flag_indices == regex.es_indices and lre_flag_named_groups == regex.es_named_groups and
-       lre_flag_unicode_sets == regex.es_unicode_sets, "the lre_flag_* bits are luce-regex's")
+assert(lre_flag_global == regex.es_global and lre_flag_ignorecase == regex.es_ignore_case and lre_flag_multiline == regex.es_multiline and lre_flag_dotall == regex.es_dotall and lre_flag_unicode == regex.es_unicode and lre_flag_sticky == regex.es_sticky and lre_flag_indices == regex.es_indices and lre_flag_named_groups == regex.es_named_groups and lre_flag_unicode_sets == regex.es_unicode_sets, "the lre_flag_* bits are luce-regex's")
 
 # The failures of a match (LRE_RET_*).
 let lre_ret_memory_error: i32 = -1

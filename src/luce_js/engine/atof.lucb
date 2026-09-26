@@ -74,7 +74,7 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
         if (flags & atod_accept_prefix_after_sign) == 0:
             radix_prefix = false
     if radix_prefix and p[0] == '0':
-        var has_prefix = true # false for `goto no_prefix`
+        var has_prefix = true  # false for `goto no_prefix`
         if (p[1] == 'x' or p[1] == 'X') and (radix == 0 or radix == 16):
             p += 2
             radix = 16
@@ -84,8 +84,7 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
         elif (p[1] == 'b' or p[1] == 'B') and radix == 0 and (flags & atod_accept_bin_oct) != 0:
             p += 2
             radix = 2
-        elif ((p[1] >= '0' and p[1] <= '9') and radix == 0 and
-                (flags & atod_accept_legacy_octal) != 0):
+        elif ((p[1] >= '0' and p[1] <= '9') and radix == 0 and (flags & atod_accept_legacy_octal) != 0):
             has_legacy_octal = true
             sep = 256
             var i: usize = 1
@@ -101,12 +100,11 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
         if has_prefix:
             # there must be a digit after the prefix
             if to_digit((i32)*p) >= radix:
-                return js_nan() # fail
+                return js_nan()  # fail
     else:
         # no_radix_prefix:
-        if ((flags & atod_int_only) == 0 and atod_type == atod_type_float64 and
-                cutils.strstart(p, "Infinity", &p)):
-            var d = cutils.uint64_as_float64(0x7ff0000000000000) # 1.0 / 0.0
+        if ((flags & atod_int_only) == 0 and atod_type == atod_type_float64 and cutils.strstart(p, "Infinity", &p)):
+            var d = cutils.uint64_as_float64(0x7ff0000000000000)  # 1.0 / 0.0
             if is_neg:
                 d = -d
             return js_new_float64(d)
@@ -114,16 +112,14 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
         radix = 10
     var is_float = false
     let p_start = p
-    while (to_digit((i32)*p) < radix or
-            ((i32)*p == sep and (radix != 10 or p != p_start + 1 or p[-1] != '0') and
-             to_digit((i32)p[1]) < radix)):
+    while (to_digit((i32)*p) < radix or ((i32)*p == sep and (radix != 10 or p != p_start + 1 or p[-1] != '0') and to_digit((i32)p[1]) < radix)):
         p += 1
     if (flags & atod_int_only) == 0 and radix == 10:
         if *p == '.' and (p > p_start or to_digit((i32)p[1]) < radix):
             is_float = true
             p += 1
             if (i32)*p == sep:
-                return js_nan() # fail
+                return js_nan()  # fail
             while to_digit((i32)*p) < radix or ((i32)*p == sep and to_digit((i32)p[1]) < radix):
                 p += 1
         if p > p_start and (*p == 'e' or *p == 'E'):
@@ -138,12 +134,12 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
                 while is_digit((i32)*p) or ((i32)*p == sep and is_digit((i32)p[1])):
                     p += 1
     if p == p_start:
-        return js_nan() # fail
+        return js_nan()  # fail
 
     let len = (usize)(p - p_start)
     if len + 2 > buf1.length:
         # no exception raised
-        let b = js_malloc_rt(ctx.rt, len + 2) else try js_throw_out_of_memory(ctx) # mem_error
+        let b = js_malloc_rt(ctx.rt, len + 2) else try js_throw_out_of_memory(ctx)  # mem_error
         buf = (u8*)b
         buf_allocated = true
     # remove the separators and the radix prefixes
@@ -170,7 +166,7 @@ func js_atof(ctx: Context*, text: const u8*, pp: const u8**?, radix0: i32, flags
         return js_new_float64(d)
     elif atod_type == atod_type_big_int:
         if has_legacy_octal or is_float:
-            return js_nan() # fail
+            return js_nan()  # fail
         let r = try js_bigint_from_string(ctx, buf, radix)
         return js_compact_bigint(ctx, r)
     else:
@@ -202,7 +198,7 @@ func js_to_number_hint_free(ctx: Context*, val0: Value, flag: ToNumberHint) -> V
                 return js_nan()
             .object:
                 val = try js_to_primitive_free(ctx, val, hint_number)
-                continue # goto redo
+                continue  # goto redo
             .string, .string_rope:
                 var len: usize = 0
                 # JS_ToCStringLen

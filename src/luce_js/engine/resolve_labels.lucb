@@ -222,8 +222,7 @@ func label_emit_jump(p: ResolveLabelsState*) -> !:
     jp.pos = (i32)p.bc_out.size + 1
     jp.label = p.label
 
-    let is_short_jump = (op == (i32)Op.if_false or op == (i32)Op.if_true or
-                         op == (i32)Op.goto_)
+    let is_short_jump = (op == (i32)Op.if_false or op == (i32)Op.if_true or op == (i32)Op.goto_)
     if ls.addr == -1:
         let diff = ls.pos2 - p.pos - 1
         if diff < 128 and is_short_jump:
@@ -399,8 +398,7 @@ func shorten_jumps(p: ResolveLabelsState*):
         let jp = fd_jump_slot(s, i)
         var delta: i32 = 3
         let op = jp.op
-        if (op == (i32)Op.goto16 or op == (i32)Op.if_false or op == (i32)Op.if_true or
-            op == (i32)Op.goto_):
+        if (op == (i32)Op.goto16 or op == (i32)Op.if_false or op == (i32)Op.if_true or op == (i32)Op.goto_):
             if op == (i32)Op.goto16:
                 delta = 1
             let pos = jp.pos

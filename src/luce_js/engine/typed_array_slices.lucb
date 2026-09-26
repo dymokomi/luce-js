@@ -29,7 +29,7 @@ func js_typed_array_join(ctx: Context*, this_val: Value, argc: i32, argv: Value*
     let oldlen = len
     var newlen = len
 
-    var c = (i32)(u8)','    # default separator
+    var c = (i32)(u8)','  # default separator
     var sep = js_undefined()
     var s: String*? = none
     if to_locale_string == 0 and argc > 0 and not js_is_undefined(argv[0]):

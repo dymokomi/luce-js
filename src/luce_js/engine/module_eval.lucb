@@ -236,8 +236,7 @@ func js_inner_module_evaluation(ctx: Context*, m: ModuleDef*, index: i32, pstack
         next_index = js_inner_module_evaluation(ctx, m1, next_index, pstack_top, pvalue)
         if next_index < 0:
             return -1
-        assert(m1.status == ModuleStatus.evaluating or m1.status == ModuleStatus.evaluating_async or
-               m1.status == ModuleStatus.evaluated)
+        assert(m1.status == ModuleStatus.evaluating or m1.status == ModuleStatus.evaluating_async or m1.status == ModuleStatus.evaluated)
         if m1.status == ModuleStatus.evaluating:
             m.dfs_ancestor_index = cutils.min_int(m.dfs_ancestor_index, m1.dfs_ancestor_index)
         else:
@@ -292,8 +291,7 @@ func js_inner_module_evaluation(ctx: Context*, m: ModuleDef*, index: i32, pstack
 # or fail with an exception.
 func js_evaluate_module(ctx: Context*, m0: ModuleDef*) -> Value!:
     var m = m0
-    assert(m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or
-           m.status == ModuleStatus.evaluated)
+    assert(m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated)
     if m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated:
         m = m.cycle_root else trap("js_evaluate_module: no cycle root")
     # a promise may be created only on the cycle_root of a cycle

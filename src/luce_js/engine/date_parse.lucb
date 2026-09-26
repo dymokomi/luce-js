@@ -129,7 +129,7 @@ func string_get_tzoffset(sp: const u8[], pp: i32*, tzp: i32*, strict: bool) -> b
                     return false
             else:
                 if strict:
-                    return false # [+-]HH is not accepted in strict mode
+                    return false  # [+-]HH is not accepted in strict mode
         if hh > 23 or mm > 59:
             return false
         tz = hh * 60 + mm
@@ -189,31 +189,30 @@ func js_date_parse_isostring(sp: const u8[], fields: i32[], is_local: bool*) -> 
             return false
         if sgn == (i32)'-':
             if fields[0] == 0:
-                return false # reject -000000
+                return false  # reject -000000
             fields[0] = -fields[0]
     else:
         if not string_get_digits(sp, &p, &fields[0], 4, 4):
             return false
     if string_skip_char(sp, &p, (i32)'-'):
-        if not string_get_digits(sp, &p, &fields[1], 2, 2): # month
+        if not string_get_digits(sp, &p, &fields[1], 2, 2):  # month
             return false
         if fields[1] < 1:
             return false
         fields[1] -= 1
         if string_skip_char(sp, &p, (i32)'-'):
-            if not string_get_digits(sp, &p, &fields[2], 2, 2): # day
+            if not string_get_digits(sp, &p, &fields[2], 2, 2):  # day
                 return false
             if fields[2] < 1:
                 return false
     if string_skip_char(sp, &p, (i32)'T'):
         *is_local = true
-        if (not string_get_digits(sp, &p, &fields[3], 2, 2) or # hour
-                not string_skip_char(sp, &p, (i32)':') or
-                not string_get_digits(sp, &p, &fields[4], 2, 2)): # minute
-            fields[3] = 100 # reject unconditionally
+        if (not string_get_digits(sp, &p, &fields[3], 2, 2) or not string_skip_char(sp, &p, (i32)':') or not string_get_digits(sp, &p, &fields[4], 2, 2)):  # hour
+            # minute
+            fields[3] = 100  # reject unconditionally
             return true
         if string_skip_char(sp, &p, (i32)':'):
-            if not string_get_digits(sp, &p, &fields[5], 2, 2): # second
+            if not string_get_digits(sp, &p, &fields[5], 2, 2):  # second
                 return false
             discard(string_get_milliseconds(sp, &p, &fields[6]))
     # parse the time zone offset if present: [+-]HH:mm or [+-]HHmm
@@ -309,8 +308,7 @@ func js_date_parse_otherstring(sp: const u8[], fields: i32[], is_local: bool*) -
                     discard(string_get_milliseconds(sp, &p, &fields[6]))
                 has_time = true
                 let c1 = date_char_at(sp, p)
-                if ((c1 == (i32)'+' or c1 == (i32)'-') and
-                        string_get_tzoffset(sp, &p, &fields[8], false)):
+                if ((c1 == (i32)'+' or c1 == (i32)'-') and string_get_tzoffset(sp, &p, &fields[8], false)):
                     *is_local = false
             else:
                 if p - p_start > 2 and not has_year:

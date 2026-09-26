@@ -71,7 +71,7 @@ func js_map_iterator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value
     var el: cutils.ListHead* = ---
     if let mr = it.cur_record:
         el = map_next_link(&mr.link)
-        map_decref_record(ctx.rt, mr)   # the record can be freed here
+        map_decref_record(ctx.rt, mr)  # the record can be freed here
     else:
         el = map_next_link(&s.records)
     while el != &s.records:

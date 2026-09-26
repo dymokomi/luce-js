@@ -153,7 +153,7 @@ func format_date_fields(buf: u8[], fields: const f64[], date_fmt: i32, part: i32
                     # tz is >= 0, can use %
                     pos = date_put_int(buf, pos, tz // 60, 2, false)
                     pos = date_put_int(buf, pos, tz % 60, 2, false)
-                    # XXX: tack the time zone code?
+            # XXX: tack the time zone code?
             2:
                 # "%02d:%02d:%02d.%03dZ"
                 pos = date_put_int(buf, pos, h, 2, false)

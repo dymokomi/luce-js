@@ -255,7 +255,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
     if found and is_with:
         ret = js_has_unscopable(st.ctx, obj, atom) catch: return false
         if ret:
-            found = false # goto no_with
+            found = false  # goto no_with
     if found:
         match st.opcode:
             .with_get_var:
@@ -270,7 +270,7 @@ noinline func interp_with_get_var(st: InterpState*) -> bool:
                 else:
                     val = js_get_property(st.ctx, obj, atom) catch: return false
                 set_value(st.ctx, st.sp - 1, val)
-            .with_put_var: # used e.g. in for in/of
+            .with_put_var:  # used e.g. in for in/of
                 # in Object Environment Records, SetMutableBinding()
                 # calls HasProperty()
                 ret = js_has_property(st.ctx, obj, atom) catch: return false

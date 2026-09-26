@@ -163,7 +163,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
         js_free(ctx, buf)
     fd.byte_code.buf = none
 
-    let strip_var_debug = fd.strip_debug and not fd.has_eval_call   # XXX: check
+    let strip_var_debug = fd.strip_debug and not fd.has_eval_call  # XXX: check
     b.func_name = fd.func_name
     if fd.arg_count + fd.var_count > 0:
         let vardefs = (BytecodeVarDef*)((u8*)b + vardefs_offset)
@@ -195,7 +195,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
 
     if fd.strip_debug:
         js_free_atom(ctx, fd.filename)
-        cutils.dbuf_free(&fd.pc2line)   # probably useless
+        cutils.dbuf_free(&fd.pc2line)  # probably useless
     else:
         # XXX: source and pc2line info should be packed at the end of the
         # JSFunctionBytecode structure, avoiding allocation overhead
@@ -224,11 +224,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
         if strip_var_debug:
             for i in 0..<fd.closure_var_count:
                 let cv = create_function_closure_var(fd, i)
-                if (cv.closure_type != ClosureType.global_ref and
-                    cv.closure_type != ClosureType.global_decl and
-                    cv.closure_type != ClosureType.global and
-                    cv.closure_type != ClosureType.module_decl and
-                    cv.closure_type != ClosureType.module_import):
+                if (cv.closure_type != ClosureType.global_ref and cv.closure_type != ClosureType.global_decl and cv.closure_type != ClosureType.global and cv.closure_type != ClosureType.module_decl and cv.closure_type != ClosureType.module_import):
                     js_free_atom(ctx, cv.var_name)
                     cv.var_name = no_atom
         let closure_var = (ClosureVar*)((u8*)b + closure_var_offset)
@@ -249,8 +245,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
     b.super_call_allowed = fd.super_call_allowed
     b.super_allowed = fd.super_allowed
     b.arguments_allowed = fd.arguments_allowed
-    b.is_direct_or_indirect_eval = (fd.eval_type == eval_type_direct or
-                                    fd.eval_type == eval_type_indirect)
+    b.is_direct_or_indirect_eval = (fd.eval_type == eval_type_direct or fd.eval_type == eval_type_indirect)
     b.realm = js_dup_context(ctx)
 
     add_gc_object(ctx.rt, &b.header, GCObjectType.function_bytecode)

@@ -127,7 +127,7 @@ pub func u64toa_radix(buf: u8*, n0: u64, radix: u32) -> usize:
         u64toa_bin_len(buf, n0, (u32)radix_bits, l)
         return (usize)l
     else:
-        var buf1: u8[41] # maximum length for radix = 3
+        var buf1: u8[41]  # maximum length for radix = 3
         var pos: usize = 41
         var n = n0
         while true:

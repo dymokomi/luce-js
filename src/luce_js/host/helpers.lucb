@@ -130,7 +130,7 @@ pub func js_std_free_handlers(rt: Runtime*):
     if let poll_fds = ts.poll_fds:
         cutils.c_free(poll_fds)
     cutils.c_free(ts)
-    js.js_set_runtime_opaque(rt, none) # fail safe
+    js.js_set_runtime_opaque(rt, none)  # fail safe
 
 # mark: Errors ==================================================================================
 

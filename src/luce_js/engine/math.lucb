@@ -102,7 +102,7 @@ func js_math_round(a: f64) -> f64:
         let one = (u64)1 << (52 - (e - 1023))
         let frac_mask = one - 1
         u = u +% ((one >> 1) - s)
-        u &= ~frac_mask # truncate to an integer
+        u &= ~frac_mask  # truncate to an integer
     # otherwise: abs(a) >= 2^52, or NaN, +/-Infinity: no change
     return f64.bits(u)
 

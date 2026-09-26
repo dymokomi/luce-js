@@ -38,8 +38,7 @@ func js_load_module_fulfilled(ctx: Context*, this_val: Value, argc: i32, argv: V
     # return the module namespace
     var ns = js_get_module_namespace(ctx, m) catch failure:
         var err = js_get_exception(ctx)
-        discard(js_load_module_rejected(ctx, js_undefined(), 1, &err, 0, func_data)
-                catch failure1: recover js_undefined())
+        discard(js_load_module_rejected(ctx, js_undefined(), 1, &err, 0, func_data) catch failure1: recover js_undefined())
         return js_undefined()
     call_free_result(ctx, resolving_funcs[0], js_undefined(), 1, &ns)
     js_free_value(ctx, ns)
@@ -137,7 +136,7 @@ func js_copy_import_attributes(ctx: Context*, attributes: Value, attributes_obj:
                                            js_value_get_obj(attributes_obj),
                                            gpn_string_mask | gpn_enum_only)
     defer js_free_property_enum(ctx, atoms_opt, atoms_len)
-    let atoms = atoms_opt else return # no properties
+    let atoms = atoms_opt else return  # no properties
     for i in 0..<atoms_len:
         let atom = atoms[i].atom
         let val = try js_get_property(ctx, attributes_obj, atom)

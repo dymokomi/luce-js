@@ -63,7 +63,7 @@ test "unaligned access and byte swaps":
     let p: u8* = &bytes[1]
     put_u64(p, 0x0102030405060708)
     assert(get_u64(p) == 0x0102030405060708)
-    assert(bytes[1] == 0x08 and bytes[8] == 0x01) # little-endian host
+    assert(bytes[1] == 0x08 and bytes[8] == 0x01)  # little-endian host
     put_u32(p + 1, 0xdeadbeef)
     assert(get_u32(p + 1) == 0xdeadbeef and get_i32(p + 1) == -559038737)
     put_u16(p + 3, 0x8001)
@@ -126,7 +126,7 @@ test "DynBuf growth and contents":
     assert(not dbuf_error(&s))
     dbuf_free(&s)
     assert(s.size == 0 and s.allocated_size == 0 and s.buf == none)
-    dbuf_free(&s) # twice is safe
+    dbuf_free(&s)  # twice is safe
 
 test "DynBuf slow paths from empty":
     var s: DynBuf
@@ -167,12 +167,12 @@ test "DynBuf allocation failure":
     failing_budget = 1000
     # once in error, growth fails even when memory is available
     assert(dbuf_putstr(&s, "0123456789") == -1)
-    assert(dbuf_printf(&s, f"{calls}") == 0) # fits the remaining space
+    assert(dbuf_printf(&s, f"{calls}") == 0)  # fits the remaining space
     assert(dbuf_printf(&s, f"{"0123456789"}") == -1)
     assert(dbuf_claim(&s, 0xffffffffffffffff) == -1)
     dbuf_set_error(&s)
     dbuf_free(&s)
-    assert(calls == 2 and not dbuf_error(&s)) # the free is the second call
+    assert(calls == 2 and not dbuf_error(&s))  # the free is the second call
 
 # mark: UTF-8, surrogates, hex ==================================================================
 
@@ -305,20 +305,20 @@ test "binary16 conversion":
     assert(fromfp16(0x7bff) == 65504.0 and fromfp16(0x0001) == 5.9604644775390625e-08)
     assert(fromfp16(0x7c00) > 1.0e308 and fromfp16(0xfc00) < -1.0e308)
     assert(float64_as_uint64(fromfp16(0x8000)) == 0x8000000000000000)
-    assert(fromfp16(0x7e00) != fromfp16(0x7e00)) # NaN
+    assert(fromfp16(0x7e00) != fromfp16(0x7e00))  # NaN
     # every non-NaN half converts exactly and back
     for index in 0..<65536:
         let v = (u16)index
         if not isfp16nan(v):
             assert(tofp16(fromfp16(v)) == v)
-    assert(tofp16(65520.0) == 0x7c00)            # rounds up to infinity
+    assert(tofp16(65520.0) == 0x7c00)  # rounds up to infinity
     assert(tofp16(65519.0) == 0x7bff)
     assert(tofp16(1.0e-8) == 0x0000)
     assert(tofp16(-1.0e-8) == 0x8000)
-    assert(tofp16(2.98023223876953125e-08) == 0x0000)   # 0x1p-25: tie to even zero
-    assert(tofp16(uint64_as_float64(0x3e60000000000001)) == 0x0001) # just above
-    assert(tofp16(1.00048828125) == 0x3c00)      # tie to even
-    assert(tofp16(1.00146484375) == 0x3c02)      # tie to even (up)
+    assert(tofp16(2.98023223876953125e-08) == 0x0000)  # 0x1p-25: tie to even zero
+    assert(tofp16(uint64_as_float64(0x3e60000000000001)) == 0x0001)  # just above
+    assert(tofp16(1.00048828125) == 0x3c00)  # tie to even
+    assert(tofp16(1.00146484375) == 0x3c02)  # tie to even (up)
     assert(tofp16(fromfp16(0x7e00)) == 0x7c01)
     assert(isfp16nan(0x7c01) and not isfp16nan(0x7c00))
     assert(isfp16zero(0x8000) and isfp16zero(0) and not isfp16zero(1))

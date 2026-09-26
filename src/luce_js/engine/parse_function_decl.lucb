@@ -27,12 +27,8 @@ func js_parse_function_name(s: ParseState*, fd: FunctionDef*, func_type: ParseFu
     let ctx = s.ctx
     var func_kind = func_kind0
     var func_name = func_name0
-    if (func_type == ParseFunctionKind.statement or
-        func_type == ParseFunctionKind.var_ or
-        func_type == ParseFunctionKind.expr):
-        if (func_kind == js_func_normal and
-            token_is_pseudo_keyword(s, atom_async) and
-            peek_token(s, true) != TokenType.newline):
+    if (func_type == ParseFunctionKind.statement or func_type == ParseFunctionKind.var_ or func_type == ParseFunctionKind.expr):
+        if (func_kind == js_func_normal and token_is_pseudo_keyword(s, atom_async) and peek_token(s, true) != TokenType.newline):
             try next_token(s)
             func_kind = js_func_async
         try next_token(s)
@@ -42,26 +38,15 @@ func js_parse_function_name(s: ParseState*, fd: FunctionDef*, func_type: ParseFu
 
         if s.token.val == TokenType.ident:
             let atom = s.token.u.ident.atom
-            if (s.token.u.ident.is_reserved or
-                (atom == atom_yield and
-                 func_type == ParseFunctionKind.expr and
-                 (func_kind & js_func_generator) != 0) or
-                (atom == atom_await and
-                 ((func_type == ParseFunctionKind.expr and
-                   (func_kind & js_func_async) != 0) or
-                  func_type == ParseFunctionKind.class_static_init))):
+            if (s.token.u.ident.is_reserved or (atom == atom_yield and func_type == ParseFunctionKind.expr and (func_kind & js_func_generator) != 0) or (atom == atom_await and ((func_type == ParseFunctionKind.expr and (func_kind & js_func_async) != 0) or func_type == ParseFunctionKind.class_static_init))):
                 try js_parse_error_reserved_identifier(s)
-        if (s.token.val == TokenType.ident or
-            (((s.token.val == TokenType.yield and ((i32)fd.js_mode & js_mode_strict) == 0) or
-              (s.token.val == TokenType.await and not s.is_module)) and
-             func_type == ParseFunctionKind.expr)):
+        if (s.token.val == TokenType.ident or (((s.token.val == TokenType.yield and ((i32)fd.js_mode & js_mode_strict) == 0) or (s.token.val == TokenType.await and not s.is_module)) and func_type == ParseFunctionKind.expr)):
             func_name = js_dup_atom(ctx, s.token.u.ident.atom)
             next_token(s) catch failure:
                 js_free_atom(ctx, func_name)
                 error(failure.code, failure.message)
         else:
-            if (func_type != ParseFunctionKind.expr and
-                export_flag != ParseExportKind.default):
+            if (func_type != ParseFunctionKind.expr and export_flag != ParseExportKind.default):
                 try js_parse_error(s, "function name expected")
     elif func_type != ParseFunctionKind.arrow:
         func_name = js_dup_atom(ctx, func_name)
@@ -77,26 +62,20 @@ func js_parse_function_define_name(s: ParseState*, fd: FunctionDef*,
     var lexical_func_idx: i32 = -1
     var create_func_var = false
 
-    if (fd.is_eval and fd.eval_type == eval_type_module and
-        (func_type == ParseFunctionKind.statement or func_type == ParseFunctionKind.var_)):
+    if (fd.is_eval and fd.eval_type == eval_type_module and (func_type == ParseFunctionKind.statement or func_type == ParseFunctionKind.var_)):
         # XXX: should check scope chain
         if let hf = find_global_var(fd, func_name):
             if hf.scope_level == fd.scope_level:
                 try js_parse_error(s, "invalid redefinition of global identifier in module code")
 
     if func_type == ParseFunctionKind.var_:
-        if (((i32)fd.js_mode & js_mode_strict) == 0 and
-            func_kind == js_func_normal and
-            find_lexical_decl(ctx, fd, func_name, fd.scope_first, false) < 0):
+        if (((i32)fd.js_mode & js_mode_strict) == 0 and func_kind == js_func_normal and find_lexical_decl(ctx, fd, func_name, fd.scope_first, false) < 0):
             let func_idx = find_var(ctx, fd, func_name)
-            if (not (func_idx >= 0 and (func_idx & argument_var_offset) != 0) and
-                not (func_name == atom_arguments and fd.has_arguments_binding)):
+            if (not (func_idx >= 0 and (func_idx & argument_var_offset) != 0) and not (func_name == atom_arguments and fd.has_arguments_binding)):
                 create_func_var = true
         # Create the lexical name here so that the function closure
         # contains it
-        if (fd.is_eval and
-            (fd.eval_type == eval_type_global or fd.eval_type == eval_type_module) and
-            fd.scope_level == fd.body_scope):
+        if (fd.is_eval and (fd.eval_type == eval_type_global or fd.eval_type == eval_type_module) and fd.scope_level == fd.body_scope):
             # avoid creating a lexical variable in the global
             # scope. XXX: check annex B
             # XXX: should check scope chain
@@ -116,17 +95,9 @@ func js_parse_function_define_name(s: ParseState*, fd: FunctionDef*,
 # Initialize the new function `fd` of type `func_type`: what it has and allows.
 func js_parse_function_init(fd: FunctionDef*, func_type: ParseFunctionKind, func_kind: u8):
     # XXX: test !fd->is_generator is always false
-    fd.has_prototype = ((func_type == ParseFunctionKind.statement or
-                         func_type == ParseFunctionKind.var_ or
-                         func_type == ParseFunctionKind.expr) and
-                        func_kind == js_func_normal)
-    fd.has_home_object = (func_type == ParseFunctionKind.method or
-                          func_type == ParseFunctionKind.getter or
-                          func_type == ParseFunctionKind.setter or
-                          func_type == ParseFunctionKind.class_constructor or
-                          func_type == ParseFunctionKind.derived_class_constructor)
-    fd.has_arguments_binding = (func_type != ParseFunctionKind.arrow and
-                                func_type != ParseFunctionKind.class_static_init)
+    fd.has_prototype = ((func_type == ParseFunctionKind.statement or func_type == ParseFunctionKind.var_ or func_type == ParseFunctionKind.expr) and func_kind == js_func_normal)
+    fd.has_home_object = (func_type == ParseFunctionKind.method or func_type == ParseFunctionKind.getter or func_type == ParseFunctionKind.setter or func_type == ParseFunctionKind.class_constructor or func_type == ParseFunctionKind.derived_class_constructor)
+    fd.has_arguments_binding = (func_type != ParseFunctionKind.arrow and func_type != ParseFunctionKind.class_static_init)
     fd.has_this_binding = fd.has_arguments_binding
     fd.is_derived_class_constructor = func_type == ParseFunctionKind.derived_class_constructor
     if func_type == ParseFunctionKind.arrow:
@@ -136,7 +107,7 @@ func js_parse_function_init(fd: FunctionDef*, func_type: ParseFunctionKind, func
         fd.super_allowed = parent.super_allowed
         fd.arguments_allowed = parent.arguments_allowed
     elif func_type == ParseFunctionKind.class_static_init:
-        fd.new_target_allowed = true   # although new.target === undefined
+        fd.new_target_allowed = true  # although new.target === undefined
         fd.super_call_allowed = false
         fd.super_allowed = true
         fd.arguments_allowed = false
@@ -189,7 +160,7 @@ func js_parse_function_params(s: ParseState*, fd: FunctionDef*, func_type: Parse
             try js_parse_expect(s, TokenType.lparen)
 
         if fd.has_parameter_expressions:
-            fd.scope_level = -1   # force no parent scope
+            fd.scope_level = -1  # force no parent scope
             # (C returns here without its fail cleanup; the cleanup is harmless)
             try push_scope(s)
 
@@ -282,8 +253,7 @@ func js_parse_function_params(s: ParseState*, fd: FunctionDef*, func_type: Parse
             if s.token.val == TokenType.rparen:
                 break
             try js_parse_expect(s, TokenType.comma)
-        if ((func_type == ParseFunctionKind.getter and fd.arg_count != 0) or
-            (func_type == ParseFunctionKind.setter and fd.arg_count != 1)):
+        if ((func_type == ParseFunctionKind.getter and fd.arg_count != 0) or (func_type == ParseFunctionKind.setter and fd.arg_count != 1)):
             try js_parse_function_accessor_error(s)
 
     if fd.has_parameter_expressions:
@@ -298,7 +268,7 @@ func js_parse_function_params(s: ParseState*, fd: FunctionDef*, func_type: Parse
                 break
             if find_var(ctx, fd, vd.var_name) < 0:
                 try add_var(ctx, fd, vd.var_name)
-                vd = fd_var(fd, idx)   # fd->vars may have been reallocated
+                vd = fd_var(fd, idx)  # fd->vars may have been reallocated
                 emit_op(s, (u8)TempOp.scope_get_var)
                 emit_atom(s, vd.var_name)
                 emit_u16(s, (u16)fd.scope_level)
@@ -397,8 +367,7 @@ func js_parse_function_bind(s: ParseState*, func_type: ParseFunctionKind, func_n
     let cur = s.fd()
     if is_expr:
         # for constructors, no code needs to be generated here
-        if (func_type != ParseFunctionKind.class_constructor and
-            func_type != ParseFunctionKind.derived_class_constructor):
+        if (func_type != ParseFunctionKind.class_constructor and func_type != ParseFunctionKind.derived_class_constructor):
             # OP_fclosure creates the function object from the bytecode
             # and adds the scope information
             emit_op(s, (u8)Op.fclosure)
@@ -455,7 +424,7 @@ func js_parse_function_bind(s: ParseState*, func_type: ParseFunctionKind, func_n
         else:
             var func_var_name = func_name
             if func_name == no_atom:
-                func_var_name = atom__default_   # export default
+                func_var_name = atom__default_  # export default
             # the variable will be assigned at the top of the function
             let hf = try add_global_var(ctx, cur, func_var_name)
             hf.cpool_idx = idx
@@ -479,8 +448,7 @@ func js_parse_function_decl2(s: ParseState*, func_type: ParseFunctionKind, func_
     let ctx = s.ctx
     let parent = s.fd()
 
-    let is_expr = (func_type != ParseFunctionKind.statement and
-                   func_type != ParseFunctionKind.var_)
+    let is_expr = (func_type != ParseFunctionKind.statement and func_type != ParseFunctionKind.var_)
 
     let (func_kind, func_name) = try js_parse_function_name(s, parent, func_type, func_kind0,
                                                             func_name0, export_flag)
@@ -499,8 +467,7 @@ func js_parse_function_decl2(s: ParseState*, func_type: ParseFunctionKind, func_
     fd.func_name = func_name
     js_parse_function_init(fd, func_type, func_kind)
 
-    if (func_type == ParseFunctionKind.class_constructor or
-        func_type == ParseFunctionKind.derived_class_constructor):
+    if (func_type == ParseFunctionKind.class_constructor or func_type == ParseFunctionKind.derived_class_constructor):
         # error if not invoked as a constructor
         emit_op(s, (u8)Op.check_ctor)
 
@@ -556,9 +523,7 @@ func js_parse_program(s: ParseState*) -> !:
 
     try js_parse_directives(s)
 
-    fd.is_global_var = (fd.eval_type == eval_type_global or
-                        fd.eval_type == eval_type_module or
-                        ((i32)fd.js_mode & js_mode_strict) == 0)
+    fd.is_global_var = (fd.eval_type == eval_type_global or fd.eval_type == eval_type_module or ((i32)fd.js_mode & js_mode_strict) == 0)
 
     if not s.is_module:
         # hidden variable for the return value

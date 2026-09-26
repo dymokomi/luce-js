@@ -29,13 +29,11 @@ func next_token_ident(s: ParseState*, pp: const u8**, c: i32, ident_has_escape: 
 # A number token at `*pp`, which moves past it (parse_number).
 func next_token_number(s: ParseState*, pp: const u8**) -> !:
     var p = *pp
-    let flags = (atod_accept_bin_oct | atod_accept_legacy_octal | atod_accept_underscores |
-                 atod_accept_suffix)
+    let flags = (atod_accept_bin_oct | atod_accept_legacy_octal | atod_accept_underscores | atod_accept_suffix)
     let ret = try js_atof(s.ctx, p, &p, 0, flags)
     # reject `10instanceof Number`
     var p1 = p
-    if (js_value_is_nan(ret) or
-        unicode.lre_js_is_ident_next((u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p1))):
+    if (js_value_is_nan(ret) or unicode.lre_js_is_ident_next((u32)cutils.unicode_from_utf8(p, cutils.utf8_char_len_max, &p1))):
         js_free_value(s.ctx, ret)
         try js_parse_error(s, "invalid number literal")
     s.token.val = TokenType.number
@@ -147,7 +145,7 @@ func next_token(s: ParseState*) -> !:
                         p = p1
                         is_ident = true
                         try next_token_ident(s, &p, c1, true)
-                    # else XXX: syntax error?
+                # else XXX: syntax error?
                 if not is_ident:
                     s.token.val = (TokenType)(i32)c
                     p += 1
@@ -226,8 +224,7 @@ func next_token(s: ParseState*) -> !:
                     p += 2
                     s.token.val = TokenType.minus_assign
                 elif p[1] == '-':
-                    if (s.allow_html_comments and p[2] == '>' and
-                        (s.got_lf or s.last_ptr == s.buf_start)):
+                    if (s.allow_html_comments and p[2] == '>' and (s.got_lf or s.last_ptr == s.buf_start)):
                         # Annex B: `-->` at beginning of line is an html comment end.
                         # It extends to the end of the line.
                         p = skip_line_comment(s, p)
@@ -373,4 +370,4 @@ func next_token(s: ParseState*) -> !:
         break
     s.buf_ptr = p
 
-    # dump_token(s, &s.token)
+# dump_token(s, &s.token)

@@ -130,7 +130,7 @@ func js_std_url_get(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
     if url_get_headers(f, buf, &header_buf, full_flag, &status):
         if cutils.dbuf_error(&header_buf):
             error(js.exception, "")
-        header_buf.size -= 2 # remove the trailing CRLF
+        header_buf.size -= 2  # remove the trailing CRLF
 
         # download the data
         while true:

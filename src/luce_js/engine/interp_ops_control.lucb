@@ -39,7 +39,7 @@ noinline func interp_if_true(st: InterpState*) -> bool:
     if (u64)op1.tag <= (u64)Tag.undefined:
         res = js_value_get_int(op1) != 0
     else:
-        res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
+        res = js_to_bool_free(st.ctx, op1) catch: recover true  # C: -1 is true
     st.sp -= 1
     if res:
         st.pc += (isize)((i32)cutils.get_u32(st.pc - 4) - 4)
@@ -56,7 +56,7 @@ noinline func interp_if_false(st: InterpState*) -> bool:
     if (u64)op1.tag <= (u64)Tag.undefined:
         res = js_value_get_int(op1) != 0
     else:
-        res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
+        res = js_to_bool_free(st.ctx, op1) catch: recover true  # C: -1 is true
     st.sp -= 1
     if not res:
         st.pc += (isize)((i32)cutils.get_u32(st.pc - 4) - 4)
@@ -71,7 +71,7 @@ noinline func interp_if_true8(st: InterpState*) -> bool:
     if (u64)op1.tag <= (u64)Tag.undefined:
         res = js_value_get_int(op1) != 0
     else:
-        res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
+        res = js_to_bool_free(st.ctx, op1) catch: recover true  # C: -1 is true
     st.sp -= 1
     if res:
         st.pc += (isize)((i32)(i8)st.pc[-1] - 1)
@@ -86,7 +86,7 @@ noinline func interp_if_false8(st: InterpState*) -> bool:
     if (u64)op1.tag <= (u64)Tag.undefined:
         res = js_value_get_int(op1) != 0
     else:
-        res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
+        res = js_to_bool_free(st.ctx, op1) catch: recover true  # C: -1 is true
     st.sp -= 1
     if not res:
         st.pc += (isize)((i32)(i8)st.pc[-1] - 1)
@@ -186,8 +186,8 @@ noinline func interp_iterator_check_object(st: InterpState*) -> bool:
 ## The body of OP_iterator_close in JS_CallInternal.
 noinline func interp_iterator_close(st: InterpState*) -> bool:
     # iter_obj next catch_offset ->
-    st.sp -= 1 # drop the catch offset to avoid getting caught by exception
-    js_free_value(st.ctx, st.sp[-1]) # drop the next method
+    st.sp -= 1  # drop the catch offset to avoid getting caught by exception
+    js_free_value(st.ctx, st.sp[-1])  # drop the next method
     st.sp -= 1
     if not js_is_undefined(st.sp[-1]):
         st.sf.cur_pc = st.pc
@@ -251,5 +251,5 @@ noinline func interp_lnot(st: InterpState*):
     if (u64)op1.tag <= (u64)Tag.undefined:
         res = js_value_get_int(op1) != 0
     else:
-        res = js_to_bool_free(st.ctx, op1) catch: recover true # C: -1 is true
+        res = js_to_bool_free(st.ctx, op1) catch: recover true  # C: -1 is true
     st.sp[-1] = js_new_bool(not res)

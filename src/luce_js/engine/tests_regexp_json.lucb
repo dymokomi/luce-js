@@ -54,9 +54,7 @@ test "JSON.rawJSON accepts text starting and ending with a-z, 0-9, - or \"":
 
 test "RegExp flag letters map to the lre_flag_* bits once each":
     let all = "dgimsuvy"
-    assert(js_regexp_parse_flags(all.bytes.data, all.bytes.length) ==
-           (lre_flag_indices | lre_flag_global | lre_flag_ignorecase | lre_flag_multiline |
-            lre_flag_dotall | lre_flag_unicode | lre_flag_unicode_sets | lre_flag_sticky))
+    assert(js_regexp_parse_flags(all.bytes.data, all.bytes.length) == (lre_flag_indices | lre_flag_global | lre_flag_ignorecase | lre_flag_multiline | lre_flag_dotall | lre_flag_unicode | lre_flag_unicode_sets | lre_flag_sticky))
     assert(js_regexp_parse_flags("".bytes.data, 0) == 0)
     assert(js_regexp_parse_flags("gy".bytes.data, 2) == lre_flag_global | lre_flag_sticky)
     assert(js_regexp_parse_flags("gg".bytes.data, 2) == -1)
