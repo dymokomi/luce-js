@@ -6,7 +6,7 @@ Evidence and profiles for the performance items are in `docs/PERFORMANCE.md` ("W
 compiler can close"). The gate for any backend change: luce-js `./test.sh` passes and
 `python3 tests/test262.py` prints `Result: 58/83558 errors` with 0 crashes.
 
-Status as of 2026-09-25 (Luce 0.8.12). Numbers are stable, so fixed items leave gaps. Items 2–12 are ordered by priority; 13 onwards were found by the
+Status as of 2026-09-25 (Luce 0.8.12). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_AND_LUCE_BASE session. Items 2–12 are ordered by priority; 13 onwards were found by the
 luce-browser ports (correctness first) and are not yet ranked against them. Fixed items move to the bottom list with the fixing commit.
 
 ## Open
@@ -372,6 +372,24 @@ vector FMA, so luce-browser's Skia-exact raster calls `fmaf` once per lane: radi
 got 45% slower when made bit-exact with Skia m144. Expected: a vector FMA (e.g. an `f32x4`
 `mul_add` lowering to `fmla`/`vfmadd`), and scalar `f32.mul_add`/`f64.mul_add` lowering to one
 instruction instead of a libm call.
+
+### 27. An f-string with a long `str` hole formats to an empty string (runtime, x86_64 Linux)
+
+Found by the luce-browser render CI on Luce 0.8.12. With a hole of about 2,500 bytes, the whole
+formatted string, its literal parts included, comes out empty and no error is reported. This
+covers `print(f"...")` and `trap(f"...")`: a failing test's trap message is blank. Short holes
+and `print(text)` work. It is not yet checked whether macOS behaves the same way.
+
+```luce
+test "long str hole":
+    var buf: u8[3000] = ---
+    for i in 0..<3000:
+        buf[i] = 'a'
+    let text = str(buf[0..<2500])
+    print(f"before {text} after")   # prints an empty line
+```
+
+Expected: the full text (grow the buffer), or a visible truncation, never silence.
 
 ## Fixed
 
