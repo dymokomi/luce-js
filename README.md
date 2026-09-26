@@ -7,11 +7,13 @@ the JavaScript engine of the Luce web browser.
 
 Status: **complete port, being hardened.** All of `quickjs.c` is ported and QuickJS's own
 test files pass, and test262 fails exactly the 58 tests C QuickJS fails (83,558 run).
-Known limits: the interpreter is 2-6x slower than C QuickJS (geometric mean 4.75 over
-upstream's microbench.js), until the luce-base native backend compiles `match` to jump
-tables and returns fallible results in registers (`docs/PERFORMANCE.md`); the default
-JavaScript stack limit is 4 MB instead of QuickJS's 1 MB. The port's layout, organization and
-conventions: `docs/PORTING.md`; compiler problems still worked around: `docs/compiler-issues/`.
+Known limits: the interpreter is 1.1-8x slower than C QuickJS (geometric mean 2.86 over
+upstream's microbench.js with Luce 0.8.12); what is left is mostly compiler work
+(`docs/PERFORMANCE.md`, `docs/COMPILER-REQUESTS.md`). The default JavaScript stack limit is 4 MB
+instead of QuickJS's 1 MB. The port's layout, organization and conventions: `docs/PORTING.md`;
+compiler problems still worked around: `docs/compiler-issues/`.
+
+**Picking up the work** (luce-js and the luce-browser port built on it): `docs/HANDOFF.md`.
 
 Embedding, in short:
 
