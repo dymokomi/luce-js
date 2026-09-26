@@ -6,7 +6,7 @@ Evidence and profiles for the performance items are in `docs/PERFORMANCE.md` ("W
 compiler can close"). The gate for any backend change: luce-js `./test.sh` passes and
 `python3 tests/test262.py` prints `Result: 58/83558 errors` with 0 crashes.
 
-Status as of 2026-09-25 (Luce 0.8.12). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_AND_LUCE_BASE session. Items 2–12 are ordered by priority; 13 onwards were found by the
+Status as of 2026-09-25 (Luce 0.8.12). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_BASE_ONLY_MACHINE session. Items 2–12 are ordered by priority; 13 onwards were found by the
 luce-browser ports (correctness first) and are not yet ranked against them. Fixed items move to the bottom list with the fixing commit.
 
 ## Open
@@ -391,11 +391,11 @@ test "long str hole":
 
 Expected: the full text (grow the buffer), or a visible truncation, never silence.
 
-## Done on a branch, waiting for a release
+## Fixed
 
-luce-base local branch `compiler-requests`, gated on arm64 macOS against luce-js (test262
-58/83558, 0 crashes), luce-regex (both backends) and every luce-browser package; x86-64 not yet
-run:
+Luce 0.8.13 (luce-base 6af76f1; the commits below were gated on arm64 macOS against luce-js
+(test262 58/83558, 0 crashes), luce-regex (both backends) and every luce-browser package before
+the release; the repositories here still pin 0.8.12 until they adopt it):
 - 63b2798: item 27. print/trap f-strings stream with no limit, and a `fmt`/Writer f-string keeps
   1024 bytes ending in "...".
 - d9c6dc7: items 12 (asm callee-saved registers saved), 13 (float methods through a pointer),
@@ -410,8 +410,6 @@ run:
   a global initialised with `~` compiles in the C backend.
 
 Still open: 2, 3, 6, 7 (ABI and frame work), 11 (interpreter start-up).
-
-## Fixed
 
 - Luce 0.8.12 (luce-base ca67a3e):
   - Dense `match` is a jump table; a u8 match subject stays in a register; `(i32)`/`(i64)`
