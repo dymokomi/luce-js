@@ -133,8 +133,8 @@ techniques, each checked against the generated code:
   about five instructions, so the hot helpers read as C reads: `var_ref_at` reads the
   closure variables without the nullable checks, the reference-count helpers address the
   count by integer arithmetic, find_own_property uses wrapping arithmetic.
-- **A workaround for a compiler gap** (below): the engine's flag constants are written as
-  literals.
+- **The engine's flag constants are quickjs.h's expressions** (`1 << 3`): Luce 0.8.13 folds
+  a constant-expression `let` (item 7 below); before, they were written as literals.
 - **A regular expression literal compiles once**: its program is kept by the function
   (FunctionBytecode.regexp_cache) and shared by the RegExp objects it makes, as QuickJS's
   objects share the bytecode string compiled with the function (regexp_bridge.lucb). Before,
@@ -291,13 +291,14 @@ instructions with its frame) where arm64 has `fcvtzs` (which already saturates a
 to 0). JS_NewFloat64 runs it for every number result: 1.9% of a loop of Math.abs calls.
 Luce 0.8.12 emits `fcvtzs` / `cvttsd2si`, and the port's `f64_to_i32_small` workaround is gone.
 
-### 7. Constants initialised by an expression are not folded (worked around)
+### 7. Constants initialised by an expression are not folded (fixed in Luce 0.8.13)
 
 `let a: i32 = 3 << 4` becomes a global initialised at startup and loaded at every use
 (`adrp; add; ldr`), and large functions hoist and spill its address; `let b: i32 = 48` is
 an immediate. js_call_internal's prologue spilled the addresses of prop_tmask,
-prop_writable and prop_length. Reduction and workaround:
-`docs/compiler-issues/constant-let-not-folded.lucb`.
+prop_writable and prop_length. Reduction: COMPILER-REQUESTS.md item 5.
+Luce 0.8.13 folds it (`movz x10, #48` for both), and the engine's flags are written as
+expressions again.
 
 ### 8. Small values are copied through temporaries
 

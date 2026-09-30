@@ -279,11 +279,13 @@ Engine idioms:
 
 ## Language bugs
 
-When the compiler rejects correct code, crashes, or miscompiles: reduce it to the smallest
-program that shows it, keep the reduction in `docs/compiler-issues/`, work around it in the
-port with a `# workaround: compiler-issues/NAME` comment, and report it. The compiler is
-not changed from this repository. When the compiler is fixed, remove the workaround and
-its reduction.
+Write the most intuitive code. When the compiler rejects correct code, crashes, or
+miscompiles: reduce it to the smallest program that shows it, keep the reduction in
+`docs/compiler-issues/`, and report it so that the compiler is fixed (the
+LUCE_BASE_ONLY_MACHINE session owns luce-base; the compiler is not changed from this
+repository). Work around it only when the port cannot wait, with a
+`# workaround: compiler-issues/NAME` comment; when the compiler is fixed, remove the
+workaround and its reduction.
 
 ## History
 
