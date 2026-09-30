@@ -15,8 +15,8 @@
 #       Differences from the C: the agent and report lists are singly linked lists with
 #       a tail instead of list_head; the progress thread polls every 50 ms instead of a
 #       timed condition wait; print_error takes a formatted line (Base functions are not
-#       variadic); threads get 8 MB stacks instead of 2 MB (compiler-issues/
-#       frame-slots-not-shared). Everything else, including every option, is ported.
+#       variadic); threads get 8 MB stacks instead of 2 MB (the engine's frames are
+#       larger than C's: engine/module.lucb, js_default_stack_size). Everything else, including every option, is ported.
 #
 #       Build: luce-base build tests/run_test262 -o build/run-test262 --release
 #       Run from tests/: ../build/run-test262 -c test262.conf -a (or tests/test262.py,

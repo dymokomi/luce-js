@@ -6,7 +6,7 @@ Evidence and profiles for the performance items are in `docs/PERFORMANCE.md` ("W
 compiler can close"). The gate for any backend change: luce-js `./test.sh` passes and
 `python3 tests/test262.py` prints `Result: 58/83558 errors` with 0 crashes.
 
-Status as of 2026-09-30 (Luce 0.8.25). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_BASE_ONLY_MACHINE session. Items 2–12 are ordered by priority; 13 onwards were found by the
+Status as of 2026-09-30 (Luce 0.8.28). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_BASE_ONLY_MACHINE session. Items 2–12 are ordered by priority; 13 onwards were found by the
 luce-browser ports (correctness first) and are not yet ranked against them. Fixed items move to the bottom list with the fixing commit.
 
 ## Open
@@ -15,7 +15,10 @@ luce-browser ports (correctness first) and are not yet ranked against them. Fixe
 
 Luce 0.8.12 copies a fallible result inline instead of calling memcpy. Returning a small
 `T!` in registers, with the failure flag in a register, is the remaining part (an ABI
-change). `Value!` is 48 bytes today.
+change). `Value!` is 48 bytes today. The result slot, and the second copy when a failure is
+passed up, are much of why the engine's recursive frames are larger than C's (Luce 0.8.28:
+js_parse_expr_binary 288 bytes a precedence level), which is why js_default_stack_size is
+4 MB rather than QuickJS's 1 MB.
 
 ### 3. Windows x64 still spills parameters at entry (backend, remaining part)
 
