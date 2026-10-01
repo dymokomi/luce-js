@@ -6,39 +6,28 @@ Evidence and profiles for the performance items are in `docs/PERFORMANCE.md` ("W
 compiler can close"). The gate for any backend change: luce-js `./test.sh` passes and
 `python3 tests/test262.py` prints `Result: 58/83558 errors` with 0 crashes.
 
-Status as of 2026-09-30 (Luce 0.8.28). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_BASE_ONLY_MACHINE session. Items 2–12 are ordered by priority; 13 onwards were found by the
-luce-browser ports (correctness first) and are not yet ranked against them. Fixed items move to the bottom list with the fixing commit.
+Status as of 2026-10-01 (Luce 0.8.30). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_BASE_ONLY_MACHINE session. Every request is fixed; new ones go under Open with an inline reproduction.
 
 ## Open
 
-### 2. Fallible results are returned through memory (backend, remaining part)
-
-Luce 0.8.12 copies a fallible result inline instead of calling memcpy. Returning a small
-`T!` in registers, with the failure flag in a register, is the remaining part (an ABI
-change). `Value!` is 48 bytes today. The result slot, and the second copy when a failure is
-passed up, are much of why the engine's recursive frames are larger than C's (Luce 0.8.28:
-js_parse_expr_binary 288 bytes a precedence level), which is why js_default_stack_size is
-4 MB rather than QuickJS's 1 MB.
-
-### 3. Windows x64 still spills parameters at entry (backend, remaining part)
-
-Luce 0.8.12 uses parameters from their registers on arm64 and System V, forms frame
-addresses at their use, and saves only the callee-saved registers it uses. The Windows x64
-calling convention still stores parameters at entry.
-
-### 7. Small values and optional results are copied through stack temporaries between calls (backend)
-
-`Value` (16 bytes) and `T?` results/arguments go through a stack slot and a copy instead of
-registers. Lower priority than 2–4; measure after those. The tiny-skia port measured passing
-32-byte values between functions 3–6× slower than 16-byte ones; its pipelines are 5–30× slower
-than tiny-skia (tests/raster/bench.lucb in luce-browser-render).
-
-Within a function, Luce 0.8.25 (luce-base 0.32.0, 77924d8) keeps a small struct whose address
-stays in the frame in registers, a field each (the `split` pass), including the arguments
-and results of the calls it expands; what remains of item 7 is the calling convention,
-item 2's ABI change.
+None.
 
 ## Fixed
+
+Luce 0.8.30 (luce-base 0.32.6), gated against luce-js (`./test.sh`, and test262 58/83558 with
+0 crashes at QuickJS's 1 MB stack):
+- item 2: a fallible result of up to four words comes back in registers (x0-x3 on arm64,
+  rax/rdx/rcx/r8 on x86-64) with its failure flag, and the Error in the thread's
+  `core.failure`; a failure passed up is not copied again. js_parse_primary_expr's frame
+  1536 -> 224 bytes, js_parse_expr_binary 304 -> 128; the parser takes 300 nested function
+  expressions at 1 MB (about 110 before, QuickJS 256) and recursion reaches about 1150
+  levels. js_default_stack_size is QuickJS's 1 MB again.
+- item 3: Windows x64 receives its first four scalar parameters straight from their
+  registers and saves only the nonvolatile registers a function names.
+- item 7: small aggregates of integer words (up to 16 bytes; 8 on Windows) are passed and
+  returned in registers between calls, as within a function since 0.8.25.
+- frames pack their slots by life (first fit), and a statement's format buffers live below
+  the frame only while the statement runs (compiler-issues/frame-slots-not-shared, removed).
 
 Luce 0.8.13 (luce-base 6af76f1; the commits below were gated on arm64 macOS against luce-js
 (test262 58/83558, 0 crashes), luce-regex (both backends) and every luce-browser package before

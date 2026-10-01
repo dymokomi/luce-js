@@ -110,7 +110,8 @@ Pitfalls learned:
    - drop the workarounds marked `# workaround: compiler-issues/...`: noinline test bodies,
      float bits through a pointer, `sizeof(T)`, generic function values, the asm x19 test,
      `const (T[N])*` (done on 2026-09-29 with Luce 0.8.22 in the browser packages,
-     luce-regex and luce-js; frame-slots-not-shared is still open);
+     luce-regex and luce-js; frame-slots-not-shared with Luce 0.8.30, whose 1 MB stack is
+     QuickJS's);
    - consider `mul_add` for item 1;
    - move the fixed items in `COMPILER-REQUESTS.md` to "Fixed".
 4. **The engine (luce-browser-engine), phase 1.** Static rendering with scripting disabled:

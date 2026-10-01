@@ -168,10 +168,10 @@ function test_calls() {
     assert(two(1), undefined);
     assert(Math.max(), -Infinity);
     assert([3, 1, 2].sort().join(), "1,2,3");
-    // the depth a luce-js frame allows in the default 4 MB stack (C's qjs, with its
-    // 1 MB, stops before)
+    // the depth a luce-js frame allows in QuickJS's default 1 MB stack (about 1190
+    // levels with Luce 0.8.30)
     function depth(n) { return n ? depth(n - 1) + 1 : 0; }
-    assert(depth(2500), 2500);
+    assert(depth(1000), 1000);
 }
 
 // a regular expression literal compiles once; its objects share the program and keep

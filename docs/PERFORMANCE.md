@@ -122,7 +122,7 @@ techniques, each checked against the generated code:
 - **No values, helpers or fallible calls in the loop's arms**: values are written as tag
   and payload where they lie and reference counts tested in place, so an arm adds no frame
   slot. js_call_internal's frame is the stack one level of JavaScript recursion takes
-  (1.3 KB): recursion goes 3000 levels deep in the default 4 MB stack.
+  (1.3 KB): recursion goes about 1150 levels deep in the default 1 MB stack (Luce 0.8.30).
 - **Calls**: a C function's class hook is called by js_call_internal before any frame is
   set up, as JS_CallInternal does, and js_call_c_function_frame dispatches on the calling
   shape itself. interp_enter takes the call from the InterpState js_call_internal filled

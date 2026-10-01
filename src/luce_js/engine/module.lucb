@@ -42,14 +42,5 @@ let js_string_rope_short2_len: i32 = 8192
 # Rope depth at which we rebalance.
 let js_string_rope_max_depth: i32 = 60
 
-# workaround: the engine's recursive functions have larger frames than C's (Luce 0.8.28 on
-# arm64: js_parse_primary_expr 1520 bytes, js_parse_postfix_expr 800, js_parse_statement_body
-# 688, js_parse_expr_binary 288 per precedence level): a fallible result comes back through
-# a slot of its own and is copied again when a failure is passed up (COMPILER-REQUESTS.md
-# item 2). quickjs.h lets a build choose this value (#ifndef JS_DEFAULT_STACK_SIZE) and
-# defaults it to 1 MB; with 1 MB the parser takes about 100 nested function expressions
-# (QuickJS: 256) and the interpreter under 1000 recursive calls (QuickJS: 2000), so 4 MB here,
-# and the host threads (ljs's main thread, run-test262's workers) have 8 MB. Stack slots of
-# disjoint call sites are shared since Luce 0.8.25 (compiler-issues/frame-slots-not-shared).
 ## The default maximum stack size of a runtime (JS_DEFAULT_STACK_SIZE).
-pub let js_default_stack_size: usize = 4 * 1024 * 1024
+pub let js_default_stack_size: usize = 1024 * 1024
