@@ -117,6 +117,32 @@ func enter_not_a_function(st: InterpState*) -> InterpEntry:
 ## Every JavaScript call runs it, so the common path is written for the native code it
 ## becomes: the frame's values are written as tag and payload, the size arithmetic wraps
 ## as C's does (the operands are u16 counts), and the loops walk pointers.
+## How many arguments a call of `b` copies into its frame: all of them when fewer are
+## passed than it declares, or the call asks for a copy, else none.
+func arguments_copied(b: FunctionBytecode*, argc: i32, flags: i32) -> usize:
+    if argc < (i32)b.arg_count or (flags & call_flag_copy_argv) != 0:
+        return (usize)b.arg_count
+    return 0
+
+## The bytes of the frame a call of `b` lays out (C QuickJS's alloca_size): the copied
+## arguments, the variables, the operand stack, and the variable references.
+func frame_bytes(b: FunctionBytecode*, argc: i32, flags: i32) -> usize:
+    return (arguments_copied(b, argc, flags) +% (usize)b.var_count +% (usize)b.stack_size) *% sizeof(Value) +% (usize)b.var_ref_count *% sizeof(VarRef*)
+
+## The values of `func_obj`'s frame that js_call_internal takes from its own frame
+## (`memory.frame`, as C QuickJS takes them with alloca): 0 for a frame on the heap, a
+## generator's, or a function that is not bytecode.
+func frame_values(func_obj: Value, argc: i32, flags: i32) -> usize:
+    if func_obj.tag != Tag.object or (flags & call_flag_generator) != 0:
+        return 0
+    let p = func_obj.u.obj
+    if p.class_id != ClassId.bytecode_function:
+        return 0
+    let bytes = frame_bytes(p.u.func_.function_bytecode, argc, flags)
+    if bytes > sizeof(Value) * js_call_inline_frame_values:
+        return 0
+    return (bytes +% sizeof(Value) -% 1) // sizeof(Value)
+
 noinline func interp_enter(st: InterpState*, flags: i32, frame_space: Value*) -> InterpEntry:
     let caller_ctx = st.caller_ctx
     let rt = caller_ctx.rt
@@ -170,12 +196,9 @@ noinline func interp_enter(st: InterpState*, flags: i32, frame_space: Value*) ->
 
     let argc = st.argc
     let arg_count = (usize)b.arg_count
-    var arg_allocated_size: usize = 0
-    if argc < (i32)b.arg_count or (flags & call_flag_copy_argv) != 0:
-        arg_allocated_size = arg_count
-
+    let arg_allocated_size = arguments_copied(b, argc, flags)
     let var_count = (usize)b.var_count
-    let alloca_size = (arg_allocated_size +% var_count +% (usize)b.stack_size) *% sizeof(Value) +% (usize)b.var_ref_count *% sizeof(VarRef*)
+    let alloca_size = frame_bytes(b, argc, flags)
     if js_check_stack_overflow(rt, alloca_size):
         js_throw_stack_overflow(caller_ctx) catch failure: return enter_failed(st, failure.code, failure.message)
 

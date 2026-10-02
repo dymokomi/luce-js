@@ -70,15 +70,16 @@
 #       - The large macros are inline functions of interpreter_support.lucb.
 #       - pc, sp and the frame buffers are pointers, exactly as in C: `sp[-1]` is the top
 #         of the stack.
-#       - C allocates the frame with alloca. Base has no alloca: a frame that fits
-#         `frame_space` (js_call_inline_frame_values values) lives in js_call_internal's
-#         frame, a larger one is js_malloc'ed and released when the call returns.
+#       - C allocates the frame with alloca; here js_call_internal takes it from its own
+#         frame with `memory.frame`, sized to the function (`frame_values`), up to
+#         js_call_inline_frame_values values; a larger one is js_malloc'ed and released
+#         when the call returns.
 #
 #==============================================================================================
 
-## The number of values a bytecode call keeps in its own frame before it allocates the
-## locals, stack and variable references on the heap (C uses alloca for all of them). Small
-## functions fit; every value here adds 16 bytes to each level of JavaScript recursion.
+## The most values a bytecode call takes from its own frame (`memory.frame`, at most 4096
+## bytes) before it allocates the locals, stack and variable references on the heap (C
+## uses alloca for all of them). A call takes only the values its function needs.
 let js_call_inline_frame_values: usize = 16
 
 # mark: JS_CallInternal =========================================================================
@@ -98,8 +99,8 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
                 return try call_func(caller_ctx, func_obj, this_obj, argc, argv, flags)
     var st: InterpState = ---
     var sf_s: StackFrame = ---
-    # the frame when it fits; C allocates it with alloca
-    var frame_space: Value[js_call_inline_frame_values] = ---
+    # the frame when it fits, sized to the function, as C allocates it with alloca
+    let frame_space = memory.frame[Value](frame_values(func_obj, argc, flags), js_call_inline_frame_values)
     st.sf = &sf_s
     st.caller_ctx = caller_ctx
     st.func_obj = func_obj
@@ -107,7 +108,7 @@ func js_call_internal(caller_ctx: Context*, func_obj: Value, this_obj: Value, ne
     st.new_target = new_target
     st.argc = argc
     st.argv = argv
-    let entry = interp_enter(&st, flags, &frame_space[0])
+    let entry = interp_enter(&st, flags, frame_space.data)
     if entry == InterpEntry.returned:
         return st.ret_val
     if entry == InterpEntry.failed:
