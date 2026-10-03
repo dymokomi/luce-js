@@ -25,7 +25,7 @@
 #
 #==============================================================================================
 
-import luce_js.engine as js
+from luce_js import engine as js
 from luce_js.engine import Context, Value, ModuleDef, CFunctionListEntry
 
 func js_bjson_read(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:

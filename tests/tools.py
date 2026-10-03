@@ -236,7 +236,7 @@ def test_ljsc():
     code, out, err = run([LJSC, "-c", "-p", "demo_", "-o", os.path.join(directory, "hello_data.lucb"),
                           "hello.js"], cwd=EXAMPLES)
     with open(os.path.join(directory, "main.lucb"), "w") as f:
-        f.write("import luce_js.engine as js\nimport luce_js.host as host\nimport hello_data\n\n"
+        f.write("from luce_js import engine as js, host\nimport hello_data\n\n"
                 "pub func main(arguments: str[]) -> i32:\n"
                 "    let rt = js.js_new_runtime() else return 1\n"
                 "    let ctx = js.js_new_context(rt) else return 1\n"

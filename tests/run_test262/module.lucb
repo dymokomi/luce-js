@@ -44,7 +44,7 @@ import sync
 import thread
 import time
 from luce_js import host
-import luce_js.engine as js
+from luce_js import engine as js
 
 # mark: C library ===============================================================================
 
