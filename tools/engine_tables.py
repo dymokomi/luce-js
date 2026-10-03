@@ -4,14 +4,14 @@ quickjs-opcode.h.
 
 usage: tools/engine_tables.py QUICKJS_SOURCE_DIR
 
-Writes src/luce_js/engine/atoms_table.lucb and src/luce_js/engine/opcodes_table.lucb.
+Writes src/engine/atoms_table.lucb and src/engine/opcodes_table.lucb.
 """
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE = ROOT / "src/luce_js/engine"
+ENGINE = ROOT / "src/engine"
 RESERVED = set("""alloc and as asm break catch const continue defer elif else enum errdefer
 export extern false for free from func goto if import in interface let local match mutating
 new none not or pub recover return self static struct test true try type union var volatile

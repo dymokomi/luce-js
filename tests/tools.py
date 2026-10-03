@@ -175,17 +175,14 @@ def test_repl_bytecode():
           err or "regenerate it: cd tests && ../build/ljsc -s -c -o repl.lucb -m repl.js")
 
 
-def package(directory, examples=False):
-    """A package in `directory` that depends on this luce-js tree (and on its examples,
-    whose fib module is the native module of test_fib.js)."""
+def package(directory):
+    """A package in `directory` that depends on this luce-js tree."""
     if os.path.exists(directory):
         shutil.rmtree(directory)
     os.makedirs(directory)
     with open(os.path.join(directory, "package.prisma"), "w") as f:
         f.write('#prisma 4.0\ndef package "ljsc_test" {\n    str source = "."\n'
                 f'    def dependency "luce-js" {{\n        str path = "{ROOT}"\n    }}\n')
-        if examples:
-            f.write(f'    def dependency "luce-js-examples" {{\n        str path = "{EXAMPLES}"\n    }}\n')
         f.write('}\n')
 
 
@@ -218,8 +215,11 @@ def test_ljsc():
 
     # -e with a native module, as the Makefile makes test_fib.c: qjsc -e -M examples/fib.so,fib
     directory = os.path.join(WORK, "test_fib")
-    # (examples/fib.lucb, the port of examples/fib.c, is the native module)
-    package(directory, examples=True)
+    # (examples/fib.lucb, the port of examples/fib.c, is the native module; it sits in the
+    # program's own package, as fib.so sits beside test_fib.c, so the generated `import fib`
+    # names it by path)
+    package(directory)
+    shutil.copy(os.path.join(EXAMPLES, "fib.lucb"), directory)
     code, out, err = run([LJSC, "-e", "-M", "fib.so,fib", "-m", "-o",
                           os.path.join(directory, "test_fib.lucb"), "test_fib.js"], cwd=EXAMPLES)
     exe = os.path.join(directory, "test_fib")
@@ -236,7 +236,7 @@ def test_ljsc():
     code, out, err = run([LJSC, "-c", "-p", "demo_", "-o", os.path.join(directory, "hello_data.lucb"),
                           "hello.js"], cwd=EXAMPLES)
     with open(os.path.join(directory, "main.lucb"), "w") as f:
-        f.write("import js\nimport host\nimport hello_data\n\n"
+        f.write("import luce_js.engine as js\nimport luce_js.host as host\nimport hello_data\n\n"
                 "pub func main(arguments: str[]) -> i32:\n"
                 "    let rt = js.js_new_runtime() else return 1\n"
                 "    let ctx = js.js_new_context(rt) else return 1\n"

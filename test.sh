@@ -12,8 +12,8 @@ for file in $(git ls-files '*.lucb' | grep -v '^tests/repl.lucb$'); do
 done
 
 for module in cutils dtoa engine host; do
-    echo "== luce-base test src/luce_js/$module"
-    luce-base test "src/luce_js/$module"
+    echo "== luce-base test src/$module"
+    luce-base test "src/$module"
 done
 
 echo "== tests/run.py"

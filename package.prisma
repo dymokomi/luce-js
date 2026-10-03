@@ -1,29 +1,22 @@
 #prisma 4.0
 def package "luce-js" {
     str owner = "dymokomi"
-    str version = "0.1.4"
+    str version = "0.2.0"
     str kind = "package"
     str language = "luce-base"
     str description = "A JavaScript engine in luce-base: a port of Fabrice Bellard's QuickJS."
     str readme = "README.md"
-
-    def export "js" {
-        str module = "luce_js.engine"
-    }
-
-    def export "host" {
-        str module = "luce_js.host"
-    }
+    str[] public = ["host", "engine"]
 
     def dependency "luce-std" {
         str owner = "dymokomi"
-        str version = "^0.1.0"
+        str version = "^0.2.0"
         str path = "../luce-std"
     }
 
     def dependency "luce-regex" {
         str owner = "dymokomi"
-        str version = "^0.2.2"
+        str version = "^0.3.0"
         str path = "../luce-regex"
     }
 }

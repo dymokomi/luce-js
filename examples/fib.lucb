@@ -22,8 +22,8 @@
 #
 #==============================================================================================
 
-import js
-from js import Context, Value, ModuleDef, CFunctionListEntry
+import luce_js.engine as js
+from luce_js.engine import Context, Value, ModuleDef, CFunctionListEntry
 
 func fib(n: i32) -> i32:
     if n <= 0:

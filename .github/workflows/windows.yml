@@ -54,7 +54,7 @@ jobs:
         shell: msys2 {0}
         run: |
           export PATH="$(cd ../luce-base/build && pwd):$PATH"
-          for module in cutils dtoa engine host; do luce-base test "src/luce_js/$module"; done
+          for module in cutils dtoa engine host; do luce-base test "src/$module"; done
       - name: QuickJS's JavaScript tests
         working-directory: luce-js
         shell: msys2 {0}

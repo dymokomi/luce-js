@@ -1,6 +1,6 @@
 # Testing luce-js on Windows
 
-The host (`src/luce_js/host/`, quickjs-libc.c) and the test programs (`ljs`,
+The host (`src/host/`, quickjs-libc.c) and the test programs (`ljs`,
 `run-test262`) follow quickjs-libc.c's `#if defined(_WIN32)` branches on
 `x86_64-windows`. They were only cross-compiled and linked with MinGW-w64 on macOS;
 these steps run them on Windows. Report every command's output where it differs
@@ -60,17 +60,17 @@ With the machine's time zone set to Pacific Time and `TZ` unset:
 Expected: every line `YEAR 420 480` (July in daylight saving time, January not).
 Upstream's Windows code answers 480 for July and 0 outside 1970..3000; this port
 reads the offset from `_localtime64`'s fields and maps other years to an equivalent
-year (see `get_timezone_offset` in `src/luce_js/engine/timezone_regexp_objects.lucb`).
+year (see `get_timezone_offset` in `src/engine/timezone_regexp_objects.lucb`).
 Windows applies this year's daylight saving rules to every year, so historical dates
 can differ from macOS and Linux.
 
 ## 3. Unit tests of each module
 
 ```powershell
-luce-base test src/luce_js/cutils
-luce-base test src/luce_js/dtoa
-luce-base test src/luce_js/engine
-luce-base test src/luce_js/host
+luce-base test src/cutils
+luce-base test src/dtoa
+luce-base test src/engine
+luce-base test src/host
 ```
 
 Expected: every line `ok`, and for the host `13 passed`. Two host tests (os.exec and

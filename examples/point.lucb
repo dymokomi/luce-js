@@ -25,9 +25,9 @@
 #
 #==============================================================================================
 
-import math
-import js
-from js import Context, Runtime, Value, ModuleDef, CFunctionListEntry, CFunctionEnum, ClassDef
+import luce_std.math
+import luce_js.engine as js
+from luce_js.engine import Context, Runtime, Value, ModuleDef, CFunctionListEntry, CFunctionEnum, ClassDef
 
 # mark: Point class =============================================================================
 

@@ -305,7 +305,7 @@ pub func main(argv: str[]) -> i32:
     discard(fprintf(fo, z("# File generated automatically by the luce-js compiler (ljsc).\n\n")))
 
     if output_type != output_c:
-        discard(fprintf(fo, z("import js\nimport host\n\n")))
+        discard(fprintf(fo, z("import luce_js.engine as js\nimport luce_js.host as host\n\n")))
 
     for i in optind..<argv.length:
         compile_file(ctx, fo, argv[i].bytes.data, cname, module)

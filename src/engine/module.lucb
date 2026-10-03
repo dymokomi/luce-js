@@ -10,13 +10,13 @@
 #==============================================================================================
 
 import io
-import math
+import luce_std.math
 import memory
 import os
-import luce_js.cutils as cutils
-import luce_js.dtoa as dtoa
-import regex
-import libunicode as unicode
+import cutils
+import dtoa
+import luce_regex.regex
+import luce_regex.unicode
 
 ## The failure every fallible engine function reports when a JavaScript exception is
 ## pending: the thrown value itself is in `rt.current_exception`, as in QuickJS.

@@ -1,14 +1,7 @@
 #prisma 4.0
 def package "luce-js-examples" {
     str source = "."
-
-    def export "fib" {
-        str module = "fib"
-    }
-
-    def export "point" {
-        str module = "point"
-    }
+    str[] public = ["fib", "point"]
 
     def dependency "luce-js" {
         str path = ".."

@@ -41,12 +41,11 @@
 
 import c
 import platform
-import js
-import host
+import luce_js.engine as js
+import luce_js.host
 import repl
 import bjson
-import fib
-import point
+from luce_js_examples import fib, point
 
 extern func malloc(size: usize) -> void*?
 extern func realloc(ptr: void*?, size: usize) -> void*?

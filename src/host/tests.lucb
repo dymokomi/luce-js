@@ -113,7 +113,7 @@ test "timers run in order from the loop and can be cleared":
 
 test "js_load_file answers the bytes and a NUL, or none":
     var len: usize = 0
-    let buf = js_load_file(none, &len, "src/luce_js/host/ORDER".bytes.data) else trap("cannot load ORDER")
+    let buf = js_load_file(none, &len, "src/host/ORDER".bytes.data) else trap("cannot load ORDER")
     assert(len > 10 and buf[len] == 0)
     assert(cutils.memcmp(buf, "module.lucb".bytes.data, 11) == 0)
     cutils.c_free(buf)

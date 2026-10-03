@@ -34,11 +34,11 @@ import platform
 import sync
 import thread
 import time
-import luce_js.cutils as cutils
-import luce_js.engine as js
-from luce_js.cutils import DynBuf, ListHead
-from luce_js.engine import Context, Runtime, Value, ModuleDef, Atom, CFunctionListEntry
-from luce_js.engine import CFunctionEnum, ClassDef, PropertyEnum, PromiseState
+import cutils
+import engine as js
+from cutils import DynBuf, ListHead
+from engine import Context, Runtime, Value, ModuleDef, Atom, CFunctionListEntry
+from engine import CFunctionEnum, ClassDef, PropertyEnum, PromiseState
 
 # mark: Per-runtime state =======================================================================
 
