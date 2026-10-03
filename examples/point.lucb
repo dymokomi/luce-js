@@ -25,7 +25,7 @@
 #
 #==============================================================================================
 
-import luce_std.math
+from luce_std import math
 import luce_js.engine as js
 from luce_js.engine import Context, Runtime, Value, ModuleDef, CFunctionListEntry, CFunctionEnum, ClassDef
 

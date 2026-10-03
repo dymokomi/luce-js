@@ -43,8 +43,8 @@ import platform
 import sync
 import thread
 import time
+from luce_js import host
 import luce_js.engine as js
-import luce_js.host
 
 # mark: C library ===============================================================================
 

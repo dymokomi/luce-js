@@ -41,8 +41,8 @@
 
 import c
 import platform
+from luce_js import host
 import luce_js.engine as js
-import luce_js.host
 import repl
 import bjson
 from luce_js_examples import fib, point
