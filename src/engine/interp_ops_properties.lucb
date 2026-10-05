@@ -141,9 +141,9 @@ noinline func interp_define_field(st: InterpState*) -> bool:
     let atom = cutils.get_u32(st.pc)
     st.pc += 4
 
-    discard(js_define_property_value(st.ctx, st.sp[-2], atom, st.sp[-1], prop_c_w_e | prop_throw) catch:
+    _ = js_define_property_value(st.ctx, st.sp[-2], atom, st.sp[-1], prop_c_w_e | prop_throw) catch:
         st.sp -= 1
-        return false)
+        return false
     st.sp -= 1
     return true
 
@@ -165,7 +165,7 @@ noinline func interp_set_proto(st: InterpState*) -> bool:
     st.sf.cur_pc = st.pc
     let proto = st.sp[-1]
     if js_is_object(proto) or js_is_null(proto):
-        discard(js_set_prototype_internal(st.ctx, st.sp[-2], proto, true) catch: return false)
+        _ = js_set_prototype_internal(st.ctx, st.sp[-2], proto, true) catch: return false
     js_free_value(st.ctx, proto)
     st.sp -= 1
     return true

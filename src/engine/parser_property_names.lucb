@@ -241,7 +241,7 @@ func js_parse_skip_parens_token(s: ParseState*, pbits: i32*?, no_line_terminator
                         # XXX: should clear the exception
                         break tokens
             _:
-                discard(0)
+                _ = 0
         if is_template:
             # handle_template:
             if s.token.u.str_.sep != (i32)'`':

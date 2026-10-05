@@ -33,7 +33,7 @@ func js_write_array(s: BCWriterState*, obj: Value) -> !:
     else:
         bc_put_u8(s, (u8)BCTag.array)
         is_template = false
-    discard(try js_get_length32(ctx, &len, obj))  # no side effect
+    _ = try js_get_length32(ctx, &len, obj)  # no side effect
     bc_put_leb128(s, len)
     if p.fast_array:
         let values = p.u.array.u.values
@@ -113,7 +113,7 @@ func js_write_array_buffer(s: BCWriterState*, obj: Value) -> !:
     bc_put_leb128(s, (u32)abuf.byte_length)
     bc_put_leb128(s, (u32)abuf.max_byte_length)
     if let data = abuf.data:
-        discard(cutils.dbuf_put(&s.dbuf, data, (usize)abuf.byte_length))
+        _ = cutils.dbuf_put(&s.dbuf, data, (usize)abuf.byte_length)
 
 ## Write a SharedArrayBuffer: its lengths and the address of its data, which the reader
 ## clones; the address is also kept in the writer's sab_tab for the caller.
@@ -128,7 +128,7 @@ func js_write_shared_array_buffer(s: BCWriterState*, obj: Value) -> !:
     if let data = abuf.data:
         address = (usize)data
     bc_put_u64(s, (u64)address)
-    try js_resize_array(s.ctx, (void*?*)&s.sab_tab, (i32)sizeof(u8*?), &s.sab_tab_size,
+    try js_resize_array(s.ctx, (void*?*)&s.sab_tab, (i32)memory.size_of(u8*?), &s.sab_tab_size,
                         s.sab_tab_len + 1)
     # keep the SAB pointer so that the user can clone it or free it
     let sab_tab = s.sab_tab else trap("js_write_shared_array_buffer: no table")
@@ -248,8 +248,8 @@ func js_write_object_atoms(s: BCWriterState*) -> !:
         try js_throw_out_of_memory(s.ctx)
     let out = dbuf1.buf else trap("js_write_object_atoms: no buffer")
     let atoms_buf = s.dbuf.buf else trap("js_write_object_atoms: no atoms buffer")
-    discard(cutils.memmove(out + atoms_size, out, dbuf1.size))
-    discard(cutils.memcpy(out, atoms_buf, atoms_size))
+    _ = cutils.memmove(out + atoms_size, out, dbuf1.size)
+    _ = cutils.memcpy(out, atoms_buf, atoms_size)
     dbuf1.size += atoms_size
     cutils.dbuf_free(&s.dbuf)
     s.dbuf = dbuf1

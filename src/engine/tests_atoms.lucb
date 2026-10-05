@@ -56,7 +56,7 @@ test "hash_string reads the characters after the header":
     p.len = 6
     p.is_wide_char = false
     let text = b"length"
-    discard(cutils.memcpy(str8(p), &text[0], 6))
+    _ = cutils.memcpy(str8(p), &text[0], 6)
     assert(hash_string(p, 1) == 3338202615)
     p.len = 3
     p.is_wide_char = true

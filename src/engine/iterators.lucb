@@ -221,8 +221,8 @@ func js_create_iterator_result(ctx: Context*, val: Value, done: bool) -> Value!:
         js_free_value(ctx, val)
         error(failure.code, failure.message)
     errdefer js_free_value(ctx, obj)
-    discard(try js_define_property_value(ctx, obj, atom_value, val, prop_c_w_e))
-    discard(try js_define_property_value(ctx, obj, atom_done, js_new_bool(done), prop_c_w_e))
+    _ = try js_define_property_value(ctx, obj, atom_value, val, prop_c_w_e)
+    _ = try js_define_property_value(ctx, obj, atom_done, js_new_bool(done), prop_c_w_e)
     return obj
 
 # mark: Spreading and copying ===================================================================
@@ -289,8 +289,8 @@ func js_append_enumerate(ctx: Context*, sp: Value*) -> !:
             # Handle fast arrays explicitly
             for i in 0..<count32:
                 let arr = arrp else trap("js_append_enumerate: no elements")
-                discard(try js_define_property_value_uint32(ctx, sp[-3], pos,
-                                                            js_dup_value(ctx, arr[(usize)i]), prop_c_w_e))
+                _ = try js_define_property_value_uint32(ctx, sp[-3], pos,
+                                                        js_dup_value(ctx, arr[(usize)i]), prop_c_w_e)
                 pos += 1
     if general_case:
         while true:
@@ -300,7 +300,7 @@ func js_append_enumerate(ctx: Context*, sp: Value*) -> !:
             if done:
                 # value is JS_UNDEFINED
                 break
-            discard(try js_define_property_value_uint32(ctx, sp[-3], pos, value, prop_c_w_e))
+            _ = try js_define_property_value_uint32(ctx, sp[-3], pos, value, prop_c_w_e)
             pos += 1
     # Note: could raise an error if too many elements
     sp[-2] = js_new_int32((i32)pos)
@@ -354,4 +354,4 @@ func js_copy_data_properties(ctx: Context*, target: Value, source: Value, exclud
         if setprop:
             try js_set_property(ctx, target, atom, val)
         else:
-            discard(try js_define_property_value(ctx, target, atom, val, prop_c_w_e))
+            _ = try js_define_property_value(ctx, target, atom, val, prop_c_w_e)

@@ -154,7 +154,7 @@ func js_new_string_rope(ctx: Context*, op1: Value, op2: Value) -> Value!:
             js_free_value(ctx, op1)
             js_free_value(ctx, op2)
             error(failure.code, failure.message)
-    let mem = js_malloc(ctx, sizeof(StringRope)) catch failure:
+    let mem = js_malloc(ctx, memory.size_of(StringRope)) catch failure:
         js_free_value(ctx, op1)
         js_free_value(ctx, op2)
         error(failure.code, failure.message)

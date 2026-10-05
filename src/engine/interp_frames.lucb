@@ -127,7 +127,7 @@ func arguments_copied(b: FunctionBytecode*, argc: i32, flags: i32) -> usize:
 ## The bytes of the frame a call of `b` lays out (C QuickJS's alloca_size): the copied
 ## arguments, the variables, the operand stack, and the variable references.
 func frame_bytes(b: FunctionBytecode*, argc: i32, flags: i32) -> usize:
-    return (arguments_copied(b, argc, flags) +% (usize)b.var_count +% (usize)b.stack_size) *% sizeof(Value) +% (usize)b.var_ref_count *% sizeof(VarRef*)
+    return (arguments_copied(b, argc, flags) +% (usize)b.var_count +% (usize)b.stack_size) *% memory.size_of(Value) +% (usize)b.var_ref_count *% memory.size_of(VarRef*)
 
 ## The values of `func_obj`'s frame that js_call_internal takes from its own frame
 ## (`memory.frame`, as C QuickJS takes them with alloca): 0 for a frame on the heap, a
@@ -139,9 +139,9 @@ func frame_values(func_obj: Value, argc: i32, flags: i32) -> usize:
     if p.class_id != ClassId.bytecode_function:
         return 0
     let bytes = frame_bytes(p.u.func_.function_bytecode, argc, flags)
-    if bytes > sizeof(Value) * js_call_inline_frame_values:
+    if bytes > memory.size_of(Value) * js_call_inline_frame_values:
         return 0
-    return (bytes +% sizeof(Value) -% 1) // sizeof(Value)
+    return (bytes +% memory.size_of(Value) -% 1) // memory.size_of(Value)
 
 noinline func interp_enter(st: InterpState*, flags: i32, frame_space: Value*) -> InterpEntry:
     let caller_ctx = st.caller_ctx
@@ -209,7 +209,7 @@ noinline func interp_enter(st: InterpState*, flags: i32, frame_space: Value*) ->
     st.var_refs = p.u.func_.var_refs
 
     var local_buf = frame_space
-    if alloca_size > sizeof(Value) * js_call_inline_frame_values:
+    if alloca_size > memory.size_of(Value) * js_call_inline_frame_values:
         let block = js_malloc(caller_ctx, alloca_size) catch failure: return enter_failed(st, failure.code, failure.message)
         st.heap_frame = block
         local_buf = (Value*)block

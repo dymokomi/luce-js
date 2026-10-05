@@ -85,8 +85,8 @@ func js_os_tty_get_win_size(ctx: Context*, this_val: Value, argc: i32, argv: Val
         var ws: WinSize
         if ioctl(fd, tiocgwinsz, &ws) == 0 and ws.ws_col >= 4 and ws.ws_row >= 4:
             let obj = try js.js_new_array(ctx)
-            discard(js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32((i32)ws.ws_col), js.prop_c_w_e) catch: recover false)
-            discard(js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32((i32)ws.ws_row), js.prop_c_w_e) catch: recover false)
+            _ = js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32((i32)ws.ws_col), js.prop_c_w_e) catch: recover false
+            _ = js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32((i32)ws.ws_row), js.prop_c_w_e) catch: recover false
             return obj
         return js.js_null()
 
@@ -95,7 +95,7 @@ var oldtty: u8[128]
 
 func term_exit():
     if not platform.windows:
-        discard(tcsetattr(0, tcsanow, &oldtty[0]))
+        _ = tcsetattr(0, tcsanow, &oldtty[0])
 
 ## Clear the bits `clear` and set the bits `set` of the tcflag_t `index` of `tty`.
 func termios_update_flag(tty: u8*, index: usize, clear: u32, set: u32):
@@ -116,7 +116,7 @@ func js_os_tty_set_raw(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
 func tty_set_raw_posix(fd: i32):
     if not platform.windows:
         var tty: u8[128]
-        discard(tcgetattr(fd, &tty[0]))
+        _ = tcgetattr(fd, &tty[0])
         oldtty = tty
 
         termios_update_flag(&tty[0], 0, tc_ignbrk | tc_brkint | tc_parmrk | tc_istrip | tc_inlcr | tc_igncr | tc_icrnl | tc_ixon, 0)
@@ -127,9 +127,9 @@ func tty_set_raw_posix(fd: i32):
         tty[termios_cc_offset + tc_vmin] = 1
         tty[termios_cc_offset + tc_vtime] = 0
 
-        discard(tcsetattr(fd, tcsanow, &tty[0]))
+        _ = tcsetattr(fd, tcsanow, &tty[0])
 
-        discard(atexit(term_exit))
+        _ = atexit(term_exit)
 
 func js_os_remove(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let filename = try js.js_to_c_string(ctx, argv[0])
@@ -155,8 +155,8 @@ func js_os_tty_get_win_size_windows(ctx: Context*, fd: i32) -> Value!:
         if GetConsoleScreenBufferInfo(handle, &info[0]) == 0:
             return js.js_null()
         let obj = try js.js_new_array(ctx)
-        discard(js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32(cutils.get_i16(&info[0])), js.prop_c_w_e) catch: recover false)
-        discard(js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32(cutils.get_i16(&info[2])), js.prop_c_w_e) catch: recover false)
+        _ = js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32(cutils.get_i16(&info[0])), js.prop_c_w_e) catch: recover false
+        _ = js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32(cutils.get_i16(&info[2])), js.prop_c_w_e) catch: recover false
         return obj
     else:
         return js.js_null()
@@ -164,11 +164,11 @@ func js_os_tty_get_win_size_windows(ctx: Context*, fd: i32) -> Value!:
 func js_os_tty_set_raw_windows(fd: i32):
     if platform.windows:
         var handle = (void*?)(usize)win_get_osfhandle(fd)
-        discard(SetConsoleMode(handle, enable_window_input | enable_virtual_terminal_input))
-        discard(win_setmode(fd, o_binary))
+        _ = SetConsoleMode(handle, enable_window_input | enable_virtual_terminal_input)
+        _ = win_setmode(fd, o_binary)
         if fd == 0:
             handle = (void*?)(usize)win_get_osfhandle(1)  # corresponding output
-            discard(SetConsoleMode(handle, enable_processed_output | enable_wrap_at_eol_output | enable_virtual_terminal_processing))
+            _ = SetConsoleMode(handle, enable_processed_output | enable_wrap_at_eol_output | enable_virtual_terminal_processing)
 
 func js_os_rename(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let oldpath = try js.js_to_c_string(ctx, argv[0])
@@ -186,7 +186,7 @@ func is_main_thread(rt: Runtime*) -> bool:
 
 ## The read/write handler whose list link is `el`.
 func rw_handler_of(el: ListHead*) -> OSRWHandler*:
-    return (OSRWHandler*)((u8*)el - offsetof(OSRWHandler, link))
+    return (OSRWHandler*)((u8*)el - memory.offset_of(OSRWHandler, link))
 
 func find_rh(ts: ThreadState*, fd: i32) -> OSRWHandler*?:
     var el = ts.os_rw_handlers.next else return none
@@ -224,7 +224,7 @@ func js_os_set_read_handler(ctx: Context*, this_val: Value, argc: i32, argv: Val
             try js.js_throw_type_error(ctx, "not a function")
         var found = find_rh(ts, fd)
         if found == none:
-            let rh = (OSRWHandler*)try js.js_mallocz(ctx, sizeof(OSRWHandler))
+            let rh = (OSRWHandler*)try js.js_mallocz(ctx, memory.size_of(OSRWHandler))
             rh.fd = fd
             rh.rw_func[0] = js.js_null()
             rh.rw_func[1] = js.js_null()
@@ -239,7 +239,7 @@ func js_os_set_read_handler(ctx: Context*, this_val: Value, argc: i32, argv: Val
 
 ## The signal handler whose list link is `el`.
 func signal_handler_of(el: ListHead*) -> OSSignalHandler*:
-    return (OSSignalHandler*)((u8*)el - offsetof(OSSignalHandler, link))
+    return (OSSignalHandler*)((u8*)el - memory.offset_of(OSSignalHandler, link))
 
 func find_sh(ts: ThreadState*, sig_num: i32) -> OSSignalHandler*?:
     var el = ts.os_signal_handlers.next else return none
@@ -279,13 +279,13 @@ func js_os_signal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
         var handler: void*? = none  # SIG_DFL
         if not js.js_is_null(func_):
             handler = sig_ign()
-        discard(c_signal((i32)sig_num, handler))
+        _ = c_signal((i32)sig_num, handler)
     else:
         if not js.js_is_function(ctx, func_):
             try js.js_throw_type_error(ctx, "not a function")
         var found = find_sh(ts, (i32)sig_num)
         if found == none:
-            let sh = (OSSignalHandler*)try js.js_mallocz(ctx, sizeof(OSSignalHandler))
+            let sh = (OSSignalHandler*)try js.js_mallocz(ctx, memory.size_of(OSSignalHandler))
             sh.sig_num = (i32)sig_num
             sh.func_ = js.js_undefined()
             cutils.list_add_tail(&sh.link, &ts.os_signal_handlers)
@@ -293,5 +293,5 @@ func js_os_signal(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Va
         let sh = found else return js.js_undefined()
         js.js_free_value(ctx, sh.func_)
         sh.func_ = js.js_dup_value(ctx, func_)
-        discard(c_signal((i32)sig_num, (void*)os_signal_handler))
+        _ = c_signal((i32)sig_num, (void*)os_signal_handler)
     return js.js_undefined()

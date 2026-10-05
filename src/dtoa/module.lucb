@@ -100,7 +100,7 @@ struct Mpb:
 # limb_t tab[] follows the struct: reached through mpb_tab
 
 func mpb_tab(r: const Mpb*) -> u32*:
-    return (u32*)((u8*)r + sizeof(Mpb))
+    return (u32*)((u8*)r + memory.size_of(Mpb))
 
 # mark: Multi-precision primitives ==============================================================
 

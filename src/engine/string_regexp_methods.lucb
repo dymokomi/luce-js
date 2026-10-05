@@ -282,7 +282,7 @@ func js_string_split(ctx: Context*, this_val: Value, argc: i32, argv: Value*) ->
                 if e < 0:
                     break
                 let t = try js_sub_string(ctx, sp, (i32)p, (i32)e)
-                discard(try js_create_data_property_uint32(ctx, a, (i64)length_a, t, 0))
+                _ = try js_create_data_property_uint32(ctx, a, (i64)length_a, t, 0)
                 length_a += 1
                 if length_a == lim:
                     return a
@@ -290,6 +290,6 @@ func js_string_split(ctx: Context*, this_val: Value, argc: i32, argv: Value*) ->
                 q = p
     # add_tail:
     let t = try js_sub_string(ctx, sp, (i32)p, (i32)s)
-    discard(try js_create_data_property_uint32(ctx, a, (i64)length_a, t, 0))
+    _ = try js_create_data_property_uint32(ctx, a, (i64)length_a, t, 0)
     length_a += 1
     return a

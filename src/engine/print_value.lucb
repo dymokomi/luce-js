@@ -59,7 +59,7 @@ func js_puts(s: PrintValueState*, text: str):
 # formats are all shorter. Text that does not fit is not written.
 func js_printf(s: PrintValueState*, message: fmt):
     var buf: u8[256] = ---
-    let text = format(buf, message) catch:
+    let text = strings.format(buf, message) catch:
         return
     s.write_func(s.write_opaque, text.bytes.data, text.length)
 
@@ -78,7 +78,7 @@ func js_print_hex(s: PrintValueState*, v: u64, n_digits: i32):
 
 # printf's "%p": the address `addr` in hexadecimal.
 func js_print_ptr(s: PrintValueState*, addr: usize):
-    js_printf(s, f"0x{hex(addr)}")
+    js_printf(s, f"0x{addr:x}")
 
 # The address of an object, 0 for none (for js_print_ptr): a nullable pointer does not
 # cast to an integer.
@@ -246,13 +246,13 @@ func js_print_array_get_length(p: Object*) -> u32:
 func js_print_comma(s: PrintValueState*, pcomma_state: i32*):
     match *pcomma_state:
         0:
-            discard(0)
+            _ = 0
         1:
             js_printf(s, ", ")
         2:
             js_printf(s, " { ")
         _:
-            discard(0)
+            _ = 0
     *pcomma_state = 1
 
 func js_print_more_items(s: PrintValueState*, pcomma_state: i32*, n: u32):
@@ -308,7 +308,7 @@ func js_print_regexp(s: PrintValueState*, p1: Object*):
                         c = (i32)'\\'
                         c2 = (i32)'/'
                 _:
-                    discard(0)
+                    _ = 0
             js_putc(s, (u8)c)
             if c2 >= 0:
                 js_putc(s, (u8)c2)

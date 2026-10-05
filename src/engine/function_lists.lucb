@@ -93,10 +93,10 @@ pub func js_set_module_export_list(ctx: Context*, m: ModuleDef*, tab: const CFun
 ## Define `func_obj.prototype` as `proto` with `proto_flags` and `proto.constructor` as
 ## `func_obj` with `ctor_flags` (JS_SetConstructor2).
 func js_set_constructor2(ctx: Context*, func_obj: Value, proto: Value, proto_flags: i32, ctor_flags: i32) -> !:
-    discard(try js_define_property_value(ctx, func_obj, atom_prototype,
-                                         js_dup_value(ctx, proto), proto_flags))
-    discard(try js_define_property_value(ctx, proto, atom_constructor,
-                                         js_dup_value(ctx, func_obj), ctor_flags))
+    _ = try js_define_property_value(ctx, func_obj, atom_prototype,
+                                     js_dup_value(ctx, proto), proto_flags)
+    _ = try js_define_property_value(ctx, proto, atom_constructor,
+                                     js_dup_value(ctx, func_obj), ctor_flags)
     set_cycle_flag(ctx, func_obj)
     set_cycle_flag(ctx, proto)
 
@@ -164,8 +164,8 @@ func js_new_c_constructor(ctx: Context*, class_id: i32, name: str, func_: CFunct
     errdefer js_free_value(ctx, ctor)
     try js_set_property_function_list(ctx, ctor, ctor_fields)
     if (flags & js_new_ctor_no_global) == 0:
-        discard(try js_define_property_value_str(ctx, ctx.global_obj, name, js_dup_value(ctx, ctor),
-                                                 prop_writable | prop_configurable))
+        _ = try js_define_property_value_str(ctx, ctx.global_obj, name, js_dup_value(ctx, ctor),
+                                             prop_writable | prop_configurable)
     # as in C, a failure here is not reported
     js_set_constructor2(ctx, ctor, proto, proto_flags, ctor_flags) catch: recover ()
     return ctor

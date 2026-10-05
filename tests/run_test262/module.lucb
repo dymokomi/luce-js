@@ -45,6 +45,7 @@ import thread
 import time
 from luce_js import host
 from luce_js import engine as js
+import strings
 
 # mark: C library ===============================================================================
 
@@ -226,15 +227,15 @@ let cmd_name: str = "run-test262"
 
 func warning(message: fmt):
     var buf: u8[1024] = ---
-    let text = format(buf, message) catch: recover "(message too long)"
-    discard(fflush(stdout()))
-    discard(fprintf(stderr(), z("%s: %.*s\n"), z(cmd_name), (i32)text.length, text.bytes.data))
+    let text = strings.format(buf, message) catch: recover "(message too long)"
+    _ = fflush(stdout())
+    _ = fprintf(stderr(), z("%s: %.*s\n"), z(cmd_name), (i32)text.length, text.bytes.data)
 
 func fatal(errcode: i32, message: fmt) -> never:
     var buf: u8[1024] = ---
-    let text = format(buf, message) catch: recover "(message too long)"
-    discard(fflush(stdout()))
-    discard(fprintf(stderr(), z("%s: %.*s\n"), z(cmd_name), (i32)text.length, text.bytes.data))
+    let text = strings.format(buf, message) catch: recover "(message too long)"
+    _ = fflush(stdout())
+    _ = fprintf(stderr(), z("%s: %.*s\n"), z(cmd_name), (i32)text.length, text.bytes.data)
     c_exit(errcode)
 
 ## A nullable pointer as a read-only one.
@@ -244,8 +245,8 @@ func cnull(p: u8*?) -> const u8*?:
     return none
 
 func perror_exit(errcode: i32, s: const u8*) -> never:
-    discard(fflush(stdout()))
-    discard(fprintf(stderr(), z("%s: "), z(cmd_name)))
+    _ = fflush(stdout())
+    _ = fprintf(stderr(), z("%s: "), z(cmd_name))
     perror(s)
     c_exit(errcode)
 
@@ -257,7 +258,7 @@ func xmalloc(size: usize) -> u8*:
 func strdup_len(text: const u8*, len: usize) -> u8*:
     let p = xmalloc(len + 1)
     if len > 0:
-        discard(memcpy(p, text, len))
+        _ = memcpy(p, text, len)
     p[len] = 0
     return p
 
@@ -274,9 +275,9 @@ func str_append(pp: (u8*?)*, sep: const u8*, text: const u8*) -> u8*:
         len = strlen(p) + strlen(sep)
     let res = xmalloc(len + strlen(text) + 1)
     if let p = old:
-        discard(memcpy(res, p, strlen(p)))
-        discard(memcpy(res + strlen(p), sep, strlen(sep) + 1))
-    discard(memcpy(res + len, text, strlen(text) + 1))
+        _ = memcpy(res, p, strlen(p))
+        _ = memcpy(res + strlen(p), sep, strlen(sep) + 1)
+    _ = memcpy(res + len, text, strlen(text) + 1)
     c_free(old)
     *pp = res
     return res
@@ -341,12 +342,12 @@ func compose_path(path: const u8*?, name: const u8*) -> u8*:
     let name_len = strlen(name)
     let d = xmalloc(path_len + 1 + name_len + 1)
     var q = d
-    discard(memcpy(q, dir, path_len))
+    _ = memcpy(q, dir, path_len)
     q += path_len
     if dir[path_len - 1] != '/':
         *q = '/'
         q += 1
-    discard(memcpy(q, name, name_len + 1))
+    _ = memcpy(q, name, name_len + 1)
     return d
 
 # mark: Name lists ==============================================================================
@@ -392,7 +393,7 @@ func namelist_cmp_indirect(a: const void*, b: const void*) -> i32:
 func namelist_sort(lp: NameList*, remove_duplicates: bool):
     if lp.count > 1:
         let arr = lp.array else return
-        qsort(arr, (usize)lp.count, sizeof(u8*), namelist_cmp_indirect)
+        qsort(arr, (usize)lp.count, memory.size_of(u8*), namelist_cmp_indirect)
         # remove duplicates
         if remove_duplicates:
             var count: i32 = 1
@@ -427,7 +428,7 @@ func namelist_add(lp: NameList*, base: const u8*?, name: const u8*):
         var old: void*? = none
         if let arr = lp.array:
             old = arr
-        let a = realloc(old, sizeof(u8*) * (usize)newsize) else fatal(1, "allocation failure\n")
+        let a = realloc(old, memory.size_of(u8*) * (usize)newsize) else fatal(1, "allocation failure\n")
         lp.array = (u8**)a
         lp.size = newsize
     let arr = lp.array else fatal(1, "allocation failure\n")
@@ -444,7 +445,7 @@ func namelist_load(lp: NameList*, filename: const u8*):
             continue  # line comment
         namelist_add(lp, cnull(base_name), p)
     c_free(base_name)
-    discard(fclose(f))
+    _ = fclose(f)
 
 func namelist_add_from_error_file(lp: NameList*, file: const u8*):
     var p: const u8* = file
@@ -478,6 +479,6 @@ func add_test_file(filename: const u8*, ptr: const void*?, flag: i32) -> i32:
 ## find js files from the directory tree and sort the list
 func enumerate_tests(path: const u8*):
     let start = test_list.count
-    discard(ftw(path, add_test_file, 100))
+    _ = ftw(path, add_test_file, 100)
     if let arr = test_list.array:
-        qsort(arr + (usize)start, (usize)(test_list.count - start), sizeof(u8*), namelist_cmp_indirect)
+        qsort(arr + (usize)start, (usize)(test_list.count - start), memory.size_of(u8*), namelist_cmp_indirect)

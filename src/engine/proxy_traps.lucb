@@ -223,7 +223,7 @@ func js_proxy_set(ctx: Context*, obj: Value, atom: Atom, value: Value, receiver:
 ## Define `prop` of the descriptor object `obj` as `val`; a failure is ignored, as
 ## js_create_desc does upstream (the exception stays pending).
 func js_create_desc_field(ctx: Context*, obj: Value, prop: Atom, val: Value):
-    discard(js_define_property_value(ctx, obj, prop, val, prop_c_w_e) catch: recover false)
+    _ = js_define_property_value(ctx, obj, prop, val, prop_c_w_e) catch: recover false
 
 ## A property descriptor object with the fields `flags` has (js_create_desc).
 func js_create_desc(ctx: Context*, val: Value, getter: Value, setter: Value, flags: i32) -> Value!:

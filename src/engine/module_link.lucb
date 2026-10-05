@@ -34,10 +34,10 @@ func js_create_module_bytecode_function(ctx: Context*, m: ModuleDef*) -> !:
                                                  (u32)ClassId.bytecode_function)
     m.func_obj = func_obj
     let b = bfunc.u.bytecode
-    discard(js_closure2(ctx, func_obj, b, none, none, true, m) catch failure:
+    _ = js_closure2(ctx, func_obj, b, none, none, true, m) catch failure:
         # XXX: keep it ?
         m.func_obj = js_undefined()
-        error(failure.code, failure.message))
+        error(failure.code, failure.message)
 
 # must be done before js_link_module() because of cyclic references
 func js_create_module_function(ctx: Context*, m: ModuleDef*) -> !:
@@ -180,7 +180,7 @@ func js_link_module(ctx: Context*, m: ModuleDef*) -> !:
             m1.status = ModuleStatus.unlinked
             stack_top = m1.stack_prev
         error(failure.code, failure.message)
-    discard(last_index)
+    _ = last_index
     assert(stack_top == none)
     assert(m.status == ModuleStatus.linked or m.status == ModuleStatus.evaluating_async or m.status == ModuleStatus.evaluated)
 

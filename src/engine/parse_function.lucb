@@ -62,7 +62,7 @@ func js_parse_directives(s: ParseState*) -> !:
                 if s.got_lf:
                     has_semi = true
             _:
-                discard(0)
+                _ = 0
         if not has_semi:
             break
         if use_strict:

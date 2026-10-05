@@ -106,7 +106,7 @@ pub func js_set_host_promise_rejection_tracker(rt: Runtime*, cb: HostPromiseReje
 
 ## The reaction record of the list link `el`.
 func promise_reaction_of(el: cutils.ListHead*) -> PromiseReactionData*:
-    return (PromiseReactionData*)((u8*)el - offsetof(PromiseReactionData, link))
+    return (PromiseReactionData*)((u8*)el - memory.offset_of(PromiseReactionData, link))
 
 ## Settle the pending `promise` with `value`: queue a job for each reaction of the outcome
 ## and drop the others (fulfill_or_reject_promise).

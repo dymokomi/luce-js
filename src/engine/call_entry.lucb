@@ -121,7 +121,7 @@ func js_invoke_free(ctx: Context*, this_val: Value, atom: Atom, argc: i32, argv:
 ## The frame values of an AsyncFunctionState: `arg_buf` follows the header, then
 ## `var_buf`, the stack and the variable references.
 func async_func_values(s: AsyncFunctionState*) -> Value*:
-    return (Value*)((u8*)s + sizeof(AsyncFunctionState))
+    return (Value*)((u8*)s + memory.size_of(AsyncFunctionState))
 
 # JSAsyncFunctionState (used by generator and async functions)
 ## A suspended frame for calling the generator or async function `func_obj`, with its
@@ -131,9 +131,9 @@ func async_func_init(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32,
     let p = func_obj.u.obj
     let b = p.u.func_.function_bytecode
     let arg_buf_len = cutils.max_int((i32)b.arg_count, argc)
-    let size = sizeof(AsyncFunctionState) + sizeof(Value) * ((usize)arg_buf_len + (usize)b.var_count + (usize)b.stack_size) + sizeof(VarRef*) * (usize)b.var_ref_count
+    let size = memory.size_of(AsyncFunctionState) + memory.size_of(Value) * ((usize)arg_buf_len + (usize)b.var_count + (usize)b.stack_size) + memory.size_of(VarRef*) * (usize)b.var_ref_count
     let s = (AsyncFunctionState*)(try js_malloc(ctx, size))
-    discard(cutils.memset(s, 0, sizeof(AsyncFunctionState)))
+    _ = cutils.memset(s, 0, memory.size_of(AsyncFunctionState))
     js_rc(s).ref_count = 1
     add_gc_object(ctx.rt, &s.header, GCObjectType.async_function)
 

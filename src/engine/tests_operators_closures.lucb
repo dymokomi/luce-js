@@ -114,7 +114,7 @@ test "a closure's class follows the function kind":
 test "an async function's state contains its frame":
     var buf: u64[64] = ---
     let s = (AsyncFunctionState*)&buf[0]
-    assert(sizeof(AsyncFunctionState) <= sizeof(u64) * 64)
+    assert(memory.size_of(AsyncFunctionState) <= memory.size_of(u64) * 64)
     assert(js_async_function_of_frame(&s.frame) == s)
 
 test "the call flags are distinct bits":

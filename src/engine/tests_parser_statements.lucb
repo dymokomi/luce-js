@@ -93,8 +93,8 @@ func test_parse_state(fd: FunctionDef*, slots: LabelSlot*, count: i32) -> ParseS
     fd.label_slots = slots
     fd.label_count = count
     fd.label_size = count
-    let raw = cutils.malloc(sizeof(ParseState)) else trap("out of memory")
-    discard(cutils.memset(raw, 0, sizeof(ParseState)))
+    let raw = cutils.malloc(memory.size_of(ParseState)) else trap("out of memory")
+    _ = cutils.memset(raw, 0, memory.size_of(ParseState))
     let s = (ParseState*)raw
     s.cur_func = fd
     return s

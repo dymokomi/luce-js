@@ -58,7 +58,7 @@ func js_proxy_own_keys(ctx: Context*, s: ProxyData*, prop_array: Value, ptab: Pr
     var len: u32 = 0
     try js_get_length32(ctx, &len, prop_array)
     if len > 0:
-        let raw = try js_mallocz(ctx, sizeof(PropertyEnum) * (usize)len)
+        let raw = try js_mallocz(ctx, memory.size_of(PropertyEnum) * (usize)len)
         let t = (PropertyEnum*)raw
         *ptab = t
         *plen = len
@@ -227,7 +227,7 @@ func js_proxy_constructor(ctx: Context*, this_val: Value, argc: i32, argv: Value
         try js_throw_type_error_not_an_object(ctx)
 
     let obj = try js_new_object_proto_class(ctx, js_null(), (u32)ClassId.proxy)
-    let raw = js_malloc(ctx, sizeof(ProxyData)) catch failure:
+    let raw = js_malloc(ctx, memory.size_of(ProxyData)) catch failure:
         js_free_value(ctx, obj)
         error(failure.code, failure.message)
     let s = (ProxyData*)raw
@@ -236,7 +236,7 @@ func js_proxy_constructor(ctx: Context*, this_val: Value, argc: i32, argv: Value
     s.is_func = (u8)js_is_function(ctx, target)
     s.is_revoked = 0
     js_set_opaque(obj, s)
-    discard(js_set_constructor_bit(ctx, obj, js_is_constructor(ctx, target)))
+    _ = js_set_constructor_bit(ctx, obj, js_is_constructor(ctx, target))
     return obj
 
 ## The revoke function of Proxy.revocable; `func_data[0]` is the proxy (js_proxy_revoke).
@@ -267,8 +267,8 @@ func js_proxy_revocable(ctx: Context*, this_val: Value, argc: i32, argv: Value*)
         js_free_value(ctx, revoke_obj)
         error(failure.code, failure.message)
     # XXX: exceptions?
-    discard(js_define_property_value(ctx, obj, atom_proxy, proxy_obj, prop_c_w_e) catch: recover false)
-    discard(js_define_property_value(ctx, obj, atom_revoke, revoke_obj, prop_c_w_e) catch: recover false)
+    _ = js_define_property_value(ctx, obj, atom_proxy, proxy_obj, prop_c_w_e) catch: recover false
+    _ = js_define_property_value(ctx, obj, atom_revoke, revoke_obj, prop_c_w_e) catch: recover false
     return obj
 
 ## The static methods of Proxy.
@@ -296,10 +296,10 @@ pub func js_add_intrinsic_proxy(ctx: Context*) -> !:
     let obj1 = try js_new_c_function3(ctx, js_proxy_constructor, "Proxy".bytes.data, 2,
                                       CFunctionEnum.constructor, 0, ctx.function_proto,
                                       (i32)js_proxy_funcs.length + 2)
-    discard(js_set_constructor_bit(ctx, obj1, true))
+    _ = js_set_constructor_bit(ctx, obj1, true)
     js_set_property_function_list(ctx, obj1, js_proxy_funcs) catch failure:
         js_free_value(ctx, obj1)
         error(failure.code, failure.message)
     # takes ownership of obj1, also on failure (upstream frees it a second time then)
-    discard(try js_define_property_value_str(ctx, ctx.global_obj, "Proxy", obj1,
-                                             prop_writable | prop_configurable))
+    _ = try js_define_property_value_str(ctx, ctx.global_obj, "Proxy", obj1,
+                                         prop_writable | prop_configurable)

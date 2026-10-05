@@ -119,7 +119,7 @@ func js_object_assign(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -
         if not js_is_null(argv[i]) and not js_is_undefined(argv[i]):
             let s = try js_to_object(ctx, argv[i])
             defer js_free_value(ctx, s)
-            discard(try js_copy_data_properties(ctx, obj, s, js_undefined(), true))
+            _ = try js_copy_data_properties(ctx, obj, s, js_undefined(), true)
     return obj
 
 ## Object.seal(obj), and Object.freeze when `freeze_flag` is 1.
@@ -149,8 +149,8 @@ func js_object_seal(ctx: Context*, this_val: Value, argc: i32, argv: Value*, fre
                 if (desc.flags & prop_writable) != 0:
                     desc_flags |= prop_has_writable
                 js_free_desc(ctx, &desc)
-        discard(try js_define_property(ctx, obj, prop, js_undefined(),
-                                       js_undefined(), js_undefined(), desc_flags))
+        _ = try js_define_property(ctx, obj, prop, js_undefined(),
+                                   js_undefined(), js_undefined(), desc_flags)
     return js_dup_value(ctx, obj)
 
 ## Object.isSealed(obj), and Object.isFrozen when `is_frozen` is 1.
@@ -213,7 +213,7 @@ func js_object_from_entries(ctx: Context*, this_val: Value, argc: i32, argv: Val
         let value = js_get_property_uint32(ctx, item, 1) catch failure:
             js_free_value(ctx, key)
             error(failure.code, failure.message)
-        discard(try js_define_property_value_value(ctx, obj, key, value, prop_c_w_e | prop_throw))
+        _ = try js_define_property_value_value(ctx, obj, key, value, prop_c_w_e | prop_throw)
     return obj
 
 ## Object.is(a, b): SameValue.
@@ -256,7 +256,7 @@ func js_object_set__proto_(ctx: Context*, this_val: Value, proto: Value) -> Valu
         try js_throw_type_error_not_an_object(ctx)
     if not js_is_object(proto) and not js_is_null(proto):
         return js_undefined()
-    discard(try js_set_prototype_internal(ctx, this_val, proto, true))
+    _ = try js_set_prototype_internal(ctx, this_val, proto, true)
     return js_undefined()
 
 ## Object.prototype.isPrototypeOf(v).

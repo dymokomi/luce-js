@@ -214,7 +214,7 @@ func js_date_parse_isostring(sp: const u8[], fields: i32[], is_local: bool*) -> 
         if string_skip_char(sp, &p, (i32)':'):
             if not string_get_digits(sp, &p, &fields[5], 2, 2):  # second
                 return false
-            discard(string_get_milliseconds(sp, &p, &fields[6]))
+            _ = string_get_milliseconds(sp, &p, &fields[6])
     # parse the time zone offset if present: [+-]HH:mm or [+-]HHmm
     if date_char_at(sp, p) != 0:
         *is_local = false
@@ -305,7 +305,7 @@ func js_date_parse_otherstring(sp: const u8[], fields: i32[], is_local: bool*) -
                 if string_skip_char(sp, &p, (i32)':'):
                     if not string_get_digits(sp, &p, &fields[5], 1, 2):
                         return false
-                    discard(string_get_milliseconds(sp, &p, &fields[6]))
+                    _ = string_get_milliseconds(sp, &p, &fields[6])
                 has_time = true
                 let c1 = date_char_at(sp, p)
                 if ((c1 == (i32)'+' or c1 == (i32)'-') and string_get_tzoffset(sp, &p, &fields[8], false)):
@@ -324,7 +324,7 @@ func js_date_parse_otherstring(sp: const u8[], fields: i32[], is_local: bool*) -
                     num_index += 1
         elif string_get_month(sp, &p, &fields[1]):
             has_mon = true
-            discard(string_skip_until(sp, &p, "0123456789 -/("))
+            _ = string_skip_until(sp, &p, "0123456789 -/(")
         elif has_time and string_match(sp, &p, "PM"):
             if fields[3] < 12:
                 fields[3] += 12
@@ -356,8 +356,8 @@ func js_date_parse_otherstring(sp: const u8[], fields: i32[], is_local: bool*) -
             if has_year or has_mon or has_time or num_index != 0:
                 return false
             # skip a word
-            discard(string_skip_until(sp, &p, " -/("))
-        discard(string_skip_separators(sp, &p))
+            _ = string_skip_until(sp, &p, " -/(")
+        _ = string_skip_separators(sp, &p)
     if num_index + (usize)has_year + (usize)has_mon > 3:
         return false
 

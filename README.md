@@ -37,7 +37,7 @@ registers each one's init function (QuickJS's `js_init_module`) before loading s
 ```luce
 import host
 
-discard(host.js_register_native_module("fib", fib.js_init_module_fib))
+_ = host.js_register_native_module("fib", fib.js_init_module_fib)
 ```
 
 The default module loader (`host.js_module_loader`) then creates the module when a program

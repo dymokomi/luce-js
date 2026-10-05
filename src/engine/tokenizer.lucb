@@ -408,7 +408,7 @@ func ident_realloc(ctx: Context*, pbuf: u8**, psize: usize*, static_buf: u8*) ->
     var new_buf = buf
     if buf == static_buf:
         new_buf = (u8*)(try js_malloc(ctx, new_size))
-        discard(cutils.memcpy(new_buf, buf, size))
+        _ = cutils.memcpy(new_buf, buf, size)
     else:
         let p = try js_realloc(ctx, buf, new_size) else trap("ident_realloc: empty block")
         new_buf = (u8*)p

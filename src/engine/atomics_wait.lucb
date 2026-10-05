@@ -172,7 +172,7 @@ func atomics_notify_raw(ptr: void*, count: i32) -> i32:
     var el = head.next else trap("atomics_notify: unlinked list")
     while el != head:
         let el1 = el.next else trap("atomics_notify: unlinked list")
-        let waiter = (AtomicsWaiter*)((u8*)el - offsetof(AtomicsWaiter, link))
+        let waiter = (AtomicsWaiter*)((u8*)el - memory.offset_of(AtomicsWaiter, link))
         if waiter.ptr == ptr:
             cutils.list_del(&waiter.link)
             waiter.linked = false
@@ -183,7 +183,7 @@ func atomics_notify_raw(ptr: void*, count: i32) -> i32:
         el = el1
     el = waiter_list.next else trap("atomics_notify: unlinked list")
     while el != &waiter_list:
-        let waiter = (AtomicsWaiter*)((u8*)el - offsetof(AtomicsWaiter, link))
+        let waiter = (AtomicsWaiter*)((u8*)el - memory.offset_of(AtomicsWaiter, link))
         waiter.cond.signal()
         el = el.next else trap("atomics_notify: unlinked list")
     js_atomics_mutex.unlock()

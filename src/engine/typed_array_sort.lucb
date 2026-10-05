@@ -169,7 +169,7 @@ func js_typed_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*
     let cmp = argv[0]
 
     if not js_is_undefined(cmp):
-        discard(try check_function(ctx, cmp))
+        _ = try check_function(ctx, cmp)
     var len = try js_typed_array_get_length_unsafe(ctx, this_val)
 
     if len > 1:
@@ -219,10 +219,10 @@ func js_typed_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*
             # the array must be copied because the comparison function may modify it
             let array = (u8*)(try js_malloc(ctx, (usize)len * elt_size))
             let src = p.u.array.u.ptr else trap("typed array without storage")
-            discard(cutils.memcpy(array, src, (usize)len * elt_size))
+            _ = cutils.memcpy(array, src, (usize)len * elt_size)
 
             # array_idx is needed to have a stable sort
-            let array_idx_raw = js_malloc(ctx, (usize)len * sizeof(u32)) catch failure:
+            let array_idx_raw = js_malloc(ctx, (usize)len * memory.size_of(u32)) catch failure:
                 js_free(ctx, array)
                 error(failure.code, failure.message)
             let array_idx = (u32*)array_idx_raw
@@ -231,7 +231,7 @@ func js_typed_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*
             for i in 0..<(usize)len:
                 array_idx[i] = (u32)i
             tsc.array = array
-            cutils.rqsort(array_idx, (usize)len, sizeof(u32), js_ta_cmp_generic, &tsc)
+            cutils.rqsort(array_idx, (usize)len, memory.size_of(u32), js_ta_cmp_generic, &tsc)
             if tsc.exception != 0:
                 if tsc.exception == 1:
                     error(exception, "")

@@ -95,7 +95,7 @@ func js_set_property_value(ctx: Context*, this_obj: Value, prop: Value, val: Val
                     p.u.array.u.double_ptr[i] = d
                 return true
             _:
-                discard(0)
+                _ = 0
 
     # slow_path:
     let atom = js_value_to_atom(ctx, prop) catch failure:

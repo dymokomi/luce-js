@@ -22,11 +22,11 @@ func check_dtoa(bits: u64, radix: i32, n_digits: i32, flags: i32, max_len: i32, 
     let len = js_dtoa(&buf[0], d, radix, n_digits, flags, &mem)
     let got = (str)buf[0..<(usize)len]
     if got != expected or buf[(usize)len] != 0:
-        print(f"js_dtoa({hex(bits)}, {radix}, {n_digits}, {flags}): got {got}, expected {expected}")
+        print(f"js_dtoa({bits:x}, {radix}, {n_digits}, {flags}): got {got}, expected {expected}")
         assert(false)
     let bound = js_dtoa_max_len(d, radix, n_digits, flags)
     if bound != max_len:
-        print(f"js_dtoa_max_len({hex(bits)}, {radix}, {n_digits}, {flags}): got {bound}")
+        print(f"js_dtoa_max_len({bits:x}, {radix}, {n_digits}, {flags}): got {bound}")
         assert(false)
 
 func check_atod(input: str, radix: i32, flags: i32, expected_bits: u64, consumed: i32):
@@ -35,7 +35,7 @@ func check_atod(input: str, radix: i32, flags: i32, expected_bits: u64, consumed
     let d = js_atod(input.bytes.data, &next, radix, flags, &mem)
     let used = (i32)(next - input.bytes.data)
     if d.bits() != expected_bits or used != consumed:
-        print(f"js_atod(\"{input}\", {radix}, {flags}): got {hex(d.bits())} after {used}")
+        print(f"js_atod(\"{input}\", {radix}, {flags}): got {d.bits():x} after {used}")
         assert(false)
 
 func check_text(buf: const u8[], len: usize, expected: str):
@@ -90,7 +90,7 @@ func round_trip(bits: u64, radix: i32):
     assert(next == (const u8*)&buf[0] + (usize)len)
     if d == d:
         if back.bits() != bits:
-            print(f"round trip {hex(bits)} radix {radix}: {(str)buf[0..<(usize)len]}")
+            print(f"round trip {bits:x} radix {radix}: {(str)buf[0..<(usize)len]}")
             assert(false)
     else:
         assert(back != back)

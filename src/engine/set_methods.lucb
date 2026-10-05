@@ -91,7 +91,7 @@ func js_copy_set(ctx: Context*, this_val: Value) -> Value!:
     while el != &s.records:
         let mr = map_record_of(el)
         if not mr.empty:
-            discard(try set_add_record(ctx, t, mr.key))
+            _ = try set_add_record(ctx, t, mr.key)
         el = map_next_link(el)
     return newset
 
@@ -210,7 +210,7 @@ func js_set_is_superset_of(ctx: Context*, this_val: Value, argc: i32, argv: Valu
 func js_set_add_new(ctx: Context*, t: MapState*, item: Value) -> !:
     defer js_free_value(ctx, item)
     if map_find_record(ctx, t, item) == none:  # no duplicates
-        discard(try set_add_record(ctx, t, item))
+        _ = try set_add_record(ctx, t, item)
 
 ## Set.prototype.intersection(other) (js_set_intersection).
 func js_set_intersection(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
@@ -291,7 +291,7 @@ func js_set_difference(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
                 js_free_value(ctx, item)
                 error(failure.code, failure.message)
             if ok:
-                discard(map_delete_record(ctx, t, item))
+                _ = map_delete_record(ctx, t, item)
             js_free_value(ctx, item)
     else:
         iter = try js_call(ctx, keys, argv[0], 0, &no_args)
@@ -301,7 +301,7 @@ func js_set_difference(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
             let item = try js_iterator_next(ctx, iter, next, 0, &no_args, &done)
             if done:
                 break  # item is JS_UNDEFINED
-            discard(map_delete_record(ctx, t, item))
+            _ = map_delete_record(ctx, t, item)
             js_free_value(ctx, item)
     return newset
 
@@ -339,7 +339,7 @@ func js_set_symmetric_difference(ctx: Context*, this_val: Value, argc: i32, argv
         let present = map_find_record(ctx, s, item) != none
         let mr = map_find_record(ctx, t, item)
         if present:
-            discard(map_delete_record(ctx, t, item))
+            _ = map_delete_record(ctx, t, item)
             js_free_value(ctx, item)
         elif mr != none:
             js_free_value(ctx, item)
@@ -347,13 +347,13 @@ func js_set_symmetric_difference(ctx: Context*, this_val: Value, argc: i32, argv
             let added = set_add_record(ctx, t, item) catch failure:
                 js_free_value(ctx, item)
                 error(failure.code, failure.message)
-            discard(added)
+            _ = added
             js_free_value(ctx, item)
     return newset
 
 ## Set.prototype.union(other) (js_set_union).
 func js_set_union(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
-    discard(try js_set_state_of(ctx, this_val))
+    _ = try js_set_state_of(ctx, this_val)
     var has = js_undefined()
     var keys = js_undefined()
     var size: i64 = 0

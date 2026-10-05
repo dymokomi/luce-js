@@ -51,12 +51,12 @@ func js_to_quoted_string(ctx: Context*, b: StringBuffer*, val1: Value) -> !:
             34, 92:  # '"', '\\'
                 quote = c
             _:
-                discard(0)
+                _ = 0
         if quote != 0:
             try string_buffer_putc8(b, (u32)'\\')
             try string_buffer_putc8(b, quote)
         elif c < 32 or cutils.is_surrogate(c):
-            discard(format_hex_escape(buf, 'u', c, 4))
+            _ = format_hex_escape(buf, 'u', c, 4)
             try string_buffer_puts8(b, &buf[0])
         else:
             try string_buffer_putc(b, c)
@@ -102,7 +102,7 @@ func js_json_check(ctx: Context*, jsc: JSONStringifyContext*, holder: Value, val
         .string, .string_rope, .int, .float64, .boolean, .null, .short_big_int, .big_int, .exception:
             return val
         _:
-            discard(0)
+            _ = 0
     js_free_value(ctx, val)
     return js_undefined()
 
@@ -286,7 +286,7 @@ func js_json_stringify_body(ctx: Context*, jsc: JSONStringifyContext*, obj: Valu
                 let found = js_to_bool_free(ctx, present) catch: recover true
                 if not found:
                     # as upstream, the result is not checked
-                    discard(js_set_property_int64(ctx, jsc.property_list, j, v) catch: recover false)
+                    _ = js_set_property_int64(ctx, jsc.property_list, j, v) catch: recover false
                     j += 1
                 else:
                     js_free_value(ctx, v)
@@ -303,7 +303,7 @@ func js_json_stringify_body(ctx: Context*, jsc: JSONStringifyContext*, obj: Valu
     js_free_value(ctx, space)
     *pwrapper = try js_new_object(ctx)
     let wrapper = *pwrapper
-    discard(try js_define_property_value(ctx, wrapper, atom_empty_string, js_dup_value(ctx, obj), prop_c_w_e))
+    _ = try js_define_property_value(ctx, wrapper, atom_empty_string, js_dup_value(ctx, obj), prop_c_w_e)
     var val = js_dup_value(ctx, obj)
 
     val = try js_json_check(ctx, jsc, wrapper, val, jsc.empty)

@@ -93,8 +93,8 @@ func output_digits(buf: u8*, a: Mpb*, radix: i32, n_digits1: i32, dot_pos: i32) 
     # add the dot
     var len = n_digits1
     if dot_pos != n_digits1:
-        discard(cutils.memmove(buf + (usize)dot_pos + 1, buf + (usize)dot_pos,
-                               (usize)(n_digits1 - dot_pos)))
+        _ = cutils.memmove(buf + (usize)dot_pos + 1, buf + (usize)dot_pos,
+                           (usize)(n_digits1 - dot_pos))
         buf[(usize)dot_pos] = '.'
         len += 1
     return len

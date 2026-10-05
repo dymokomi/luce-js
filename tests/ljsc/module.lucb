@@ -48,6 +48,7 @@
 import c
 from luce_js import host
 from luce_js import engine as js
+import memory
 
 # mark: C library ===============================================================================
 
@@ -135,7 +136,7 @@ struct NameList:
 func namelist_add(lp: NameList*, name: const u8*, short_name: const u8*?, flags: i32):
     if lp.count == lp.size:
         let newsize = lp.size + (lp.size >> 1) + 4
-        let a = realloc(lp.array, sizeof(NameListEntry) * (usize)newsize) else abort()
+        let a = realloc(lp.array, memory.size_of(NameListEntry) * (usize)newsize) else abort()
         lp.array = (NameListEntry*)a
         lp.size = newsize
     let array = lp.array else abort()

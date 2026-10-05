@@ -80,9 +80,9 @@ test "throw on a fresh generator completes it without running it":
     var done: i32 = -1
     var arg = js_new_int32(3)
     var failed = false
-    discard(js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_throw) catch:
+    _ = js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_throw) catch:
         failed = true
-        recover js_undefined())
+        recover js_undefined()
     assert(failed and done == 1)
     assert(s.state == GeneratorState.completed)
     let thrown = js_get_exception(ctx)
@@ -96,9 +96,9 @@ test "an exception in the body completes the generator":
     var done: i32 = -1
     var arg = js_undefined()
     var failed = false
-    discard(js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_next) catch:
+    _ = js_generator_next(ctx, gen, 1, &arg, &done, gen_magic_next) catch:
         failed = true
-        recover js_undefined())
+        recover js_undefined()
     assert(failed)
     assert(s.state == GeneratorState.completed)
     assert(s.func_state == none)

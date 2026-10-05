@@ -83,7 +83,7 @@ func get_timezone_offset(time: i64) -> i32:
     if os.windows:
         return windows_timezone_offset(ti)
     var tm: Tm = ---
-    discard(localtime_r(&ti, &tm))
+    _ = localtime_r(&ti, &tm)
     return (i32)(-tm.tm_gmtoff // 60)
 
 # mark: RegExp objects ==========================================================================
@@ -159,7 +159,7 @@ func js_regexp_literal_program(ctx: Context*, b: FunctionBytecode*, pattern: Val
             return shared
         next = shared.next
     let program = try js_compile_regexp(ctx, pattern, flags)
-    let block = js_malloc(ctx, sizeof(RegExpShared)) catch failure:
+    let block = js_malloc(ctx, memory.size_of(RegExpShared)) catch failure:
         regex.free_ecmascript(program)
         error(failure.code, failure.message)
     let shared = (RegExpShared*)block

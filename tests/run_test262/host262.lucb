@@ -12,9 +12,11 @@
 
 # mark: print ===================================================================================
 
+import memory
+
 func js_print_value_write(opaque: void*?, buf: const u8*, len: usize):
     let fo = opaque else return
-    discard(fwrite(buf, 1, len, fo))
+    _ = fwrite(buf, 1, len, fo)
 
 ## The per-thread state, the opaque pointer of every runtime of the thread.
 func tls_of(ctx: js.Context*) -> ThreadLocalStorage*:
@@ -26,7 +28,7 @@ func js_print(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) 
     for i in 0..<(usize)argc:
         if i != 0:
             if let fo = outfile:
-                discard(fputc((i32)' ', fo))
+                _ = fputc((i32)' ', fo)
         let v = argv[i]
         if js.js_is_string(v):
             var len: usize = 0
@@ -36,13 +38,13 @@ func js_print(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) 
             elif strstart(text, z("Test262:AsyncTestFailure"), none):
                 tls.async_done = 2  # force an error
             if let fo = outfile:
-                discard(fwrite(text, 1, len, fo))
+                _ = fwrite(text, 1, len, fo)
             js.js_free_c_string(ctx, text)
         else:
             if let fo = outfile:
                 js.js_print_value(ctx, js_print_value_write, fo, v, none)
     if let fo = outfile:
-        discard(fputc((i32)'\n', fo))
+        _ = fputc((i32)'\n', fo)
     return js.js_undefined()
 
 # mark: $262 ====================================================================================
@@ -124,8 +126,8 @@ func js_agent_start(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Va
         try js.js_throw_type_error(ctx, "cannot be called inside an agent")
 
     let script = try js.js_to_c_string(ctx, argv[0])
-    let agent = (Test262Agent*)xmalloc(sizeof(Test262Agent))
-    discard(memset(agent, 0, sizeof(Test262Agent)))
+    let agent = (Test262Agent*)xmalloc(memory.size_of(Test262Agent))
+    _ = memset(agent, 0, memory.size_of(Test262Agent))
     agent.tls = tls
     agent.broadcast_func = js.js_undefined()
     agent.broadcast_sab = js.js_undefined()
@@ -217,7 +219,7 @@ func js_agent_receive_broadcast(ctx: js.Context*, this_val: js.Value, argc: i32,
 func js_agent_sleep(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
     var duration: u32 = 0
     try js.js_to_uint32(ctx, &duration, argv[0])
-    discard(usleep(duration *% 1000))
+    _ = usleep(duration *% 1000)
     return js.js_undefined()
 
 func get_clock_ms() -> i64:
@@ -243,7 +245,7 @@ func js_agent_get_report(ctx: js.Context*, this_val: js.Value, argc: i32, argv: 
 func js_agent_report(ctx: js.Context*, this_val: js.Value, argc: i32, argv: js.Value*) -> js.Value!:
     let tls = tls_of(ctx)
     let text = try js.js_to_c_string(ctx, argv[0])
-    let rep = (AgentReport*)xmalloc(sizeof(AgentReport))
+    let rep = (AgentReport*)xmalloc(memory.size_of(AgentReport))
     rep.next = none
     rep.text = strdup(text)
     js.js_free_c_string(ctx, text)
@@ -298,28 +300,28 @@ func add_helpers1(ctx: js.Context*) -> js.Value!:
     let global_obj = js.js_get_global_object(ctx)
     defer js.js_free_value(ctx, global_obj)
 
-    discard(try js.js_set_property_str(ctx, global_obj, "print", try new_function(ctx, js_print, "print", 1)))
+    _ = try js.js_set_property_str(ctx, global_obj, "print", try new_function(ctx, js_print, "print", 1))
 
     # $262 special object used by the tests
     let obj262 = try js.js_new_object(ctx)
     errdefer js.js_free_value(ctx, obj262)
-    discard(try js.js_set_property_str(ctx, obj262, "detachArrayBuffer",
-                                       try new_function(ctx, js_detach_array_buffer_262, "detachArrayBuffer", 1)))
-    discard(try js.js_set_property_str(ctx, obj262, "evalScript",
-                                       try new_function(ctx, js_eval_script, "evalScript", 1)))
-    discard(try js.js_set_property_str(ctx, obj262, "codePointRange",
-                                       try new_function(ctx, js.js_string_code_point_range, "codePointRange", 2)))
-    discard(try js.js_set_property_str(ctx, obj262, "agent", try js_new_agent(ctx)))
+    _ = try js.js_set_property_str(ctx, obj262, "detachArrayBuffer",
+                                   try new_function(ctx, js_detach_array_buffer_262, "detachArrayBuffer", 1))
+    _ = try js.js_set_property_str(ctx, obj262, "evalScript",
+                                   try new_function(ctx, js_eval_script, "evalScript", 1))
+    _ = try js.js_set_property_str(ctx, obj262, "codePointRange",
+                                   try new_function(ctx, js.js_string_code_point_range, "codePointRange", 2))
+    _ = try js.js_set_property_str(ctx, obj262, "agent", try js_new_agent(ctx))
 
-    discard(try js.js_set_property_str(ctx, obj262, "global", js.js_dup_value(ctx, global_obj)))
-    discard(try js.js_set_property_str(ctx, obj262, "createRealm",
-                                       try new_function(ctx, js_create_realm, "createRealm", 0)))
+    _ = try js.js_set_property_str(ctx, obj262, "global", js.js_dup_value(ctx, global_obj))
+    _ = try js.js_set_property_str(ctx, obj262, "createRealm",
+                                   try new_function(ctx, js_create_realm, "createRealm", 0))
     let obj = try new_function(ctx, js_is_htmldda, "IsHTMLDDA", 0)
     js.js_set_is_htmldda(ctx, obj)
-    discard(try js.js_set_property_str(ctx, obj262, "IsHTMLDDA", obj))
-    discard(try js.js_set_property_str(ctx, obj262, "gc", try new_function(ctx, js_gc, "gc", 0)))
+    _ = try js.js_set_property_str(ctx, obj262, "IsHTMLDDA", obj)
+    _ = try js.js_set_property_str(ctx, obj262, "gc", try new_function(ctx, js_gc, "gc", 0))
 
-    discard(try js.js_set_property_str(ctx, global_obj, "$262", js.js_dup_value(ctx, obj262)))
+    _ = try js.js_set_property_str(ctx, global_obj, "$262", js.js_dup_value(ctx, obj262))
     return obj262
 
 func add_helpers(ctx: js.Context*):
@@ -339,7 +341,7 @@ func load_file(filename: const u8*, lenp: usize*?) -> u8*:
 
 func json_module_init_test(ctx: js.Context*, m: js.ModuleDef*) -> !:
     let val = js.js_get_module_private_value(ctx, m)
-    discard(try js.js_set_module_export(ctx, m, z("default"), val))
+    _ = try js.js_set_module_export(ctx, m, z("default"), val)
 
 func js_module_loader_test(ctx: js.Context*, module_name0: const u8*, opaque: void*?,
                            attributes: js.Value) -> js.ModuleDef*!:
@@ -351,7 +353,7 @@ func js_module_loader_test(ctx: js.Context*, module_name0: const u8*, opaque: vo
     let filename = (const u8*)(opaque else trap("run-test262: module loader without file name"))
     if strchr(module_name, (i32)'/') == none:
         if let slash = strrchr(filename, (i32)'/'):
-            discard(snprintf(&path[0], 1024, z("%.*s/%s"), (i32)(slash - filename), filename, module_name))
+            _ = snprintf(&path[0], 1024, z("%.*s/%s"), (i32)(slash - filename), filename, module_name)
             module_name = &path[0]
 
     var buf_len: usize = 0
@@ -368,7 +370,7 @@ func js_module_loader_test(ctx: js.Context*, module_name0: const u8*, opaque: vo
             error(failure.code, failure.message)
         # only export the "default" symbol which will contain the JSON object
         try js.js_add_module_export(ctx, m, z("default"))
-        discard(js.js_set_module_private_value(ctx, m, val))
+        _ = js.js_set_module_private_value(ctx, m, val)
         return m
     # compile the module
     let func_val = js.js_eval(ctx, buf, buf_len, module_name,

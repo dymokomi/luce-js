@@ -109,9 +109,9 @@ pub func js_set_property_internal(ctx: Context*, obj: Value, prop: Atom, val: Va
                 return true
             elif (prs_flags & prop_tmask) == prop_autoinit:
                 # Instantiate property and retry (potentially useless)
-                discard(js_auto_init_property(ctx, po, prop, pr, prs) catch failure:
+                _ = js_auto_init_property(ctx, po, prop, pr, prs) catch failure:
                     js_free_value(ctx, val)
-                    error(failure.code, failure.message))
+                    error(failure.code, failure.message)
                 continue retry
             else:
                 return try set_property_read_only(ctx, val, flags, prop)
@@ -188,9 +188,9 @@ pub func js_set_property_internal(ctx: Context*, obj: Value, prop: Atom, val: Va
             elif (prs_flags & prop_tmask) == prop_autoinit:
                 # Instantiate property and retry (potentially useless). QuickJS does not
                 # free 'val' when this fails; the port does, as the function owns it.
-                discard(js_auto_init_property(ctx, cur, prop, pr, prs) catch failure:
+                _ = js_auto_init_property(ctx, cur, prop, pr, prs) catch failure:
                     js_free_value(ctx, val)
-                    error(failure.code, failure.message))
+                    error(failure.code, failure.message)
                 continue
             elif (prs_flags & prop_writable) == 0:
                 return try set_property_read_only(ctx, val, flags, prop)

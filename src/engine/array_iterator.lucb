@@ -79,7 +79,7 @@ func js_create_array_iterator(ctx: Context*, this_val: Value, argc: i32, argv: V
     errdefer js_free_value(ctx, arr)
     let enum_obj = try js_new_object_class(ctx, (i32)class_id)
     errdefer js_free_value(ctx, enum_obj)
-    let it = (ArrayIteratorData*)(try js_malloc(ctx, sizeof(ArrayIteratorData)))
+    let it = (ArrayIteratorData*)(try js_malloc(ctx, memory.size_of(ArrayIteratorData)))
     it.obj = arr
     it.kind = kind
     it.idx = 0

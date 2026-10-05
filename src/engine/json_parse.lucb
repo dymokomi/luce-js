@@ -76,7 +76,7 @@ func json_parse_record_init_primitive(ctx: Context*, pr: JSONParseRecord*, val: 
     pr.u.primitive.source_len = source_len
 
 func json_parse_record_resize_hash(ctx: Context*, po: JSONParseRecordObject*, new_hash_size: u32) -> !:
-    let new_hash_table = (u32*)(try js_malloc(ctx, sizeof(u32) * (usize)new_hash_size))
+    let new_hash_table = (u32*)(try js_malloc(ctx, memory.size_of(u32) * (usize)new_hash_size))
     if let old = po.hash_table:
         js_free(ctx, old)
     po.hash_table = new_hash_table
@@ -96,7 +96,7 @@ func json_parse_record_resize_hash(ctx: Context*, po: JSONParseRecordObject*, ne
 func json_parse_record_add(ctx: Context*, pr: JSONParseRecord*, key: Atom, psize: i32*) -> JSONParseRecord*!:
     let po = &pr.u.obj
 
-    try js_resize_array(ctx, (void*?*)&po.entries, (i32)sizeof(JSONParseRecordEntry), psize, po.count + 1)
+    try js_resize_array(ctx, (void*?*)&po.entries, (i32)memory.size_of(JSONParseRecordEntry), psize, po.count + 1)
     # don't use a hash table when the number of entries is small
     if po.count >= 8 and (u32)(po.count + 1) > po.hash_size:
         let hash_bits = 32 - cutils.clz32((u32)po.count)
@@ -209,7 +209,7 @@ func json_parse_value(s: ParseState*, pr: JSONParseRecord*?) -> Value!:
                     if let r = pr:
                         pr1 = try json_parse_record_add(ctx, r, prop_name, &pr_size)
                     let prop_val = try json_parse_value(s, pr1)
-                    discard(try js_define_property_value(ctx, val, prop_name, prop_val, prop_c_w_e))
+                    _ = try js_define_property_value(ctx, val, prop_name, prop_val, prop_c_w_e)
 
                     if s.token.val != TokenType.comma:
                         break
@@ -228,7 +228,7 @@ func json_parse_value(s: ParseState*, pr: JSONParseRecord*?) -> Value!:
                 while true:
                     var pr1: JSONParseRecord*? = none
                     if let r = pr:
-                        try js_resize_array(ctx, (void*?*)&r.u.array.elements, (i32)sizeof(JSONParseRecord),
+                        try js_resize_array(ctx, (void*?*)&r.u.array.elements, (i32)memory.size_of(JSONParseRecord),
                                             &pr_size, r.u.array.count + 1)
                         let elements = r.u.array.elements else trap("json_parse_value: no elements")
                         let e = elements + (usize)r.u.array.count
@@ -236,7 +236,7 @@ func json_parse_value(s: ParseState*, pr: JSONParseRecord*?) -> Value!:
                         e.value = js_undefined()
                         pr1 = e
                     let el = try json_parse_value(s, pr1)
-                    discard(try js_define_property_value_uint32(ctx, val, idx, el, prop_c_w_e))
+                    _ = try js_define_property_value_uint32(ctx, val, idx, el, prop_c_w_e)
                     if s.token.val != TokenType.comma:
                         break
                     try json_next_token(s)

@@ -32,7 +32,7 @@ func iterator_to_array(ctx: Context*, items: Value) -> Value!:
         let v = try js_iterator_next(ctx, iter, next_method, 0, &no_arg, &done)
         if done:
             break
-        discard(try js_define_property_value_int64(ctx, r, k, v, prop_c_w_e | prop_throw))
+        _ = try js_define_property_value_int64(ctx, r, k, v, prop_c_w_e | prop_throw)
         k += 1
     return r
 

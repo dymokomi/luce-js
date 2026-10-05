@@ -23,7 +23,7 @@ func js_dtoa2(ctx: Context*, d: f64, radix: i32, n_digits: i32, flags: i32) -> V
     # longer buffer may be used if radix != 10
     var tmp_buf: void*? = none
     var buf: u8* = &static_buf[0]
-    if len_max > (i32)sizeof(u8[128]) - 1:
+    if len_max > (i32)memory.size_of(u8[128]) - 1:
         let p = try js_malloc(ctx, (usize)len_max + 1)
         tmp_buf = p
         buf = (u8*)p

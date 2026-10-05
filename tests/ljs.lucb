@@ -130,8 +130,8 @@ func eval_file(ctx: js.Context*, filename: const u8*, module: i32, strict: bool)
 func js_new_custom_context(rt: js.Runtime*) -> js.Context*?:
     let ctx = js.js_new_context(rt) else return none
     # system modules
-    discard(host.js_init_module_std(ctx, z("std")) catch: return ctx)
-    discard(host.js_init_module_os(ctx, z("os")) catch: return ctx)
+    _ = host.js_init_module_std(ctx, z("std")) catch: return ctx
+    _ = host.js_init_module_os(ctx, z("os")) catch: return ctx
     return ctx
 
 # mark: Allocation tracing ======================================================================
@@ -161,11 +161,11 @@ func js_trace_malloc_usable_size(ptr: const void*?) -> usize:
 ## The "%p" of js_trace_malloc_printf: NULL, or H<offset from the base>.<usable size>.
 func trace_ptr(s: js.MallocState*, ptr: void*?):
     if ptr == none:
-        discard(printf(z("NULL")))
+        _ = printf(z("NULL"))
         return
     let p = ptr else return
     let dp = (TraceMallocData*)(s.opaque else trap("js_trace_malloc: no trace data"))
-    discard(printf(z("H%+06lld.%zd"), js_trace_malloc_ptr_offset((u8*)p, dp), js_trace_malloc_usable_size(p)))
+    _ = printf(z("H%+06lld.%zd"), js_trace_malloc_ptr_offset((u8*)p, dp), js_trace_malloc_usable_size(p))
 
 func js_trace_malloc_init(s: TraceMallocData*):
     let base = malloc(8)
@@ -179,9 +179,9 @@ func js_trace_malloc(s: js.MallocState*, size: usize) -> void*?:
     if s.malloc_size + size > s.malloc_limit:
         return none
     let ptr = malloc(size)
-    discard(printf(z("A %zd -> "), size))
+    _ = printf(z("A %zd -> "), size)
     trace_ptr(s, ptr)
-    discard(printf(z("\n")))
+    _ = printf(z("\n"))
     if let p = ptr:
         s.malloc_count += 1
         s.malloc_size += js_trace_malloc_usable_size(p) + malloc_overhead
@@ -190,9 +190,9 @@ func js_trace_malloc(s: js.MallocState*, size: usize) -> void*?:
 func js_trace_free(s: js.MallocState*, ptr: void*?):
     let p = ptr else return
 
-    discard(printf(z("F ")))
+    _ = printf(z("F "))
     trace_ptr(s, p)
-    discard(printf(z("\n")))
+    _ = printf(z("\n"))
     s.malloc_count -= 1
     s.malloc_size -= js_trace_malloc_usable_size(p) + malloc_overhead
     c_free(p)
@@ -205,9 +205,9 @@ func js_trace_realloc(s: js.MallocState*, ptr: void*?, size: usize) -> void*?:
     let old = ptr else return none
     let old_size = js_trace_malloc_usable_size(old)
     if size == 0:
-        discard(printf(z("R %zd "), size))
+        _ = printf(z("R %zd "), size)
         trace_ptr(s, old)
-        discard(printf(z("\n")))
+        _ = printf(z("\n"))
         s.malloc_count -= 1
         s.malloc_size -= old_size + malloc_overhead
         c_free(old)
@@ -215,13 +215,13 @@ func js_trace_realloc(s: js.MallocState*, ptr: void*?, size: usize) -> void*?:
     if s.malloc_size + size - old_size > s.malloc_limit:
         return none
 
-    discard(printf(z("R %zd "), size))
+    _ = printf(z("R %zd "), size)
     trace_ptr(s, old)
 
     let result = realloc(old, size)
-    discard(printf(z(" -> ")))
+    _ = printf(z(" -> "))
     trace_ptr(s, result)
-    discard(printf(z("\n")))
+    _ = printf(z("\n"))
     if let p = result:
         s.malloc_size += js_trace_malloc_usable_size(p) - old_size
     return result
@@ -248,7 +248,7 @@ func get_suffixed_size(text: const u8*) -> usize:
             v <<= 10
         _:
             if p[0] != 0:
-                discard(fprintf(stderr(), z("ljs: invalid suffix: %s\n"), p))
+                _ = fprintf(stderr(), z("ljs: invalid suffix: %s\n"), p)
                 c_exit(1)
     return v
 
@@ -258,8 +258,8 @@ let prog_name: str = "ljs"
 let config_version: str = "2026-06-04"
 
 func help() -> never:
-    discard(printf(z("luce-js (QuickJS version %s)\nusage: %s [options] [file [args]]\n-h  --help         list options\n-e  --eval EXPR    evaluate EXPR\n-i  --interactive  go to interactive mode\n-m  --module       load as ES6 module (default=autodetect)\n    --script       load as ES6 script (default=autodetect)\n    --strict       force strict mode\n-I  --include file include an additional file\n    --std          make 'std' and 'os' available to the loaded script\n-T  --trace        trace memory allocation\n-d  --dump         dump the memory usage stats\n    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n    --no-unhandled-rejection  ignore unhandled promise rejections\n-s                    strip all the debug info\n    --strip-source    strip the source code\n-q  --quit         just instantiate the interpreter and quit\n"),
-                   config_version.bytes.data, z(prog_name)))
+    _ = printf(z("luce-js (QuickJS version %s)\nusage: %s [options] [file [args]]\n-h  --help         list options\n-e  --eval EXPR    evaluate EXPR\n-i  --interactive  go to interactive mode\n-m  --module       load as ES6 module (default=autodetect)\n    --script       load as ES6 script (default=autodetect)\n    --strict       force strict mode\n-I  --include file include an additional file\n    --std          make 'std' and 'os' available to the loaded script\n-T  --trace        trace memory allocation\n-d  --dump         dump the memory usage stats\n    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n    --no-unhandled-rejection  ignore unhandled promise rejections\n-s                    strip all the debug info\n    --strip-source    strip the source code\n-q  --quit         just instantiate the interpreter and quit\n"),
+               config_version.bytes.data, z(prog_name))
     c_exit(1)
 
 ## The command line of ljs, as qjs's main keeps it in locals.
@@ -312,14 +312,14 @@ func parse_options(o: Options*, argv: str[]) -> usize:
                     o.expr = argv[optind].bytes.data
                     optind += 1
                     break
-                discard(fprintf(stderr(), z("ljs: missing expression for -e\n")))
+                _ = fprintf(stderr(), z("ljs: missing expression for -e\n"))
                 c_exit(2)
             if opt == 'I' or long_name == "include":
                 if optind >= argv.length:
-                    discard(fprintf(stderr(), z("expecting filename")))
+                    _ = fprintf(stderr(), z("expecting filename"))
                     c_exit(1)
                 if o.include_count >= 32:
-                    discard(fprintf(stderr(), z("too many included files")))
+                    _ = fprintf(stderr(), z("too many included files"))
                     c_exit(1)
                 o.include_list[o.include_count] = argv[optind].bytes.data
                 o.include_count += 1
@@ -354,14 +354,14 @@ func parse_options(o: Options*, argv: str[]) -> usize:
                 continue
             if long_name == "memory-limit":
                 if optind >= argv.length:
-                    discard(fprintf(stderr(), z("expecting memory limit")))
+                    _ = fprintf(stderr(), z("expecting memory limit"))
                     c_exit(1)
                 o.memory_limit = get_suffixed_size(argv[optind].bytes.data)
                 optind += 1
                 continue
             if long_name == "stack-size":
                 if optind >= argv.length:
-                    discard(fprintf(stderr(), z("expecting stack size")))
+                    _ = fprintf(stderr(), z("expecting stack size"))
                     c_exit(1)
                 o.stack_size = get_suffixed_size(argv[optind].bytes.data)
                 optind += 1
@@ -373,10 +373,10 @@ func parse_options(o: Options*, argv: str[]) -> usize:
                 o.strip_flags = js.strip_source
                 continue
             if opt != 0:
-                discard(fprintf(stderr(), z("ljs: unknown option '-%c'\n"), (i32)opt))
+                _ = fprintf(stderr(), z("ljs: unknown option '-%c'\n"), (i32)opt)
             else:
-                discard(fprintf(stderr(), z("ljs: unknown option '--%.*s'\n"), (i32)long_name.length,
-                                long_name.bytes.data))
+                _ = fprintf(stderr(), z("ljs: unknown option '--%.*s'\n"), (i32)long_name.length,
+                            long_name.bytes.data)
             help()
     return optind
 
@@ -401,9 +401,9 @@ pub func main(argv: str[]) -> i32:
     let optind = parse_options(&o, argv)
 
     # the native modules qjs would load as shared libraries
-    discard(host.js_register_native_module("bjson", bjson.js_init_module_bjson))
-    discard(host.js_register_native_module("fib", fib.js_init_module_fib))
-    discard(host.js_register_native_module("point", point.js_init_module))
+    _ = host.js_register_native_module("bjson", bjson.js_init_module_bjson)
+    _ = host.js_register_native_module("fib", fib.js_init_module_fib)
+    _ = host.js_register_native_module("point", point.js_init_module)
 
     var created: js.Runtime*? = none
     if o.trace_memory != 0:
@@ -412,7 +412,7 @@ pub func main(argv: str[]) -> i32:
     else:
         created = js.js_new_runtime()
     if created == none:
-        discard(fprintf(stderr(), z("ljs: cannot allocate JS runtime\n")))
+        _ = fprintf(stderr(), z("ljs: cannot allocate JS runtime\n"))
     let rt = created else c_exit(2)
     if o.memory_limit != 0:
         js.js_set_memory_limit(rt, o.memory_limit)
@@ -423,7 +423,7 @@ pub func main(argv: str[]) -> i32:
     host.js_std_init_handlers(rt)
     let new_ctx = js_new_custom_context(rt)
     if new_ctx == none:
-        discard(fprintf(stderr(), z("ljs: cannot allocate JS context\n")))
+        _ = fprintf(stderr(), z("ljs: cannot allocate JS context\n"))
     let ctx = new_ctx else c_exit(2)
 
     # loader for ES6 modules
@@ -443,7 +443,7 @@ pub func main(argv: str[]) -> i32:
         var stats: js.MemoryUsage = ---
         js.js_compute_memory_usage(rt, &stats)
         # JS_DumpMemoryUsage writes with Luce's print: flush what C stdio holds first
-        discard(fflush(c.stdout()))
+        _ = fflush(c.stdout())
         js.js_dump_memory_usage(&stats, rt)
     host.js_std_free_handlers(rt)
     js.js_free_context(ctx)
@@ -462,7 +462,7 @@ func run(ctx: js.Context*, rt: js.Runtime*, argv: str[], optind: usize, o: Optio
     # make 'std' and 'os' visible to non module code
     if o.load_std:
         let text = "import * as std from 'std';\nimport * as os from 'os';\nglobalThis.std = std;\nglobalThis.os = os;\n"
-        discard(eval_buf(ctx, text.bytes.data, text.length, z("<input>"), js.eval_type_module))
+        _ = eval_buf(ctx, text.bytes.data, text.length, z("<input>"), js.eval_type_module)
 
     for i in 0..<o.include_count:
         if eval_file(ctx, o.include_list[i], 0, o.strict) != 0:
@@ -513,5 +513,5 @@ func instantiation_times():
             if i == 0 or best[j] > ms:
                 best[j] = ms
             j -= 1
-    discard(printf(z("\nInstantiation times (ms): %.3f = %.3f+%.3f+%.3f+%.3f\n"),
-                   best[1] + best[2] + best[3] + best[4], best[1], best[2], best[3], best[4]))
+    _ = printf(z("\nInstantiation times (ms): %.3f = %.3f+%.3f+%.3f+%.3f\n"),
+               best[1] + best[2] + best[3] + best[4], best[1], best[2], best[3], best[4])

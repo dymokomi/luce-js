@@ -37,7 +37,7 @@ func exchange_one_byte(a: void*, b: void*, size: usize):
 func exchange_int16s(a: void*, b: void*, size: usize):
     var ap = (u16*)a
     var bp = (u16*)b
-    var n = size // sizeof(u16)
+    var n = size // memory.size_of(u16)
     while n != 0:
         n -= 1
         let t = *ap
@@ -56,7 +56,7 @@ func exchange_one_int16(a: void*, b: void*, size: usize):
 func exchange_int32s(a: void*, b: void*, size: usize):
     var ap = (u32*)a
     var bp = (u32*)b
-    var n = size // sizeof(u32)
+    var n = size // memory.size_of(u32)
     while n != 0:
         n -= 1
         let t = *ap
@@ -75,7 +75,7 @@ func exchange_one_int32(a: void*, b: void*, size: usize):
 func exchange_int64s(a: void*, b: void*, size: usize):
     var ap = (u64*)a
     var bp = (u64*)b
-    var n = size // sizeof(u64)
+    var n = size // memory.size_of(u64)
     while n != 0:
         n -= 1
         let t = *ap
@@ -94,7 +94,7 @@ func exchange_one_int64(a: void*, b: void*, size: usize):
 func exchange_int128s(a: void*, b: void*, size: usize):
     var ap = (u64*)a
     var bp = (u64*)b
-    var n = size // (sizeof(u64) * 2)
+    var n = size // (memory.size_of(u64) * 2)
     while n != 0:
         n -= 1
         let t = ap[0]
@@ -119,22 +119,22 @@ func exchange_one_int128(a: void*, b: void*, size: usize):
 func exchange_func(base: const void*, size: usize) -> ExchangeF:
     match ((usize)base | size) & 15:
         0:
-            if size == sizeof(u64) * 2:
+            if size == memory.size_of(u64) * 2:
                 return exchange_one_int128
             else:
                 return exchange_int128s
         8:
-            if size == sizeof(u64):
+            if size == memory.size_of(u64):
                 return exchange_one_int64
             else:
                 return exchange_int64s
         4, 12:
-            if size == sizeof(u32):
+            if size == memory.size_of(u32):
                 return exchange_one_int32
             else:
                 return exchange_int32s
         2, 6, 10, 14:
-            if size == sizeof(u16):
+            if size == memory.size_of(u16):
                 return exchange_one_int16
             else:
                 return exchange_int16s

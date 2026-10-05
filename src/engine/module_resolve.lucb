@@ -45,7 +45,7 @@ func find_resolve_entry(s: ResolveState*, m: ModuleDef*, name: Atom) -> i32:
     return -1
 
 func add_resolve_entry(ctx: Context*, s: ResolveState*, m: ModuleDef*, name: Atom) -> !:
-    try js_resize_array(ctx, (void*?*)&s.array, (i32)sizeof(ResolveEntry), &s.size, s.count + 1)
+    try js_resize_array(ctx, (void*?*)&s.array, (i32)memory.size_of(ResolveEntry), &s.size, s.count + 1)
     let re = resolve_entry(s, s.count)
     s.count += 1
     re.module = m
@@ -177,7 +177,7 @@ func get_exported_names(ctx: Context*, s: GetExportNamesState*, m: ModuleDef*, f
         let modules = s.modules else trap("get_exported_names: no module list")
         if modules[(usize)i] == m:
             return
-    try js_resize_array(ctx, (void*?*)&s.modules, (i32)sizeof(ModuleDef*), &s.modules_size,
+    try js_resize_array(ctx, (void*?*)&s.modules, (i32)memory.size_of(ModuleDef*), &s.modules_size,
                         s.modules_count + 1)
     let modules = s.modules else trap("get_exported_names: no module list")
     modules[(usize)s.modules_count] = m
@@ -189,7 +189,7 @@ func get_exported_names(ctx: Context*, s: GetExportNamesState*, m: ModuleDef*, f
             continue
         let j = find_exported_name(s, me.export_name)
         if j < 0:
-            try js_resize_array(ctx, (void*?*)&s.exported_names, (i32)sizeof(ExportedNameEntry),
+            try js_resize_array(ctx, (void*?*)&s.exported_names, (i32)memory.size_of(ExportedNameEntry),
                                 &s.exported_names_size, s.exported_names_count + 1)
             let en = exported_name_entry(s, s.exported_names_count)
             s.exported_names_count += 1
@@ -318,7 +318,7 @@ func js_build_module_ns(ctx: Context*, m: ModuleDef*) -> Value!:
 
     # sort the exported names
     if let names = s.exported_names:
-        cutils.rqsort(names, (usize)s.exported_names_count, sizeof(ExportedNameEntry),
+        cutils.rqsort(names, (usize)s.exported_names_count, memory.size_of(ExportedNameEntry),
                       exported_names_cmp, ctx)
 
     for i in 0..<s.exported_names_count:
@@ -333,12 +333,12 @@ func js_build_module_ns(ctx: Context*, m: ModuleDef*) -> Value!:
             .delayed:
                 # the exported namespace or reference may depend on circular references, so
                 # we resolve it lazily
-                discard(try js_define_auto_init_property(ctx, obj, en.export_name, AutoInitId.module_ns,
-                                                         m, prop_enumerable | prop_writable))
+                _ = try js_define_auto_init_property(ctx, obj, en.export_name, AutoInitId.module_ns,
+                                                     m, prop_enumerable | prop_writable)
             _: continue
 
     let tag = js_atom_to_string(ctx, atom_Module) catch failure: recover js_exception()
-    discard(js_define_property_value(ctx, obj, atom_Symbol_toStringTag, tag, 0) catch failure: recover false)
+    _ = js_define_property_value(ctx, obj, atom_Symbol_toStringTag, tag, 0) catch failure: recover false
 
     p.extensible = false
     return obj

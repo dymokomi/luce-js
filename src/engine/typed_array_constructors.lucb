@@ -22,7 +22,7 @@ func js_typed_array_base_constructor(ctx: Context*, this_val: Value, argc: i32, 
 func typed_array_init(ctx: Context*, obj: Value, buffer: Value, offset: u64, len: u64, track_rab: bool) -> !:
     let p = obj.u.obj
     let size_log2 = (u64)typed_array_size_log2(p.class_id)
-    let ta_raw = js_malloc(ctx, sizeof(TypedArray)) catch failure:
+    let ta_raw = js_malloc(ctx, memory.size_of(TypedArray)) catch failure:
         js_free_value(ctx, buffer)
         error(failure.code, failure.message)
     let ta = (TypedArray*)ta_raw
@@ -55,7 +55,7 @@ func js_array_from_iterator(ctx: Context*, plen: u32*, obj: Value, method: Value
         let val = try js_iterator_next(ctx, iter, next_method, 0, &no_args, &done)
         if done:
             break
-        discard(try js_create_data_property_uint32(ctx, arr, (i64)k, val, prop_throw))
+        _ = try js_create_data_property_uint32(ctx, arr, (i64)k, val, prop_throw)
         k += 1
     *plen = k
     return arr
@@ -79,7 +79,7 @@ func js_typed_array_constructor_obj(ctx: Context*, new_target: Value, obj: Value
         js_free_value(ctx, iter)
         len = (i64)len1
     else:
-        discard(try js_get_length64(ctx, &len, obj))
+        _ = try js_get_length64(ctx, &len, obj)
         arr = js_dup_value(ctx, obj)
     defer js_free_value(ctx, arr)
 
@@ -88,7 +88,7 @@ func js_typed_array_constructor_obj(ctx: Context*, new_target: Value, obj: Value
 
     for i in 0..<(u32)len:
         let val = try js_get_property_uint32(ctx, arr, i)
-        discard(try js_set_property_uint32(ctx, ret, i, val))
+        _ = try js_set_property_uint32(ctx, ret, i, val)
     return ret
 
 ## A typed array of class `classid` and `len` elements copied from the typed array
@@ -112,12 +112,12 @@ func js_typed_array_constructor_ta(ctx: Context*, new_target: Value, src_obj: Va
     let src_abuf = src_buffer.u.array_buffer
     if ((u16)p.class_id == (u16)classid and (i64)ta.offset + (i64)abuf.byte_length <= (i64)src_abuf.byte_length):
         # same type and no overflow: copy the content
-        discard(cutils.memcpy(abuf.data, array_buffer_data_at(src_abuf.data, ta.offset),
-                              (usize)abuf.byte_length))
+        _ = cutils.memcpy(abuf.data, array_buffer_data_at(src_abuf.data, ta.offset),
+                          (usize)abuf.byte_length)
     else:
         for i in 0..<len:
             let val = try js_get_property_uint32(ctx, src_obj, i)
-            discard(try js_set_property_uint32(ctx, obj, i, val))
+            _ = try js_set_property_uint32(ctx, obj, i, val)
     return obj
 
 ## The constructor of the typed array class `classid`: `(length)`, `(buffer, offset,

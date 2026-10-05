@@ -67,7 +67,7 @@ pub func u32toa(buf: u8*, n0: u32) -> usize:
         if n == 0:
             break
     let len = 10 - pos
-    discard(cutils.memcpy(buf, &buf1[pos], len))
+    _ = cutils.memcpy(buf, &buf1[pos], len)
     return len
 
 ## Write `n` in decimal at `buf` (at most 11 bytes, no NUL); answers the length.
@@ -142,7 +142,7 @@ pub func u64toa_radix(buf: u8*, n0: u64, radix: u32) -> usize:
             if n == 0:
                 break
         let len = 41 - pos
-        discard(cutils.memcpy(buf, &buf1[pos], len))
+        _ = cutils.memcpy(buf, &buf1[pos], len)
         return len
 
 ## Write `n` in `radix` (2 to 36, lowercase) at `buf` (at most 65 bytes, no NUL); answers

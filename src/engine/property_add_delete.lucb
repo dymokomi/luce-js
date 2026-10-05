@@ -24,7 +24,7 @@ func add_property(ctx: Context*, p: Object*, prop: Atom, prop_flags: i32) -> Pro
             let head = &ctx.rt.context_list
             var el = head.next else trap("unlinked context list")
             while el != head:
-                let ctx1 = (Context*)((u8*)el - offsetof(Context, link))
+                let ctx1 = (Context*)((u8*)el - memory.offset_of(Context, link))
                 let class_proto = ctx1.class_proto else trap("context without class prototypes")
                 let object_proto = class_proto[(usize)ClassId.object]
                 if js_is_object(object_proto) and object_proto.u.obj == p:
@@ -41,7 +41,7 @@ func add_property(ctx: Context*, p: Object*, prop: Atom, prop_flags: i32) -> Pro
             # matching shape found: use it
             #  the property array may need to be resized
             if new_sh.prop_size != sh.prop_size:
-                let new_prop = try js_realloc(ctx, p.prop, sizeof(Property) * (usize)new_sh.prop_size)
+                let new_prop = try js_realloc(ctx, p.prop, memory.size_of(Property) * (usize)new_sh.prop_size)
                 # js_realloc of a non-zero size never answers none
                 p.prop = (Property*)(new_prop else trap("js_realloc answered none"))
             p.shape = js_dup_shape(new_sh)
@@ -255,7 +255,7 @@ func set_array_length(ctx: Context*, p: Object*, val: Value, flags: i32) -> bool
                     if pr.atom != no_atom and js_atom_is_array_index(ctx, &idx, pr.atom):
                         if idx >= cur_len:
                             # remove the property (as in QuickJS, the result is ignored)
-                            discard(delete_property(ctx, p, pr.atom) else false)
+                            _ = delete_property(ctx, p, pr.atom) else false
                             # WARNING: the shape may have been modified
                             sh = p.shape
                     i += 1

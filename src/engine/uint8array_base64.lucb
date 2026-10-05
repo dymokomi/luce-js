@@ -168,7 +168,7 @@ func js_uint8array_to_hex(ctx: Context*, this_val: Value, argc: i32, argv: Value
 
     let ostr = try js_alloc_string(ctx, (i32)out_len, false)
 
-    discard(u8a_hex_encode(data, u8[](str8(ostr), out_len)))
+    _ = u8a_hex_encode(data, u8[](str8(ostr), out_len))
     str8(ostr)[out_len] = 0
     return js_mkptr(Tag.string, ostr)
 
@@ -223,8 +223,8 @@ func js_uint8array_from_hex(ctx: Context*, this_val: Value, argc: i32, argv: Val
 func js_make_read_written(ctx: Context*, read: usize, written: usize) -> Value!:
     let obj = try js_new_object(ctx)
     errdefer js_free_value(ctx, obj)
-    discard(try js_define_property_value_str(ctx, obj, "read", js_new_uint32((u32)read), prop_c_w_e))
-    discard(try js_define_property_value_str(ctx, obj, "written", js_new_uint32((u32)written), prop_c_w_e))
+    _ = try js_define_property_value_str(ctx, obj, "read", js_new_uint32((u32)read), prop_c_w_e)
+    _ = try js_define_property_value_str(ctx, obj, "written", js_new_uint32((u32)written), prop_c_w_e)
     return obj
 
 # Uint8Array.prototype.setFromBase64(string[, options])

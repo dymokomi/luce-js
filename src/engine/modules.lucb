@@ -16,7 +16,7 @@
 
 # 'name' is freed. The module is referenced by 'ctx.loaded_modules'.
 func js_new_module_def(ctx: Context*, name: Atom) -> ModuleDef*!:
-    let block = js_mallocz(ctx, sizeof(ModuleDef)) catch failure:
+    let block = js_mallocz(ctx, memory.size_of(ModuleDef)) catch failure:
         js_free_atom(ctx, name)
         error(failure.code, failure.message)
     let m = (ModuleDef*)block
@@ -131,7 +131,7 @@ func js_free_module_def(rt: Runtime*, m: ModuleDef*):
 
 # Add `module_name` to the modules `m` requests; answers its index.
 func add_req_module_entry(ctx: Context*, m: ModuleDef*, module_name: Atom) -> i32!:
-    try js_resize_array(ctx, (void*?*)&m.req_module_entries, (i32)sizeof(ReqModuleEntry),
+    try js_resize_array(ctx, (void*?*)&m.req_module_entries, (i32)memory.size_of(ReqModuleEntry),
                         &m.req_module_entries_size, m.req_module_entries_count + 1)
     let rme = module_req_entry(m, m.req_module_entries_count)
     m.req_module_entries_count += 1
@@ -158,18 +158,18 @@ func add_export_entry2(ctx: Context*, s: ParseState*?, m: ModuleDef*, local_name
         else:
             try js_throw_syntax_error_atom(ctx, "duplicate exported name '%s'", export_name)
 
-    try js_resize_array(ctx, (void*?*)&m.export_entries, (i32)sizeof(ExportEntry),
+    try js_resize_array(ctx, (void*?*)&m.export_entries, (i32)memory.size_of(ExportEntry),
                         &m.export_entries_size, m.export_entries_count + 1)
     let me = module_export_entry(m, m.export_entries_count)
     m.export_entries_count += 1
-    discard(cutils.memset(me, 0, sizeof(ExportEntry)))
+    _ = cutils.memset(me, 0, memory.size_of(ExportEntry))
     me.local_name = js_dup_atom(ctx, local_name)
     me.export_name = js_dup_atom(ctx, export_name)
     me.export_type = export_type
     return me
 
 func add_star_export_entry(ctx: Context*, m: ModuleDef*, req_module_idx: i32) -> !:
-    try js_resize_array(ctx, (void*?*)&m.star_export_entries, (i32)sizeof(StarExportEntry),
+    try js_resize_array(ctx, (void*?*)&m.star_export_entries, (i32)memory.size_of(StarExportEntry),
                         &m.star_export_entries_size, m.star_export_entries_count + 1)
     let se = module_star_export_entry(m, m.star_export_entries_count)
     m.star_export_entries_count += 1
@@ -190,7 +190,7 @@ pub func js_new_c_module(ctx: Context*, name_str: const u8*, func_: ModuleInitFu
 pub func js_add_module_export(ctx: Context*, m: ModuleDef*, export_name: const u8*) -> !:
     let name = try js_new_atom_len(ctx, export_name, cutils.strlen(export_name))
     defer js_free_atom(ctx, name)
-    discard(try add_export_entry2(ctx, none, m, no_atom, name, ExportType.local_))
+    _ = try add_export_entry2(ctx, none, m, no_atom, name, ExportType.local_)
 
 ## Set the value of the export `export_name` of the C module `m`, taking ownership of `val`
 ## (JS_SetModuleExport). Answers false, with no exception pending, if `m` has no such
@@ -263,7 +263,7 @@ func module_normalize_path(filename: u8*, cap: i32, base_name: const u8*, name: 
     var len: i32 = 0
     if let p = find_last_byte(base_name, '/'):
         len = (i32)(p - base_name)
-    discard(cutils.memcpy(filename, base_name, (usize)len))
+    _ = cutils.memcpy(filename, base_name, (usize)len)
     filename[(usize)len] = 0
 
     # we only normalize the leading '..' or '.'
@@ -287,8 +287,8 @@ func module_normalize_path(filename: u8*, cap: i32, base_name: const u8*, name: 
         else:
             break
     if filename[0] != 0:
-        discard(cutils.pstrcat(filename, cap, "/".bytes.data))
-    discard(cutils.pstrcat(filename, cap, r))
+        _ = cutils.pstrcat(filename, cap, "/".bytes.data)
+    _ = cutils.pstrcat(filename, cap, r)
 
 # default module filename normalizer
 func js_default_module_normalize_name(ctx: Context*, base_name: const u8*, name: const u8*) -> u8*!:
@@ -309,7 +309,7 @@ func js_find_loaded_module(ctx: Context*, name: Atom) -> ModuleDef*?:
     let head = &ctx.loaded_modules
     var el = head.next else trap("js_find_loaded_module: unlinked module list")
     while el != head:
-        let m = (ModuleDef*)((u8*)el - offsetof(ModuleDef, link))
+        let m = (ModuleDef*)((u8*)el - memory.offset_of(ModuleDef, link))
         if m.module_name == name:
             return m
         el = el.next else trap("js_find_loaded_module: unlinked module list")

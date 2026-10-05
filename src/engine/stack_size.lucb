@@ -63,7 +63,7 @@ func ss_check(ctx: Context*, s: StackSizeState*, pos: i32, op: i32, stack_len: i
     s.catch_pos_tab[(usize)pos] = catch_pos
 
     # queue the new PC to explore
-    try js_resize_array(ctx, (void*?*)&s.pc_stack, (i32)sizeof(i32), &s.pc_stack_size,
+    try js_resize_array(ctx, (void*?*)&s.pc_stack, (i32)memory.size_of(i32), &s.pc_stack_size,
                         s.pc_stack_len + 1)
     let pc_stack = s.pc_stack else trap("ss_check: no pc stack")
     pc_stack[(isize)s.pc_stack_len] = pos
@@ -96,11 +96,11 @@ func compute_stack_size(ctx: Context*, fd: FunctionDef*) -> i32!:
     # bc_len > 0
     let bc_buf: const u8* = fd.byte_code.buf else trap("compute_stack_size: empty bytecode")
     let bc_len = (i32)fd.byte_code.size
-    let level_tab = (u16*)try js_malloc(ctx, sizeof(u16) * (usize)bc_len)
+    let level_tab = (u16*)try js_malloc(ctx, memory.size_of(u16) * (usize)bc_len)
     defer js_free(ctx, level_tab)
     for i in 0..<(usize)bc_len:
         level_tab[i] = 0xffff
-    let catch_tab = (i32*)try js_malloc(ctx, sizeof(i32) * (usize)bc_len)
+    let catch_tab = (i32*)try js_malloc(ctx, memory.size_of(i32) * (usize)bc_len)
     defer js_free(ctx, catch_tab)
 
     var s = StackSizeState(bc_len = bc_len, stack_len_max = 0,
@@ -195,6 +195,6 @@ func compute_stack_size(ctx: Context*, fd: FunctionDef*) -> i32!:
                 stack_len += 1  # no stack overflow is possible by construction
                 catch_pos = s.catch_pos_tab[(usize)catch_pos]
             _:
-                discard(0)
+                _ = 0
         try ss_check(ctx, &s, pos_next, op, stack_len, catch_pos)
     return s.stack_len_max

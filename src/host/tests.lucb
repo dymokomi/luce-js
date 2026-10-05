@@ -19,8 +19,8 @@ func test_context() -> Context*:
     let rt = js.js_new_runtime() else trap("no runtime")
     js_std_init_handlers(rt)
     let ctx = js.js_new_context(rt) else trap("no context")
-    discard(js_init_module_std(ctx, "std".bytes.data) catch: trap("no std"))
-    discard(js_init_module_os(ctx, "os".bytes.data) catch: trap("no os"))
+    _ = js_init_module_std(ctx, "std".bytes.data) catch: trap("no std")
+    _ = js_init_module_os(ctx, "os".bytes.data) catch: trap("no os")
     return ctx
 
 func free_test_context(ctx: Context*):
@@ -35,7 +35,7 @@ func eval_to_text(ctx: Context*, source: str, out: u8[]) -> str:
     let func_val = js.js_eval_text(ctx, source, "<test>", js.eval_type_module) catch:
         js_std_dump_error(ctx)
         trap("evaluation failed")
-    discard(js_std_await(ctx, func_val) catch: trap("module failed"))
+    _ = js_std_await(ctx, func_val) catch: trap("module failed")
     let global_obj = js.js_get_global_object(ctx)
     let result = js.js_get_property_str(ctx, global_obj, "result") catch: trap("no result")
     js.js_free_value(ctx, global_obj)
@@ -43,7 +43,7 @@ func eval_to_text(ctx: Context*, source: str, out: u8[]) -> str:
     js.js_free_value(ctx, result)
     let len = cutils.strlen(text)
     assert(len <= out.length)
-    discard(cutils.memcpy(out.data, text, len))
+    _ = cutils.memcpy(out.data, text, len)
     js.js_free_c_string(ctx, text)
     return (str)out[0..<len]
 
@@ -95,7 +95,7 @@ test "stat and readdir decode this target's layouts":
 test "timers run in order from the loop and can be cleared":
     let ctx = test_context()
     var buf: u8[256]
-    discard(eval_to_text(ctx, """
+    _ = eval_to_text(ctx, """
         import * as os from "os";
         let r = [];
         os.setTimeout(() => r.push("b"), 300);
@@ -105,7 +105,7 @@ test "timers run in order from the loop and can be cleared":
         Promise.resolve().then(() => r.push("job"));
         globalThis.log = r;
         globalThis.result = "";
-        """, buf))
+        """, buf)
     js_std_loop(ctx)
     let text = eval_to_text(ctx, "globalThis.result = globalThis.log.join();", buf)
     assert(text == "job,a,b")
@@ -157,7 +157,7 @@ test "signal and read handlers run from the loop":
         return  # Windows has no os.pipe, os.kill or SIGUSR2
     let ctx = test_context()
     var buf: u8[256]
-    discard(eval_to_text(ctx, """
+    _ = eval_to_text(ctx, """
         import * as os from "os";
         let r = [];
         os.signal(os.SIGUSR2, () => { r.push("usr2"); os.signal(os.SIGUSR2, null); });
@@ -176,7 +176,7 @@ test "signal and read handlers run from the loop":
         });
         globalThis.log = r;
         globalThis.result = "";
-        """, buf))
+        """, buf)
     js_std_loop(ctx)
     let text = eval_to_text(ctx, "globalThis.result = globalThis.log.join();", buf)
     assert(text == "usr2,read 2")

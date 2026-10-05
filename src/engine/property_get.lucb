@@ -181,7 +181,7 @@ pub func js_get_property_internal(ctx: Context*, obj: Value, prop: Atom, this_ob
                 elif prop == atom_length:
                     return js_new_int32((i32)p1.len)
             _:
-                discard(0)
+                _ = 0
         # cannot raise an exception
         let proto = js_get_prototype_primitive(ctx, obj)
         if proto.tag != Tag.object:

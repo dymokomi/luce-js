@@ -18,11 +18,11 @@
 # A context as JS_NewContextRaw makes it before it adds the basic objects.
 func test_interp_context() -> Context*:
     let rt = js_new_runtime() else trap("out of memory")
-    let p = js_mallocz_rt(rt, sizeof(Context)) else trap("out of memory")
+    let p = js_mallocz_rt(rt, memory.size_of(Context)) else trap("out of memory")
     let ctx = (Context*)p
     js_rc(ctx).ref_count = 1
     add_gc_object(rt, &ctx.header, GCObjectType.js_context)
-    let class_proto = js_malloc_rt(rt, sizeof(Value) * (usize)rt.class_count) else trap("out of memory")
+    let class_proto = js_malloc_rt(rt, memory.size_of(Value) * (usize)rt.class_count) else trap("out of memory")
     let protos = (Value*)class_proto
     ctx.class_proto = protos
     ctx.rt = rt
@@ -41,7 +41,7 @@ func test_interp_context() -> Context*:
 # A bytecode function of `code` in `ctx`, as the compiler would leave it.
 func test_interp_function(ctx: Context*, code: const u8[], arg_count: u16, var_count: u16, stack_size: u16, func_kind: u8) -> Value:
     let rt = ctx.rt
-    let p = js_mallocz_rt(rt, sizeof(FunctionBytecode)) else trap("out of memory")
+    let p = js_mallocz_rt(rt, memory.size_of(FunctionBytecode)) else trap("out of memory")
     let b = (FunctionBytecode*)p
     let buf = js_malloc_rt(rt, code.length) else trap("out of memory")
     let bytes = (u8*)buf
@@ -170,9 +170,9 @@ test "an uncaught exception fails the call and unlinks the frame":
     let f = test_interp_function(ctx, code, 0, 0, 1, js_func_normal)
     var no_args = js_undefined()
     var failed = false
-    discard(js_call(ctx, f, js_undefined(), 0, &no_args) catch:
+    _ = js_call(ctx, f, js_undefined(), 0, &no_args) catch:
         failed = true
-        recover js_undefined())
+        recover js_undefined()
     assert(failed)
     assert(test_interp_int(js_get_exception(ctx)) == 5)
     assert(ctx.rt.current_stack_frame == none)
@@ -183,9 +183,9 @@ test "an invalid opcode throws an internal error":
     let f = test_interp_function(ctx, code, 0, 0, 1, js_func_normal)
     var no_args = js_undefined()
     var failed = false
-    discard(js_call(ctx, f, js_undefined(), 0, &no_args) catch:
+    _ = js_call(ctx, f, js_undefined(), 0, &no_args) catch:
         failed = true
-        recover js_undefined())
+        recover js_undefined()
     assert(failed)
 
 # mark: Suspended frames ========================================================================

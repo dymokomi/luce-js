@@ -29,7 +29,7 @@ func js_parse_class_default_ctor(s: ParseState*, has_super: bool, pfd: FunctionD
     fd.new_target_allowed = true
 
     # enter body scope (its failure is ignored, as in QuickJS)
-    discard(push_scope(s) catch failure: recover -1)
+    _ = push_scope(s) catch failure: recover -1
     fd.body_scope = fd.scope_level
     var func_type = ParseFunctionKind.class_constructor
     if has_super:
@@ -94,7 +94,7 @@ func emit_class_field_init(s: ParseState*):
     emit_op(s, (u8)Op.call_method)
     emit_u16(s, 0)
 
-    discard(emit_label(s, label_next))
+    _ = emit_label(s, label_next)
     emit_op(s, (u8)Op.drop)
 
 # build a private setter function name from the private getter name
@@ -137,7 +137,7 @@ func emit_class_init_start(s: ParseState*, cf: ClassFieldsDef*) -> !:
 
         emit_op(s, (u8)Op.add_brand)
 
-        discard(emit_label(s, label_add_brand))
+        _ = emit_label(s, label_add_brand)
     s.cur_func = s.fd().parent
 
 # Finish the field initializer function of `cf` and push its closure.

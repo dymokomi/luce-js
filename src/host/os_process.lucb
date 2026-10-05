@@ -27,7 +27,7 @@ func build_envp(ctx: Context*, obj: Value) -> CStringEntry*!:
     var len: u32 = 0
     try js.js_get_own_property_names(ctx, &tab, &len, obj, js.gpn_string_mask | js.gpn_enum_only)
     defer js.js_free_property_enum(ctx, tab, len)
-    let envp = (CStringEntry*)try js.js_mallocz(ctx, sizeof(CStringEntry) * ((usize)len + 1))
+    let envp = (CStringEntry*)try js.js_mallocz(ctx, memory.size_of(CStringEntry) * ((usize)len + 1))
     errdefer free_envp(ctx, envp)
     let entries = tab else return envp
     for i in 0..<(usize)len:
@@ -42,9 +42,9 @@ func build_envp(ctx: Context*, obj: Value) -> CStringEntry*!:
         let key_len = cutils.strlen(key)
         let str_len = cutils.strlen(text)
         let pair = (u8*)try js.js_malloc(ctx, key_len + str_len + 2)
-        discard(cutils.memcpy(pair, key, key_len))
+        _ = cutils.memcpy(pair, key, key_len)
         pair[key_len] = '='
-        discard(cutils.memcpy(pair + (key_len + 1), text, str_len))
+        _ = cutils.memcpy(pair + (key_len + 1), text, str_len)
         pair[key_len + 1 + str_len] = 0
         envp[i] = pair
     return envp
@@ -78,12 +78,12 @@ func my_execvpe(filename: const u8*, argv: CStringEntry*, envp: CStringEntry*) -
             # path too long
             if path_len + 1 + filename_len + 1 > path_max:
                 continue
-            discard(cutils.memcpy(&buf[0], dir, path_len))
+            _ = cutils.memcpy(&buf[0], dir, path_len)
             buf[path_len] = '/'
-            discard(cutils.memcpy(&buf[path_len + 1], filename, filename_len))
+            _ = cutils.memcpy(&buf[path_len + 1], filename, filename_len)
             buf[path_len + 1 + filename_len] = 0
 
-            discard(execve(&buf[0], argv, envp))
+            _ = execve(&buf[0], argv, envp)
 
             let err = c.errno()
             if err == e_acces:
@@ -173,7 +173,7 @@ func exec_child(exec_argv: CStringEntry*, options: const ExecOptions*) -> never:
         let fd_max = cutils.min_int((i32)sysconf(sc_open_max), 1024)
         var fd: i32 = 3
         while fd < fd_max:
-            discard(close(fd))
+            _ = close(fd)
             fd += 1
 
         if let cwd = options.cwd:
@@ -193,9 +193,9 @@ func exec_child(exec_argv: CStringEntry*, options: const ExecOptions*) -> never:
         if let env = options.envp:
             envp = env
         if options.use_path:
-            discard(my_execvpe(file, exec_argv, envp))
+            _ = my_execvpe(file, exec_argv, envp)
         else:
-            discard(execve(file, exec_argv, envp))
+            _ = execve(file, exec_argv, envp)
         _exit(127)
 
 ## Free the arguments os.exec converted.
@@ -215,7 +215,7 @@ func js_os_exec(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Valu
         # arbitrary limit to avoid overflow
         if exec_argc < 1 or exec_argc > 65535:
             try js.js_throw_type_error(ctx, "invalid number of arguments")
-        let exec_argv = (CStringEntry*)try js.js_mallocz(ctx, sizeof(CStringEntry) * ((usize)exec_argc + 1))
+        let exec_argv = (CStringEntry*)try js.js_mallocz(ctx, memory.size_of(CStringEntry) * ((usize)exec_argc + 1))
         defer free_exec_argv(ctx, exec_argv, exec_argc)
         for i in 0..<exec_argc:
             let val = try js.js_get_property_uint32(ctx, args, i)
@@ -276,8 +276,8 @@ func js_os_waitpid(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
             status = 0
 
         let obj = try js.js_new_array(ctx)
-        discard(js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32(ret), js.prop_c_w_e) catch: recover false)
-        discard(js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32(status), js.prop_c_w_e) catch: recover false)
+        _ = js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32(ret), js.prop_c_w_e) catch: recover false
+        _ = js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32(status), js.prop_c_w_e) catch: recover false
         return obj
 
 ## pipe() -> [read_fd, write_fd] or null if error
@@ -289,8 +289,8 @@ func js_os_pipe(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Valu
         if pipe(&pipe_fds[0]) < 0:
             return js.js_null()
         let obj = try js.js_new_array(ctx)
-        discard(js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32(pipe_fds[0]), js.prop_c_w_e) catch: recover false)
-        discard(js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32(pipe_fds[1]), js.prop_c_w_e) catch: recover false)
+        _ = js.js_define_property_value_uint32(ctx, obj, 0, js.js_new_int32(pipe_fds[0]), js.prop_c_w_e) catch: recover false
+        _ = js.js_define_property_value_uint32(ctx, obj, 1, js.js_new_int32(pipe_fds[1]), js.prop_c_w_e) catch: recover false
         return obj
 
 ## kill(pid, sig)

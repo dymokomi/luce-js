@@ -152,7 +152,7 @@ func js_parse_function_params(s: ParseState*, fd: FunctionDef*, func_type: Parse
             # consider there is a parameter expression inside
             # (C ignores a failure of this look-ahead; it can only fail when reading the
             # '(' again, which next_token below does too)
-            discard(try js_parse_skip_parens_token(s, &skip_bits, false))
+            _ = try js_parse_skip_parens_token(s, &skip_bits, false)
             if (skip_bits & skip_has_assignment) != 0:
                 fd.has_parameter_expressions = true
             try next_token(s)
@@ -227,14 +227,14 @@ func js_parse_function_params(s: ParseState*, fd: FunctionDef*, func_type: Parse
                     emit_op(s, (u8)Op.dup)
                     emit_op(s, (u8)Op.undefined)
                     emit_op(s, (u8)Op.strict_eq)
-                    discard(emit_goto(s, (i32)Op.if_false, label))
+                    _ = emit_goto(s, (i32)Op.if_false, label)
                     emit_op(s, (u8)Op.drop)
                     try js_parse_assign_expr(s)
                     set_object_name(s, name)
                     emit_op(s, (u8)Op.dup)
                     emit_op(s, (u8)Op.put_arg)
                     emit_u16(s, (u16)idx)
-                    discard(emit_label(s, label))
+                    _ = emit_label(s, label)
                     js_parse_function_put_var_init(s, fd, name)
                 else:
                     if not has_opt_arg:
@@ -311,7 +311,7 @@ func js_parse_function_body(s: ParseState*, fd: FunctionDef*, func_type: ParseFu
     # of the arguments
     fd.in_function_body = true
     # enter body scope (C ignores a failure here)
-    discard(push_scope(s) catch failure: recover -1)
+    _ = push_scope(s) catch failure: recover -1
     fd.body_scope = fd.scope_level
 
     if s.token.val == TokenType.arrow and func_type == ParseFunctionKind.arrow:

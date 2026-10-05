@@ -92,7 +92,7 @@ test "ready modules sort by their async evaluation order":
     assert(exec_module_list_cmp(&tab[0], &tab[1], none) == 1)
     assert(exec_module_list_cmp(&tab[1], &tab[0], none) == -1)
     assert(exec_module_list_cmp(&tab[1], &tab[3], none) == 0)
-    cutils.rqsort(&tab[0], 4, sizeof(ModuleDef*), exec_module_list_cmp, none)
+    cutils.rqsort(&tab[0], 4, memory.size_of(ModuleDef*), exec_module_list_cmp, none)
     for i in 1..<tab.length:
         assert(tab[i - 1].async_evaluation_timestamp <= tab[i].async_evaluation_timestamp)
     assert(tab[3] == &mods[2] and tab[2] == &mods[0])

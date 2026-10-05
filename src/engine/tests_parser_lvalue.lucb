@@ -18,8 +18,8 @@
 func r17a_parse_state(fd: FunctionDef*) -> ParseState*:
     cutils.dbuf_init(&fd.byte_code)
     fd.last_opcode_pos = -1
-    let raw = cutils.malloc(sizeof(ParseState)) else trap("out of memory")
-    discard(cutils.memset(raw, 0, sizeof(ParseState)))
+    let raw = cutils.malloc(memory.size_of(ParseState)) else trap("out of memory")
+    _ = cutils.memset(raw, 0, memory.size_of(ParseState))
     let s = (ParseState*)raw
     s.cur_func = fd
     return s

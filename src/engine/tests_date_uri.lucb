@@ -165,7 +165,7 @@ test "the ISO format":
     assert(parse_date_bytes(b"2018\x00", &is_local) == 1514764800000.0)
     assert(not is_local)
     assert(parse_date_bytes(b"+275760-09-13T00:00:00.000Z\x00", &is_local) == 8.64e15)
-    discard(parse_date_bytes(b"2018-01-02T23:02\x00", &is_local))
+    _ = parse_date_bytes(b"2018-01-02T23:02\x00", &is_local)
     assert(is_local)
     # -000000 is not a year
     assert(math.is_nan(parse_date_bytes(b"-000000-01-01T00:00:00Z\x00", &is_local)))

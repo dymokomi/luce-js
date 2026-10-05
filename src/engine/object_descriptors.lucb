@@ -22,13 +22,13 @@ func js_global_eval(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
 ## The global isNaN.
 func js_global_is_na_n(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var d: f64 = 0.0
-    discard(try js_to_float64(ctx, &d, argv[0]))
+    _ = try js_to_float64(ctx, &d, argv[0])
     return js_new_bool(d != d)
 
 ## The global isFinite.
 func js_global_is_finite(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var d: f64 = 0.0
-    discard(try js_to_float64(ctx, &d, argv[0]))
+    _ = try js_to_float64(ctx, &d, argv[0])
     # isfinite(d): the exponent is not all ones
     return js_new_bool((d.bits() & 0x7ff0000000000000) != 0x7ff0000000000000)
 
@@ -144,7 +144,7 @@ func js_object_define_properties(ctx: Context*, obj: Value, properties: Value) -
     for i in 0..<(usize)len:
         let desc = try js_get_property(ctx, props, tab[i].atom)
         defer js_free_value(ctx, desc)
-        discard(try js_define_property_desc(ctx, obj, tab[i].atom, desc, prop_throw))
+        _ = try js_define_property_desc(ctx, obj, tab[i].atom, desc, prop_throw)
 
 # mark: Object constructor ======================================================================
 
@@ -185,7 +185,7 @@ func js_object_get_prototype_of(ctx: Context*, this_val: Value, argc: i32, argv:
 ## Object.setPrototypeOf(obj, proto).
 func js_object_set_prototype_of(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let obj = argv[0]
-    discard(try js_set_prototype_internal(ctx, obj, argv[1], true))
+    _ = try js_set_prototype_internal(ctx, obj, argv[1], true)
     return js_dup_value(ctx, obj)
 
 # magic = 1 if called as Reflect.defineProperty
@@ -224,7 +224,7 @@ func js_object__define_getter_(ctx: Context*, this_val: Value, argc: i32, argv: 
     let obj = try js_to_object(ctx, this_val)
     defer js_free_value(ctx, obj)
 
-    discard(try check_function(ctx, value))
+    _ = try check_function(ctx, value)
     let atom = try js_value_to_atom(ctx, prop)
     defer js_free_atom(ctx, atom)
     var flags = (prop_throw | prop_has_enumerable | prop_enumerable | prop_has_configurable | prop_configurable)
@@ -236,7 +236,7 @@ func js_object__define_getter_(ctx: Context*, this_val: Value, argc: i32, argv: 
     else:
         get = value
         flags |= prop_has_get
-    discard(try js_define_property(ctx, obj, atom, js_undefined(), get, set, flags))
+    _ = try js_define_property(ctx, obj, atom, js_undefined(), get, set, flags)
     return js_undefined()
 
 # mark: Own property descriptors ================================================================
@@ -265,16 +265,16 @@ func js_object_get_own_property_descriptor(ctx: Context*, this_val: Value, argc:
             errdefer js_free_value(ctx, ret)
             let flags = prop_c_w_e | prop_throw
             if (desc.flags & prop_getset) != 0:
-                discard(try js_define_property_value(ctx, ret, atom_get, js_dup_value(ctx, desc.getter), flags))
-                discard(try js_define_property_value(ctx, ret, atom_set, js_dup_value(ctx, desc.setter), flags))
+                _ = try js_define_property_value(ctx, ret, atom_get, js_dup_value(ctx, desc.getter), flags)
+                _ = try js_define_property_value(ctx, ret, atom_set, js_dup_value(ctx, desc.setter), flags)
             else:
-                discard(try js_define_property_value(ctx, ret, atom_value, js_dup_value(ctx, desc.value), flags))
-                discard(try js_define_property_value(ctx, ret, atom_writable,
-                                                     js_new_bool((desc.flags & prop_writable) != 0), flags))
-            discard(try js_define_property_value(ctx, ret, atom_enumerable,
-                                                 js_new_bool((desc.flags & prop_enumerable) != 0), flags))
-            discard(try js_define_property_value(ctx, ret, atom_configurable,
-                                                 js_new_bool((desc.flags & prop_configurable) != 0), flags))
+                _ = try js_define_property_value(ctx, ret, atom_value, js_dup_value(ctx, desc.value), flags)
+                _ = try js_define_property_value(ctx, ret, atom_writable,
+                                                 js_new_bool((desc.flags & prop_writable) != 0), flags)
+            _ = try js_define_property_value(ctx, ret, atom_enumerable,
+                                             js_new_bool((desc.flags & prop_enumerable) != 0), flags)
+            _ = try js_define_property_value(ctx, ret, atom_configurable,
+                                             js_new_bool((desc.flags & prop_configurable) != 0), flags)
     return ret
 
 ## Object.getOwnPropertyDescriptors(obj).
@@ -299,7 +299,7 @@ func js_object_get_own_property_descriptors(ctx: Context*, this_val: Value, argc
             error(failure.code, failure.message)
         js_free_value(ctx, atom_val)
         if not js_is_undefined(desc):
-            discard(try js_define_property_value(ctx, r, tab[i].atom, desc, prop_c_w_e | prop_throw))
+            _ = try js_define_property_value(ctx, r, tab[i].atom, desc, prop_c_w_e | prop_throw)
     return r
 
 # mark: Own property keys =======================================================================
@@ -316,9 +316,9 @@ func js_get_own_property_names2_item(ctx: Context*, obj: Value, atom: Atom, kind
             let val = try js_new_array(ctx)
             errdefer js_free_value(ctx, val)
             let key = try js_atom_to_value(ctx, atom)
-            discard(try js_create_data_property_uint32(ctx, val, 0, key, prop_throw))
+            _ = try js_create_data_property_uint32(ctx, val, 0, key, prop_throw)
             let value = try js_get_property(ctx, obj, atom)
-            discard(try js_create_data_property_uint32(ctx, val, 1, value, prop_throw))
+            _ = try js_create_data_property_uint32(ctx, val, 1, value, prop_throw)
             return val
         _:
             # IteratorKind.key
@@ -351,7 +351,7 @@ func js_get_own_property_names2(ctx: Context*, obj1: Value, flags: i32, kind: i3
             if (desc.flags & prop_enumerable) == 0:
                 continue
         let val = try js_get_own_property_names2_item(ctx, obj, atom, kind)
-        discard(try js_create_data_property_uint32(ctx, r, (i64)j, val, 0))
+        _ = try js_create_data_property_uint32(ctx, r, (i64)j, val, 0)
         j += 1
     return r
 

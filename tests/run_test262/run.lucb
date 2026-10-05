@@ -182,7 +182,7 @@ func run_test_buf(tls: ThreadLocalStorage*, filename: const u8*, harness: const 
         test_failed += 1
         if let fo = outfile:
             # do not output a failure number to minimize diff
-            discard(fprintf(fo, z("  FAILED\n")))
+            _ = fprintf(fo, z("  FAILED\n"))
     return ret
 
 func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
@@ -205,7 +205,7 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
     if new_style:
         if harness == none:
             if let p = strstr(filename, z("test/")):
-                discard(snprintf(&harnessbuf[0], 1024, z("%.*s%s"), (i32)(p - filename), filename, z("harness")))
+                _ = snprintf(&harnessbuf[0], 1024, z("%.*s%s"), (i32)(p - filename), filename, z("harness"))
             else:
                 harnessbuf[0] = 0
             harness = &harnessbuf[0]
@@ -254,7 +254,7 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
             if p != none:
                 while let option = get_option(&p, &state):
                     if find_word(cnull(harness_features), option) != none:
-                        discard(0)  # feature is enabled
+                        _ = 0  # feature is enabled
                     elif let p1 = find_word(cnull(harness_skip_features), option):
                         # skip disabled feature
                         if let counts = harness_skip_features_count:
@@ -263,7 +263,7 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
                         skip = true
                     else:
                         # feature is not listed: skip and warn
-                        discard(printf(z("%s:%d: unknown feature: %s\n"), filename, 1, option))
+                        _ = printf(z("%s:%d: unknown feature: %s\n"), filename, 1, option)
                         skip = true
                     c_free(option)
             c_free(desc)
@@ -272,8 +272,8 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
     else:
         if harness == none:
             if let p = strstr(filename, z("test/")):
-                discard(snprintf(&harnessbuf[0], 1024, z("%.*s%s"), (i32)(p - filename), filename,
-                                 z("test/harness")))
+                _ = snprintf(&harnessbuf[0], 1024, z("%.*s%s"), (i32)(p - filename), filename,
+                             z("test/harness"))
             else:
                 harnessbuf[0] = 0
             harness = &harnessbuf[0]
@@ -309,14 +309,14 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
 
     if let fo = outfile:
         if index >= 0:
-            discard(fprintf(fo, z("%d: %s%s%s%s%s%s%s\n"), index, filename,
-                            z("  @noStrict") if is_nostrict else z(""),
-                            z("  @onlyStrict") if is_onlystrict else z(""),
-                            z("  async") if is_async else z(""),
-                            z("  module") if is_module else z(""),
-                            z("  @negative") if is_negative else z(""),
-                            z("  SKIPPED") if skip else z("")))
-            discard(fflush(fo))
+            _ = fprintf(fo, z("%d: %s%s%s%s%s%s%s\n"), index, filename,
+                        z("  @noStrict") if is_nostrict else z(""),
+                        z("  @onlyStrict") if is_onlystrict else z(""),
+                        z("  async") if is_async else z(""),
+                        z("  module") if is_module else z(""),
+                        z("  @negative") if is_negative else z(""),
+                        z("  SKIPPED") if skip else z(""))
+            _ = fflush(fo)
 
     var use_strict = false
     var use_nostrict = false
@@ -366,7 +366,7 @@ func run_test(tls: ThreadLocalStorage*, filename: const u8*, index: i32) -> i32:
         if let fo = outfile:
             if index >= 0 and elapsed >= clocks_per_sec // 10:
                 # output timings for tests that take more than 100 ms
-                discard(fprintf(fo, z(" time: %d ms\n"), (i32)(elapsed * 1000 // clocks_per_sec)))
+                _ = fprintf(fo, z(" time: %d ms\n"), (i32)(elapsed * 1000 // clocks_per_sec))
     namelist_free(&include_list)
     c_free(error_type)
     c_free(buf)

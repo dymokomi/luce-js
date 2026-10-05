@@ -118,7 +118,7 @@ func bc_get_buf(s: BCReaderState*, buf: u8*, buf_len: u32) -> !:
     if buf_len != 0:
         if bc_remaining(s) < (isize)buf_len:
             try bc_read_error_end(s)
-        discard(cutils.memcpy(buf, s.ptr, (usize)buf_len))
+        _ = cutils.memcpy(buf, s.ptr, (usize)buf_len)
         s.ptr += (usize)buf_len
 
 ## The atom of number `idx` of the input, as a new reference.
@@ -169,7 +169,7 @@ func js_read_string(s: BCReaderState*) -> String*!:
     if (usize)bc_remaining(s) < size:
         js_free_string(s.ctx.rt, p)
         try bc_read_error_end(s)
-    discard(cutils.memcpy(str8(p), s.ptr, size))
+    _ = cutils.memcpy(str8(p), s.ptr, size)
     s.ptr += size
     if is_wide_char:
         if is_be():
@@ -223,7 +223,7 @@ func js_read_bigint(s: BCReaderState*) -> Value!:
 ## Remember the object just read, when references are allowed (BC_add_object_ref1).
 func bc_add_object_ref1(s: BCReaderState*, p: Object*?) -> !:
     if s.allow_reference:
-        try js_resize_array(s.ctx, (void*?*)&s.objects, (i32)sizeof(Object*?), &s.objects_size,
+        try js_resize_array(s.ctx, (void*?*)&s.objects, (i32)memory.size_of(Object*?), &s.objects_size,
                             s.objects_count + 1)
         let objects = s.objects else trap("bc_add_object_ref1: no table")
         objects[(usize)s.objects_count] = p
@@ -267,7 +267,7 @@ func js_read_function_bytecode(s: BCReaderState*, b: FunctionBytecode*, byte_cod
                 let idx = cutils.get_u32(bc_buf + (usize)pos + 1)
                 if s.is_rom_data:
                     # just increment the reference count of the atom
-                    discard(js_dup_atom(s.ctx, idx))
+                    _ = js_dup_atom(s.ctx, idx)
                 else:
                     var atom: Atom = no_atom
                     bc_idx_to_atom(s, &atom, idx) catch failure:
@@ -276,7 +276,7 @@ func js_read_function_bytecode(s: BCReaderState*, b: FunctionBytecode*, byte_cod
                         error(failure.code, failure.message)
                     cutils.put_u32(bc_buf + (usize)pos + 1, atom)
             _:
-                discard(0)
+                _ = 0
         pos += len
     b.byte_code_len = (i32)bc_len
 
@@ -306,7 +306,7 @@ func js_read_function_tag(s: BCReaderState*) -> Value!:
     var idx: i32 = 0
     var local_count: i32 = 0
 
-    discard(cutils.memset(&bc, 0, sizeof(FunctionBytecode)))
+    _ = cutils.memset(&bc, 0, memory.size_of(FunctionBytecode))
 
     try bc_get_u16(s, &v16)
     js_read_function_flags(&bc, v16)
@@ -327,15 +327,15 @@ func js_read_function_tag(s: BCReaderState*) -> Value!:
     # The sizes wrap as C's uint64_t arithmetic does; a huge count is refused below.
     var function_size: u64 = 0
     if bc.has_debug:
-        function_size = (u64)sizeof(FunctionBytecode)
+        function_size = (u64)memory.size_of(FunctionBytecode)
     else:
-        function_size = (u64)offsetof(FunctionBytecode, debug)
+        function_size = (u64)memory.offset_of(FunctionBytecode, debug)
     let cpool_offset = (i32)function_size
-    function_size = function_size +% (u64)(i64)bc.cpool_count *% (u64)sizeof(Value)
+    function_size = function_size +% (u64)(i64)bc.cpool_count *% (u64)memory.size_of(Value)
     let vardefs_offset = (i32)function_size
-    function_size = function_size +% (u64)(i64)local_count *% (u64)sizeof(BytecodeVarDef)
+    function_size = function_size +% (u64)(i64)local_count *% (u64)memory.size_of(BytecodeVarDef)
     let closure_var_offset = (i32)function_size
-    function_size = function_size +% (u64)(i64)bc.closure_var_count *% (u64)sizeof(ClosureVar)
+    function_size = function_size +% (u64)(i64)bc.closure_var_count *% (u64)memory.size_of(ClosureVar)
     let byte_code_offset = (i32)function_size
     if not bc.read_only_bytecode:
         function_size = function_size +% (u64)(i64)bc.byte_code_len
@@ -345,7 +345,7 @@ func js_read_function_tag(s: BCReaderState*) -> Value!:
 
     let b = (FunctionBytecode*)(try js_mallocz(ctx, (usize)function_size))
 
-    discard(cutils.memcpy(b, &bc, offsetof(FunctionBytecode, debug)))
+    _ = cutils.memcpy(b, &bc, memory.offset_of(FunctionBytecode, debug))
     if local_count != 0:
         b.vardefs = (BytecodeVarDef*)((u8*)b + (usize)vardefs_offset)
     if b.closure_var_count != 0:
@@ -429,7 +429,7 @@ func js_read_module(s: BCReaderState*) -> Value!:
     try bc_get_leb128_int(s, &m.req_module_entries_count)
     if m.req_module_entries_count != 0:
         m.req_module_entries_size = m.req_module_entries_count
-        let entries = (ReqModuleEntry*)(try js_mallocz(ctx, sizeof(ReqModuleEntry) *% (usize)m.req_module_entries_size))
+        let entries = (ReqModuleEntry*)(try js_mallocz(ctx, memory.size_of(ReqModuleEntry) *% (usize)m.req_module_entries_size))
         m.req_module_entries = entries
         for i: i32 in 0..<m.req_module_entries_count:
             let rme = entries + (usize)i
@@ -439,7 +439,7 @@ func js_read_module(s: BCReaderState*) -> Value!:
     try bc_get_leb128_int(s, &m.export_entries_count)
     if m.export_entries_count != 0:
         m.export_entries_size = m.export_entries_count
-        let entries = (ExportEntry*)(try js_mallocz(ctx, sizeof(ExportEntry) *% (usize)m.export_entries_size))
+        let entries = (ExportEntry*)(try js_mallocz(ctx, memory.size_of(ExportEntry) *% (usize)m.export_entries_size))
         m.export_entries = entries
         for i: i32 in 0..<m.export_entries_count:
             let me = entries + (usize)i
@@ -455,7 +455,7 @@ func js_read_module(s: BCReaderState*) -> Value!:
     try bc_get_leb128_int(s, &m.star_export_entries_count)
     if m.star_export_entries_count != 0:
         m.star_export_entries_size = m.star_export_entries_count
-        let entries = (StarExportEntry*)(try js_mallocz(ctx, sizeof(StarExportEntry) *% (usize)m.star_export_entries_size))
+        let entries = (StarExportEntry*)(try js_mallocz(ctx, memory.size_of(StarExportEntry) *% (usize)m.star_export_entries_size))
         m.star_export_entries = entries
         for i: i32 in 0..<m.star_export_entries_count:
             let se = entries + (usize)i
@@ -464,7 +464,7 @@ func js_read_module(s: BCReaderState*) -> Value!:
     try bc_get_leb128_int(s, &m.import_entries_count)
     if m.import_entries_count != 0:
         m.import_entries_size = m.import_entries_count
-        let entries = (ImportEntry*)(try js_mallocz(ctx, sizeof(ImportEntry) *% (usize)m.import_entries_size))
+        let entries = (ImportEntry*)(try js_mallocz(ctx, memory.size_of(ImportEntry) *% (usize)m.import_entries_size))
         m.import_entries = entries
         for i: i32 in 0..<m.import_entries_count:
             let mi = entries + (usize)i

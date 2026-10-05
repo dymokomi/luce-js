@@ -60,7 +60,7 @@ func js_string_compare(ctx: Context*, p1: const String*, p2: const String*) -> i
 # Copy `len` code units of `p` from `offset` to `dst` as 16-bit code units.
 func copy_str16(dst: u16*, p: const String*, offset: i32, len: i32):
     if p.is_wide_char:
-        discard(cutils.memcpy(dst, str16(p) + offset, (usize)len * 2))
+        _ = cutils.memcpy(dst, str16(p) + offset, (usize)len * 2)
     else:
         let src1 = str8(p) + offset
         for i in 0..<len:
@@ -74,8 +74,8 @@ func js_concat_string1(ctx: Context*, p1: const String*, p2: const String*) -> V
     let is_wide_char = p1.is_wide_char or p2.is_wide_char
     let p = try js_alloc_string(ctx, (i32)len, is_wide_char)
     if not is_wide_char:
-        discard(cutils.memcpy(str8(p), str8(p1), (usize)p1.len))
-        discard(cutils.memcpy(str8(p) + p1.len, str8(p2), (usize)p2.len))
+        _ = cutils.memcpy(str8(p), str8(p1), (usize)p1.len)
+        _ = cutils.memcpy(str8(p) + p1.len, str8(p2), (usize)p2.len)
         str8(p)[len] = 0
     else:
         copy_str16(str16(p), p1, 0, (i32)p1.len)
@@ -94,9 +94,9 @@ func js_concat_string_in_place(ctx: Context*, p1: String*, op2: Value) -> bool:
             return false
         let size1 = js_malloc_usable_size(ctx, p1)
         if p1.is_wide_char:
-            if size1 >= sizeof(String) + ((usize)(p1.len + p2.len) << 1):
+            if size1 >= memory.size_of(String) + ((usize)(p1.len + p2.len) << 1):
                 if p2.is_wide_char:
-                    discard(cutils.memcpy(str16(p1) + p1.len, str16(p2), (usize)p2.len << 1))
+                    _ = cutils.memcpy(str16(p1) + p1.len, str16(p2), (usize)p2.len << 1)
                     p1.len += p2.len
                     return true
                 for i in 0..<p2.len:
@@ -104,8 +104,8 @@ func js_concat_string_in_place(ctx: Context*, p1: String*, op2: Value) -> bool:
                     p1.len += 1
                 return true
         elif not p2.is_wide_char:
-            if size1 >= sizeof(String) + (usize)p1.len + (usize)p2.len + 1:
-                discard(cutils.memcpy(str8(p1) + p1.len, str8(p2), (usize)p2.len))
+            if size1 >= memory.size_of(String) + (usize)p1.len + (usize)p2.len + 1:
+                _ = cutils.memcpy(str8(p1) + p1.len, str8(p2), (usize)p2.len)
                 p1.len += p2.len
                 str8(p1)[p1.len] = 0
                 return true

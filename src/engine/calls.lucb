@@ -28,7 +28,7 @@ func js_call_c_function(ctx: Context*, func_obj: Value, this_obj: Value, argc: i
     let arg_count = (i32)p.u.cfunc.length
 
     # better to always check stack overflow
-    if js_check_stack_overflow(rt, sizeof(Value) * (usize)arg_count):
+    if js_check_stack_overflow(rt, memory.size_of(Value) * (usize)arg_count):
         try js_throw_stack_overflow(ctx)
 
     if argc < arg_count:
@@ -134,13 +134,13 @@ func js_call_bound_function(ctx: Context*, func_obj: Value, this_obj: Value, arg
     let p = func_obj.u.obj
     let bf = p.u.bound_function
     let arg_count = bf.argc + argc
-    if js_check_stack_overflow(ctx.rt, sizeof(Value) * (usize)arg_count):
+    if js_check_stack_overflow(ctx.rt, memory.size_of(Value) * (usize)arg_count):
         try js_throw_stack_overflow(ctx)
     if arg_count <= js_bound_args_local_max:
         var local_buf: Value[32] = ---
         return try js_call_bound_function_args(ctx, func_obj, this_obj, argc, argv, flags,
                                                &local_buf[0])
-    let heap_buf = (Value*)(try js_malloc(ctx, sizeof(Value) * (usize)arg_count))
+    let heap_buf = (Value*)(try js_malloc(ctx, memory.size_of(Value) * (usize)arg_count))
     defer js_free(ctx, heap_buf)
     return try js_call_bound_function_args(ctx, func_obj, this_obj, argc, argv, flags, heap_buf)
 

@@ -110,7 +110,7 @@ func atom_hash_table(rt: Runtime*) -> u32*:
 func js_resize_atom_hash(rt: Runtime*, new_hash_size: i32) -> i32:
     assert((new_hash_size & (new_hash_size - 1)) == 0)  # power of two
     let new_hash_mask = (u32)(new_hash_size - 1)
-    let mem = js_mallocz_rt(rt, sizeof(u32) * (usize)new_hash_size) else return -1
+    let mem = js_mallocz_rt(rt, memory.size_of(u32) * (usize)new_hash_size) else return -1
     let new_hash = (u32*)mem
     if let old_hash = rt.atom_hash:
         for i in 0..<(u32)rt.atom_hash_size:
@@ -265,14 +265,14 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
         var old_array: void*? = none
         if let a = rt.atom_array:
             old_array = a
-        let array_size = sizeof(AtomStruct*) * (usize)new_size
+        let array_size = memory.size_of(AtomStruct*) * (usize)new_size
         let mem = js_realloc_rt(rt, old_array, array_size) else return js_new_atom_fail(rt, str_)
         let new_array = (AtomStruct**)mem
         # Note: the atom 0 is not used
         var start = (u32)rt.atom_size
         if start == 0:
             # no_atom entry
-            if let pm = js_mallocz_rt(rt, sizeof(AtomStruct)):
+            if let pm = js_mallocz_rt(rt, memory.size_of(AtomStruct)):
                 let p = (AtomStruct*)pm
                 js_rc(p).ref_count = 1  # not refcounted
                 p.atom_type = js_atom_type_symbol
@@ -300,16 +300,16 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
             p.atom_type = atom_type
         else:
             let data_size = ((usize)s.len << (usize)s.is_wide_char) + 1 - (usize)s.is_wide_char
-            let size = sizeof(String) + data_size
+            let size = memory.size_of(String) + data_size
             let pm = js_malloc_rt(rt, size) else return js_new_atom_fail(rt, str_)
             p = (AtomStruct*)pm
             js_rc(p).ref_count = 1
             p.is_wide_char = s.is_wide_char
             p.len = s.len
-            discard(cutils.memcpy(str8(p), str8(s), data_size))
+            _ = cutils.memcpy(str8(p), str8(s), data_size)
             js_free_string(rt, s)
     else:
-        let pm = js_malloc_rt(rt, sizeof(AtomStruct)) else return no_atom  # empty wide string
+        let pm = js_malloc_rt(rt, memory.size_of(AtomStruct)) else return no_atom  # empty wide string
         p = (AtomStruct*)pm
         js_rc(p).ref_count = 1
         p.is_wide_char = true  # Hack to represent NULL as a JSString
@@ -332,14 +332,14 @@ func js_new_atom_raw(rt: Runtime*, str_: String*?, atom_type0: u8) -> Atom:
         p.hash_next = atom_hash[h1]
         atom_hash[h1] = i
         if rt.atom_count >= rt.atom_count_resize:
-            discard(js_resize_atom_hash(rt, rt.atom_hash_size * 2))
+            _ = js_resize_atom_hash(rt, rt.atom_hash_size * 2)
 
     return i
 
 # only works with zero terminated 8 bit strings
 func js_new_atom_init_raw(rt: Runtime*, str_: const u8*, len: i32, atom_type: u8) -> Atom:
     let p = js_alloc_string_rt(rt, len, false) else return no_atom
-    discard(cutils.memcpy(str8(p), str_, (usize)len))
+    _ = cutils.memcpy(str8(p), str_, (usize)len)
     str8(p)[len] = 0
     return js_new_atom_raw(rt, p, atom_type)
 

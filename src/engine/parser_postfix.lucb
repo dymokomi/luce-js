@@ -311,11 +311,11 @@ func js_parse_callee(s: ParseState*, call_type: FuncCallType,
         set_last_opcode(fd, (u8)Op.get_field2)
         fd.byte_code.size = (usize)(fd.last_opcode_pos + 1 + 4)
         let next_label = emit_goto(s, (i32)Op.goto_, -1)
-        discard(emit_label(s, opt_chain_label))
+        _ = emit_label(s, opt_chain_label)
         # need an additional undefined value for the case where the optional field does
         # not exists
         emit_op(s, (u8)Op.undefined)
-        discard(emit_label(s, next_label))
+        _ = emit_label(s, next_label)
         drop_count = 2
         opcode = (i32)Op.get_field
     elif opcode == (i32)TempOp.scope_get_private_field:
@@ -332,11 +332,11 @@ func js_parse_callee(s: ParseState*, call_type: FuncCallType,
         set_last_opcode(fd, (u8)Op.get_array_el2)
         fd.byte_code.size = (usize)(fd.last_opcode_pos + 1)
         let next_label = emit_goto(s, (i32)Op.goto_, -1)
-        discard(emit_label(s, opt_chain_label))
+        _ = emit_label(s, opt_chain_label)
         # need an additional undefined value for the case where the optional field does
         # not exists
         emit_op(s, (u8)Op.undefined)
-        discard(emit_label(s, next_label))
+        _ = emit_label(s, next_label)
         drop_count = 2
         opcode = (i32)Op.get_array_el
     elif opcode == (i32)TempOp.scope_get_var:

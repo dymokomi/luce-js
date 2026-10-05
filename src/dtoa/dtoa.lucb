@@ -73,9 +73,9 @@ func dtoa_done(buf: u8*, q: u8*) -> i32:
 pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
                  tmp_mem: DTOATempMem*) -> i32:
     var mptr: u64* = &tmp_mem.mem[0]
-    let tmp1 = (Mpb*)dtoa_malloc(&mptr, sizeof(Mpb) + sizeof(u32) * dbignum_len_max)
-    let mant_max = (Mpb*)dtoa_malloc(&mptr, sizeof(Mpb) + sizeof(u32) * mant_len_max)
-    assert((mptr - &tmp_mem.mem[0]) <= (isize)(sizeof(DTOATempMem) // sizeof(u64)))
+    let tmp1 = (Mpb*)dtoa_malloc(&mptr, memory.size_of(Mpb) + memory.size_of(u32) * dbignum_len_max)
+    let mant_max = (Mpb*)dtoa_malloc(&mptr, memory.size_of(Mpb) + memory.size_of(u32) * mant_len_max)
+    assert((mptr - &tmp_mem.mem[0]) <= (isize)(memory.size_of(DTOATempMem) // memory.size_of(u64)))
     let fmt_mode = flags & dtoa_format_mask
 
     let radix_shift = cutils.ctz32((u32)radix)
@@ -92,10 +92,10 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
             if sgn != 0:
                 *q = '-'
                 q += 1
-            discard(cutils.memcpy(q, "Infinity".bytes.data, 8))
+            _ = cutils.memcpy(q, "Infinity".bytes.data, 8)
             q += 8
         else:
-            discard(cutils.memcpy(q, "NaN".bytes.data, 3))
+            _ = cutils.memcpy(q, "NaN".bytes.data, 3)
             q += 3
         return dtoa_done(buf, q)
     elif e == 0 and m == 0:
@@ -198,7 +198,7 @@ pub func js_dtoa(buf: u8*, d: f64, radix: i32, n_digits: i32, flags: i32,
                                     cutils.max_int(E + 1, 1))
             if q[0] == '0' and len >= 2 and q[1] != '.':
                 len -= 1
-                discard(cutils.memmove(q, q + 1, (usize)len))
+                _ = cutils.memmove(q, q + 1, (usize)len)
             q += (usize)len
             return dtoa_done(buf, q)
         else:

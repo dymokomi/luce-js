@@ -181,5 +181,5 @@ pub func js_to_c_string(ctx: Context*, val1: Value) -> const u8*!:
 pub func js_free_c_string(ctx: Context*, ptr: const u8*?):
     let text = ptr else return
     # purposely removing constness
-    let p = (String*)((u8*)text - sizeof(String))
+    let p = (String*)((u8*)text - memory.size_of(String))
     js_free_value(ctx, js_mkptr(Tag.string, p))

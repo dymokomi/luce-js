@@ -56,7 +56,7 @@ func js_copy_sub_array(ctx: Context*, obj: Value, to_pos: i64, from_pos: i64, co
         if not done_fast:
             var val = js_undefined()
             if try js_try_get_property_int64(ctx, obj, from_, &val):
-                discard(try js_set_property_int64(ctx, obj, to, val))
+                _ = try js_set_property_int64(ctx, obj, to, val)
             else:
-                discard(try js_delete_property_int64(ctx, obj, to, prop_throw))
+                _ = try js_delete_property_int64(ctx, obj, to, prop_throw)
             i += 1

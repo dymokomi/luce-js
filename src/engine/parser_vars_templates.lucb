@@ -100,7 +100,7 @@ func define_var(s: ParseState*, fd: FunctionDef*, name: Atom, var_def_type: VarD
                 if let hf = find_global_var(fd, name):
                     if (hf.is_lexical and hf.scope_level == fd.scope_level and fd.eval_type == eval_type_module):
                         try js_parse_error(s, "invalid redefinition of lexical identifier")
-                discard(try add_global_var(s.ctx, fd, name))
+                _ = try add_global_var(s.ctx, fd, name)
                 idx = global_var_offset
             else:
                 # if the variable already exists, don't add it again
@@ -154,7 +154,7 @@ func js_parse_template(s: ParseState*, call: bool, argc: i32*?) -> !:
         # the constant pool keeps the template object alive
         js_free_value(ctx, template_object)
         raw_array = try js_new_array(ctx)
-        discard(try js_define_property_value(ctx, template_object, atom_raw, raw_array, prop_throw))
+        _ = try js_define_property_value(ctx, template_object, atom_raw, raw_array, prop_throw)
 
     var depth: i32 = 0
     var done = false
@@ -162,17 +162,17 @@ func js_parse_template(s: ParseState*, call: bool, argc: i32*?) -> !:
         var p = s.token.ptr + 1
         var cooked = s.token
         if call:
-            discard(try js_define_property_value_uint32(ctx, raw_array, (u32)depth,
-                                                        js_dup_value(ctx, s.token.u.str_.str),
-                                                        prop_enumerable | prop_throw))
+            _ = try js_define_property_value_uint32(ctx, raw_array, (u32)depth,
+                                                    js_dup_value(ctx, s.token.u.str_.str),
+                                                    prop_enumerable | prop_throw)
             # re-parse the string with escape sequences but do not throw a syntax error
             # if it contains invalid sequences
             js_parse_string(s, (i32)'`', false, p, &cooked, &p) catch failure:
                 cooked.u.str_.str = js_undefined()
                 recover ()
-            discard(try js_define_property_value_uint32(ctx, template_object, (u32)depth,
-                                                        cooked.u.str_.str,
-                                                        prop_enumerable | prop_throw))
+            _ = try js_define_property_value_uint32(ctx, template_object, (u32)depth,
+                                                    cooked.u.str_.str,
+                                                    prop_enumerable | prop_throw)
         else:
             # re-parse the string with escape sequences and throw a syntax error if it
             # contains invalid sequences

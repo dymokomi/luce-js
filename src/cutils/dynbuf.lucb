@@ -34,7 +34,7 @@ pub struct DynBuf: Writer:
 
     ## Append `data` (the `io.Writer` requirement); fails with `memory.exhausted` when the
     ## buffer cannot grow.
-    pub mutating func write(data: const u8[]) -> usize!:
+    pub func write(data: const u8[]) -> usize!:
         if dbuf_put(&self, data.data, data.length) != 0:
             error(memory.exhausted, "DynBuf: out of memory")
         return data.length
@@ -99,7 +99,7 @@ pub func dbuf_put_self(s: DynBuf*, offset: usize, len: usize) -> i32:
             return -1
     if len != 0:
         let b = dbuf_storage(s)
-        discard(memcpy(b + s.size, b + offset, len))
+        _ = memcpy(b + s.size, b + offset, len)
     s.size += len
     return 0
 
@@ -173,7 +173,7 @@ pub func dbuf_printf(s: DynBuf*, text: fmt) -> i32:
 pub func dbuf_free(s: DynBuf*):
     if let b = s.buf:
         let realloc_func = s.realloc_func else trap("DynBuf: not initialised")
-        discard(realloc_func(s.opaque, b, 0))
+        _ = realloc_func(s.opaque, b, 0)
     *s = DynBuf()
 
 ## Whether an allocation of `s` has failed.

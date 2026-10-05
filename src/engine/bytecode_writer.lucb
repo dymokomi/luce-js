@@ -73,25 +73,25 @@ struct BCWriterState:
 # mark: Primitives ==============================================================================
 
 func bc_put_u8(s: BCWriterState*, v: u8):
-    discard(cutils.dbuf_putc(&s.dbuf, v))
+    _ = cutils.dbuf_putc(&s.dbuf, v)
 
 func bc_put_u16(s: BCWriterState*, v0: u16):
     var v = v0
     if is_be():
         v = cutils.bswap16(v)
-    discard(cutils.dbuf_put_u16(&s.dbuf, v))
+    _ = cutils.dbuf_put_u16(&s.dbuf, v)
 
 func bc_put_u32(s: BCWriterState*, v0: u32):
     var v = v0
     if is_be():
         v = cutils.bswap32(v)
-    discard(cutils.dbuf_put_u32(&s.dbuf, v))
+    _ = cutils.dbuf_put_u32(&s.dbuf, v)
 
 func bc_put_u64(s: BCWriterState*, v0: u64):
     var v = v0
     if is_be():
         v = cutils.bswap64(v)
-    discard(cutils.dbuf_put_u64(&s.dbuf, v))
+    _ = cutils.dbuf_put_u64(&s.dbuf, v)
 
 func bc_put_leb128(s: BCWriterState*, v: u32):
     dbuf_put_leb128(&s.dbuf, v)
@@ -121,13 +121,13 @@ func bc_atom_to_idx(s: BCWriterState*, pres: u32*, atom0: Atom) -> !:
             return
     if atom >= (u32)s.atom_to_idx_size:
         let old_size = s.atom_to_idx_size
-        try js_resize_array(s.ctx, (void*?*)&s.atom_to_idx, (i32)sizeof(u32), &s.atom_to_idx_size,
+        try js_resize_array(s.ctx, (void*?*)&s.atom_to_idx, (i32)memory.size_of(u32), &s.atom_to_idx_size,
                             (i32)(atom + 1))
         # XXX: could add a specific js_resize_array() function to do it
         let grown = s.atom_to_idx else trap("bc_atom_to_idx: no table")
         for i in (usize)old_size..<(usize)s.atom_to_idx_size:
             grown[i] = 0
-    js_resize_array(s.ctx, (void*?*)&s.idx_to_atom, (i32)sizeof(Atom), &s.idx_to_atom_size,
+    js_resize_array(s.ctx, (void*?*)&s.idx_to_atom, (i32)memory.size_of(Atom), &s.idx_to_atom_size,
                     s.idx_to_atom_count + 1) catch failure:
         *pres = 0
         error(failure.code, failure.message)
@@ -179,14 +179,14 @@ func bc_byte_swap(bc_buf: u8*, bc_len: i32):
                 cutils.put_u16(operand, cutils.bswap16((u16)cutils.get_u16(operand)))
                 cutils.put_u16(operand + 2, cutils.bswap16((u16)cutils.get_u16(operand + 2)))
             _:
-                discard(0)
+                _ = 0
         pos += len
 
 ## Write a function's bytecode, its atom operands renumbered through the atom table.
 func js_write_function_bytecode(s: BCWriterState*, bc_buf1: const u8*, bc_len: i32) -> !:
     let bc_buf = (u8*)(try js_malloc(s.ctx, (usize)bc_len))
     defer js_free(s.ctx, bc_buf)
-    discard(cutils.memcpy(bc_buf, bc_buf1, (usize)bc_len))
+    _ = cutils.memcpy(bc_buf, bc_buf1, (usize)bc_len)
 
     var pos: i32 = 0
     while pos < bc_len:
@@ -200,13 +200,13 @@ func js_write_function_bytecode(s: BCWriterState*, bc_buf1: const u8*, bc_len: i
                 try bc_atom_to_idx(s, &val, atom)
                 cutils.put_u32(bc_buf + (usize)pos + 1, val)
             _:
-                discard(0)
+                _ = 0
         pos += len
 
     if is_be():
         bc_byte_swap(bc_buf, bc_len)
 
-    discard(cutils.dbuf_put(&s.dbuf, bc_buf, (usize)bc_len))
+    _ = cutils.dbuf_put(&s.dbuf, bc_buf, (usize)bc_len)
 
 # mark: Strings and big integers ================================================================
 
@@ -218,7 +218,7 @@ func js_write_string(s: BCWriterState*, p: String*):
         for i in 0..<(usize)p.len:
             bc_put_u16(s, chars[i])
     else:
-        discard(cutils.dbuf_put(&s.dbuf, str8(p), (usize)p.len))
+        _ = cutils.dbuf_put(&s.dbuf, str8(p), (usize)p.len)
 
 ## Write a big integer as the shortest little-endian two's complement bytes that hold it
 ## (none for zero), after their count.
@@ -332,10 +332,10 @@ func js_write_function_tag(s: BCWriterState*, obj: Value) -> !:
         try bc_put_atom(s, b.debug.filename)
         bc_put_leb128(s, (u32)b.debug.pc2line_len)
         if let pc2line_buf = b.debug.pc2line_buf:
-            discard(cutils.dbuf_put(&s.dbuf, pc2line_buf, (usize)b.debug.pc2line_len))
+            _ = cutils.dbuf_put(&s.dbuf, pc2line_buf, (usize)b.debug.pc2line_len)
         if let source = b.debug.source:
             bc_put_leb128(s, (u32)b.debug.source_len)
-            discard(cutils.dbuf_put(&s.dbuf, source, (usize)b.debug.source_len))
+            _ = cutils.dbuf_put(&s.dbuf, source, (usize)b.debug.source_len)
         else:
             bc_put_leb128(s, 0)
 

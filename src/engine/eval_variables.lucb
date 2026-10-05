@@ -48,8 +48,8 @@ func add_eval_this_vars(ctx: Context*, fd: FunctionDef*):
 func add_eval_closure_var(ctx: Context*, s: FunctionDef*, fd: FunctionDef*,
                           closure_type: ClosureType, var_idx: i32, var_name: Atom,
                           is_const: bool, is_lexical: bool, var_kind: VarKind):
-    discard(get_closure_var(ctx, s, fd, closure_type, var_idx, var_name, is_const, is_lexical,
-                            var_kind) catch: recover -1)
+    _ = get_closure_var(ctx, s, fd, closure_type, var_idx, var_name, is_const, is_lexical,
+                        var_kind) catch: recover -1
 
 # Make every variable a direct eval() in `s` can name a captured variable of `s` or a
 # closure variable of `s`.
@@ -67,13 +67,13 @@ func add_eval_variables(ctx: Context*, s: FunctionDef*):
         add_eval_this_vars(ctx, s)
     var has_arguments_binding = s.has_arguments_binding
     if has_arguments_binding:
-        discard(add_arguments_var(ctx, s) catch: recover -1)
+        _ = add_arguments_var(ctx, s) catch: recover -1
         # also add an arguments binding in the argument scope to raise an error if a
         # direct eval in the argument scope tries to redefine it
         if s.has_parameter_expressions and ((i32)s.js_mode & js_mode_strict) == 0:
             add_arguments_arg(ctx, s) catch: recover ()
     if s.is_func_expr and s.func_name != no_atom:
-        discard(add_func_var(ctx, s, s.func_name) catch: recover -1)
+        _ = add_func_var(ctx, s, s.func_name) catch: recover -1
 
     for i in 0..<s.arg_count:
         capture_var(s, fd_arg(s, i))
@@ -99,11 +99,11 @@ func add_eval_variables(ctx: Context*, s: FunctionDef*):
             has_this_binding = true
         # add 'arguments' if it was not previously added
         if not has_arguments_binding and fd.has_arguments_binding:
-            discard(add_arguments_var(ctx, fd) catch: recover -1)
+            _ = add_arguments_var(ctx, fd) catch: recover -1
             has_arguments_binding = true
         # add function name
         if fd.is_func_expr and fd.func_name != no_atom:
-            discard(add_func_var(ctx, fd, fd.func_name) catch: recover -1)
+            _ = add_func_var(ctx, fd, fd.func_name) catch: recover -1
 
         # add lexical variables
         var scope_idx = fd_scope(fd, scope_level).first
@@ -180,7 +180,7 @@ func add_closure_variables(ctx: Context*, s: FunctionDef*, b: FunctionBytecode*,
     s.closure_var_size = count
     if count == 0:
         return
-    s.closure_var = (ClosureVar*)try js_malloc(ctx, sizeof(ClosureVar) * (usize)count)
+    s.closure_var = (ClosureVar*)try js_malloc(ctx, memory.size_of(ClosureVar) * (usize)count)
     # Add lexical variables in scope at the point of evaluation
     var i = scope_idx
     while i >= 0:
@@ -216,7 +216,7 @@ func add_closure_variables(ctx: Context*, s: FunctionDef*, b: FunctionBytecode*,
         let cv0 = closure_var + (isize)j
         match cv0.closure_type:
             .local_, .arg, .ref, .module_decl, .module_import:
-                discard(0)
+                _ = 0
             .global_ref, .global_decl, .global:
                 continue  # not necessary to add global variables
             _:

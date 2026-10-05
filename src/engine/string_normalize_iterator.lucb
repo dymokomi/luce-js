@@ -23,7 +23,7 @@ func js_to_utf32_string(ctx: Context*, pbuf: u32*?*, val1: Value) -> i32!:
     let p = val.u.string
     let len = (i32)p.len
     # UTF32 buffer length is len minus the number of correct surrogates pairs
-    let block = js_malloc(ctx, sizeof(u32) * (usize)cutils.max_int(len, 1)) catch failure:
+    let block = js_malloc(ctx, memory.size_of(u32) * (usize)cutils.max_int(len, 1)) catch failure:
         *pbuf = none
         error(failure.code, failure.message)
     let buf = (u32*)block

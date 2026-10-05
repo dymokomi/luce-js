@@ -128,7 +128,7 @@ func js_create_property(ctx: Context*, p: Object*, prop: Atom, val: Value, gette
     elif p.class_id == ClassId.global_object:
         # (as in QuickJS, the result of the deletion is ignored)
         if let d = delete_obj:
-            discard(delete_property(ctx, d, prop) else false)
+            _ = delete_property(ctx, d, prop) else false
         let vr = var_ref else trap("global variable without a reference")
         pr.u.var_ref = vr
         if (flags & prop_has_value) != 0:

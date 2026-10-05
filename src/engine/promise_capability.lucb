@@ -41,7 +41,7 @@ func js_promise_resolve_function_free_resolved(rt: Runtime*, sr: PromiseFunction
 ## Make the resolve and reject functions of `promise` in `resolving_funcs[0]` and
 ## `resolving_funcs[1]`.
 func js_create_resolving_functions(ctx: Context*, resolving_funcs: Value*, promise: Value) -> !:
-    let sr = (PromiseFunctionDataResolved*)(try js_malloc(ctx, sizeof(PromiseFunctionDataResolved)))
+    let sr = (PromiseFunctionDataResolved*)(try js_malloc(ctx, memory.size_of(PromiseFunctionDataResolved)))
     sr.ref_count = 1
     sr.already_resolved = false  # must be shared between the two functions
     defer js_promise_resolve_function_free_resolved(ctx.rt, sr)
@@ -51,7 +51,7 @@ func js_create_resolving_functions(ctx: Context*, resolving_funcs: Value*, promi
             if i != 0:
                 js_free_value(ctx, resolving_funcs[0])
             error(failure.code, failure.message)
-        let raw = js_malloc(ctx, sizeof(PromiseFunctionData)) catch failure:
+        let raw = js_malloc(ctx, memory.size_of(PromiseFunctionData)) catch failure:
             js_free_value(ctx, obj)
             if i != 0:
                 js_free_value(ctx, resolving_funcs[0])
@@ -157,7 +157,7 @@ func js_promise_constructor(ctx: Context*, new_target: Value, argc: i32, argv: V
     let obj = try js_create_from_ctor(ctx, new_target, (u32)ClassId.promise)
     # fail:
     errdefer js_free_value(ctx, obj)
-    let s = (PromiseData*)(try js_mallocz(ctx, sizeof(PromiseData)))
+    let s = (PromiseData*)(try js_mallocz(ctx, memory.size_of(PromiseData)))
     s.promise_state = PromiseState.pending
     s.is_handled = false
     for i: usize in 0..<2:

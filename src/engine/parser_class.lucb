@@ -45,7 +45,7 @@ func js_parse_class_static_block(s: ParseState*, cf: ClassFieldsDef*) -> !:
     try js_parse_function_decl2(s, ParseFunctionKind.class_static_init, js_func_normal,
                                 no_atom, s.token.ptr, ParseExportKind.none_, &init)
     # stack is now: fclosure
-    discard(push_scope(s) catch failure: recover -1)
+    _ = push_scope(s) catch failure: recover -1
     emit_op(s, (u8)TempOp.scope_get_var)
     emit_atom(s, atom_this)
     emit_u16(s, 0)
@@ -78,9 +78,9 @@ func js_parse_class_getset(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*,
                 try private_field_already_defined(s)
             vd.var_kind = VarKind.private_getter_setter
         else:
-            discard(try add_private_class_field(s, fd, name,
-                                                (VarKind)(u8)((i32)VarKind.private_getter + is_set),
-                                                is_static))
+            _ = try add_private_class_field(s, fd, name,
+                                            (VarKind)(u8)((i32)VarKind.private_getter + is_set),
+                                            is_static)
         (class_fields + (isize)(i32)is_static).need_brand = true
 
     var method_fd_opt: FunctionDef*? = none
@@ -98,8 +98,8 @@ func js_parse_class_getset(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*,
             var setter_name = try get_private_setter_name(ctx, name)
             defer free_atom_at(ctx, &setter_name)
             emit_atom(s, setter_name)
-            discard(try add_private_class_field(s, fd, setter_name, VarKind.private_setter,
-                                                is_static))
+            _ = try add_private_class_field(s, fd, setter_name, VarKind.private_setter,
+                                            is_static)
         else:
             emit_atom(s, name)
         emit_u16(s, (u16)s.fd().scope_level)
@@ -126,7 +126,7 @@ func js_parse_class_field(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*,
     if is_private:
         if find_private_class_field(ctx, fd, name, fd.scope_level) >= 0:
             try private_field_already_defined(s)
-        discard(try add_private_class_field(s, fd, name, VarKind.private_field, is_static))
+        _ = try add_private_class_field(s, fd, name, VarKind.private_field, is_static)
         emit_op(s, (u8)Op.private_symbol)
         emit_atom(s, name)
         emit_op(s, (u8)TempOp.scope_put_var_init)
@@ -213,7 +213,7 @@ func js_parse_class_method(s: ParseState*, fd: FunctionDef*, atoms: ClassAtoms*,
         method_fd.need_home_object = true
         if find_private_class_field(ctx, fd, name, fd.scope_level) >= 0:
             try private_field_already_defined(s)
-        discard(try add_private_class_field(s, fd, name, VarKind.private_method, is_static))
+        _ = try add_private_class_field(s, fd, name, VarKind.private_method, is_static)
         emit_op(s, (u8)Op.set_home_object)
         emit_op(s, (u8)Op.set_name)
         emit_atom(s, name)
@@ -310,7 +310,7 @@ func js_parse_class(s: ParseState*, is_class_expr: bool, export_flag: ParseExpor
             atoms.class_var_name = js_dup_atom(ctx, class_name)
     let class_var_name = atoms.class_var_name
 
-    discard(push_scope(s) catch failure: recover -1)
+    _ = push_scope(s) catch failure: recover -1
 
     if s.token.val == TokenType.extends:
         class_flags = define_class_has_heritage
@@ -321,12 +321,12 @@ func js_parse_class(s: ParseState*, is_class_expr: bool, export_flag: ParseExpor
 
     # add a 'const' definition for the class name
     if class_name != no_atom:
-        discard(try define_var(s, fd, class_name, VarDefKind.const_))
+        _ = try define_var(s, fd, class_name, VarDefKind.const_)
 
     try js_parse_expect(s, TokenType.lbrace)
 
     # this scope contains the private fields
-    discard(push_scope(s) catch failure: recover -1)
+    _ = push_scope(s) catch failure: recover -1
 
     emit_op(s, (u8)Op.push_const)
     let ctor_cpool_offset = fd.byte_code.size
@@ -403,7 +403,7 @@ func js_parse_class(s: ParseState*, is_class_expr: bool, export_flag: ParseExpor
 
     # store the function to initialize the fields to that it can be referenced by the
     # constructor
-    discard(try define_var(s, fd, atom_class_fields_init, VarDefKind.const_))
+    _ = try define_var(s, fd, atom_class_fields_init, VarDefKind.const_)
     if cf0.fields_init_fd != none:
         emit_class_init_end(s, cf0)
     else:
@@ -443,7 +443,7 @@ func js_parse_class(s: ParseState*, is_class_expr: bool, export_flag: ParseExpor
 
     # the class statements have a block level scope
     if class_var_name != no_atom:
-        discard(try define_var(s, fd, class_var_name, VarDefKind.let_))
+        _ = try define_var(s, fd, class_var_name, VarDefKind.let_)
         emit_op(s, (u8)TempOp.scope_put_var_init)
         emit_atom(s, class_var_name)
         emit_u16(s, (u16)fd.scope_level)
@@ -457,4 +457,4 @@ func js_parse_class(s: ParseState*, is_class_expr: bool, export_flag: ParseExpor
     if export_flag != ParseExportKind.none_:
         let m = fd.module else trap("js_parse_class: export outside a module")
         let export_name = class_var_name if export_flag == ParseExportKind.named else atom_default
-        discard(try add_export_entry(s, m, class_var_name, export_name, ExportType.local_))
+        _ = try add_export_entry(s, m, class_var_name, export_name, ExportType.local_)

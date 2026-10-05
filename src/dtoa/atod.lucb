@@ -11,6 +11,8 @@
 
 # mark: Digits ==================================================================================
 
+import memory
+
 func to_digit(c: u8) -> i32:
     if c >= '0' and c <= '9':
         return (i32)(c - '0')
@@ -63,8 +65,8 @@ pub func js_atod(text: const u8*, pnext: const u8**?, radix: i32, flags: i32,
 func atod_bits(text: const u8*, radix0: i32, flags: i32,
                tmp_mem: ATODTempMem*) -> (u64?, const u8*):
     var mptr: u64* = &tmp_mem.mem[0]
-    let tmp0 = (Mpb*)dtoa_malloc(&mptr, sizeof(Mpb) + sizeof(u32) * dbignum_len_max)
-    assert((mptr - &tmp_mem.mem[0]) <= (isize)(sizeof(ATODTempMem) // sizeof(u64)))
+    let tmp0 = (Mpb*)dtoa_malloc(&mptr, memory.size_of(Mpb) + memory.size_of(u32) * dbignum_len_max)
+    assert((mptr - &tmp_mem.mem[0]) <= (isize)(memory.size_of(ATODTempMem) // memory.size_of(u64)))
     let tab = mpb_tab(tmp0)
     let infinity: u64 = (u64)0x7ff << 52
     var radix = radix0

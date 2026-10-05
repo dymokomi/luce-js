@@ -50,7 +50,7 @@ func js_dataview_constructor(ctx: Context*, new_target: Value, argc: i32, argv: 
         len = (u32)((u64)abuf.byte_length - offset)
     elif offset + (u64)len > (u64)abuf.byte_length:
         try js_throw_range_error(ctx, "invalid byteOffset or byteLength")
-    let ta = (TypedArray*)(try js_malloc(ctx, sizeof(TypedArray)))
+    let ta = (TypedArray*)(try js_malloc(ctx, memory.size_of(TypedArray)))
     let p = obj.u.obj
     ta.obj = p
     ta.buffer = js_dup_value(ctx, buffer).u.obj

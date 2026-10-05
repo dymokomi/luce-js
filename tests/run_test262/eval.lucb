@@ -88,8 +88,8 @@ func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const 
         # XXX: should get the filename and line number
         if let fo = outf:
             if not is_error:
-                discard(fprintf(fo, z("%sThrow: "), strict_prefix(eval_flags)))
-            discard(js_print(ctx, js.js_null(), 1, &exception_val) catch: recover js.js_undefined())
+                _ = fprintf(fo, z("%sThrow: "), strict_prefix(eval_flags))
+            _ = js_print(ctx, js.js_null(), 1, &exception_val) catch: recover js.js_undefined()
         if is_error:
             let name = js.js_get_property_str(ctx, exception_val, "name") catch: recover js.js_undefined()
             error_name = js.js_to_c_string(ctx, name) catch: recover none
@@ -98,7 +98,7 @@ func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const 
                 let stack_str: const u8*? = js.js_to_c_string(ctx, stack) catch: recover none
                 if let st = stack_str:
                     if let fo = outf:
-                        discard(fprintf(fo, z("%s"), st))
+                        _ = fprintf(fo, z("%s"), st)
 
                     let len = strlen(filename)
                     if let p = strstr(st, filename):
@@ -144,18 +144,18 @@ func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const 
                         let now_has = str_equal(known, z("expected error")) or strstart(known, z("unexpected error type:"), none) or str_equal(known, m)
                         if now_has:  # did not have error yet
                             if not has_error_line:
-                                discard(longest_match(buf, m, pos, &pos, pos_line, &error_line))
-                            discard(printf(z("%s:%d: %sOK, now has error %s\n"), filename, error_line,
-                                           strict_mode, m))
+                                _ = longest_match(buf, m, pos, &pos, pos_line, &error_line)
+                            _ = printf(z("%s:%d: %sOK, now has error %s\n"), filename, error_line,
+                                       strict_mode, m)
                             fixed_errors += 1
             else:
                 if s == none:  # not yet reported
                     if let m = msg:
-                        discard(snprintf(&line_buf[0], 1024, z("%s:%d: %sunexpected error type: %s\n"),
-                                         filename, error_line, strict_mode, m))
+                        _ = snprintf(&line_buf[0], 1024, z("%s:%d: %sunexpected error type: %s\n"),
+                                     filename, error_line, strict_mode, m)
                     else:
-                        discard(snprintf(&line_buf[0], 1024, z("%s:%d: %sexpected error\n"),
-                                         filename, error_line, strict_mode))
+                        _ = snprintf(&line_buf[0], 1024, z("%s:%d: %sexpected error\n"),
+                                     filename, error_line, strict_mode)
                     print_error(&line_buf[0])
                     new_errors += 1
         # should not have error
@@ -165,18 +165,18 @@ func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const 
                     if not has_error_line:
                         let p = skip_prefix(m, z("Test262 Error: "))
                         if strstr(p, z("Test case returned non-true value!")) != none:
-                            discard(longest_match(buf, z("runTestCase"), pos, &pos, pos_line, &error_line))
+                            _ = longest_match(buf, z("runTestCase"), pos, &pos, pos_line, &error_line)
                         else:
-                            discard(longest_match(buf, p, pos, &pos, pos_line, &error_line))
-                    discard(snprintf(&line_buf[0], 1024, z("%s:%d: %s%s%s\n"), filename, error_line,
-                                     strict_mode, z("unexpected error: ") if error_file != none else z(""),
-                                     m))
+                            _ = longest_match(buf, p, pos, &pos, pos_line, &error_line)
+                    _ = snprintf(&line_buf[0], 1024, z("%s:%d: %s%s%s\n"), filename, error_line,
+                                 strict_mode, z("unexpected error: ") if error_file != none else z(""),
+                                 m)
                     print_error(&line_buf[0])
 
                     if let known = s:
                         if not str_equal(known, m) or error_line != s_line:
-                            discard(printf(z("%s:%d: %sprevious error: %s\n"), filename, s_line,
-                                           strict_mode, known))
+                            _ = printf(z("%s:%d: %sprevious error: %s\n"), filename, s_line,
+                                       strict_mode, known)
                             changed_errors += 1
                         else:
                             new_errors += 1
@@ -184,8 +184,8 @@ func eval_buf(ctx: js.Context*, buf: const u8*, buf_len: usize, filename: const 
                         new_errors += 1
             else:
                 if let known = s:
-                    discard(printf(z("%s:%d: %sOK, fixed error: %s\n"), filename, s_line, strict_mode,
-                                   known))
+                    _ = printf(z("%s:%d: %sOK, fixed error: %s\n"), filename, s_line, strict_mode,
+                               known)
                     fixed_errors += 1
         js.js_free_value(ctx, msg_val)
         js.js_free_c_string(ctx, msg)

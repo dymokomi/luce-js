@@ -16,7 +16,7 @@
 
 ## A context-sized buffer: the paths under test never read it.
 struct TestContextBuf:
-    var words: u64[sizeof(Context) // 8 + 1]
+    var words: u64[memory.size_of(Context) // 8 + 1]
 
 ## Lay out an ordinary, extensible object with shape `sh` and storage `props` in `buf`,
 ## after a block header holding a reference count of 1.
@@ -27,7 +27,7 @@ func test_object_in(buf: u64*, sh: Shape*, props: Property*) -> Object*:
     header.gc_bits = 0
     header.ref_count = 1
     let p = (Object*)(buf + 1)
-    discard(cutils.memset(p, 0, sizeof(Object)))
+    _ = cutils.memset(p, 0, memory.size_of(Object))
     p.class_id = ClassId.object
     p.extensible = true
     p.shape = sh
@@ -58,7 +58,7 @@ test "num_keys_cmp sorts array-index keys numerically":
     let keys: u32[5] = [10, 2, 2147483647, 0, 7]
     for i in 0..<keys.length:
         tab[i] = PropertyEnum(is_enumerable = true, atom = js_atom_from_uint32_raw(keys[i]))
-    cutils.rqsort(&tab[0], 5, sizeof(PropertyEnum), num_keys_cmp, ctx)
+    cutils.rqsort(&tab[0], 5, memory.size_of(PropertyEnum), num_keys_cmp, ctx)
     let sorted: u32[5] = [0, 2, 7, 10, 2147483647]
     for i in 0..<sorted.length:
         assert(js_atom_to_uint32_raw(tab[i].atom) == sorted[i])

@@ -47,7 +47,7 @@ noinline func interp_put_var(st: InterpState*) -> bool:
                 if js_is_uninitialized(*var_ref.pvalue):
                     js_throw_reference_error_uninitialized(st.ctx, cv.var_name) catch: return false
                 else:
-                    discard(js_throw_type_error_read_only(st.ctx, prop_throw, cv.var_name) catch: return false)
+                    _ = js_throw_type_error_read_only(st.ctx, prop_throw, cv.var_name) catch: return false
                 return false
         else:
             st.sf.cur_pc = st.pc

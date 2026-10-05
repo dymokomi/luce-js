@@ -55,7 +55,7 @@ func js_promise_with_resolvers(ctx: Context*, this_val: Value, argc: i32, argv: 
                 js_free_value(ctx, owned[j])
             js_free_value(ctx, obj)
             error(failure.code, failure.message)
-        discard(defined)
+        _ = defined
     return obj
 
 ## Promise.try(callbackfn, ...args).
@@ -87,8 +87,8 @@ func remaining_elements_count_add(ctx: Context*, resolve_element_env: Value, add
     var remaining_elements_count: i32 = 0
     try js_to_int32_free(ctx, &remaining_elements_count, val)
     remaining_elements_count += addend
-    discard(try js_set_property_uint32(ctx, resolve_element_env, 0,
-                                       js_new_int32(remaining_elements_count)))
+    _ = try js_set_property_uint32(ctx, resolve_element_env, 0,
+                                   js_new_int32(remaining_elements_count))
     return remaining_elements_count == 0
 
 let promise_magic_all: i32 = 0
@@ -118,13 +118,13 @@ func js_promise_all_resolve_element(ctx: Context*, this_val: Value, argc: i32, a
         # fail1:
         errdefer js_free_value(ctx, o)
         let status = try js_new_string8(ctx, ("rejected" if is_reject else "fulfilled").bytes.data)
-        discard(try js_define_property_value(ctx, o, atom_status, status, prop_c_w_e))
-        discard(try js_define_property_value(ctx, o, atom_reason if is_reject else atom_value,
-                                             js_dup_value(ctx, argv[0]), prop_c_w_e))
+        _ = try js_define_property_value(ctx, o, atom_status, status, prop_c_w_e)
+        _ = try js_define_property_value(ctx, o, atom_reason if is_reject else atom_value,
+                                         js_dup_value(ctx, argv[0]), prop_c_w_e)
         obj = o
     else:
         obj = js_dup_value(ctx, argv[0])
-    discard(try js_define_property_value_uint32(ctx, values, (u32)index, obj, prop_c_w_e))
+    _ = try js_define_property_value_uint32(ctx, values, (u32)index, obj, prop_c_w_e)
 
     let is_zero = try remaining_elements_count_add(ctx, resolve_element_env, -1)
     if is_zero:
@@ -194,8 +194,8 @@ func js_promise_all_element(ctx: Context*, this_val: Value, magic: i32, resolvin
             error(failure.code, failure.message)
     elif magic == promise_magic_any:
         # as upstream, next_promise and resolve_element are not freed if this fails
-        discard(try js_define_property_value_uint32(ctx, l.values, (u32)index, js_undefined(),
-                                                    prop_c_w_e))
+        _ = try js_define_property_value_uint32(ctx, l.values, (u32)index, js_undefined(),
+                                                prop_c_w_e)
         reject_element = resolve_element
         resolve_element = js_dup_value(ctx, resolving_funcs[0])
     else:
@@ -206,7 +206,7 @@ func js_promise_all_element(ctx: Context*, this_val: Value, magic: i32, resolvin
         js_free_value(ctx, resolve_element)
         js_free_value(ctx, reject_element)
         error(failure.code, failure.message)
-    discard(counted)
+    _ = counted
 
     var then_args: Value[2] = [resolve_element, reject_element]
     let ret = js_invoke_free(ctx, next_promise, atom_then, 2, &then_args[0]) catch failure:
@@ -228,8 +228,8 @@ func js_promise_all_iterate(ctx: Context*, this_val: Value, iterable: Value, mag
     l.values = try js_new_array(ctx)
     l.resolve_element_env = try js_new_array(ctx)
     # remainingElementsCount field
-    discard(try js_define_property_value_uint32(ctx, l.resolve_element_env, 0, js_new_int32(1),
-                                                prop_configurable | prop_enumerable | prop_writable))
+    _ = try js_define_property_value_uint32(ctx, l.resolve_element_env, 0, js_new_int32(1),
+                                            prop_configurable | prop_enumerable | prop_writable)
 
     var index: i32 = 0
     while true:

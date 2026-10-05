@@ -109,11 +109,11 @@ func load_config(filename: const u8*, ignore: const u8*):
             q = str_strip(eq + 1)
         if section == section_config:
             if q == none:
-                discard(printf(z("%s:%d: syntax error\n"), filename, lineno))
+                _ = printf(z("%s:%d: syntax error\n"), filename, lineno)
                 continue
             let value = q else continue
             if strstr(ignore, p) != none:
-                discard(printf(z("%s:%d: ignoring %s=%s\n"), filename, lineno, p, value))
+                _ = printf(z("%s:%d: ignoring %s=%s\n"), filename, lineno, p, value)
                 continue
             if config_setting(cnull(base_name), p, value):
                 continue
@@ -123,13 +123,13 @@ func load_config(filename: const u8*, ignore: const u8*):
             namelist_add(&exclude_list, cnull(base_name), p)
         elif section == section_features:
             if q == none or str_equal(cnull(q) else z(""), z("yes")):
-                discard(str_append(&harness_features, z(" "), p))
+                _ = str_append(&harness_features, z(" "), p)
             else:
-                discard(str_append(&harness_skip_features, z(" "), p))
+                _ = str_append(&harness_skip_features, z(" "), p)
         elif section == section_tests:
             namelist_add(&test_list, cnull(base_name), p)
     # ignore settings in other sections
-    discard(fclose(f))
+    _ = fclose(f)
     c_free(base_name)
 
 ## Apply the [config] setting `p`=`q`; false for an unknown name.
@@ -143,11 +143,11 @@ func config_setting(base_name: const u8*?, p: const u8*, q: const u8*) -> bool:
     elif str_equal(p, z("harnessdir")):
         harness_dir = compose_path(base_name, q)
     elif str_equal(p, z("harnessexclude")):
-        discard(str_append(&harness_exclude, z(" "), q))
+        _ = str_append(&harness_exclude, z(" "), q)
     elif str_equal(p, z("features")):
-        discard(str_append(&harness_features, z(" "), q))
+        _ = str_append(&harness_features, z(" "), q)
     elif str_equal(p, z("skip-features")):
-        discard(str_append(&harness_skip_features, z(" "), q))
+        _ = str_append(&harness_skip_features, z(" "), q)
     elif str_equal(p, z("mode")):
         if str_equal(q, z("default")) or str_equal(q, z("default-nostrict")):
             test_mode = test_default_nostrict
@@ -290,4 +290,4 @@ func print_error(buf: const u8*):
         namelist_add(&error_list, none, buf)
         error_list_mutex.unlock()
     else:
-        discard(fputs(buf, stdout()))
+        _ = fputs(buf, stdout())

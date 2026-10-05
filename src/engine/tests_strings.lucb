@@ -12,7 +12,7 @@
 # A flat 8-bit string holding `text`, as js_alloc_string lays it out.
 func test_string8(text: str) -> String*:
     let len = text.bytes.length
-    let mem = cutils.malloc(sizeof(String) + len + 1) else trap("out of memory")
+    let mem = cutils.malloc(memory.size_of(String) + len + 1) else trap("out of memory")
     let p = (String*)mem
     p.len = (u32)len
     p.hash = 0
@@ -27,7 +27,7 @@ func test_string8(text: str) -> String*:
 # A flat 16-bit string holding `units`.
 func test_string16(units: const u16[]) -> String*:
     let len = units.length
-    let mem = cutils.malloc(sizeof(String) + len * 2) else trap("out of memory")
+    let mem = cutils.malloc(memory.size_of(String) + len * 2) else trap("out of memory")
     let p = (String*)mem
     p.len = (u32)len
     p.hash = 0
@@ -45,7 +45,7 @@ func test_rope(left: Value, right: Value) -> StringRope:
 test "characters follow the string header":
     let a = test_string8("abc")
     defer cutils.c_free(a)
-    assert((usize)str8(a) - (usize)a == sizeof(String))
+    assert((usize)str8(a) - (usize)a == memory.size_of(String))
     assert(string_get(a, 0) == 0x61 and string_get(a, 2) == 0x63)
     assert(str8(a)[3] == 0)
     let units: u16[3] = [0x41, 0x3b1, 0xffff]

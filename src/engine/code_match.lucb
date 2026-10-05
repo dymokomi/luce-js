@@ -121,5 +121,5 @@ func code_match(s: CodeContext*, pos0: i32, pattern: const i32[]) -> bool:
                 s.label = (i32)cutils.get_u32(tab + pos + 4)
                 s.val = (i32)cutils.get_u8(tab + pos + 8)
             _:
-                discard(0)
+                _ = 0
         pos = pos_next

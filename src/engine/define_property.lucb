@@ -58,7 +58,7 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
 
             if ((i32)prs.flags & prop_tmask) == prop_autoinit:
                 # Instantiate property and retry
-                discard(try js_auto_init_property(ctx, p, prop, pr, prs))
+                _ = try js_auto_init_property(ctx, p, prop, pr, prs)
                 continue
 
             if (flags & (prop_has_value | prop_has_writable | prop_has_get | prop_has_set)) != 0:
@@ -91,13 +91,13 @@ pub func js_define_property(ctx: Context*, this_obj: Value, prop: Atom, val_arg:
                         if let old_getter = pr.u.getset.getter:
                             js_free_value(ctx, js_mkptr(Tag.object, old_getter))
                         if new_getter != none:
-                            discard(js_dup_value(ctx, getter))
+                            _ = js_dup_value(ctx, getter)
                         pr.u.getset.getter = new_getter
                     if (flags & prop_has_set) != 0:
                         if let old_setter = pr.u.getset.setter:
                             js_free_value(ctx, js_mkptr(Tag.object, old_setter))
                         if new_setter != none:
-                            discard(js_dup_value(ctx, setter))
+                            _ = js_dup_value(ctx, setter)
                         pr.u.getset.setter = new_setter
                 else:
                     if ((i32)prs.flags & prop_tmask) == prop_getset:

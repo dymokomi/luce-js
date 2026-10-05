@@ -31,7 +31,7 @@ struct ObjectList:
 
 ## Make `s` the empty list.
 func js_object_list_init(s: ObjectList*):
-    discard(cutils.memset(s, 0, sizeof(ObjectList)))
+    _ = cutils.memset(s, 0, memory.size_of(ObjectList))
 
 ## The hash chain of `p` in a table of `hash_size` (a power of two) chains.
 func js_object_list_get_hash(p: Object*, hash_size: u32) -> u32:
@@ -39,7 +39,7 @@ func js_object_list_get_hash(p: Object*, hash_size: u32) -> u32:
 
 # Replace the hash table of `s` by one of `new_hash_size` chains holding every entry.
 func js_object_list_resize_hash(ctx: Context*, s: ObjectList*, new_hash_size: u32) -> !:
-    let new_hash_table = (u32*)try js_malloc(ctx, sizeof(u32) * (usize)new_hash_size)
+    let new_hash_table = (u32*)try js_malloc(ctx, memory.size_of(u32) * (usize)new_hash_size)
     if let old = s.hash_table:
         js_free(ctx, old)
     s.hash_table = new_hash_table
@@ -58,7 +58,7 @@ func js_object_list_resize_hash(ctx: Context*, s: ObjectList*, new_hash_size: u3
 # memory error
 ## Add `obj` to `s` (it must not be there yet); its index is the count before.
 func js_object_list_add(ctx: Context*, s: ObjectList*, obj: Object*) -> !:
-    try js_resize_array(ctx, (void*?*)&s.object_tab, (i32)sizeof(ObjectListEntry),
+    try js_resize_array(ctx, (void*?*)&s.object_tab, (i32)memory.size_of(ObjectListEntry),
                         &s.object_size, s.object_count + 1)
     if (u32)(s.object_count + 1) >= s.hash_size:
         var new_hash_size = cutils.max_uint32(s.hash_size, 4)

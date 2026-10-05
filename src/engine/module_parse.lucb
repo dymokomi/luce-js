@@ -51,7 +51,7 @@ func js_parse_with_clause(s: ParseState*, rme: ReqModuleEntry*) -> !:
                                                js_dup_value(ctx, s.token.u.str_.str), prop_c_w_e) catch failure:
             js_free_atom(ctx, key)
             error(failure.code, failure.message)
-        discard(defined)
+        _ = defined
         js_free_atom(ctx, key)
         try next_token(s)
         if s.token.val != TokenType.comma:
@@ -116,7 +116,7 @@ func js_parse_export_specifier(s: ParseState*, m: ModuleDef*) -> !:
     defer js_free_atom(ctx, local_name)
     let export_name = try js_parse_export_as(s, local_name)
     defer js_free_atom(ctx, export_name)
-    discard(try add_export_entry(s, m, local_name, export_name, ExportType.local_))
+    _ = try add_export_entry(s, m, local_name, export_name, ExportType.local_)
 
 # `export * as name from "module"`: the token after `as`.
 func js_parse_export_ns_from(s: ParseState*, m: ModuleDef*) -> !:
@@ -185,12 +185,12 @@ func js_parse_export(s: ParseState*) -> !:
 
             # store the value in the _default_ global variable and export it
             let local_name = atom__default_
-            discard(try define_var(s, s.fd(), local_name, VarDefKind.let_))
+            _ = try define_var(s, s.fd(), local_name, VarDefKind.let_)
             emit_op(s, (u8)TempOp.scope_put_var_init)
             emit_atom(s, local_name)
             emit_u16(s, 0)
 
-            discard(try add_export_entry(s, m, local_name, atom_default, ExportType.local_))
+            _ = try add_export_entry(s, m, local_name, atom_default, ExportType.local_)
         .var_, .let_, .const_:
             # parse_flags TRUE: PF_IN_ACCEPTED
             try js_parse_var(s, 1, tok, true)
@@ -217,7 +217,7 @@ func add_import(s: ParseState*, m: ModuleDef*, local_name: Atom, import_name: At
     let closure_type = ClosureType.module_decl if is_star else ClosureType.module_import
     let var_idx = try add_closure_var(ctx, fd, closure_type, m.import_entries_count, local_name,
                                       true, true, VarKind.normal)
-    try js_resize_array(ctx, (void*?*)&m.import_entries, (i32)sizeof(ImportEntry),
+    try js_resize_array(ctx, (void*?*)&m.import_entries, (i32)memory.size_of(ImportEntry),
                         &m.import_entries_size, m.import_entries_count + 1)
     let mi = module_import_entry(m, m.import_entries_count)
     m.import_entries_count += 1
@@ -358,7 +358,7 @@ func js_parse_source_element(s: ParseState*) -> !:
 func js_new_function_def(ctx: Context*, parent: FunctionDef*?, is_eval: bool, is_func_expr: bool,
                          filename: const u8*, source_ptr: const u8*,
                          get_line_col_cache: GetLineColCache*) -> FunctionDef*!:
-    let fd = (FunctionDef*)(try js_mallocz(ctx, sizeof(FunctionDef)))
+    let fd = (FunctionDef*)(try js_mallocz(ctx, memory.size_of(FunctionDef)))
 
     fd.ctx = ctx
     cutils.init_list_head(&fd.child_list)
@@ -416,7 +416,7 @@ func js_free_function_def(ctx: Context*, fd: FunctionDef*):
     var el = head.next else trap("js_free_function_def: unlinked child list")
     while el != head:
         let next = el.next else trap("js_free_function_def: unlinked child list")
-        let fd1 = (FunctionDef*)((u8*)el - offsetof(FunctionDef, link))
+        let fd1 = (FunctionDef*)((u8*)el - memory.offset_of(FunctionDef, link))
         js_free_function_def(ctx, fd1)
         el = next
 

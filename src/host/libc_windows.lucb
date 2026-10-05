@@ -87,11 +87,11 @@ func win_setenv(name: const u8*, value: const u8*):
         let value_len = cutils.strlen(value)
         let block = cutils.malloc(name_len + 1 + value_len + 1) else return
         let text = (u8*)block
-        discard(cutils.memcpy(text, name, name_len))
+        _ = cutils.memcpy(text, name, name_len)
         text[name_len] = '='
-        discard(cutils.memcpy(text + (name_len + 1), value, value_len))
+        _ = cutils.memcpy(text + (name_len + 1), value, value_len)
         text[name_len + 1 + value_len] = 0
-        discard(win_putenv(text))
+        _ = win_putenv(text)
         cutils.c_free(block)
 
 ## setenv(name, value, 1) on every target.
@@ -99,14 +99,14 @@ func set_env(name: const u8*, value: const u8*):
     if platform.windows:
         win_setenv(name, value)
     else:
-        discard(setenv(name, value, 1))
+        _ = setenv(name, value, 1)
 
 ## unsetenv() on every target; Windows sets the variable to "", which removes it.
 func unset_env(name: const u8*):
     if platform.windows:
         win_setenv(name, "".bytes.data)
     else:
-        discard(unsetenv(name))
+        _ = unsetenv(name)
 
 # mark: Per-target calls ========================================================================
 

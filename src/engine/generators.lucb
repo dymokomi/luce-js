@@ -211,7 +211,7 @@ func js_generator_next(ctx: Context*, this_val: Value, argc: i32, argv: Value*, 
 ## The call of a generator function: a new generator object whose frame has run up to
 ## OP_initial_yield.
 func js_generator_function_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
-    let s = (GeneratorData*)(try js_mallocz(ctx, sizeof(GeneratorData)))
+    let s = (GeneratorData*)(try js_mallocz(ctx, memory.size_of(GeneratorData)))
     errdefer js_free(ctx, s)
     errdefer free_generator_stack_rt(ctx.rt, s)
     s.state = GeneratorState.suspended_start

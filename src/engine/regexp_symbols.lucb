@@ -40,7 +40,7 @@ func js_regexp_symbol_match(ctx: Context*, this_val: Value, argc: i32, argv: Val
     else:
         let full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or string_indexof_char(p, (i32)'v', 0) >= 0)
 
-        discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0)))
+        _ = try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0))
         a = try js_new_array(ctx)
         var n: i64 = 0
         while true:
@@ -53,12 +53,12 @@ func js_regexp_symbol_match(ctx: Context*, this_val: Value, argc: i32, argv: Val
             let is_empty = js_is_empty_string(match_str)
             let index = n
             n += 1
-            discard(try js_define_property_value_int64(ctx, a, index, match_str, prop_c_w_e | prop_throw))
+            _ = try js_define_property_value_int64(ctx, a, index, match_str, prop_c_w_e | prop_throw)
             if is_empty:
                 var this_index: i64 = 0
                 try js_to_length_free(ctx, &this_index, js_get_property(ctx, rx, atom_lastIndex))
                 let next_index = string_advance_index(s.u.string, this_index, full_unicode)
-                discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int64(next_index)))
+                _ = try js_set_property(ctx, rx, atom_lastIndex, js_new_int64(next_index))
         if n == 0:
             js_free_value(ctx, a)
             a = js_null()
@@ -117,7 +117,7 @@ func js_regexp_string_iterator_next(ctx: Context*, this_val: Value, argc: i32, a
             try js_to_length_free(ctx, &this_index, js_get_property(ctx, r, atom_lastIndex))
             let sp = s.u.string
             let next_index = string_advance_index(sp, this_index, it.unicode)
-            discard(try js_set_property(ctx, r, atom_lastIndex, js_new_int64(next_index)))
+            _ = try js_set_property(ctx, r, atom_lastIndex, js_new_int64(next_index))
     else:
         it.done = true
     *pdone = 0
@@ -150,10 +150,10 @@ func js_regexp_symbol_match_all(ctx: Context*, this_val: Value, argc: i32, argv:
     matcher = try js_call_constructor(ctx, ctor, 2, &args[0])
     var last_index: i64 = 0
     try js_to_length_free(ctx, &last_index, js_get_property(ctx, r, atom_lastIndex))
-    discard(try js_set_property(ctx, matcher, atom_lastIndex, js_new_int64(last_index)))
+    _ = try js_set_property(ctx, matcher, atom_lastIndex, js_new_int64(last_index))
 
     iter = try js_new_object_class(ctx, (i32)ClassId.regexp_string_iterator)
-    let it = (RegExpStringIteratorData*)(try js_malloc(ctx, sizeof(RegExpStringIteratorData)))
+    let it = (RegExpStringIteratorData*)(try js_malloc(ctx, memory.size_of(RegExpStringIteratorData)))
     it.iterating_regexp = matcher
     it.iterated_string = s
     let strp = flags.u.string
@@ -205,15 +205,15 @@ func value_buffer_append(b: ValueBuffer*, val: Value) -> !:
         if not inline_arr:
             old_arr = (void*)b.arr
 
-        let raw = js_realloc2(b.ctx, old_arr, sizeof(Value) * (usize)new_size, &slack) catch failure:
+        let raw = js_realloc2(b.ctx, old_arr, memory.size_of(Value) * (usize)new_size, &slack) catch failure:
             value_buffer_free(b)
             js_free_value(b.ctx, val)
             b.error_status = -1
             error(failure.code, failure.message)
         let new_arr = (Value*)(raw else trap("value_buffer_append: empty allocation"))
         if inline_arr:
-            discard(cutils.memcpy(new_arr, &b.def[0], sizeof(Value) * 4))
-        new_size += (i32)(slack // sizeof(Value))
+            _ = cutils.memcpy(new_arr, &b.def[0], memory.size_of(Value) * 4)
+        new_size += (i32)(slack // memory.size_of(Value))
         b.arr = new_arr
         b.size = new_size
     b.arr[(usize)b.len] = val
@@ -340,7 +340,7 @@ func js_regexp_symbol_replace(ctx: Context*, this_val: Value, argc: i32, argv: V
     let is_global = -1 != string_indexof_char(p, (i32)'g', 0)
     if is_global:
         full_unicode = (string_indexof_char(p, (i32)'u', 0) >= 0 or string_indexof_char(p, (i32)'v', 0) >= 0)
-        discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0)))
+        _ = try js_set_property(ctx, rx, atom_lastIndex, js_new_int32(0))
 
     while true:
         let result = try js_reg_exp_exec(ctx, rx, text)
@@ -357,7 +357,7 @@ func js_regexp_symbol_replace(ctx: Context*, this_val: Value, argc: i32, argv: V
             var this_index: i64 = 0
             try js_to_length_free(ctx, &this_index, js_get_property(ctx, rx, atom_lastIndex))
             let next_index = string_advance_index(sp, this_index, full_unicode)
-            discard(try js_set_property(ctx, rx, atom_lastIndex, js_new_int64(next_index)))
+            _ = try js_set_property(ctx, rx, atom_lastIndex, js_new_int64(next_index))
     var next_source_position: i64 = 0
     for j in 0..<(usize)results.len:
         let result = results.arr[j]
@@ -377,27 +377,27 @@ func js_regexp_symbol_replace(ctx: Context*, this_val: Value, argc: i32, argv: V
         js_free_value(ctx, tab)
         tab = js_undefined()
         tab = try js_new_array(ctx)
-        discard(try js_define_property_value_int64(ctx, tab, 0, js_dup_value(ctx, matched),
-                                                   prop_c_w_e | prop_throw))
+        _ = try js_define_property_value_int64(ctx, tab, 0, js_dup_value(ctx, matched),
+                                               prop_c_w_e | prop_throw)
         var n: i64 = 1
         while n < (i64)n_captures:
             var cap_n = try js_get_property_int64(ctx, result, n)
             if not js_is_undefined(cap_n):
                 cap_n = try js_to_string_free(ctx, cap_n)
-            discard(try js_define_property_value_int64(ctx, tab, n, cap_n, prop_c_w_e | prop_throw))
+            _ = try js_define_property_value_int64(ctx, tab, n, cap_n, prop_c_w_e | prop_throw)
             n += 1
         js_free_value(ctx, named_captures)
         named_captures = js_undefined()
         named_captures = try js_get_property(ctx, result, atom_groups)
         if functional_replace:
-            discard(try js_define_property_value_int64(ctx, tab, n, js_new_int32((i32)position),
-                                                       prop_c_w_e | prop_throw))
+            _ = try js_define_property_value_int64(ctx, tab, n, js_new_int32((i32)position),
+                                                   prop_c_w_e | prop_throw)
             n += 1
-            discard(try js_define_property_value_int64(ctx, tab, n, js_dup_value(ctx, text), prop_c_w_e | prop_throw))
+            _ = try js_define_property_value_int64(ctx, tab, n, js_dup_value(ctx, text), prop_c_w_e | prop_throw)
             n += 1
             if not js_is_undefined(named_captures):
-                discard(try js_define_property_value_int64(ctx, tab, n, js_dup_value(ctx, named_captures),
-                                                           prop_c_w_e | prop_throw))
+                _ = try js_define_property_value_int64(ctx, tab, n, js_dup_value(ctx, named_captures),
+                                                       prop_c_w_e | prop_throw)
                 n += 1
             args[0] = js_undefined()
             args[1] = tab

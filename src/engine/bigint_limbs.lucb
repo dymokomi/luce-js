@@ -199,7 +199,7 @@ func mp_divnorm(tabq: u32*, taba: u32*, na: u32, tabb: const u32*, nb: u32):
         j -= 1
     tabq[n] = q
     if q != 0:
-        discard(mp_sub(taba + n, taba + n, tabb, nbi, 0))
+        _ = mp_sub(taba + n, taba + n, tabb, nbi, 0)
 
     var i = (i32)n - 1
     while i >= 0:

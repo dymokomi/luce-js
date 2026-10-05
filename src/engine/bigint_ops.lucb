@@ -71,9 +71,9 @@ func js_bigint_mul(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*
     mp_mul_basecase(r_tab, a_tab, a.len, b_tab, b.len)
     # correct the result if negative operands (no overflow is possible)
     if js_bigint_sign(a) != 0:
-        discard(mp_sub(r_tab + (usize)a.len, r_tab + (usize)a.len, b_tab, (i32)b.len, 0))
+        _ = mp_sub(r_tab + (usize)a.len, r_tab + (usize)a.len, b_tab, (i32)b.len, 0)
     if js_bigint_sign(b) != 0:
-        discard(mp_sub(r_tab + (usize)b.len, r_tab + (usize)b.len, a_tab, (i32)a.len, 0))
+        _ = mp_sub(r_tab + (usize)b.len, r_tab + (usize)b.len, a_tab, (i32)a.len, 0)
     return js_bigint_normalize(ctx, r)
 
 # mark: Division ================================================================================
@@ -94,21 +94,21 @@ func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem:
     let r = try js_bigint_new(ctx, na + 2)
     let r_tab = js_bigint_tab(r)
     if a_sign != 0:
-        discard(mp_neg(r_tab, a_tab, na))
+        _ = mp_neg(r_tab, a_tab, na)
     else:
-        discard(cutils.memcpy(r_tab, a_tab, (usize)na * sizeof(u32)))
+        _ = cutils.memcpy(r_tab, a_tab, (usize)na * memory.size_of(u32))
     # normalize
     while na > 1 and r_tab[na - 1] == 0:
         na -= 1
 
-    let tabb_block = js_malloc(ctx, (usize)nb * sizeof(u32)) catch failure:
+    let tabb_block = js_malloc(ctx, (usize)nb * memory.size_of(u32)) catch failure:
         js_free(ctx, r)
         error(failure.code, failure.message)
     let tabb = (u32*)tabb_block
     if b_sign != 0:
-        discard(mp_neg(tabb, b_tab, nb))
+        _ = mp_neg(tabb, b_tab, nb)
     else:
-        discard(cutils.memcpy(tabb, b_tab, (usize)nb * sizeof(u32)))
+        _ = cutils.memcpy(tabb, b_tab, (usize)nb * memory.size_of(u32))
     # normalize
     while nb > 1 and tabb[nb - 1] == 0:
         nb -= 1
@@ -120,7 +120,7 @@ func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem:
         if is_rem:
             # r = a
             let r1 = try js_bigint_new(ctx, (i32)a.len)
-            discard(cutils.memcpy(js_bigint_tab(r1), a_tab, (usize)a.len * sizeof(u32)))
+            _ = cutils.memcpy(js_bigint_tab(r1), a_tab, (usize)a.len * memory.size_of(u32))
             return r1
         else:
             # q = 0
@@ -129,7 +129,7 @@ func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem:
     # normalize 'b'
     let shift = (i32)js_limb_clz(tabb[nb - 1])
     if shift != 0:
-        discard(mp_shl(tabb, tabb, nb, shift))
+        _ = mp_shl(tabb, tabb, nb, shift)
         let h = mp_shl(r_tab, r_tab, na, shift)
         if h != 0:
             r_tab[na] = h
@@ -148,17 +148,17 @@ func js_bigint_divrem(ctx: Context*, a: const BigInt*, b: const BigInt*, is_rem:
     if is_rem:
         js_free(ctx, q)
         if shift != 0:
-            discard(mp_shr(r_tab, r_tab, nb, shift, 0))
+            _ = mp_shr(r_tab, r_tab, nb, shift, 0)
         r_tab[nb] = 0
         nb += 1
         if a_sign != 0:
-            discard(mp_neg(r_tab, r_tab, nb))
+            _ = mp_neg(r_tab, r_tab, nb)
         return js_bigint_normalize1(ctx, r, nb)
     else:
         js_free(ctx, r)
         q_tab[na - nb + 1] = 0
         if (a_sign ^ b_sign) != 0:
-            discard(mp_neg(q_tab, q_tab, (i32)q.len))
+            _ = mp_neg(q_tab, q_tab, (i32)q.len)
         return js_bigint_normalize(ctx, q)
 
 # mark: Bitwise operations ======================================================================
@@ -257,7 +257,7 @@ func js_bigint_shr(ctx: Context*, a: const BigInt*, shift1: u32) -> BigInt*!:
             i += 1
     # no normalization is needed
     else:
-        discard(mp_shr(r_tab, a_tab + (usize)d, n1, shift, -%(u32)a_sign))
+        _ = mp_shr(r_tab, a_tab + (usize)d, n1, shift, -%(u32)a_sign)
         r = js_bigint_normalize(ctx, r)
     return r
 
@@ -298,7 +298,7 @@ func js_bigint_pow(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*
             let r = try js_bigint_new(ctx,
                                       (i32)((e + (u32)js_limb_bits + 1 - (u32)is_neg) // (u32)js_limb_bits))
             let r_tab = js_bigint_tab(r)
-            discard(cutils.memset(r_tab, 0, sizeof(u32) * (usize)r.len))
+            _ = cutils.memset(r_tab, 0, memory.size_of(u32) * (usize)r.len)
             let top = (u32)(1 - 2 * (i32)is_neg) << (e % (u32)js_limb_bits)
             r_tab[e // (u32)js_limb_bits] = top
             return r
@@ -312,7 +312,7 @@ func js_bigint_pow(ctx: Context*, a: const BigInt*, b: const BigInt*) -> BigInt*
     var r = try js_bigint_new(ctx, (i32)a.len)
     # not in QuickJS, which leaks 'r' when a multiplication fails
     errdefer js_free(ctx, r)
-    discard(cutils.memcpy(js_bigint_tab(r), a_tab, (usize)a.len * sizeof(u32)))
+    _ = cutils.memcpy(js_bigint_tab(r), a_tab, (usize)a.len * memory.size_of(u32))
     var i = n_bits - 2
     while i >= 0:
         var r1 = try js_bigint_mul(ctx, r, r)

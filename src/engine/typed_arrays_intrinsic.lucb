@@ -60,7 +60,7 @@ pub func js_add_intrinsic_typed_arrays(ctx: Context*) -> !:
                                        prop_writable | prop_configurable) catch failure:
         js_free_value(ctx, typed_array_base_proto)
         error(failure.code, failure.message)
-    discard(ret)
+    _ = ret
     js_free_value(ctx, typed_array_base_proto)
 
     # The typed array constructors are magic constructors; JS_NewCConstructor takes them

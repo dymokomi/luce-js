@@ -125,12 +125,12 @@ pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
     ctx.throw_type_error = try js_new_c_function2(ctx, js_throw_type_error_internal, none, 0,
                                                   CFunctionEnum.generic, 0)
     # add caller and arguments properties to throw a TypeError
-    discard(try js_define_property(ctx, ctx.function_proto, atom_caller, js_undefined(),
-                                   ctx.throw_type_error, ctx.throw_type_error,
-                                   prop_has_get | prop_has_set | prop_has_configurable | prop_configurable))
-    discard(try js_define_property(ctx, ctx.function_proto, atom_arguments, js_undefined(),
-                                   ctx.throw_type_error, ctx.throw_type_error,
-                                   prop_has_get | prop_has_set | prop_has_configurable | prop_configurable))
+    _ = try js_define_property(ctx, ctx.function_proto, atom_caller, js_undefined(),
+                               ctx.throw_type_error, ctx.throw_type_error,
+                               prop_has_get | prop_has_set | prop_has_configurable | prop_configurable)
+    _ = try js_define_property(ctx, ctx.function_proto, atom_arguments, js_undefined(),
+                               ctx.throw_type_error, ctx.throw_type_error,
+                               prop_has_get | prop_has_set | prop_has_configurable | prop_configurable)
     # (C ignores a failure of the seal)
     let sealed = js_object_seal(ctx, js_undefined(), 1, &ctx.throw_type_error, 1) catch failure:
         recover js_exception()
@@ -177,7 +177,7 @@ pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
         js_free_value(ctx, obj2)
         js_free_value(ctx, obj1)
         error(failure.code, failure.message)
-    discard(defined)
+    _ = defined
     js_free_value(ctx, obj1)
     ctx.iterator_ctor = obj2
 
@@ -254,16 +254,16 @@ pub func js_add_intrinsic_base_objects(ctx: Context*) -> !:
                                     js_new_ctor_no_global | js_new_ctor_readonly)
     # (NULL, 0)
     js_free_value(ctx, obj1)
-    discard(try js_set_constructor2(ctx, protos[(usize)ClassId.generator_function],
-                                    protos[(usize)ClassId.generator],
-                                    prop_configurable, prop_configurable))
+    _ = try js_set_constructor2(ctx, protos[(usize)ClassId.generator_function],
+                                protos[(usize)ClassId.generator],
+                                prop_configurable, prop_configurable)
 
     # global properties
     ctx.eval_obj = try js_get_property(ctx, ctx.global_obj, atom_eval)
 
-    discard(try js_define_property_value(ctx, ctx.global_obj, atom_globalThis,
-                                         js_dup_value(ctx, ctx.global_obj),
-                                         prop_configurable | prop_writable))
+    _ = try js_define_property_value(ctx, ctx.global_obj, atom_globalThis,
+                                     js_dup_value(ctx, ctx.global_obj),
+                                     prop_configurable | prop_writable)
 
     # BigInt
     try js_add_intrinsic_bigint(ctx)

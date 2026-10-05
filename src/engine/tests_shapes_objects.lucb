@@ -24,7 +24,7 @@ func test_shape_in(buf: u64*, hash_size: u32, prop_size: i32) -> Shape*:
     sh.deleted_prop_count = 0
     sh.shape_hash_next = none
     sh.proto = none
-    discard(cutils.memset(get_shape_hash_table(sh), 0, sizeof(u32) * (usize)hash_size))
+    _ = cutils.memset(get_shape_hash_table(sh), 0, memory.size_of(u32) * (usize)hash_size)
     return sh
 
 ## Append (`atom`, `flags`) to `sh` the way add_shape_property does, without the atom
@@ -44,10 +44,10 @@ func test_shape_add(sh: Shape*, atom: Atom, flags: u8):
 test "shape layout: the hash table and the properties follow the header":
     var buf: u64[32] = ---
     let sh = test_shape_in(&buf[0], 4, 2)
-    assert((usize)get_shape_hash_table(sh) - (usize)sh == sizeof(Shape))
-    assert((usize)get_shape_prop(sh) - (usize)sh == sizeof(Shape) + 4 * sizeof(u32))
-    assert(get_shape_size(4, 2) == sizeof(Shape) + 16 + 2 * sizeof(ShapeProperty))
-    assert(sizeof(ShapeProperty) == 12)
+    assert((usize)get_shape_hash_table(sh) - (usize)sh == memory.size_of(Shape))
+    assert((usize)get_shape_prop(sh) - (usize)sh == memory.size_of(Shape) + 4 * memory.size_of(u32))
+    assert(get_shape_size(4, 2) == memory.size_of(Shape) + 16 + 2 * memory.size_of(ShapeProperty))
+    assert(memory.size_of(ShapeProperty) == 12)
 
 test "shape hash: the kernel multiplier, truncated to the table bits":
     assert(shape_hash(1, 0) == 0x9e370001)
@@ -56,7 +56,7 @@ test "shape hash: the kernel multiplier, truncated to the table bits":
     assert(get_shape_hash(0x9e370001, 4) == 0x9)
     assert(get_shape_hash(0x9e370001, 8) == 0x9e)
     # the empty shape of a null prototype hashes the address 0 twice on 64-bit targets
-    if sizeof(usize) > 4:
+    if memory.size_of(usize) > 4:
         assert(shape_initial_hash(none) == 0x3c6e0001)
     else:
         assert(shape_initial_hash(none) == 0x9e370001)
@@ -99,10 +99,10 @@ test "rehashing the properties into a larger table":
     test_shape_add(sh, no_atom, 0)  # a deleted property is not rehashed
     test_shape_add(sh, 58, 0)
     # grow the table to 8 buckets in place: the properties move behind it
-    discard(cutils.memmove((u8*)get_shape_prop(sh) + 4 * sizeof(u32), get_shape_prop(sh),
-                           4 * sizeof(ShapeProperty)))
+    _ = cutils.memmove((u8*)get_shape_prop(sh) + 4 * memory.size_of(u32), get_shape_prop(sh),
+                       4 * memory.size_of(ShapeProperty))
     sh.prop_hash_mask = 7
-    discard(cutils.memset(get_shape_hash_table(sh), 0, 8 * sizeof(u32)))
+    _ = cutils.memset(get_shape_hash_table(sh), 0, 8 * memory.size_of(u32))
     rehash_shape_props(sh, 7, 4)
     let hash_table = get_shape_hash_table(sh)
     # 50 and 58 share bucket 2 (58 first), 54 is in bucket 6
@@ -144,10 +144,10 @@ test "classes with bytecode":
 test "flexible members follow their records":
     var buf: u64[8] = ---
     let s = (CFunctionDataRecord*)&buf[0]
-    assert((usize)c_function_data_record_data(s) - (usize)s == sizeof(CFunctionDataRecord))
+    assert((usize)c_function_data_record_data(s) - (usize)s == memory.size_of(CFunctionDataRecord))
     let bf = (BoundFunction*)&buf[0]
-    assert((usize)bound_function_argv(bf) - (usize)bf == sizeof(BoundFunction))
+    assert((usize)bound_function_argv(bf) - (usize)bf == memory.size_of(BoundFunction))
     # the C layouts: data[] after 16 bytes, argv[] after 40 bytes on 64-bit targets
-    if sizeof(usize) == 8:
-        assert(sizeof(CFunctionDataRecord) == 16)
-        assert(sizeof(BoundFunction) == 40)
+    if memory.size_of(usize) == 8:
+        assert(memory.size_of(CFunctionDataRecord) == 16)
+        assert(memory.size_of(BoundFunction) == 40)

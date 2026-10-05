@@ -47,7 +47,7 @@ struct AsyncGeneratorData:
 
 # The request of the queue link `el`.
 func async_generator_request_of(el: cutils.ListHead*) -> AsyncGeneratorRequest*:
-    return (AsyncGeneratorRequest*)((u8*)el - offsetof(AsyncGeneratorRequest, link))
+    return (AsyncGeneratorRequest*)((u8*)el - memory.offset_of(AsyncGeneratorRequest, link))
 
 # The oldest request of the queue of `s`, which is not empty.
 func async_generator_first_request(s: AsyncGeneratorData*) -> AsyncGeneratorRequest*:
@@ -334,7 +334,7 @@ func js_async_generator_next(ctx: Context*, this_val: Value, argc: i32, argv: Va
     let promise = try js_new_promise_capability(ctx, &resolving_funcs[0])
     if let raw = opaque:
         let s = (AsyncGeneratorData*)raw
-        let req_raw = js_mallocz(ctx, sizeof(AsyncGeneratorRequest)) catch failure:
+        let req_raw = js_mallocz(ctx, memory.size_of(AsyncGeneratorRequest)) catch failure:
             js_free_value(ctx, resolving_funcs[0])
             js_free_value(ctx, resolving_funcs[1])
             js_free_value(ctx, promise)
@@ -355,7 +355,7 @@ func js_async_generator_next(ctx: Context*, this_val: Value, argc: i32, argv: Va
 ## The call of an async generator function: a new async generator object whose frame
 ## has run up to OP_initial_yield.
 func js_async_generator_function_call(ctx: Context*, func_obj: Value, this_obj: Value, argc: i32, argv: Value*, flags: i32) -> Value!:
-    let s = (AsyncGeneratorData*)(try js_mallocz(ctx, sizeof(AsyncGeneratorData)))
+    let s = (AsyncGeneratorData*)(try js_mallocz(ctx, memory.size_of(AsyncGeneratorData)))
     s.state = AsyncGeneratorState.suspended_start
     cutils.init_list_head(&s.queue)
     errdefer js_async_generator_free(ctx.rt, s)

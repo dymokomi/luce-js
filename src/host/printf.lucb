@@ -61,7 +61,7 @@ func dbuf_printf_i32(s: DynBuf*, cformat: const u8*, v: i32) -> i32:
     let r = dbuf_put_formatted(s, &tmp[0], 128, len)
     if r != 1: return r
     let dst = dbuf_long_destination(s, len) else return -1
-    discard(format_i32(dst, (usize)len + 1, cformat, v))
+    _ = format_i32(dst, (usize)len + 1, cformat, v)
     s.size += (usize)len
     return 0
 
@@ -71,7 +71,7 @@ func dbuf_printf_i64(s: DynBuf*, cformat: const u8*, v: i64) -> i32:
     let r = dbuf_put_formatted(s, &tmp[0], 128, len)
     if r != 1: return r
     let dst = dbuf_long_destination(s, len) else return -1
-    discard(format_i64(dst, (usize)len + 1, cformat, v))
+    _ = format_i64(dst, (usize)len + 1, cformat, v)
     s.size += (usize)len
     return 0
 
@@ -81,7 +81,7 @@ func dbuf_printf_f64(s: DynBuf*, cformat: const u8*, v: f64) -> i32:
     let r = dbuf_put_formatted(s, &tmp[0], 128, len)
     if r != 1: return r
     let dst = dbuf_long_destination(s, len) else return -1
-    discard(format_f64(dst, (usize)len + 1, cformat, v))
+    _ = format_f64(dst, (usize)len + 1, cformat, v)
     s.size += (usize)len
     return 0
 
@@ -91,7 +91,7 @@ func dbuf_printf_str(s: DynBuf*, cformat: const u8*, v: const u8*) -> i32:
     let r = dbuf_put_formatted(s, &tmp[0], 128, len)
     if r != 1: return r
     let dst = dbuf_long_destination(s, len) else return -1
-    discard(format_str(dst, (usize)len + 1, cformat, v))
+    _ = format_str(dst, (usize)len + 1, cformat, v)
     s.size += (usize)len
     return 0
 
@@ -147,7 +147,7 @@ func printf_conversions(ctx: Context*, argc: i32, argv: Value*, fmt_str: const u
         let p = fmtp
         while fmtp < fmt_end and *fmtp != '%':
             fmtp += 1
-        discard(cutils.dbuf_put(dbuf, p, (usize)(fmtp - p)))
+        _ = cutils.dbuf_put(dbuf, p, (usize)(fmtp - p))
         if fmtp >= fmt_end:
             break
         var q: usize = 0
@@ -246,7 +246,7 @@ func printf_conversions(ctx: Context*, argc: i32, argv: Value*, fmt_str: const u
                     int32_arg = 0xFFFD
                 # ignore conversion flags, width and precision
                 let len = cutils.unicode_to_utf8(&cbuf[0], (u32)int32_arg)
-                discard(cutils.dbuf_put(dbuf, &cbuf[0], (usize)len))
+                _ = cutils.dbuf_put(dbuf, &cbuf[0], (usize)len)
             'd', 'i', 'o', 'u', 'x', 'X':
                 if i >= argc:
                     *failure = .missing
@@ -274,9 +274,9 @@ func printf_conversions(ctx: Context*, argc: i32, argv: Value*, fmt_str: const u
                         fmtbuf[q - 1] = 'l'
                         fmtbuf[q] = 'l'
                         fmtbuf[q + 2] = 0
-                    discard(dbuf_printf_i64(dbuf, &fmtbuf[0], int64_arg))
+                    _ = dbuf_printf_i64(dbuf, &fmtbuf[0], int64_arg)
                 else:
-                    discard(dbuf_printf_i32(dbuf, &fmtbuf[0], (i32)int64_arg))
+                    _ = dbuf_printf_i32(dbuf, &fmtbuf[0], (i32)int64_arg)
             's':
                 if i >= argc:
                     *failure = .missing
@@ -284,7 +284,7 @@ func printf_conversions(ctx: Context*, argc: i32, argv: Value*, fmt_str: const u
                 # XXX: handle strings containing null characters
                 let string_arg = try js.js_to_c_string(ctx, argv[(usize)i])
                 i += 1
-                discard(dbuf_printf_str(dbuf, &fmtbuf[0], string_arg))
+                _ = dbuf_printf_str(dbuf, &fmtbuf[0], string_arg)
                 js.js_free_c_string(ctx, string_arg)
             'e', 'f', 'g', 'a', 'E', 'F', 'G', 'A':
                 if i >= argc:
@@ -293,9 +293,9 @@ func printf_conversions(ctx: Context*, argc: i32, argv: Value*, fmt_str: const u
                 var double_arg: f64 = 0.0
                 try js.js_to_float64(ctx, &double_arg, argv[(usize)i])
                 i += 1
-                discard(dbuf_printf_f64(dbuf, &fmtbuf[0], double_arg))
+                _ = dbuf_printf_f64(dbuf, &fmtbuf[0], double_arg)
             '%':
-                discard(cutils.dbuf_putc(dbuf, '%'))
+                _ = cutils.dbuf_putc(dbuf, '%')
             _:
                 # XXX: should support an extension mechanism
                 *failure = .invalid

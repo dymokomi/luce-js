@@ -63,7 +63,7 @@ func js_get_global_var_ref(ctx: Context*, prop: Atom, sp: Value*) -> !:
             try js_throw_reference_error_uninitialized(ctx, prs.atom)
         if ((i32)prs.flags & prop_writable) == 0:
             # always throws: the flags are prop_throw
-            discard(try js_throw_type_error_read_only(ctx, prop_throw, prop))
+            _ = try js_throw_type_error_read_only(ctx, prop_throw, prop)
             return
         sp[0] = js_dup_value(ctx, ctx.global_var_obj)
     else:

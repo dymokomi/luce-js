@@ -85,7 +85,7 @@ func js_bigint_from_string(ctx: Context*, text: const u8*, radix: i32) -> BigInt
     else:
         # power of two base: no multiplication is needed
         r.len = (u32)n_limbs
-        discard(cutils.memset(r_tab, 0, sizeof(u32) * (usize)n_limbs))
+        _ = cutils.memset(r_tab, 0, memory.size_of(u32) * (usize)n_limbs)
         var i: i32 = 0
         while i < n_digits:
             let c = (u32)to_digit((i32)p[n_digits - 1 - i])
@@ -207,7 +207,7 @@ func js_bigint_to_string1(ctx: Context*, val: Value, radix: i32) -> Value!:
     elif not is_binary_radix:
         # need to modify 'r'
         let t = try js_bigint_new(ctx, (i32)r.len)
-        discard(cutils.memcpy(js_bigint_tab(t), js_bigint_tab(r), (usize)r.len * sizeof(u32)))
+        _ = cutils.memcpy(js_bigint_tab(t), js_bigint_tab(r), (usize)r.len * memory.size_of(u32))
         tmp = t
         r = t
     let r_tab = js_bigint_tab(r)

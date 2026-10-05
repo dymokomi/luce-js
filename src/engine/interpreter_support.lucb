@@ -221,7 +221,7 @@ inline func eq_inline(ctx: Context*, sf: StackFrame*, pc: const u8*, sp: Value*,
         slow = true
     if slow:
         sf.cur_pc = pc
-        discard(try js_eq_slow(ctx, sp, inv))
+        _ = try js_eq_slow(ctx, sp, inv)
         return
     sp[-2] = js_new_bool(res != inv)
 

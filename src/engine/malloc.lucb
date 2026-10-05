@@ -69,15 +69,15 @@ func get_zero_size_block(s: MallocContext*) -> MallocBlockHeader*:
 
 ## The user data of a block: the bytes just after its header (JSMallocBlockHeader.user_data).
 func block_user_data(b: MallocBlockHeader*) -> void*:
-    return (u8*)b + sizeof(MallocBlockHeader)
+    return (u8*)b + memory.size_of(MallocBlockHeader)
 
 ## The header before a js_malloc'ed block (js_rc): it holds the reference count of GC
 ## objects and strings.
 func js_rc(ptr: const void*) -> MallocBlockHeader*:
-    return (MallocBlockHeader*)((const u8*)ptr - sizeof(MallocBlockHeader))
+    return (MallocBlockHeader*)((const u8*)ptr - memory.size_of(MallocBlockHeader))
 
 func js_malloc_init(s: MallocContext*):
-    discard(cutils.memset(s, 0, sizeof(MallocContext)))
+    _ = cutils.memset(s, 0, memory.size_of(MallocContext))
     get_zero_size_block(s).block_idx = free_nil
     for i in 0..<js_malloc_block_size_count:
         cutils.init_list_head(&s.arena_list[i])
@@ -85,15 +85,15 @@ func js_malloc_init(s: MallocContext*):
 
 ## The header of block `idx` of an arena; the blocks follow the arena header.
 func get_arena_block(ar: MallocArena*, idx: u32, block_size: u32) -> MallocBlockHeader*:
-    return (MallocBlockHeader*)((u8*)ar + sizeof(MallocArena) + (usize)idx * (usize)block_size)
+    return (MallocBlockHeader*)((u8*)ar + memory.size_of(MallocArena) + (usize)idx * (usize)block_size)
 
 # mark: Allocation ==============================================================================
 
 func js_malloc_new_arena(s: MallocContext*, block_size_idx: i32) -> MallocArena*?:
     let block_size = (i32)js_malloc_block_sizes[block_size_idx]
-    let n_blocks = (i32)((js_malloc_arena_size - sizeof(MallocArena)) // (usize)block_size)
+    let n_blocks = (i32)((js_malloc_arena_size - memory.size_of(MallocArena)) // (usize)block_size)
     let host_malloc = s.mf.js_malloc
-    let p = host_malloc(&s.malloc_state, sizeof(MallocArena) + (usize)(n_blocks * block_size)) else return none
+    let p = host_malloc(&s.malloc_state, memory.size_of(MallocArena) + (usize)(n_blocks * block_size)) else return none
     let ar = (MallocArena*)p
 
     ar.block_size_idx = (u8)block_size_idx
@@ -116,7 +116,7 @@ func js_malloc_new_arena(s: MallocContext*, block_size_idx: i32) -> MallocArena*
 
 func js_malloc_large(s: MallocContext*, size: usize) -> void*?:
     # a size so large that the header overflows cannot be allocated (C would wrap)
-    let total_size = sizeof(MallocLargeBlockHeader) +? size else return none
+    let total_size = memory.size_of(MallocLargeBlockHeader) +? size else return none
     let host_malloc = s.mf.js_malloc
     let p = host_malloc(&s.malloc_state, total_size) else return none
     let b = (MallocLargeBlockHeader*)p
@@ -133,9 +133,9 @@ func small_block_total_size(size: usize) -> usize?:
     if size > largest - (js_malloc_align - 1):
         return none
     let rounded = (size + (js_malloc_align - 1)) & ~(js_malloc_align - 1)
-    if rounded > largest - sizeof(MallocBlockHeader):
+    if rounded > largest - memory.size_of(MallocBlockHeader):
         return none
-    return rounded + sizeof(MallocBlockHeader)
+    return rounded + memory.size_of(MallocBlockHeader)
 
 ## Allocate `size` bytes (__js_malloc); none if the host allocator fails.
 func js_malloc_raw(s: MallocContext*, size: usize) -> void*?:
@@ -153,7 +153,7 @@ func js_malloc_raw(s: MallocContext*, size: usize) -> void*?:
     if el == head:
         found = js_malloc_new_arena(s, block_size_idx)
     else:
-        found = (MallocArena*)((u8*)el - offsetof(MallocArena, free_link))
+        found = (MallocArena*)((u8*)el - memory.offset_of(MallocArena, free_link))
     let ar = found else return none
 
     let block_idx = ar.first_free_block
@@ -181,7 +181,7 @@ func js_free_raw(s: MallocContext*, ptr: void*?):
         let block_idx = (usize)b.block_idx
         let block_size_idx = (usize)b.block_size_idx
         let block_size = (usize)js_malloc_block_sizes[block_size_idx]
-        let ar = (MallocArena*)((u8*)b - block_size * block_idx - sizeof(MallocArena))
+        let ar = (MallocArena*)((u8*)b - block_size * block_idx - memory.size_of(MallocArena))
         b.block_idx = ar.first_free_block  # free_next
         ar.first_free_block = (u16)block_idx
         # add back to the free list if needed
@@ -206,7 +206,7 @@ func js_realloc_raw(s: MallocContext*, ptr: void*?, size: usize) -> void*?:
         if b == get_zero_size_block(s):
             return js_malloc_raw(s, size)
         let lb = (MallocLargeBlockHeader*)b
-        let total_size = sizeof(MallocLargeBlockHeader) +? size else return none
+        let total_size = memory.size_of(MallocLargeBlockHeader) +? size else return none
         let host_realloc = s.mf.js_realloc
         let q = host_realloc(&s.malloc_state, lb, total_size) else return none
         let new_lb = (MallocLargeBlockHeader*)q
@@ -224,9 +224,9 @@ func js_realloc_raw(s: MallocContext*, ptr: void*?, size: usize) -> void*?:
     new_b.gc_bits = b.gc_bits
     new_b.ref_count = b.ref_count
     # copy the data
-    let old_size = block_size - sizeof(MallocBlockHeader)
+    let old_size = block_size - memory.size_of(MallocBlockHeader)
     let copy_size = old_size if size > old_size else size
-    discard(cutils.memcpy(new_ptr, p, copy_size))
+    _ = cutils.memcpy(new_ptr, p, copy_size)
     js_free_raw(s, p)
     return new_ptr
 
@@ -242,8 +242,8 @@ func js_malloc_usable_size_raw(s: MallocContext*, ptr: const void*?) -> usize:
         if let usable_size = s.mf.js_malloc_usable_size:
             var size = usable_size(lb)
             if size != 0:
-                size -= sizeof(MallocLargeBlockHeader)
+                size -= memory.size_of(MallocLargeBlockHeader)
             return size
         return 0
     let block_size = (usize)js_malloc_block_sizes[b.block_size_idx]
-    return block_size - sizeof(MallocBlockHeader)
+    return block_size - memory.size_of(MallocBlockHeader)

@@ -113,7 +113,7 @@ func js_to_bigint64_free(ctx: Context*, pres: i64*, val0: Value) -> !:
     else:
         let p = val.u.big_int
         # the limbs follow the header (JSBigInt.tab)
-        let tab = (u32*)((u8*)p + sizeof(BigInt))
+        let tab = (u32*)((u8*)p + memory.size_of(BigInt))
         # return the value mod 2^64
         res = tab[0]
         if p.len >= 2:

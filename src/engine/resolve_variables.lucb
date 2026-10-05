@@ -50,7 +50,7 @@ func instantiate_hoisted_definitions(ctx: Context*, s: FunctionDef*, bc: cutils.
         dbuf_op(bc, Op.push_this)
         dbuf_op(bc, Op.if_false)
         dbuf_u32(bc, (u32)label_next)
-        discard(update_label(s, label_next, 1))
+        _ = update_label(s, label_next, 1)
         s.jump_size += 1
 
     # add the global variables (only happens if s->is_global_var is true)
@@ -136,17 +136,17 @@ func skip_dead_code(s: FunctionDef*, bc_buf: const u8*, bc_len: i32, pos0: i32,
             match op_info(op, true).fmt:
                 .label, .label_u16:
                     let label = (i32)cutils.get_u32(bc_buf + pos + 1)
-                    discard(update_label(s, label, -1))
+                    _ = update_label(s, label, -1)
                 .atom_label_u8, .atom_label_u16:
                     let label = (i32)cutils.get_u32(bc_buf + pos + 5)
-                    discard(update_label(s, label, -1))
+                    _ = update_label(s, label, -1)
                     let atom = cutils.get_u32(bc_buf + pos + 1)
                     js_free_atom(s.ctx, atom)
                 .atom, .atom_u8, .atom_u16:
                     let atom = cutils.get_u32(bc_buf + pos + 1)
                     js_free_atom(s.ctx, atom)
                 _:
-                    discard(0)
+                    _ = 0
         pos += len
     return pos
 
@@ -186,7 +186,7 @@ func resolve_variables_fail(s: FunctionDef*, bc_out: cutils.DynBuf*, bc_buf: con
     var pos = pos0
     while pos < bc_len:
         let len = (i32)op_info(bc_buf[pos], true).size
-        discard(cutils.dbuf_put(bc_out, bc_buf + pos, (usize)len))
+        _ = cutils.dbuf_put(bc_out, bc_buf + pos, (usize)len)
         pos += len
     cutils.dbuf_free(&s.byte_code)
     s.byte_code = *bc_out
@@ -310,7 +310,7 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
                     resolve_leave_scope(s, &bc_out, (i32)cutils.get_u16(bc_buf + pos + 1))
                 .set_class_name:
                     # only used during parsing
-                    discard(0)
+                    _ = 0
                 .get_field_opt_chain:
                     # equivalent to OP_get_field
                     let name = cutils.get_u32(bc_buf + pos + 1)
@@ -368,7 +368,7 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
                         s.jump_size += 1
                     # remove dead code
                     var line: i32 = -1
-                    discard(cutils.dbuf_put(&bc_out, bc_buf + pos, (usize)len))
+                    _ = cutils.dbuf_put(&bc_out, bc_buf + pos, (usize)len)
                     pos = skip_dead_code(s, bc_buf, bc_len, pos + len, &line)
                     pos_next = pos
                     if pos < bc_len and line >= 0 and line_num != line:
@@ -399,8 +399,8 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
                             pos2 = get_label_pos(s, lab1)
                         if code_match(&cc, pos2, [op1, -1]):
                             s.jump_size += 1
-                            discard(update_label(s, lab0, -1))
-                            discard(update_label(s, cc.label, 1))
+                            _ = update_label(s, lab0, -1)
+                            _ = update_label(s, cc.label, 1)
                             dbuf_byte(&bc_out, (u8)op1)
                             dbuf_u32(&bc_out, (u32)cc.label)
                             pos_next = pos1
@@ -410,11 +410,11 @@ func resolve_variables(ctx: Context*, s: FunctionDef*) -> !:
                             no_change = false
                 .nop:
                     # remove erased code
-                    discard(0)
+                    _ = 0
                 _:
                     no_change = true
         if no_change:
-            discard(cutils.dbuf_put(&bc_out, bc_buf + pos, (usize)len))
+            _ = cutils.dbuf_put(&bc_out, bc_buf + pos, (usize)len)
         pos = pos_next
 
     # set the new byte code

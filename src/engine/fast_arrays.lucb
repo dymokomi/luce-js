@@ -17,8 +17,8 @@ func expand_fast_array(ctx: Context*, p: Object*, new_len: u32) -> !:
     # XXX: potential arithmetic overflow
     var new_size = (u32)cutils.max_int((i32)new_len, (i32)(p.u.array.u1.size *% 3 // 2))
     var slack: usize = 0
-    let new_array_prop = try js_realloc2(ctx, p.u.array.u.ptr, sizeof(Value) * (usize)new_size, &slack)
-    new_size += (u32)(slack // sizeof(Value))
+    let new_array_prop = try js_realloc2(ctx, p.u.array.u.ptr, memory.size_of(Value) * (usize)new_size, &slack)
+    new_size += (u32)(slack // memory.size_of(Value))
     p.u.array.u.ptr = new_array_prop
     p.u.array.u1.size = new_size
 

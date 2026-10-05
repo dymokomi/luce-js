@@ -58,9 +58,9 @@ func js_new_class1(rt: Runtime*, class_id: u32, class_def: const ClassDef*, name
         # reallocate the context class prototype array, if any
         var el = rt.context_list.next else trap("unlinked context list")
         while el != &rt.context_list:
-            let ctx = (Context*)((u8*)el - offsetof(Context, link))
+            let ctx = (Context*)((u8*)el - memory.offset_of(Context, link))
             let old_tab = ctx.class_proto else trap("context without class_proto")
-            let new_tab_raw = js_realloc_rt(rt, old_tab, sizeof(Value) * (usize)new_size)
+            let new_tab_raw = js_realloc_rt(rt, old_tab, memory.size_of(Value) * (usize)new_size)
             let new_tab = (Value*)(new_tab_raw else return -1)
             for i in rt.class_count..<new_size:
                 new_tab[i] = js_null()
@@ -71,10 +71,10 @@ func js_new_class1(rt: Runtime*, class_id: u32, class_def: const ClassDef*, name
         var old_array: void*? = none
         if let class_array = rt.class_array:
             old_array = class_array
-        let new_array_raw = js_realloc_rt(rt, old_array, sizeof(Class) * (usize)new_size)
+        let new_array_raw = js_realloc_rt(rt, old_array, memory.size_of(Class) * (usize)new_size)
         let new_class_array = (Class*)(new_array_raw else return -1)
-        discard(cutils.memset(new_class_array + rt.class_count, 0,
-                              (usize)(new_size - rt.class_count) * sizeof(Class)))
+        _ = cutils.memset(new_class_array + rt.class_count, 0,
+                          (usize)(new_size - rt.class_count) * memory.size_of(Class))
         rt.class_array = new_class_array
         rt.class_count = new_size
 

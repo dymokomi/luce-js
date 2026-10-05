@@ -129,21 +129,21 @@ func js_instantiate_getset(ctx: Context*, obj: Value, atom: Atom, e: const CFunc
 
     var getter = js_undefined()
     if let get = js_function_list_entry_getter(e):
-        discard(format(buf, f"get {e.name}") else "")
+        _ = strings.format(buf, f"get {e.name}") else ""
         var kind = CFunctionEnum.getter
         if is_magic:
             kind = CFunctionEnum.getter_magic
         getter = try js_new_c_function2(ctx, get, &buf[0], 0, kind, (i32)e.magic)
     var setter = js_undefined()
     if let set = js_function_list_entry_setter(e):
-        discard(format(buf, f"set {e.name}") else "")
+        _ = strings.format(buf, f"set {e.name}") else ""
         var kind = CFunctionEnum.setter
         if is_magic:
             kind = CFunctionEnum.setter_magic
         setter = js_new_c_function2(ctx, set, &buf[0], 1, kind, (i32)e.magic) catch failure:
             js_free_value(ctx, getter)
             error(failure.code, failure.message)
-    discard(try js_define_property_get_set(ctx, obj, atom, getter, setter, prop_flags))
+    _ = try js_define_property_get_set(ctx, obj, atom, getter, setter, prop_flags)
 
 ## Define the property `atom` of `obj` from the table entry `e`: functions, strings and
 ## objects become auto-init properties, the other entries are created now.
@@ -171,7 +171,7 @@ func js_instantiate_function_list_item(ctx: Context*, obj: Value, atom: Atom, e:
         prop_flags = js_function_list_symbol_flags(atom, prop_flags)
     elif e.def_type == def_cfunc:
         prop_flags = js_function_list_symbol_flags(atom, prop_flags)
-        discard(try js_define_auto_init_property(ctx, obj, atom, AutoInitId.prop, (void*)e, prop_flags))
+        _ = try js_define_auto_init_property(ctx, obj, atom, AutoInitId.prop, (void*)e, prop_flags)
         return
     elif e.def_type == def_cgetset or e.def_type == def_cgetset_magic:
         # XXX: use autoinit again ?
@@ -190,8 +190,8 @@ func js_instantiate_function_list_item(ctx: Context*, obj: Value, atom: Atom, e:
     elif e.def_type == def_prop_bool:
         val = js_new_bool(e.i32_value != 0)
     elif e.def_type == def_prop_string or e.def_type == def_object:
-        discard(try js_define_auto_init_property(ctx, obj, atom, AutoInitId.prop, (void*)e, prop_flags))
+        _ = try js_define_auto_init_property(ctx, obj, atom, AutoInitId.prop, (void*)e, prop_flags)
         return
     else:
         trap(f"{e.name}: invalid entry type")  # abort()
-    discard(try js_define_property_value(ctx, obj, atom, val, prop_flags))
+    _ = try js_define_property_value(ctx, obj, atom, val, prop_flags)

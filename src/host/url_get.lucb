@@ -26,7 +26,7 @@ func http_get_header_line(f: void*, buf: u8*, buf_size: usize, dbuf: DynBuf*?) -
             buf[p] = (u8)ch
             p += 1
         if let d = dbuf:
-            discard(cutils.dbuf_putc(d, (u8)ch))
+            _ = cutils.dbuf_putc(d, (u8)ch)
         if ch == (i32)'\n':
             break
     buf[p] = 0
@@ -45,23 +45,23 @@ func http_get_status(buf: const u8*) -> i32:
 
 ## The command that downloads `url`: curl with the URL single-quoted for the shell.
 func url_get_command(cmd_buf: DynBuf*, url: const u8*):
-    discard(cutils.dbuf_printf(cmd_buf, f"{url_get_program} '"))
+    _ = cutils.dbuf_printf(cmd_buf, f"{url_get_program} '")
     var i: usize = 0
     while url[i] != 0:
         let ch = url[i]
         match ch:
             '\'':
                 # shell single quoted string does not support \'
-                discard(cutils.dbuf_putstr(cmd_buf, "'\\''"))
+                _ = cutils.dbuf_putstr(cmd_buf, "'\\''")
             '[', ']', '{', '}', '\\':
                 # prevent interpretation by curl as range or set specification
-                discard(cutils.dbuf_putc(cmd_buf, '\\'))
-                discard(cutils.dbuf_putc(cmd_buf, ch))
+                _ = cutils.dbuf_putc(cmd_buf, '\\')
+                _ = cutils.dbuf_putc(cmd_buf, ch)
             _:
-                discard(cutils.dbuf_putc(cmd_buf, ch))
+                _ = cutils.dbuf_putc(cmd_buf, ch)
         i += 1
-    discard(cutils.dbuf_putstr(cmd_buf, "'"))
-    discard(cutils.dbuf_putc(cmd_buf, 0))
+    _ = cutils.dbuf_putstr(cmd_buf, "'")
+    _ = cutils.dbuf_putc(cmd_buf, 0)
 
 ## Read the status line and the headers of the response in `f` into `buf` and
 ## `header_buf`: the status, or none when the response is refused (no status line, a
@@ -137,14 +137,14 @@ func js_std_url_get(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
             let len = fread(buf, 1, url_get_buf_size, f)
             if len == 0:
                 break
-            discard(cutils.dbuf_put(&data_buf, buf, len))
+            _ = cutils.dbuf_put(&data_buf, buf, len)
         if cutils.dbuf_error(&data_buf):
             error(js.exception, "")
         if binary_flag:
             response = try new_array_buffer_of_dbuf(ctx, &data_buf)
         else:
             response = try new_string_of_dbuf(ctx, &data_buf)
-    discard(pclose(f))
+    _ = pclose(f)
     f_open = false
     cutils.dbuf_free(&data_buf)
 
@@ -153,13 +153,13 @@ func js_std_url_get(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> 
     let ret_obj = js.js_new_object(ctx) catch failure:
         js.js_free_value(ctx, response)
         error(failure.code, failure.message)
-    discard(js.js_define_property_value_str(ctx, ret_obj, "response", response, js.prop_c_w_e) catch: recover false)
+    _ = js.js_define_property_value_str(ctx, ret_obj, "response", response, js.prop_c_w_e) catch: recover false
     if not js.js_is_null(response):
         let header_text = new_string_of_dbuf(ctx, &header_buf) catch failure:
             js.js_free_value(ctx, ret_obj)
             error(failure.code, failure.message)
-        discard(js.js_define_property_value_str(ctx, ret_obj, "responseHeaders", header_text, js.prop_c_w_e) catch: recover false)
-        discard(js.js_define_property_value_str(ctx, ret_obj, "status", js.js_new_int32(status), js.prop_c_w_e) catch: recover false)
+        _ = js.js_define_property_value_str(ctx, ret_obj, "responseHeaders", header_text, js.prop_c_w_e) catch: recover false
+        _ = js.js_define_property_value_str(ctx, ret_obj, "status", js.js_new_int32(status), js.prop_c_w_e) catch: recover false
     return ret_obj
 
 ## The bytes of `dbuf` as a new ArrayBuffer.
@@ -171,4 +171,4 @@ func new_array_buffer_of_dbuf(ctx: Context*, dbuf: const DynBuf*) -> Value!:
 ## pclose() the stream `f` of std.urlGet if it is still open.
 func if_open_pclose(f: void*, f_open: bool*):
     if *f_open:
-        discard(pclose(f))
+        _ = pclose(f)

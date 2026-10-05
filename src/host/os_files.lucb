@@ -16,8 +16,8 @@ func make_obj_error(ctx: Context*, obj: Value, err: i32) -> Value!:
     let arr = js.js_new_array(ctx) catch failure:
         js.js_free_value(ctx, obj)
         error(failure.code, failure.message)
-    discard(js.js_define_property_value_uint32(ctx, arr, 0, obj, js.prop_c_w_e) catch: recover false)
-    discard(js.js_define_property_value_uint32(ctx, arr, 1, js.js_new_int32(err), js.prop_c_w_e) catch: recover false)
+    _ = js.js_define_property_value_uint32(ctx, arr, 0, obj, js.prop_c_w_e) catch: recover false
+    _ = js.js_define_property_value_uint32(ctx, arr, 1, js.js_new_int32(err), js.prop_c_w_e) catch: recover false
     return arr
 
 func make_string_error(ctx: Context*, buf: const u8*, err: i32) -> Value!:
@@ -72,9 +72,9 @@ func js_os_readdir(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
                 break
             let d = entry else break
             let name = js.js_new_string(ctx, dirent_name(d)) catch: recover js.js_undefined()
-            discard(js.js_define_property_value_uint32(ctx, obj, len, name, js.prop_c_w_e) catch: recover false)
+            _ = js.js_define_property_value_uint32(ctx, obj, len, name, js.prop_c_w_e) catch: recover false
             len += 1
-        discard(closedir(f))
+        _ = closedir(f)
     return try make_obj_error(ctx, obj, err)
 
 ## return [obj, errcode]; os.stat (is_lstat 0) and os.lstat (1)
@@ -106,7 +106,7 @@ func js_os_stat(ctx: Context*, this_val: Value, argc: i32, argv: Value*, is_lsta
     return try make_obj_error(ctx, obj, err)
 
 func define_stat_field(ctx: Context*, obj: Value, name: str, val: Value) -> !:
-    discard(try js.js_define_property_value_str(ctx, obj, name, val, js.prop_c_w_e))
+    _ = try js.js_define_property_value_str(ctx, obj, name, val, js.prop_c_w_e)
 
 func js_os_utimes(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     var atime: i64 = 0

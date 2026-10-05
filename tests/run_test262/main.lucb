@@ -37,14 +37,14 @@ func show_progress(opaque: void*?):
             last_test_skipped = test_skipped1
             last_test_failed = test_failed1
 
-            discard(fputc((i32)ch, stderr()))
+            _ = fputc((i32)ch, stderr())
             dots += 1
             if exiting or dots % 60 == 0:
-                discard(fprintf(stderr(), z(" %d/%d/%d\n"), test_failed1, test_count1, test_skipped1))
+                _ = fprintf(stderr(), z(" %d/%d/%d\n"), test_failed1, test_count1, test_skipped1)
         else:
             # output progress indicator: erase end of line and return to col 0
-            discard(fprintf(stderr(), z("%d/%d/%d\u{1b}[K\r"), test_failed1, test_count1, test_skipped1))
-        discard(fflush(stderr()))
+            _ = fprintf(stderr(), z("%d/%d/%d\u{1b}[K\r"), test_failed1, test_count1, test_skipped1)
+        _ = fflush(stderr())
         if exiting:
             break
 
@@ -71,7 +71,7 @@ func run_test_dir_list(opaque: void*?):
     let th = (RunTestDirThread*)(opaque else return)
     var tls_s: ThreadLocalStorage = ---
     let tls = &tls_s
-    discard(memset(tls, 0, sizeof(ThreadLocalStorage)))
+    _ = memset(tls, 0, memory.size_of(ThreadLocalStorage))
 
     let lp = &test_list
     let arr = lp.array else return
@@ -82,15 +82,15 @@ func run_test_dir_list(opaque: void*?):
             var ti: i64 = 0
             if slow_test_threshold != 0:
                 ti = get_clock_ms()
-            discard(run_test(tls, p, i))
+            _ = run_test(tls, p, i)
             if slow_test_threshold != 0:
                 ti = get_clock_ms() - ti
                 if ti >= (i64)slow_test_threshold:
-                    discard(fprintf(stderr(), z("\n%s (%d ms)\n"), p, (i32)ti))
+                    _ = fprintf(stderr(), z("\n%s (%d ms)\n"), p, (i32)ti)
         i += nthreads
 
 func help() -> never:
-    discard(fputs(z("""
+    _ = fputs(z("""
         run-test262 version 2026-06-04 (luce-js)
         usage: run-test262 [options] {-f file ... | [dir_list] [index range]}
         -h             help
@@ -113,7 +113,7 @@ func help() -> never:
         -r file        set the report file name (default=none)
         -x file        exclude tests listed in 'file'
         --no-can-block set [[CanBlock]] to false (Atomics.wait will throw)
-        """), stdout()))
+        """), stdout())
     c_exit(1)
 
 func get_opt_arg(option: const u8*, argv: const u8*[], index: usize) -> const u8*:
@@ -144,7 +144,7 @@ pub func main(arguments: c.str[]) -> i32:
 
     var tls_s: ThreadLocalStorage = ---
     let tls = &tls_s
-    discard(memset(tls, 0, sizeof(ThreadLocalStorage)))
+    _ = memset(tls, 0, memory.size_of(ThreadLocalStorage))
     var only_check_errors = false
     var ignore: const u8* = z("")
     var is_test262_harness = false
@@ -155,7 +155,7 @@ pub func main(arguments: c.str[]) -> i32:
     if not platform.windows:
         compact = isatty(stderr_fileno) == 0
         # Date tests assume California local time
-        discard(setenv(z("TZ"), z("America/Los_Angeles"), 1))
+        _ = setenv(z("TZ"), z("America/Los_Angeles"), 1)
 
     var optind: usize = 1
     while optind < argc:
@@ -262,9 +262,9 @@ pub func main(arguments: c.str[]) -> i32:
     if count_skipped_features:
         # not storage efficient but it is simple
         let skip_len = strlen(cnull(harness_skip_features) else z(""))
-        let size = sizeof(i32) * skip_len
+        let size = memory.size_of(i32) * skip_len
         let counts = (i32*)xmalloc(size + 1)
-        discard(memset(counts, 0, size))
+        _ = memset(counts, 0, size)
         harness_skip_features_count = counts
 
     if is_dir_list:
@@ -304,7 +304,7 @@ pub func main(arguments: c.str[]) -> i32:
 
         let progress_thread = thread.spawn(show_progress, none) catch: fatal(1, "cannot start a thread")
 
-        let threads = (RunTestDirThread*)xmalloc(sizeof(RunTestDirThread) * (usize)nthreads)
+        let threads = (RunTestDirThread*)xmalloc(memory.size_of(RunTestDirThread) * (usize)nthreads)
         for i in 0..<nthreads:
             let th = threads + (usize)i
             th.thread_index = i
@@ -318,28 +318,28 @@ pub func main(arguments: c.str[]) -> i32:
 
         if let fo = outfile:
             if fo != stdout():
-                discard(fclose(fo))
+                _ = fclose(fo)
             outfile = none
     else:
         outfile = stdout()
         while optind < argc:
-            discard(run_test(tls, argv[optind], -1))
+            _ = run_test(tls, argv[optind], -1)
             optind += 1
 
     let elapsed = clock() -% clocks
 
     if dump_memory != 0:
         if dump_memory > 1 and stats_count > 1:
-            discard(printf(z("\nMininum memory statistics for %s:\n\n"), cnull(stats_min_filename) else z("")))
-            discard(fflush(stdout()))  # the engine prints with its own writer
+            _ = printf(z("\nMininum memory statistics for %s:\n\n"), cnull(stats_min_filename) else z(""))
+            _ = fflush(stdout())  # the engine prints with its own writer
             js.js_dump_memory_usage(&stats_min, none)
-            discard(printf(z("\nMaximum memory statistics for %s:\n\n"), cnull(stats_max_filename) else z("")))
-            discard(fflush(stdout()))
+            _ = printf(z("\nMaximum memory statistics for %s:\n\n"), cnull(stats_max_filename) else z(""))
+            _ = fflush(stdout())
             js.js_dump_memory_usage(&stats_max, none)
-        discard(printf(z("\nAverage memory statistics for %d tests:\n\n"), stats_count))
-        discard(fflush(stdout()))
+        _ = printf(z("\nAverage memory statistics for %d tests:\n\n"), stats_count)
+        _ = fflush(stdout())
         js.js_dump_memory_usage(&stats_avg, none)
-        discard(printf(z("\n")))
+        _ = printf(z("\n"))
 
     if count_skipped_features:
         let features = cnull(harness_skip_features) else z("")
@@ -350,40 +350,40 @@ pub func main(arguments: c.str[]) -> i32:
             if counts[i] != 0:
                 if not disp:
                     disp = true
-                    discard(printf(z("%-30s %7s\n"), z("SKIPPED FEATURE"), z("COUNT")))
+                    _ = printf(z("%-30s %7s\n"), z("SKIPPED FEATURE"), z("COUNT"))
                 var n: usize = 0
                 while n < 30:
                     let ch = features[i + n]
                     if is_word_sep(ch):
                         break
-                    discard(putchar((i32)ch))
+                    _ = putchar((i32)ch)
                     n += 1
                 while n < 30:
-                    discard(putchar((i32)' '))
+                    _ = putchar((i32)' ')
                     n += 1
-                discard(printf(z(" %7d\n"), counts[i]))
-        discard(printf(z("\n")))
+                _ = printf(z(" %7d\n"), counts[i])
+        _ = printf(z("\n"))
 
     if is_dir_list:
         let failed_count = test_failed.load()
         let total = test_count.load()
-        discard(fprintf(stderr(), z("Result: %d/%d error%s"), failed_count, total,
-                        z("s") if total != 1 else z("")))
+        _ = fprintf(stderr(), z("Result: %d/%d error%s"), failed_count, total,
+                    z("s") if total != 1 else z(""))
         if test_excluded != 0:
-            discard(fprintf(stderr(), z(", %d excluded"), test_excluded))
+            _ = fprintf(stderr(), z(", %d excluded"), test_excluded)
         if test_skipped.load() != 0:
-            discard(fprintf(stderr(), z(", %d skipped"), test_skipped.load()))
+            _ = fprintf(stderr(), z(", %d skipped"), test_skipped.load())
         if error_file != none:
             if new_errors.load() != 0:
-                discard(fprintf(stderr(), z(", %d new"), new_errors.load()))
+                _ = fprintf(stderr(), z(", %d new"), new_errors.load())
             if changed_errors.load() != 0:
-                discard(fprintf(stderr(), z(", %d changed"), changed_errors.load()))
+                _ = fprintf(stderr(), z(", %d changed"), changed_errors.load())
             if fixed_errors.load() != 0:
-                discard(fprintf(stderr(), z(", %d fixed"), fixed_errors.load()))
-        discard(fprintf(stderr(), z("\n")))
+                _ = fprintf(stderr(), z(", %d fixed"), fixed_errors.load())
+        _ = fprintf(stderr(), z("\n"))
         if show_timings != 0:
-            discard(fprintf(stderr(), z("Total user time: %.3fs (nthreads=%d)\n"),
-                            f64(elapsed) / f64(clocks_per_sec), nthreads))
+            _ = fprintf(stderr(), z("Total user time: %.3fs (nthreads=%d)\n"),
+                        f64(elapsed) / f64(clocks_per_sec), nthreads)
 
     if update_errors != 0:
         let name = error_filename else fatal(1, "no error file to update")
@@ -393,8 +393,8 @@ pub func main(arguments: c.str[]) -> i32:
         namelist_sort(&error_list, false)
         if let arr = error_list.array:
             for i in 0..<error_list.count:
-                discard(fputs(arr[(usize)i], error_out))
-        discard(fclose(error_out))
+                _ = fputs(arr[(usize)i], error_out)
+        _ = fclose(error_out)
 
     namelist_free(&test_list)
     namelist_free(&exclude_list)

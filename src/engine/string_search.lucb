@@ -63,7 +63,7 @@ func string_advance_index(p: const String*, index: i64, unicode_: bool) -> i64:
     if not unicode_ or index >= (i64)p.len or not p.is_wide_char:
         return index + 1
     var index32 = (i32)index
-    discard(string_getc(p, &index32))
+    _ = string_getc(p, &index32)
     return (i64)index32
 
 # return the position of the first invalid character in the string or

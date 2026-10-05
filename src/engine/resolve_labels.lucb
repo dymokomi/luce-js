@@ -158,7 +158,7 @@ func place_label(p: ResolveLabelsState*):
                 assert(diff == (i32)(i8)diff)
                 cutils.put_u8(buf + re.addr, (u8)diff)
             _:
-                discard(0)
+                _ = 0
         js_free(p.ctx, re)
     ls.first_reloc = none
 
@@ -177,7 +177,7 @@ func label_constant_test(p: ResolveLabelsState*) -> LabelStep:
     # transform false if_true(l1) -> nop
     # transform true if_false(l1) -> nop
     p.pos_next = p.cc.pos
-    discard(update_label(p.s, p.cc.label, -1))
+    _ = update_label(p.s, p.cc.label, -1)
     return LabelStep.done
 
 # has_goto: thread the goto to `label`.
@@ -189,13 +189,13 @@ func label_goto(p: ResolveLabelsState*) -> LabelStep:
     p.label = find_jump_target(s, p.label, &op1, &line1)
     if code_has_label(&p.cc, p.pos_next, p.label):
         # jump to next instruction: remove jump
-        discard(update_label(s, p.label, -1))
+        _ = update_label(s, p.label, -1)
         return LabelStep.done
     if op1 == (i32)Op.return_ or op1 == (i32)Op.return_undef or op1 == (i32)Op.throw:
         # jump to return/throw: remove jump, append return/throw
         # updating the line number obfuscates assembly listing
         # if (line1 != -1) line_num = line1;
-        discard(update_label(s, p.label, -1))
+        _ = update_label(s, p.label, -1)
         state_pc2line(p)
         dbuf_byte(&p.bc_out, (u8)op1)
         p.pos_next = skip_dead_code(s, p.bc_buf, p.bc_len, p.pos_next, &p.line_num)
@@ -230,14 +230,14 @@ func label_emit_jump(p: ResolveLabelsState*) -> !:
             jp.op = (i32)Op.if_false8 + (op - (i32)Op.if_false)
             dbuf_byte(&p.bc_out, (u8)jp.op)
             dbuf_byte(&p.bc_out, 0)
-            discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 1, 1))
+            _ = try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 1, 1)
             return
         if diff < 32768 and op == (i32)Op.goto_:
             jp.size = 2
             jp.op = (i32)Op.goto16
             dbuf_op(&p.bc_out, Op.goto16)
             dbuf_u16(&p.bc_out, 0)
-            discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 2, 2))
+            _ = try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 2, 2)
             return
     else:
         let diff = ls.addr - (i32)p.bc_out.size - 1
@@ -257,7 +257,7 @@ func label_emit_jump(p: ResolveLabelsState*) -> !:
     dbuf_u32(&p.bc_out, (u32)(ls.addr - (i32)p.bc_out.size))
     if ls.addr == -1:
         # unresolved yet: create a new relocation entry
-        discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 4, 4))
+        _ = try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 4, 4)
 
 # with_get_var ... with_get_ref: the atom, the jump to the label past the with test, and
 # the is_with flag.
@@ -281,7 +281,7 @@ func label_with_op(p: ResolveLabelsState*) -> !:
     dbuf_u32(&p.bc_out, (u32)(ls.addr - (i32)p.bc_out.size))
     if ls.addr == -1:
         # unresolved yet: create a new relocation entry
-        discard(try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 4, 4))
+        _ = try add_reloc(p.ctx, ls, (u32)p.bc_out.size -% 4, 4)
     dbuf_byte(&p.bc_out, is_with)
 
 # mark: The jump opcodes ========================================================================
@@ -338,7 +338,7 @@ func resolve_labels_op(p: ResolveLabelsState*) -> LabelStep!:
             p.label = find_jump_target(s, p.label, &op1, none)
             # transform if_false/if_true(l1) label(l1) -> drop label(l1)
             if code_has_label(&p.cc, p.pos_next, p.label):
-                discard(update_label(s, p.label, -1))
+                _ = update_label(s, p.label, -1)
                 dbuf_op(&p.bc_out, Op.drop)
                 return LabelStep.done
             # transform if_false(l1) goto(l2) label(l1) -> if_false(l2) label(l1)
@@ -349,7 +349,7 @@ func resolve_labels_op(p: ResolveLabelsState*) -> LabelStep!:
                     if line1 != -1:
                         p.line_num = line1
                     p.pos_next = pos1
-                    discard(update_label(s, p.label, -1))
+                    _ = update_label(s, p.label, -1)
                     p.label = p.cc.label
                     p.op ^= (i32)Op.if_true ^ (i32)Op.if_false
             return LabelStep.has_label
@@ -383,7 +383,7 @@ func resolve_labels_code(p: ResolveLabelsState*) -> !:
                     break
                 .no_change:
                     state_pc2line(p)
-                    discard(cutils.dbuf_put(&p.bc_out, p.bc_buf + p.pos, (usize)p.len))
+                    _ = cutils.dbuf_put(&p.bc_out, p.bc_buf + p.pos, (usize)p.len)
                     break
                 .done:
                     break
@@ -424,8 +424,8 @@ func shorten_jumps(p: ResolveLabelsState*):
             if shrink:
                 # XXX: should reduce complexity, using 2 finger copy scheme
                 let count = (i32)p.bc_out.size - pos - jp.size - delta
-                discard(cutils.memmove(buf + pos + jp.size, buf + pos + jp.size + delta,
-                                       (usize)count))
+                _ = cutils.memmove(buf + pos + jp.size, buf + pos + jp.size + delta,
+                                   (usize)count)
                 p.bc_out.size -= (usize)delta
                 patch_offsets += 1
                 for j in 0..<s.label_count:
@@ -453,7 +453,7 @@ func shorten_jumps(p: ResolveLabelsState*):
                 4:
                     cutils.put_u32(buf + jp1.pos, (u32)diff1)
                 _:
-                    discard(0)
+                    _ = 0
 
 # peephole optimizations and resolve goto/labels
 func resolve_labels(ctx: Context*, s: FunctionDef*) -> !:
@@ -466,11 +466,11 @@ func resolve_labels(ctx: Context*, s: FunctionDef*) -> !:
     js_dbuf_bytecode_init(ctx, &p.bc_out)
 
     if s.jump_size != 0:
-        let slots = try js_mallocz(s.ctx, sizeof(JumpSlot) * (usize)s.jump_size)
+        let slots = try js_mallocz(s.ctx, memory.size_of(JumpSlot) * (usize)s.jump_size)
         s.jump_slots = (JumpSlot*)slots
     # XXX: Should skip this phase if not generating SHORT_OPCODES
     if s.line_number_size != 0 and not s.strip_debug:
-        let slots = try js_mallocz(s.ctx, sizeof(LineNumberSlot) * (usize)s.line_number_size)
+        let slots = try js_mallocz(s.ctx, memory.size_of(LineNumberSlot) * (usize)s.line_number_size)
         s.line_number_slots = (LineNumberSlot*)slots
         s.line_number_last = (i32)s.source_pos
         s.line_number_last_pc = 0

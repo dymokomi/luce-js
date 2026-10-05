@@ -21,7 +21,7 @@ func perform_promise_then(ctx: Context*, promise: Value, resolve_reject: Value*,
     var rd_array: PromiseReactionData*[2] = ---
 
     for i: usize in 0..<2:
-        let rd_raw = js_mallocz(ctx, sizeof(PromiseReactionData)) catch failure:
+        let rd_raw = js_mallocz(ctx, memory.size_of(PromiseReactionData)) catch failure:
             if i == 1:
                 promise_reaction_data_free(ctx.rt, rd_array[0])
             error(failure.code, failure.message)
@@ -59,7 +59,7 @@ func perform_promise_then(ctx: Context*, promise: Value, resolve_reject: Value*,
 
 ## Promise.prototype.then(onFulfilled, onRejected).
 func js_promise_then(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
-    discard(try js_get_opaque2(ctx, this_val, (u32)ClassId.promise))
+    _ = try js_get_opaque2(ctx, this_val, (u32)ClassId.promise)
 
     let ctor = try js_species_constructor(ctx, this_val, js_undefined())
     var resolving_funcs: Value[2] = ---

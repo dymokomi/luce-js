@@ -148,7 +148,7 @@ func mpb_shr_round(r: Mpb*, shift0: i32, rnd_mode: RndMode):
                 for i in 0..<(usize)r.len:
                     tab[i] = tab[i + (usize)l]
             if shift != 0:
-                discard(mp_shr(tab, tab, (isize)r.len, shift, 0))
+                _ = mp_shr(tab, tab, (isize)r.len, shift, 0)
                 mpb_renorm(r)
             if add_one != 0:
                 let a = mp_add_ui(tab, 1, (usize)r.len)

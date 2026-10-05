@@ -136,7 +136,7 @@ func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum*?*, pl
     # XXX: need generic way to test for js_malloc(ctx, a * b) overflow
 
     # avoid allocating 0 bytes
-    let tab_raw = js_malloc(ctx, sizeof(PropertyEnum) * (usize)(atom_count if atom_count > 1 else 1)) catch failure:
+    let tab_raw = js_malloc(ctx, memory.size_of(PropertyEnum) * (usize)(atom_count if atom_count > 1 else 1)) catch failure:
         js_free_property_enum(ctx, tab_exotic, exotic_count)
         error(failure.code, failure.message)
     let tab_atom = (PropertyEnum*)tab_raw
@@ -209,7 +209,7 @@ func js_get_own_property_names_internal(ctx: Context*, ptab: PropertyEnum*?*, pl
     assert(sym_index == atom_count)
 
     if num_keys_count != 0 and not num_sorted:
-        cutils.rqsort(tab_atom, (usize)num_keys_count, sizeof(PropertyEnum), num_keys_cmp, ctx)
+        cutils.rqsort(tab_atom, (usize)num_keys_count, memory.size_of(PropertyEnum), num_keys_cmp, ctx)
     *ptab = tab_atom
     *plen = atom_count
 
@@ -262,7 +262,7 @@ func js_get_own_property_internal(ctx: Context*, desc: PropertyDescriptor*?, p: 
                     try js_throw_reference_error_uninitialized(ctx, prs.atom)
             elif kind == prop_autoinit:
                 # nothing to do: delay instantiation until actual value and/or attributes are read
-                discard(0)
+                _ = 0
         return true
     if p.is_exotic:
         if p.fast_array:
@@ -338,7 +338,7 @@ pub func js_has_property(ctx: Context*, obj: Value, prop: Atom) -> bool!:
                     defer js_free_value(ctx, obj1)
                     return try method(ctx, obj1, prop)
         # JS_GetOwnPropertyInternal can free the prototype
-        discard(js_dup_value(ctx, js_mkptr(Tag.object, p)))
+        _ = js_dup_value(ctx, js_mkptr(Tag.object, p))
         let ret = js_get_own_property_internal(ctx, none, p, prop) catch failure:
             js_free_value(ctx, js_mkptr(Tag.object, p))
             error(failure.code, failure.message)

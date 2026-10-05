@@ -19,7 +19,7 @@
 ## cannot be read, with `errno` set.
 pub func js_load_file(ctx: Context*?, pbuf_len: usize*, filename: const u8*) -> u8*?:
     let f = fopen(filename, "rb".bytes.data) else return none
-    defer discard(fclose(f))
+    defer _ = fclose(f)
     if file_seek(f, 0, seek_end) < 0:
         return none
     let lret = file_tell(f)
@@ -88,29 +88,29 @@ pub func js_module_set_import_meta(ctx: Context*, func_val: Value, use_realpath:
         # corresponding module source code is not necessarily present (Windows does
         # not use it)
         if platform.windows:
-            discard(cutils.pstrcat(&buf[0], 4112, module_name))
+            _ = cutils.pstrcat(&buf[0], 4112, module_name)
         elif use_realpath:
             if realpath(module_name, &buf[7]) == none:
                 js.js_free_c_string(ctx, module_name)
                 try js.js_throw_type_error(ctx, "realpath failure")
         else:
-            discard(cutils.pstrcat(&buf[0], 4112, module_name))
+            _ = cutils.pstrcat(&buf[0], 4112, module_name)
     else:
         cutils.pstrcpy(&buf[0], 4112, module_name)
     js.js_free_c_string(ctx, module_name)
 
     let meta_obj = try js.js_get_import_meta(ctx, m)
     defer js.js_free_value(ctx, meta_obj)
-    discard(try js.js_define_property_value_str(ctx, meta_obj, "url", try js.js_new_string(ctx, &buf[0]),
-                                                js.prop_c_w_e))
-    discard(try js.js_define_property_value_str(ctx, meta_obj, "main", js.js_new_bool(is_main),
-                                                js.prop_c_w_e))
+    _ = try js.js_define_property_value_str(ctx, meta_obj, "url", try js.js_new_string(ctx, &buf[0]),
+                                            js.prop_c_w_e)
+    _ = try js.js_define_property_value_str(ctx, meta_obj, "main", js.js_new_bool(is_main),
+                                            js.prop_c_w_e)
 
 # mark: JSON modules ============================================================================
 
 func json_module_init(ctx: Context*, m: ModuleDef*) -> !:
     let val = js.js_get_module_private_value(ctx, m)
-    discard(try js.js_set_module_export(ctx, m, "default".bytes.data, val))
+    _ = try js.js_set_module_export(ctx, m, "default".bytes.data, val)
 
 ## A module whose only export, "default", is the parsed JSON value `val` (owned).
 func create_json_module(ctx: Context*, module_name: const u8*, val: Value) -> ModuleDef*!:
@@ -119,7 +119,7 @@ func create_json_module(ctx: Context*, module_name: const u8*, val: Value) -> Mo
         error(failure.code, failure.message)
     # only export the "default" symbol which will contain the JSON object
     try js.js_add_module_export(ctx, m, "default".bytes.data)
-    discard(js.js_set_module_private_value(ctx, m, val))
+    _ = js.js_set_module_private_value(ctx, m, val)
     return m
 
 ## JS_ParseJSON2 with extended syntax when `flags` has parse_json_ext.

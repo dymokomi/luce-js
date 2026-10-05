@@ -122,8 +122,8 @@ test "JS_DetectModule finds import and export":
 # A zeroed FunctionDef over `vars` and `scope_count` scopes; the caller frees it with
 # cutils.c_free.
 func test_function_def(vars: VarDef*?, var_count: i32, scope_count: i32) -> FunctionDef*:
-    let raw = cutils.malloc(sizeof(FunctionDef)) else trap("out of memory")
-    discard(cutils.memset(raw, 0, sizeof(FunctionDef)))
+    let raw = cutils.malloc(memory.size_of(FunctionDef)) else trap("out of memory")
+    _ = cutils.memset(raw, 0, memory.size_of(FunctionDef))
     let fd = (FunctionDef*)raw
     fd.scopes = &fd.def_scope_array[0]
     fd.scope_size = 4
@@ -214,9 +214,9 @@ test "emitted bytes and the live code test":
     defer cutils.dbuf_free(&fd.byte_code)
     fd.last_opcode_pos = -1
     let source = "x = 1"
-    let raw = cutils.malloc(sizeof(ParseState)) else trap("out of memory")
+    let raw = cutils.malloc(memory.size_of(ParseState)) else trap("out of memory")
     defer cutils.c_free(raw)
-    discard(cutils.memset(raw, 0, sizeof(ParseState)))
+    _ = cutils.memset(raw, 0, memory.size_of(ParseState))
     let s = (ParseState*)raw
     s.cur_func = fd
     s.buf_start = source.bytes.data

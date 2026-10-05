@@ -46,7 +46,7 @@ func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
         # initial value
         emit_op(s, (u8)Op.undefined)
 
-        discard(emit_label(s, label_loop))
+        _ = emit_label(s, label_loop)
         emit_op(s, (u8)Op.iterator_next)
         if is_async:
             emit_op(s, (u8)Op.await)
@@ -55,7 +55,7 @@ func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
         emit_atom(s, atom_done)
         # end of loop
         let label_next = emit_goto(s, (i32)Op.if_true, -1)
-        discard(emit_label(s, label_yield))
+        _ = emit_label(s, label_yield)
         if is_async:
             # OP_async_yield_star takes the value as parameter
             emit_op(s, (u8)Op.get_field)
@@ -67,9 +67,9 @@ func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
         emit_op(s, (u8)Op.dup)
         let label_return = emit_goto(s, (i32)Op.if_true, -1)
         emit_op(s, (u8)Op.drop)
-        discard(emit_goto(s, (i32)Op.goto_, label_loop))
+        _ = emit_goto(s, (i32)Op.goto_, label_loop)
 
-        discard(emit_label(s, label_return))
+        _ = emit_label(s, label_return)
         emit_op(s, (u8)Op.push_i32)
         emit_u32(s, 2)
         emit_op(s, (u8)Op.strict_eq)
@@ -86,19 +86,19 @@ func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
         emit_op(s, (u8)Op.iterator_check_object)
         emit_op(s, (u8)Op.get_field2)
         emit_atom(s, atom_done)
-        discard(emit_goto(s, (i32)Op.if_false, label_yield))
+        _ = emit_goto(s, (i32)Op.if_false, label_yield)
 
         emit_op(s, (u8)Op.get_field)
         emit_atom(s, atom_value)
 
-        discard(emit_label(s, label_return1))
+        _ = emit_label(s, label_return1)
         emit_op(s, (u8)Op.nip)
         emit_op(s, (u8)Op.nip)
         emit_op(s, (u8)Op.nip)
         emit_return(s, true)
 
         # throw handling
-        discard(emit_label(s, label_throw))
+        _ = emit_label(s, label_throw)
         emit_op(s, (u8)Op.iterator_call)
         emit_u8(s, 1)
         let label_throw1 = emit_goto(s, (i32)Op.if_true, -1)
@@ -107,22 +107,22 @@ func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
         emit_op(s, (u8)Op.iterator_check_object)
         emit_op(s, (u8)Op.get_field2)
         emit_atom(s, atom_done)
-        discard(emit_goto(s, (i32)Op.if_false, label_yield))
-        discard(emit_goto(s, (i32)Op.goto_, label_next))
+        _ = emit_goto(s, (i32)Op.if_false, label_yield)
+        _ = emit_goto(s, (i32)Op.goto_, label_next)
         # close the iterator and throw a type error exception
-        discard(emit_label(s, label_throw1))
+        _ = emit_label(s, label_throw1)
         emit_op(s, (u8)Op.iterator_call)
         emit_u8(s, 2)
         let label_throw2 = emit_goto(s, (i32)Op.if_true, -1)
         if is_async:
             emit_op(s, (u8)Op.await)
-        discard(emit_label(s, label_throw2))
+        _ = emit_label(s, label_throw2)
 
         emit_op(s, (u8)Op.throw_error)
         emit_atom(s, no_atom)
         emit_u8(s, (u8)throw_error_iterator_throw)
 
-        discard(emit_label(s, label_next))
+        _ = emit_label(s, label_next)
         emit_op(s, (u8)Op.get_field)
         emit_atom(s, atom_value)
         # keep the value associated with done = true
@@ -135,7 +135,7 @@ func js_parse_yield_expr(s: ParseState*, parse_flags: i32) -> !:
         emit_op(s, (u8)Op.yield)
         let label_next = emit_goto(s, (i32)Op.if_false, -1)
         emit_return(s, true)
-        discard(emit_label(s, label_next))
+        _ = emit_label(s, label_next)
 
 # mark: Assignment ==============================================================================
 
@@ -163,7 +163,7 @@ func js_parse_assign_special(s: ParseState*) -> bool!:
 
         let source_ptr = s.token.ptr
         var pos: ParsePos = ---
-        discard(js_parse_get_pos(s, &pos))
+        _ = js_parse_get_pos(s, &pos)
         try next_token(s)
         if ((s.token.val == TokenType.lparen and (try js_parse_skip_parens_token(s, &bits_unused, true)) == TokenType.arrow) or (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved and peek_token(s, true) == TokenType.arrow)):
             try js_parse_function_decl(s, ParseFunctionKind.arrow, js_func_async, no_atom,
@@ -179,8 +179,8 @@ func js_parse_assign_special(s: ParseState*) -> bool!:
     elif s.token.val == TokenType.lbrace or s.token.val == TokenType.lbracket:
         var skip_bits: i32 = 0
         if (try js_parse_skip_parens_token(s, &skip_bits, false)) == TokenType.assign:
-            discard(try js_parse_destructuring_element(s, (TokenType)0, false, false, skip_bits & skip_has_ellipsis,
-                                                       true, false))
+            _ = try js_parse_destructuring_element(s, (TokenType)0, false, false, skip_bits & skip_has_ellipsis,
+                                                   true, false)
             return true
     return false
 
@@ -254,14 +254,14 @@ func js_parse_assign_expr2(s: ParseState*, parse_flags: i32) -> !:
         put_lvalue(s, opcode, scope, name, label, PutLValueKind.nokeep_depth, false)
         let label2 = emit_goto(s, (i32)Op.goto_, -1)
 
-        discard(emit_label(s, label1))
+        _ = emit_label(s, label1)
 
         # remove the lvalue stack entries
         while depth_lvalue != 0:
             emit_op(s, (u8)Op.nip)
             depth_lvalue -= 1
 
-        discard(emit_label(s, label2))
+        _ = emit_label(s, label2)
 
 func js_parse_assign_expr(s: ParseState*) -> !:
     try js_parse_assign_expr2(s, pf_in_accepted)

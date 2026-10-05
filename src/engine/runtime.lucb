@@ -156,8 +156,8 @@ pub func js_new_runtime2(mf: const MallocFunctions*, opaque: void*?) -> Runtime*
     ms.malloc_limit = ~(usize)0
 
     let host_malloc = mf.js_malloc
-    let p = host_malloc(&ms, sizeof(Runtime)) else return none
-    discard(cutils.memset(p, 0, sizeof(Runtime)))
+    let p = host_malloc(&ms, memory.size_of(Runtime)) else return none
+    _ = cutils.memset(p, 0, memory.size_of(Runtime))
     let rt = (Runtime*)p
     js_malloc_init(&rt.malloc_ctx)
     rt.malloc_ctx.mf = *mf
@@ -324,13 +324,13 @@ pub func js_get_strip_info(rt: Runtime*) -> i32:
 
 ## The arguments of a job: `argc` values after the JobEntry (JSJobEntry.argv).
 func job_entry_argv(e: JobEntry*) -> Value*:
-    return (Value*)((u8*)e + sizeof(JobEntry))
+    return (Value*)((u8*)e + memory.size_of(JobEntry))
 
 ## Queue `job_func(ctx, argc, argv)`. With `no_exception`, an allocation failure fails
 ## without throwing (no exception is pending then).
 func js_enqueue_job2(ctx: Context*, job_func: JobFunc, argc: i32, argv: Value*, no_exception: bool) -> !:
     let rt = ctx.rt
-    let size = sizeof(JobEntry) + (usize)argc * sizeof(Value)
+    let size = memory.size_of(JobEntry) + (usize)argc * memory.size_of(Value)
     var p: void*? = none
     if no_exception:
         p = js_malloc_rt(ctx.rt, size)
@@ -365,7 +365,7 @@ pub func js_execute_pending_job(rt: Runtime*, pctx: Context*?*?) -> bool!:
 
     # get the first pending job and execute it
     let first = rt.job_list.next else trap("js_execute_pending_job: unlinked job list")
-    let e = (JobEntry*)((u8*)first - offsetof(JobEntry, link))
+    let e = (JobEntry*)((u8*)first - memory.offset_of(JobEntry, link))
     cutils.list_del(&e.link)
     let ctx = e.realm
     let e_argv = job_entry_argv(e)

@@ -116,7 +116,7 @@ func emit_local_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op: T
         .scope_delete_var:
             dbuf_op(bc, Op.push_false)
         _:
-            discard(0)
+            _ = 0
     return pos_next
 
 # mark: Closure and global variables ============================================================
@@ -194,7 +194,7 @@ func emit_closure_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op:
         .scope_delete_var:
             dbuf_op(bc, Op.push_false)
         _:
-            discard(0)
+            _ = 0
     return pos_next
 
 # has_global_idx: the access to the global variable of closure variable `idx`. Answers
@@ -228,7 +228,7 @@ func emit_global_var_access(ctx: Context*, s: FunctionDef*, var_name: Atom, op: 
             dbuf_op(bc, Op.delete_var)
             dbuf_u32(bc, js_dup_atom(ctx, var_name))
         _:
-            discard(0)
+            _ = 0
     return pos_next
 
 # Whether closure variable `cv` refers to a global variable.

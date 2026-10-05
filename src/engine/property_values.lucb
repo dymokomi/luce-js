@@ -80,7 +80,7 @@ func js_get_property_value(ctx: Context*, this_obj: Value, prop: Value) -> Value
                 if idx < p.u.array.count:
                     return js_new_float64_raw(p.u.array.u.double_ptr[i])
             _:
-                discard(0)
+                _ = 0
 
     # slow_path:
     # ToObject() must be done before ToPropertyKey()

@@ -82,7 +82,7 @@ test "pstrcpy, pstrcat and strstart":
     assert((str)buf[0..<7] == "hello w" and buf[7] == 0)
     pstrcpy(&buf[0], 8, "ab".bytes.data)
     assert(strlen(&buf[0]) == 2)
-    discard(pstrcat(&buf[0], 8, "cdefghij".bytes.data))
+    _ = pstrcat(&buf[0], 8, "cdefghij".bytes.data)
     assert((str)buf[0..<7] == "abcdefg" and buf[7] == 0)
     pstrcpy(&buf[0], 0, "zz".bytes.data)
     assert(buf[0] == 'a')
@@ -330,7 +330,7 @@ struct Item:
     var link: ListHead
 
 func item_of(el: ListHead*) -> Item*:
-    return (Item*)((u8*)el - offsetof(Item, link))
+    return (Item*)((u8*)el - memory.offset_of(Item, link))
 
 test "intrusive list":
     var head: ListHead

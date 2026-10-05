@@ -344,7 +344,7 @@ noinline func interp_throw_error(st: InterpState*) -> bool:
     let type_ = (i32)st.pc[4]
     st.pc += 5
     if type_ == throw_var_ro:
-        discard(js_throw_type_error_read_only(st.ctx, prop_throw, atom) catch: return false)
+        _ = js_throw_type_error_read_only(st.ctx, prop_throw, atom) catch: return false
     elif type_ == throw_var_redecl:
         js_throw_syntax_error_var_redeclaration(st.ctx, atom) catch: return false
     elif type_ == throw_var_uninitialized:

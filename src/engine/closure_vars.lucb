@@ -34,7 +34,7 @@ func add_closure_var(ctx: Context*, s: FunctionDef*, closure_type: ClosureType, 
     if s.closure_var_count >= js_max_local_vars:
         try js_throw_internal_error(ctx, "too many closure variables")
 
-    try js_resize_array(ctx, (void*?*)&s.closure_var, (i32)sizeof(ClosureVar),
+    try js_resize_array(ctx, (void*?*)&s.closure_var, (i32)memory.size_of(ClosureVar),
                         &s.closure_var_size, s.closure_var_count + 1)
     let cv = fd_closure_var(s, s.closure_var_count)
     s.closure_var_count += 1
@@ -188,7 +188,7 @@ func var_object_test(ctx: Context*, s: FunctionDef*, var_name: Atom, op: TempOp,
             return
     dbuf_u32(bc, (u32)*plabel_done)
     dbuf_byte(bc, (u8)is_with)
-    discard(update_label(s, *plabel_done, 1))
+    _ = update_label(s, *plabel_done, 1)
     s.jump_size += 1
 
 # Mark `vd` as captured by a closure, giving it the next variable reference slot.

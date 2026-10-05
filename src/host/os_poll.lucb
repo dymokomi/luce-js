@@ -24,7 +24,7 @@ func free_timer(rt: Runtime*, th: OSTimer*):
 
 ## The timer whose list link is `el`.
 func timer_of(el: ListHead*) -> OSTimer*:
-    return (OSTimer*)((u8*)el - offsetof(OSTimer, link))
+    return (OSTimer*)((u8*)el - memory.offset_of(OSTimer, link))
 
 func js_os_set_timeout(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let rt = js.js_get_runtime(ctx)
@@ -34,7 +34,7 @@ func js_os_set_timeout(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
         try js.js_throw_type_error(ctx, "not a function")
     var delay: i64 = 0
     try js.js_to_int64(ctx, &delay, argv[1])
-    let th = (OSTimer*)try js.js_mallocz(ctx, sizeof(OSTimer))
+    let th = (OSTimer*)try js.js_mallocz(ctx, memory.size_of(OSTimer))
     th.timer_id = ts.next_timer_id
     if ts.next_timer_id == 0x7fffffff:
         ts.next_timer_id = 1
@@ -76,7 +76,7 @@ func js_os_sleep_async(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
     defer js.js_free_value(ctx, resolving_funcs[0])
     defer js.js_free_value(ctx, resolving_funcs[1])
 
-    let th = (OSTimer*)(js.js_mallocz(ctx, sizeof(OSTimer)) catch failure:
+    let th = (OSTimer*)(js.js_mallocz(ctx, memory.size_of(OSTimer)) catch failure:
         js.js_free_value(ctx, promise)
         error(failure.code, failure.message))
     th.timer_id = -1
@@ -104,7 +104,7 @@ func js_poll_expand(ts: ThreadState*) -> i32:
     var old_fds: void*? = none
     if let fds = ts.poll_fds:
         old_fds = fds
-    let new_fds = cutils.realloc(old_fds, (usize)new_size * sizeof(PollFd)) else return -1
+    let new_fds = cutils.realloc(old_fds, (usize)new_size * memory.size_of(PollFd)) else return -1
     ts.poll_fds = (PollFd*)new_fds
     ts.poll_fds_size = new_size
     return 0

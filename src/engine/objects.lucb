@@ -31,8 +31,8 @@ func free_object_from_shape_inputs(rt: Runtime*, sh: Shape*, props: Property*?):
 func js_new_object_from_shape(ctx: Context*, sh: Shape*, class_id: u32, props: Property*?) -> Value!:
     errdefer free_object_from_shape_inputs(ctx.rt, sh, props)
 
-    js_trigger_gc(ctx.rt, sizeof(Object))
-    let p = (Object*)(try js_malloc(ctx, sizeof(Object)))
+    js_trigger_gc(ctx.rt, memory.size_of(Object))
+    let p = (Object*)(try js_malloc(ctx, memory.size_of(Object)))
     p.class_id = (ClassId)(u16)class_id
     p.is_std_array_prototype = false
     p.extensible = true
@@ -46,14 +46,14 @@ func js_new_object_from_shape(ctx: Context*, sh: Shape*, class_id: u32, props: P
     p.weakref_count = 0
     p.u.opaque = none
     p.shape = sh
-    let prop = js_malloc(ctx, sizeof(Property) * (usize)sh.prop_size) catch failure:
+    let prop = js_malloc(ctx, memory.size_of(Property) * (usize)sh.prop_size) catch failure:
         js_free(ctx, p)
         error(failure.code, failure.message)
     p.prop = (Property*)prop
 
     match p.class_id:
         .object:
-            discard(0)
+            _ = 0
         .array:
             p.is_exotic = true
             p.fast_array = true
@@ -85,7 +85,7 @@ func js_new_object_from_shape(ctx: Context*, sh: Shape*, class_id: u32, props: P
         .regexp:
             # pattern = NULL, program = none: the pattern is never null once the regexp
             # is built, so the fields are cleared as bytes.
-            discard(cutils.memset(&p.u.regexp, 0, sizeof(RegExp)))
+            _ = cutils.memset(&p.u.regexp, 0, memory.size_of(RegExp))
         .global_object:
             p.u.global_object.uninitialized_vars = js_undefined()
         _:
@@ -148,7 +148,7 @@ func js_set_object_data(ctx: Context*, obj: Value, val: Value) -> !:
                 p.u.object_data = val
                 return
             _:
-                discard(0)
+                _ = 0
     js_free_value(ctx, val)
     if not js_is_exception(obj):
         try js_throw_type_error(ctx, "invalid object type")
@@ -180,10 +180,10 @@ pub func js_new_object(ctx: Context*) -> Value!:
 ## exception may be left pending); a name that cannot be made is not defined.
 func js_function_set_properties(ctx: Context*, func_obj: Value, name: Atom, len: i32):
     # ES6 feature non compatible with ES5.1: length is configurable
-    discard(js_define_property_value(ctx, func_obj, atom_length, js_new_int32(len),
-                                     prop_configurable) else false)
+    _ = js_define_property_value(ctx, func_obj, atom_length, js_new_int32(len),
+                                 prop_configurable) else false
     let name_str = js_atom_to_string(ctx, name) else return
-    discard(js_define_property_value(ctx, func_obj, atom_name, name_str, prop_configurable) else false)
+    _ = js_define_property_value(ctx, func_obj, atom_name, name_str, prop_configurable) else false
 
 ## Whether objects of `class_id` are closures over bytecode (u.func_).
 func js_class_has_bytecode(class_id: u32) -> bool:
@@ -233,7 +233,7 @@ func js_method_set_properties(ctx: Context*, func_obj: Value, name: Atom, flags:
         name_str = try js_concat_string3(ctx, "get ".bytes.data, name_str, &empty_c_string[0])
     elif (flags & prop_has_set) != 0:
         name_str = try js_concat_string3(ctx, "set ".bytes.data, name_str, &empty_c_string[0])
-    discard(try js_define_property_value(ctx, func_obj, atom_name, name_str, prop_configurable))
+    _ = try js_define_property_value(ctx, func_obj, atom_name, name_str, prop_configurable)
     js_method_set_home_object(ctx, func_obj, home_obj)
 
 # mark: C functions =============================================================================
@@ -277,7 +277,7 @@ struct CFunctionDataRecord:
 
 ## The values bound to a C function with data (the C flexible member `data`).
 func c_function_data_record_data(s: CFunctionDataRecord*) -> Value*:
-    return (Value*)((u8*)s + sizeof(CFunctionDataRecord))
+    return (Value*)((u8*)s + memory.size_of(CFunctionDataRecord))
 
 ## Finalizer of ClassId.c_function_data.
 func js_c_function_data_finalizer(rt: Runtime*, val: Value):
@@ -321,7 +321,7 @@ func js_c_function_data_call(ctx: Context*, func_obj: Value, this_val: Value, ar
 pub func js_new_c_function_data(ctx: Context*, func_: CFunctionData, length: i32, magic: i32, data_len: i32, data: Value*) -> Value!:
     let func_obj = try js_new_object_proto_class(ctx, ctx.function_proto, (u32)ClassId.c_function_data)
     errdefer js_free_value(ctx, func_obj)
-    let raw = try js_malloc(ctx, sizeof(CFunctionDataRecord) + (usize)data_len * sizeof(Value))
+    let raw = try js_malloc(ctx, memory.size_of(CFunctionDataRecord) + (usize)data_len * memory.size_of(Value))
     let s = (CFunctionDataRecord*)raw
     s.func_ = func_
     s.length = (u8)length

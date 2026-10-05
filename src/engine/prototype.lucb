@@ -68,7 +68,7 @@ func js_set_prototype_internal(ctx: Context*, obj: Value, proto_val: Value,
                 return false
             # Note: for Proxy objects, proto is none
             p1 = o.shape.proto
-        discard(js_dup_value(ctx, proto_val))
+        _ = js_dup_value(ctx, proto_val)
 
     try js_shape_prepare_update(ctx, p, none)
     sh = p.shape

@@ -139,7 +139,7 @@ func emit_scope_make_ref(s: ParseState*, fd: FunctionDef*, name: Atom, scope: i3
     emit_atom(s, name)
     emit_u32(s, (u32)label)
     emit_u16(s, (u16)scope)
-    discard(update_label(fd, label, 1))
+    _ = update_label(fd, label, 1)
     return label
 
 # The last opcode emitted, in the bytecode (fd->byte_code.buf + fd->last_opcode_pos).
@@ -251,7 +251,7 @@ func put_lvalue(s: ParseState*, opcode: i32, scope: i32, name: Atom, label: i32,
         # depth = 0
         match special:
             .nokeep, .nokeep_depth, .keep_second, .nokeep_bottom:
-                discard(0)
+                _ = 0
             .keep_top:
                 emit_op(s, (u8)Op.dup)
             _:
@@ -260,7 +260,7 @@ func put_lvalue(s: ParseState*, opcode: i32, scope: i32, name: Atom, label: i32,
         # depth = 1
         match special:
             .nokeep, .nokeep_depth:
-                discard(0)
+                _ = 0
             .keep_top:
                 # obj v -> v obj v
                 emit_op(s, (u8)Op.insert2)
@@ -275,13 +275,13 @@ func put_lvalue(s: ParseState*, opcode: i32, scope: i32, name: Atom, label: i32,
         # depth = 2
         if opcode == (i32)Op.get_ref_value:
             js_free_atom(s.ctx, name)
-            discard(emit_label(s, label))
+            _ = emit_label(s, label)
         match special:
             .nokeep:
                 # will trigger optimization
                 emit_op(s, (u8)Op.nop)
             .nokeep_depth:
-                discard(0)
+                _ = 0
             .keep_top:
                 # obj prop v -> v obj prop v
                 emit_op(s, (u8)Op.insert3)
@@ -296,7 +296,7 @@ func put_lvalue(s: ParseState*, opcode: i32, scope: i32, name: Atom, label: i32,
         # depth = 3
         match special:
             .nokeep, .nokeep_depth:
-                discard(0)
+                _ = 0
             .keep_top:
                 # this obj prop v -> v this obj prop v
                 emit_op(s, (u8)Op.insert4)
@@ -367,7 +367,7 @@ func js_define_var(s: ParseState*, name: Atom, tok: TokenType) -> !:
             var_def_type = VarDefKind.catch_
         _:
             trap("js_define_var: invalid declaration token")
-    discard(try define_var(s, fd, name, var_def_type))
+    _ = try define_var(s, fd, name, var_def_type)
 
 # Emit the collection of the rest of an iteration into a new array (a rest element);
 # `depth` values lie between the enumeration record and the array.
@@ -380,15 +380,15 @@ func js_emit_spread_code(s: ParseState*, depth: i32):
     emit_op(s, (u8)Op.push_i32)
     emit_u32(s, 0)
     let label_rest_next = new_label(s)
-    discard(emit_label(s, label_rest_next))
+    _ = emit_label(s, label_rest_next)
     emit_op(s, (u8)Op.for_of_next)
     emit_u8(s, (u8)(2 + depth))
     let label_rest_done = emit_goto(s, (i32)Op.if_true, -1)
     # array idx val -- array idx
     emit_op(s, (u8)Op.define_array_el)
     emit_op(s, (u8)Op.inc)
-    discard(emit_goto(s, (i32)Op.goto_, label_rest_next))
-    discard(emit_label(s, label_rest_done))
+    _ = emit_goto(s, (i32)Op.goto_, label_rest_next)
+    _ = emit_label(s, label_rest_done)
     # enum_rec xxx array idx undef -- enum_rec xxx array
     emit_op(s, (u8)Op.drop)
     emit_op(s, (u8)Op.drop)

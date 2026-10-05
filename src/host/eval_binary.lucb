@@ -51,4 +51,4 @@ pub func js_std_eval_binary_json_module(ctx: Context*, buf: const u8*, buf_len: 
 
 func eval_binary_json_module(ctx: Context*, buf: const u8*, buf_len: usize, module_name: const u8*) -> !:
     let obj = try js.js_read_object(ctx, buf, buf_len, 0)
-    discard(try create_json_module(ctx, module_name, obj))
+    _ = try create_json_module(ctx, module_name, obj)

@@ -26,7 +26,7 @@ func js_read_object_tag(s: BCReaderState*) -> Value!:
         try bc_get_atom(s, &atom)
         defer js_free_atom(ctx, atom)
         let val = try js_read_object_rec(s)
-        discard(try js_define_property_value(ctx, obj, atom, val, prop_c_w_e))
+        _ = try js_define_property_value(ctx, obj, atom, val, prop_c_w_e)
     return obj
 
 ## Read an array, or a template object (a frozen-length array of enumerable, read-only
@@ -45,11 +45,11 @@ func js_read_array(s: BCReaderState*, tag: u8) -> Value!:
         var prop_flags = prop_c_w_e
         if is_template:
             prop_flags = prop_enumerable
-        discard(try js_define_property_value_uint32(ctx, obj, i, val, prop_flags))
+        _ = try js_define_property_value_uint32(ctx, obj, i, val, prop_flags)
     if is_template:
         let val = try js_read_object_rec(s)
         if not js_is_undefined(val):
-            discard(try js_define_property_value(ctx, obj, atom_raw, val, 0))
+            _ = try js_define_property_value(ctx, obj, atom_raw, val, 0)
         js_prevent_extensions(ctx, obj) catch: recover false
     return obj
 
@@ -73,7 +73,7 @@ func js_read_typed_array(s: BCReaderState*) -> Value!:
     try bc_add_object_ref1(s, none)
     let array_buffer = try js_read_object_rec(s)
     defer js_free_value(ctx, array_buffer)
-    discard(try js_get_array_buffer_internal(ctx, array_buffer))
+    _ = try js_get_array_buffer_internal(ctx, array_buffer)
     var args: Value[3] = ---
     args[0] = array_buffer
     args[1] = js_new_int64((i64)offset)
@@ -258,7 +258,7 @@ func js_read_object_atoms(s: BCReaderState*) -> !:
     try bc_get_leb128(s, &s.idx_to_atom_count)
 
     if s.idx_to_atom_count != 0:
-        let table = js_mallocz(s.ctx, (usize)s.idx_to_atom_count *% sizeof(Atom)) catch failure:
+        let table = js_mallocz(s.ctx, (usize)s.idx_to_atom_count *% memory.size_of(Atom)) catch failure:
             s.error_state = -1
             error(failure.code, failure.message)
         s.idx_to_atom = (Atom*)table

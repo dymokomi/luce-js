@@ -47,7 +47,7 @@ func js_parse_statement_or_decl(s: ParseState*, decl_mask: i32) -> !:
         if (((i32)s.fd().js_mode & js_mode_strict) == 0 and (decl_mask & decl_mask_func_with_label) != 0):
             mask = decl_mask_func | decl_mask_func_with_label
         try js_parse_statement_or_decl(s, mask)
-        discard(emit_label(s, label_break))
+        _ = emit_label(s, label_break)
         pop_break_entry(s.fd())
         return
     try js_parse_statement_body(s, decl_mask, label_name)
@@ -190,7 +190,7 @@ func js_parse_with(s: ParseState*) -> !:
 
     try js_parse_expr_paren(s)
 
-    discard(try push_scope(s))
+    _ = try push_scope(s)
     let with_idx = try define_var(s, s.fd(), atom__with_, VarDefKind.with_)
     emit_op(s, (u8)Op.to_object)
     emit_op(s, (u8)Op.put_loc)
@@ -207,7 +207,7 @@ func js_parse_with(s: ParseState*) -> !:
 func js_parse_if(s: ParseState*) -> !:
     try next_token(s)
     # create a new scope for `let f;if(1) function f(){}`
-    discard(try push_scope(s))
+    _ = try push_scope(s)
     set_eval_ret_undefined(s)
     try js_parse_expr_paren(s)
     var label1 = emit_goto(s, (i32)Op.if_false, -1)
@@ -222,11 +222,11 @@ func js_parse_if(s: ParseState*) -> !:
         let label2 = emit_goto(s, (i32)Op.goto_, -1)
         try next_token(s)
 
-        discard(emit_label(s, label1))
+        _ = emit_label(s, label1)
         try js_parse_statement_or_decl(s, mask)
 
         label1 = label2
-    discard(emit_label(s, label1))
+    _ = emit_label(s, label1)
     pop_scope(s)
 
 func js_parse_while(s: ParseState*, label_name: Atom) -> !:
@@ -240,14 +240,14 @@ func js_parse_while(s: ParseState*, label_name: Atom) -> !:
 
     set_eval_ret_undefined(s)
 
-    discard(emit_label(s, label_cont))
+    _ = emit_label(s, label_cont)
     try js_parse_expr_paren(s)
-    discard(emit_goto(s, (i32)Op.if_false, label_break))
+    _ = emit_goto(s, (i32)Op.if_false, label_break)
 
     try js_parse_statement(s)
-    discard(emit_goto(s, (i32)Op.goto_, label_cont))
+    _ = emit_goto(s, (i32)Op.goto_, label_cont)
 
-    discard(emit_label(s, label_break))
+    _ = emit_label(s, label_break)
 
     pop_break_entry(s.fd())
 
@@ -261,21 +261,21 @@ func js_parse_do_while(s: ParseState*, label_name: Atom) -> !:
 
     try next_token(s)
 
-    discard(emit_label(s, label1))
+    _ = emit_label(s, label1)
 
     set_eval_ret_undefined(s)
 
     try js_parse_statement(s)
 
-    discard(emit_label(s, label_cont))
+    _ = emit_label(s, label_cont)
     try js_parse_expect(s, TokenType.while_)
     try js_parse_expr_paren(s)
     # Insert semicolon if missing
     if s.token.val == TokenType.semicolon:
         try next_token(s)
-    discard(emit_goto(s, (i32)Op.if_true, label1))
+    _ = emit_goto(s, (i32)Op.if_true, label1)
 
-    discard(emit_label(s, label_break))
+    _ = emit_label(s, label_break)
 
     pop_break_entry(s.fd())
 
@@ -286,7 +286,7 @@ func js_parse_for(s: ParseState*, label_name: Atom) -> !:
     var bits: i32 = 0
     var is_async = false
     if s.token.val == TokenType.lparen:
-        discard(try js_parse_skip_parens_token(s, &bits, false))
+        _ = try js_parse_skip_parens_token(s, &bits, false)
     elif s.token.val == TokenType.await:
         if (s.fd().func_kind & js_func_async) == 0:
             try js_parse_error(s, "for await is only valid in asynchronous functions")
@@ -303,7 +303,7 @@ func js_parse_for(s: ParseState*, label_name: Atom) -> !:
 
     # create scope for the lexical variables declared in the initial, test and increment
     # expressions
-    discard(try push_scope(s))
+    _ = try push_scope(s)
     # initial expression
     var tok = s.token.val
     if tok != TokenType.semicolon:
@@ -333,9 +333,9 @@ func js_parse_for(s: ParseState*, label_name: Atom) -> !:
         # no test expression
         label_test = label_body
     else:
-        discard(emit_label(s, label_test))
+        _ = emit_label(s, label_test)
         try js_parse_expr(s)
-        discard(emit_goto(s, (i32)Op.if_false, label_break))
+        _ = emit_goto(s, (i32)Op.if_false, label_break)
     try js_parse_expect(s, TokenType.semicolon)
 
     var pos_cont: i32 = 0
@@ -345,18 +345,18 @@ func js_parse_for(s: ParseState*, label_name: Atom) -> !:
         break_entry.label_cont = label_cont
     else:
         # skip the end expression
-        discard(emit_goto(s, (i32)Op.goto_, label_body))
+        _ = emit_goto(s, (i32)Op.goto_, label_body)
 
         pos_cont = (i32)s.fd().byte_code.size
-        discard(emit_label(s, label_cont))
+        _ = emit_label(s, label_cont)
         try js_parse_expr(s)
         emit_op(s, (u8)Op.drop)
         if label_test != label_body:
-            discard(emit_goto(s, (i32)Op.goto_, label_test))
+            _ = emit_goto(s, (i32)Op.goto_, label_test)
     try js_parse_expect(s, TokenType.rparen)
 
     let pos_body = (i32)s.fd().byte_code.size
-    discard(emit_label(s, label_body))
+    _ = emit_label(s, label_body)
     try js_parse_statement(s)
 
     # close the closures before the next iteration
@@ -367,9 +367,9 @@ func js_parse_for(s: ParseState*, label_name: Atom) -> !:
         # move the increment code here
         try move_loop_code_to_end(s, pos_cont, pos_body, label_cont)
     else:
-        discard(emit_goto(s, (i32)Op.goto_, label_cont))
+        _ = emit_goto(s, (i32)Op.goto_, label_cont)
 
-    discard(emit_label(s, label_break))
+    _ = emit_label(s, label_break)
 
     pop_break_entry(s.fd())
     pop_scope(s)
@@ -382,7 +382,7 @@ func js_parse_switch(s: ParseState*, label_name: Atom) -> !:
     set_eval_ret_undefined(s)
     try js_parse_expr_paren(s)
 
-    discard(try push_scope(s))
+    _ = try push_scope(s)
     let label_break = new_label(s)
     var break_entry: BlockEnv = ---
     push_break_entry(s.fd(), &break_entry, label_name, label_break, -1, 1)
@@ -397,7 +397,7 @@ func js_parse_switch(s: ParseState*, label_name: Atom) -> !:
             if label_case >= 0:
                 # skip the case if needed
                 label1 = emit_goto(s, (i32)Op.goto_, -1)
-            discard(emit_label(s, label_case))
+            _ = emit_label(s, label_case)
             label_case = -1
             while true:
                 # parse a sequence of case clauses
@@ -410,7 +410,7 @@ func js_parse_switch(s: ParseState*, label_name: Atom) -> !:
                     label1 = emit_goto(s, (i32)Op.if_true, label1)
                 else:
                     label_case = emit_goto(s, (i32)Op.if_false, -1)
-                    discard(emit_label(s, label1))
+                    _ = emit_label(s, label1)
                     break
         elif s.token.val == TokenType.default:
             try next_token(s)
@@ -438,8 +438,8 @@ func js_parse_switch(s: ParseState*, label_name: Atom) -> !:
         cutils.put_u32(bytecode_at(fd, default_label_pos), (u32)label_case)
         fd_label(fd, label_case).pos = default_label_pos + 4
     else:
-        discard(emit_label(s, label_case))
-    discard(emit_label(s, label_break))
+        _ = emit_label(s, label_case)
+    _ = emit_label(s, label_break)
     # drop the switch expression
     emit_op(s, (u8)Op.drop)
 
@@ -455,8 +455,8 @@ func js_parse_catch_binding(s: ParseState*) -> !:
     if not (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved):
         if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
             # XXX: TOK_LET is not completely correct
-            discard(try js_parse_destructuring_element(s, TokenType.let_, false, true, -1, true,
-                                                       false))
+            _ = try js_parse_destructuring_element(s, TokenType.let_, false, true, -1, true,
+                                                   false)
         else:
             try js_parse_error(s, "identifier expected")
     else:
@@ -478,7 +478,7 @@ func js_parse_try(s: ParseState*) -> !:
     let label_finally = new_label(s)
     let label_end = new_label(s)
 
-    discard(emit_goto(s, (i32)Op.catch_, label_catch))
+    _ = emit_goto(s, (i32)Op.catch_, label_catch)
 
     var block_env: BlockEnv = ---
     push_break_entry(s.fd(), &block_env, no_atom, -1, -1, 1)
@@ -493,17 +493,17 @@ func js_parse_try(s: ParseState*) -> !:
         emit_op(s, (u8)Op.drop)
         # must push dummy value to keep same stack size
         emit_op(s, (u8)Op.undefined)
-        discard(emit_goto(s, (i32)Op.gosub, label_finally))
+        _ = emit_goto(s, (i32)Op.gosub, label_finally)
         emit_op(s, (u8)Op.drop)
 
-        discard(emit_goto(s, (i32)Op.goto_, label_end))
+        _ = emit_goto(s, (i32)Op.goto_, label_end)
 
     if s.token.val == TokenType.catch_:
         try next_token(s)
 
         # catch variable
-        discard(try push_scope(s))
-        discard(emit_label(s, label_catch))
+        _ = try push_scope(s)
+        _ = emit_label(s, label_catch)
 
         if s.token.val == TokenType.lbrace:
             # support optional-catch-binding feature
@@ -514,10 +514,10 @@ func js_parse_try(s: ParseState*) -> !:
             try js_parse_catch_binding(s)
             try js_parse_expect(s, TokenType.rparen)
         # XXX: should keep the address to nop it out if there is no finally block
-        discard(emit_goto(s, (i32)Op.catch_, label_catch2))
+        _ = emit_goto(s, (i32)Op.catch_, label_catch2)
 
         # catch block
-        discard(try push_scope(s))
+        _ = try push_scope(s)
         push_break_entry(s.fd(), &block_env, no_atom, -1, -1, 1)
         block_env.label_finally = label_finally
 
@@ -535,24 +535,24 @@ func js_parse_try(s: ParseState*) -> !:
             # XXX: should keep the address to nop it out if there is no finally block
             # must push dummy value to keep same stack size
             emit_op(s, (u8)Op.undefined)
-            discard(emit_goto(s, (i32)Op.gosub, label_finally))
+            _ = emit_goto(s, (i32)Op.gosub, label_finally)
             emit_op(s, (u8)Op.drop)
-            discard(emit_goto(s, (i32)Op.goto_, label_end))
+            _ = emit_goto(s, (i32)Op.goto_, label_end)
         # catch exceptions thrown in the catch block to execute the finally clause and
         # rethrow the exception
-        discard(emit_label(s, label_catch2))
+        _ = emit_label(s, label_catch2)
         # catch value is at TOS, no need to push undefined
-        discard(emit_goto(s, (i32)Op.gosub, label_finally))
+        _ = emit_goto(s, (i32)Op.gosub, label_finally)
         emit_op(s, (u8)Op.throw)
     elif s.token.val == TokenType.finally:
         # finally without catch : execute the finally clause and rethrow the exception
-        discard(emit_label(s, label_catch))
+        _ = emit_label(s, label_catch)
         # catch value is at TOS, no need to push undefined
-        discard(emit_goto(s, (i32)Op.gosub, label_finally))
+        _ = emit_goto(s, (i32)Op.gosub, label_finally)
         emit_op(s, (u8)Op.throw)
     else:
         try js_parse_error(s, "expecting catch or finally")
-    discard(emit_label(s, label_finally))
+    _ = emit_label(s, label_finally)
     if s.token.val == TokenType.finally:
         var saved_eval_ret_idx: i32 = 0
 
@@ -578,4 +578,4 @@ func js_parse_try(s: ParseState*) -> !:
             emit_u16(s, (u16)s.fd().eval_ret_idx)
         pop_break_entry(s.fd())
     emit_op(s, (u8)Op.ret)
-    discard(emit_label(s, label_end))
+    _ = emit_label(s, label_end)

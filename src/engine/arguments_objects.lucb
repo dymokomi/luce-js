@@ -48,7 +48,7 @@ func js_build_arguments(ctx: Context*, argc: i32, argv: Value*) -> Value!:
     # initialize the fast array part
     p.u.array.u.ptr = none
     if argc > 0:
-        let mem = js_malloc(ctx, sizeof(Value) * (usize)argc) catch failure:
+        let mem = js_malloc(ctx, memory.size_of(Value) * (usize)argc) catch failure:
             js_free_value(ctx, val)
             error(failure.code, failure.message)
         let tab = (Value*)mem
@@ -107,7 +107,7 @@ func js_build_mapped_arguments(ctx: Context*, argc: i32, argv: Value*, sf: Stack
     # initialize the fast array part
     p.u.array.u.ptr = none
     if argc > 0:
-        let tab = (VarRef**)(try js_malloc(ctx, sizeof(VarRef*) * (usize)argc))
+        let tab = (VarRef**)(try js_malloc(ctx, memory.size_of(VarRef*) * (usize)argc))
         var i: i32 = 0
         while i < arg_count:
             let var_ref = get_var_ref(ctx, sf, i, true) catch failure:

@@ -44,7 +44,7 @@ func find_unique_cname(cname: u8*, cname_size: usize):
         cname[max_len] = 0
     var suffix_num: i32 = 1
     while true:
-        discard(snprintf(&cname1[0], 1024, z("%s_%d"), cname, suffix_num))
+        _ = snprintf(&cname1[0], 1024, z("%s_%d"), cname, suffix_num)
         if namelist_find(&cname_list, &cname1[0]) == none:
             break
         suffix_num += 1
@@ -57,14 +57,14 @@ func dump_hex(f: void*, buf: const u8*, len: usize):
     var col = 0
     for i in 0..<len:
         if col == 0:
-            discard(fputs(z("   "), f))
-        discard(fprintf(f, z(" 0x%02x,"), (u32)buf[i]))
+            _ = fputs(z("   "), f)
+        _ = fprintf(f, z(" 0x%02x,"), (u32)buf[i])
         col += 1
         if col == 8:
-            discard(fprintf(f, z("\n")))
+            _ = fprintf(f, z("\n"))
             col = 0
     if col != 0:
-        discard(fprintf(f, z("\n")))
+        _ = fprintf(f, z("\n"))
 
 ## the kinds of the generated arrays (CNameTypeEnum)
 let cname_type_script: i32 = 0
@@ -85,15 +85,15 @@ func output_object_code(ctx: js.Context*, fo: void*, obj: js.Value, c_name: cons
 
     namelist_add(&cname_list, c_name, none, c_name_type)
 
-    discard(fprintf(fo, z("## The size of %s.\npub let %s_size: u32 = %u\n\n"),
-                    c_name, c_name, (u32)out_buf_len))
+    _ = fprintf(fo, z("## The size of %s.\npub let %s_size: u32 = %u\n\n"),
+                c_name, c_name, (u32)out_buf_len)
     if c_name_type == cname_type_json_module:
-        discard(fprintf(fo, z("## The JSON value of the module %s, written by JS_WriteObject.\n"), c_name))
+        _ = fprintf(fo, z("## The JSON value of the module %s, written by JS_WriteObject.\n"), c_name)
     else:
-        discard(fprintf(fo, z("## The bytecode of %s, written by JS_WriteObject.\n"), c_name))
-    discard(fprintf(fo, z("pub let %s: u8[%u] = [\n"), c_name, (u32)out_buf_len))
+        _ = fprintf(fo, z("## The bytecode of %s, written by JS_WriteObject.\n"), c_name)
+    _ = fprintf(fo, z("pub let %s: u8[%u] = [\n"), c_name, (u32)out_buf_len)
     dump_hex(fo, out_buf, out_buf_len)
-    discard(fprintf(fo, z("]\n\n")))
+    _ = fprintf(fo, z("]\n\n"))
 
     js.js_free(ctx, out_buf)
 
@@ -114,7 +114,7 @@ func jsc_module_loader(ctx: js.Context*, module_name: const u8*, opaque: void*?,
         # create a dummy module
         return try js.js_new_c_module(ctx, module_name, js_module_dummy_init)
     if has_suffix(module_name, ".so"):
-        discard(fprintf(stderr(), z("Warning: binary module '%s' will be dynamically loaded\n"), module_name))
+        _ = fprintf(stderr(), z("Warning: binary module '%s' will be dynamically loaded\n"), module_name)
         # create a dummy module
         let m = try js.js_new_c_module(ctx, module_name, js_module_dummy_init)
         # the resulting executable will export its symbols for the dynamic library
@@ -146,10 +146,10 @@ func jsc_module_loader(ctx: js.Context*, module_name: const u8*, opaque: void*?,
             find_unique_cname(&cname[0], 1024)
 
         # output the module name
-        discard(fprintf(fo, z("## The name of the JSON module %s.\npub let %s_module_name: u8[%u] = [\n"),
-                        &cname[0], &cname[0], (u32)(strlen(module_name) + 1)))
+        _ = fprintf(fo, z("## The name of the JSON module %s.\npub let %s_module_name: u8[%u] = [\n"),
+                    &cname[0], &cname[0], (u32)(strlen(module_name) + 1))
         dump_hex(fo, module_name, strlen(module_name) + 1)
-        discard(fprintf(fo, z("]\n\n")))
+        _ = fprintf(fo, z("]\n\n"))
 
         output_object_code(ctx, fo, val, &cname[0], cname_type_json_module)
         return m
@@ -179,7 +179,7 @@ func compile_file(ctx: js.Context*, fo: void*, filename: const u8*, c_name1: con
     var buf_len: usize = 0
     let loaded = host.js_load_file(ctx, &buf_len, filename)
     if loaded == none:
-        discard(fprintf(stderr(), z("Could not load '%s'\n"), filename))
+        _ = fprintf(stderr(), z("Could not load '%s'\n"), filename)
     let buf = loaded else c_exit(1)
     var eval_flags = js.eval_flag_compile_only
     var is_module = module > 0

@@ -20,23 +20,23 @@
 
 # dbuf_putc(bc, OP_x): append the opcode `op` to the bytecode `bc`.
 func dbuf_op(bc: cutils.DynBuf*, op: Op):
-    discard(cutils.dbuf_putc(bc, (u8)op))
+    _ = cutils.dbuf_putc(bc, (u8)op)
 
 # dbuf_putc(bc, OP_x) for a temporary opcode.
 func dbuf_temp_op(bc: cutils.DynBuf*, op: TempOp):
-    discard(cutils.dbuf_putc(bc, (u8)op))
+    _ = cutils.dbuf_putc(bc, (u8)op)
 
 # dbuf_putc(bc, v): append the byte `v`.
 func dbuf_byte(bc: cutils.DynBuf*, v: u8):
-    discard(cutils.dbuf_putc(bc, v))
+    _ = cutils.dbuf_putc(bc, v)
 
 # dbuf_put_u16(bc, v): append the low 16 bits of `v`, as C converts its int argument.
 func dbuf_u16(bc: cutils.DynBuf*, v: i32):
-    discard(cutils.dbuf_put_u16(bc, (u16)v))
+    _ = cutils.dbuf_put_u16(bc, (u16)v)
 
 # dbuf_put_u32(bc, v).
 func dbuf_u32(bc: cutils.DynBuf*, v: u32):
-    discard(cutils.dbuf_put_u32(bc, v))
+    _ = cutils.dbuf_put_u32(bc, v)
 
 # The bytes of the bytecode buffer `bc`; a buffer that never grew has none, and its size
 # is then zero.
@@ -98,7 +98,7 @@ func emit_u8(s: ParseState*, val: u8):
     dbuf_byte(&s.fd().byte_code, val)
 
 func emit_u16(s: ParseState*, val: u16):
-    discard(cutils.dbuf_put_u16(&s.fd().byte_code, val))
+    _ = cutils.dbuf_put_u16(&s.fd().byte_code, val)
 
 func emit_u32(s: ParseState*, val: u32):
     dbuf_u32(&s.fd().byte_code, val)
@@ -144,7 +144,7 @@ func update_label(s: FunctionDef*, label: i32, delta: i32) -> i32:
 
 # A new unresolved label of `fd`.
 func new_label_fd(fd: FunctionDef*) -> i32!:
-    try js_resize_array(fd.ctx, (void*?*)&fd.label_slots, (i32)sizeof(LabelSlot),
+    try js_resize_array(fd.ctx, (void*?*)&fd.label_slots, (i32)memory.size_of(LabelSlot),
                         &fd.label_size, fd.label_count + 1)
     let label = fd.label_count
     fd.label_count += 1
@@ -205,7 +205,7 @@ func emit_goto(s: ParseState*, opcode: i32, label: i32) -> i32:
 # return the constant pool index. 'val' is not duplicated (it is freed on failure).
 func cpool_add(s: ParseState*, val: Value) -> i32!:
     let fd = s.fd()
-    js_resize_array(s.ctx, (void*?*)&fd.cpool, (i32)sizeof(Value), &fd.cpool_size,
+    js_resize_array(s.ctx, (void*?*)&fd.cpool, (i32)memory.size_of(Value), &fd.cpool_size,
                     fd.cpool_count + 1) catch failure:
         js_free_value(s.ctx, val)
         error(failure.code, failure.message)
@@ -219,7 +219,7 @@ func cpool_add(s: ParseState*, val: Value) -> i32!:
 func emit_push_const(s: ParseState*, val: Value, as_atom: bool) -> !:
     if val.tag == Tag.string and as_atom:
         # warning: JS_NewAtomStr frees the string value
-        discard(js_dup_value(s.ctx, val))
+        _ = js_dup_value(s.ctx, val)
         let atom = try js_new_atom_str(s.ctx, val.u.string)
         if atom != no_atom and not js_atom_is_tagged_int_raw(atom):
             emit_op(s, (u8)Op.push_atom_value)
@@ -325,16 +325,16 @@ func push_scope(s: ParseState*) -> i32!:
             var slack: usize = 0
             # XXX: potential arithmetic overflow
             var new_size = cutils.max_int(fd.scope_count + 1, fd.scope_size * 3 // 2)
-            let bytes = (usize)new_size * sizeof(VarScope)
+            let bytes = (usize)new_size * memory.size_of(VarScope)
             var new_buf = fd.scopes
             if fd.scopes == &fd.def_scope_array[0]:
                 let p = try js_realloc2(s.ctx, none, bytes, &slack) else trap("push_scope: empty block")
                 new_buf = (VarScope*)p
-                discard(cutils.memcpy(new_buf, fd.scopes, (usize)fd.scope_count * sizeof(VarScope)))
+                _ = cutils.memcpy(new_buf, fd.scopes, (usize)fd.scope_count * memory.size_of(VarScope))
             else:
                 let p = try js_realloc2(s.ctx, fd.scopes, bytes, &slack) else trap("push_scope: empty block")
                 new_buf = (VarScope*)p
-            new_size += (i32)(slack // sizeof(VarScope))
+            new_size += (i32)(slack // memory.size_of(VarScope))
             fd.scopes = new_buf
             fd.scope_size = new_size
         fd.scope_count += 1
@@ -381,11 +381,11 @@ func add_var(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32!:
     # the local variable indexes are currently stored on 16 bits
     if fd.var_count >= js_max_local_vars:
         try js_throw_internal_error(ctx, "too many local variables")
-    try js_resize_array(ctx, (void*?*)&fd.vars, (i32)sizeof(VarDef), &fd.var_size,
+    try js_resize_array(ctx, (void*?*)&fd.vars, (i32)memory.size_of(VarDef), &fd.var_size,
                         fd.var_count + 1)
     let vd = fd_var(fd, fd.var_count)
     fd.var_count += 1
-    discard(cutils.memset(vd, 0, sizeof(VarDef)))
+    _ = cutils.memset(vd, 0, memory.size_of(VarDef))
     vd.var_name = js_dup_atom(ctx, name)
     vd.func_pool_idx = -1
     return fd.var_count - 1
@@ -442,18 +442,18 @@ func add_arg(ctx: Context*, fd: FunctionDef*, name: Atom) -> i32!:
     # the local variable indexes are currently stored on 16 bits
     if fd.arg_count >= js_max_local_vars:
         try js_throw_internal_error(ctx, "too many arguments")
-    try js_resize_array(ctx, (void*?*)&fd.args, (i32)sizeof(VarDef), &fd.arg_size,
+    try js_resize_array(ctx, (void*?*)&fd.args, (i32)memory.size_of(VarDef), &fd.arg_size,
                         fd.arg_count + 1)
     let vd = fd_arg(fd, fd.arg_count)
     fd.arg_count += 1
-    discard(cutils.memset(vd, 0, sizeof(VarDef)))
+    _ = cutils.memset(vd, 0, memory.size_of(VarDef))
     vd.var_name = js_dup_atom(ctx, name)
     vd.func_pool_idx = -1
     return fd.arg_count - 1
 
 # add a global variable definition
 func add_global_var(ctx: Context*, s: FunctionDef*, name: Atom) -> GlobalVar*!:
-    try js_resize_array(ctx, (void*?*)&s.global_vars, (i32)sizeof(GlobalVar),
+    try js_resize_array(ctx, (void*?*)&s.global_vars, (i32)memory.size_of(GlobalVar),
                         &s.global_var_size, s.global_var_count + 1)
     let hf = fd_global_var(s, s.global_var_count)
     s.global_var_count += 1

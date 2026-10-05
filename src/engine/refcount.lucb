@@ -22,7 +22,7 @@
 # The helpers they stand for are the value tests and js_rc; the slow path is a call.
 
 ## The reference count is the last 4 bytes of a block's header (MallocBlockHeader).
-assert(sizeof(MallocBlockHeader) - offsetof(MallocBlockHeader, ref_count) == 4)
+assert(memory.size_of(MallocBlockHeader) - memory.offset_of(MallocBlockHeader, ref_count) == 4)
 
 ## A new reference to `v` (JS_DupValue).
 pub func js_dup_value(ctx: Context*, v: Value) -> Value:

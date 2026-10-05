@@ -19,7 +19,7 @@
 # The address of the GC object that holds the list link `el` (list_entry(el,
 # JSGCObjectHeader, link)).
 func gc_header_of(el: cutils.ListHead*) -> GCObjectHeader*:
-    return (GCObjectHeader*)((u8*)el - offsetof(GCObjectHeader, link))
+    return (GCObjectHeader*)((u8*)el - memory.offset_of(GCObjectHeader, link))
 
 func gc_remove_weak_objects(rt: Runtime*):
     # add the freed objects to rt.gc_zero_ref_count_list so that rt.weakref_list is not
@@ -28,7 +28,7 @@ func gc_remove_weak_objects(rt: Runtime*):
 
     var el = rt.weakref_list.next else trap("gc_remove_weak_objects: unlinked list")
     while el != &rt.weakref_list:
-        let wh = (WeakRefHeader*)((u8*)el - offsetof(WeakRefHeader, link))
+        let wh = (WeakRefHeader*)((u8*)el - memory.offset_of(WeakRefHeader, link))
         match wh.weakref_type:
             .map: map_delete_weakrefs(rt, wh)
             .weakref: weakref_delete_weakref(rt, wh)
@@ -77,7 +77,7 @@ func mark_children(rt: Runtime*, gp: GCObjectHeader*, mark_func: MarkFunc):
             else:
                 let sf = var_ref.u.frame.stack_frame
                 if (sf.js_mode & js_mode_async) != 0:
-                    let async_func = (AsyncFunctionState*)((u8*)sf - offsetof(AsyncFunctionState, frame))
+                    let async_func = (AsyncFunctionState*)((u8*)sf - memory.offset_of(AsyncFunctionState, frame))
                     mark_func(rt, &async_func.header)
         .async_function:
             let s = (AsyncFunctionState*)gp

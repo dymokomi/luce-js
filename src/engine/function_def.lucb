@@ -26,5 +26,5 @@ func free_bytecode_atoms(rt: Runtime*, bc_buf: const u8*, bc_len: i32, use_short
                 if (pos + 1 + 4) <= bc_len:
                     let atom = cutils.get_u32(bc_buf + (usize)pos + 1)
                     js_free_atom_rt(rt, atom)
-            _: discard(0)
+            _: _ = 0
         pos += len

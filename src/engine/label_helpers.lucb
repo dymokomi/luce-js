@@ -79,7 +79,7 @@ func compute_pc2line_info(s: FunctionDef*):
 # Record that the `size` bytes at `addr` of the new bytecode hold the offset to label
 # `ls`, to be patched when the label is placed.
 func add_reloc(ctx: Context*, ls: LabelSlot*, addr: u32, size: i32) -> RelocEntry*!:
-    let re = (RelocEntry*)try js_malloc(ctx, sizeof(RelocEntry))
+    let re = (RelocEntry*)try js_malloc(ctx, memory.size_of(RelocEntry))
     re.addr = addr
     re.size = size
     re.next = ls.first_reloc
@@ -114,7 +114,7 @@ func find_jump_target(s: FunctionDef*, label0: i32, pop: i32*, pline: i32*?) -> 
     let buf = dbuf_bytes_or_empty(&s.byte_code)
     var label = label0
     var op: i32 = 0
-    discard(update_label(s, label, -1))
+    _ = update_label(s, label, -1)
     var i = 0
     while i < 10:
         i += 1
@@ -140,7 +140,7 @@ func find_jump_target(s: FunctionDef*, label0: i32, pop: i32*, pline: i32*?) -> 
                     op = (i32)Op.return_undef
             # done:
             *pop = op
-            discard(update_label(s, label, 1))
+            _ = update_label(s, label, 1)
             return label
     # cycle detected, could issue a warning
     # XXX: the combination of find_jump_target() and skip_dead_code() seems incorrect
@@ -158,7 +158,7 @@ func find_jump_target(s: FunctionDef*, label0: i32, pop: i32*, pline: i32*?) -> 
     label = label0
     # done:
     *pop = op
-    discard(update_label(s, label, 1))
+    _ = update_label(s, label, 1)
     return label
 
 # mark: Short opcodes ===========================================================================

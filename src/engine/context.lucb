@@ -31,7 +31,7 @@ func atom_set_free(v: u32) -> String*:
 ## memory. Note: the string contents are uninitialized.
 func js_alloc_string_rt(rt: Runtime*, max_len: i32, is_wide_char: bool) -> String*?:
     let wide = (i32)is_wide_char
-    let p = js_malloc_rt(rt, sizeof(String) + (usize)((max_len << wide) + 1 - wide)) else return none
+    let p = js_malloc_rt(rt, memory.size_of(String) + (usize)((max_len << wide) + 1 - wide)) else return none
     let s = (String*)p
     js_rc(s).ref_count = 1
     s.is_wide_char = is_wide_char
@@ -72,7 +72,7 @@ pub func js_free_runtime(rt: Runtime*):
     var el = jobs.next else trap("js_free_runtime: unlinked job list")
     while el != jobs:
         let next = el.next else trap("js_free_runtime: unlinked job list")
-        let e = (JobEntry*)((u8*)el - offsetof(JobEntry, link))
+        let e = (JobEntry*)((u8*)el - memory.offset_of(JobEntry, link))
         let e_argv = job_entry_argv(e)
         for i in 0..<(usize)e.argc:
             js_free_value_rt(rt, e_argv[i])
@@ -115,12 +115,12 @@ pub func js_free_runtime(rt: Runtime*):
 
 ## A context with only the basic objects; none if out of memory (JS_NewContextRaw).
 pub func js_new_context_raw(rt: Runtime*) -> Context*?:
-    let p = js_mallocz_rt(rt, sizeof(Context)) else return none
+    let p = js_mallocz_rt(rt, memory.size_of(Context)) else return none
     let ctx = (Context*)p
     js_rc(ctx).ref_count = 1
     add_gc_object(rt, &ctx.header, GCObjectType.js_context)
 
-    let class_proto = js_malloc_rt(rt, sizeof(Value) * (usize)rt.class_count)
+    let class_proto = js_malloc_rt(rt, memory.size_of(Value) * (usize)rt.class_count)
     if class_proto == none:
         # as upstream, the context is freed without remove_gc_object()
         js_free_rt(rt, ctx)
@@ -213,7 +213,7 @@ func js_free_modules(ctx: Context*, flag: FreeModuleKind):
     var el = head.next else trap("js_free_modules: unlinked module list")
     while el != head:
         let next = el.next else trap("js_free_modules: unlinked module list")
-        let m = (ModuleDef*)((u8*)el - offsetof(ModuleDef, link))
+        let m = (ModuleDef*)((u8*)el - memory.offset_of(ModuleDef, link))
         if flag == FreeModuleKind.all or (flag == FreeModuleKind.not_resolved and not m.resolved):
             # warning: the module may be referenced elsewhere. It could be simpler to use
             # an array instead of a list for 'ctx.loaded_modules'
@@ -233,7 +233,7 @@ func js_mark_context(rt: Runtime*, ctx: Context*, mark_func: MarkFunc):
     let head = &ctx.loaded_modules
     var el = head.next else trap("js_mark_context: unlinked module list")
     while el != head:
-        let m = (ModuleDef*)((u8*)el - offsetof(ModuleDef, link))
+        let m = (ModuleDef*)((u8*)el - memory.offset_of(ModuleDef, link))
         js_mark_value(rt, js_mkptr(Tag.module, m), mark_func)
         el = el.next else trap("js_mark_context: unlinked module list")
 

@@ -43,7 +43,7 @@ pub func js_malloc_usable_size_rt(rt: Runtime*, ptr: const void*?) -> usize:
 ## Allocate `size` zeroed bytes from the runtime's heap; none on failure (js_mallocz_rt).
 pub func js_mallocz_rt(rt: Runtime*, size: usize) -> void*?:
     let ptr = js_malloc_rt(rt, size) else return none
-    discard(cutils.memset(ptr, 0, size))
+    _ = cutils.memset(ptr, 0, size)
     return ptr
 
 # mark: Context allocation ======================================================================
@@ -89,7 +89,7 @@ pub func js_malloc_usable_size(ctx: Context*, ptr: const void*?) -> usize:
 ## of error (js_strndup).
 pub func js_strndup(ctx: Context*, s: const u8*, n: usize) -> u8*!:
     let ptr = (u8*)(try js_malloc(ctx, n + 1))
-    discard(cutils.memcpy(ptr, s, n))
+    _ = cutils.memcpy(ptr, s, n)
     ptr[n] = 0
     return ptr
 

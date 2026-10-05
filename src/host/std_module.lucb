@@ -51,7 +51,7 @@ func js_std_getenviron(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
         let value = p + 1
         let atom = try js.js_new_atom_len(ctx, name, name_len)
         defer js.js_free_atom(ctx, atom)
-        discard(try js.js_define_property_value(ctx, obj, atom, try js.js_new_string(ctx, value), js.prop_c_w_e))
+        _ = try js.js_define_property_value(ctx, obj, atom, try js.js_new_string(ctx, value), js.prop_c_w_e)
     return obj
 
 func js_std_gc(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
@@ -212,17 +212,17 @@ let js_std_file_proto_funcs: CFunctionListEntry[17] = [
 func js_std_init(ctx: Context*, m: ModuleDef*) -> !:
     # FILE class
     # the class ID is created once
-    discard(js.js_new_class_id(&js_std_file_class_id))
+    _ = js.js_new_class_id(&js_std_file_class_id)
     # the class is created once per runtime
-    discard(js.js_new_class(js.js_get_runtime(ctx), js_std_file_class_id, &js_std_file_class))
+    _ = js.js_new_class(js.js_get_runtime(ctx), js_std_file_class_id, &js_std_file_class)
     let proto = try js.js_new_object(ctx)
     try js.js_set_property_function_list(ctx, proto, js_std_file_proto_funcs)
     js.js_set_class_proto(ctx, js_std_file_class_id, proto)
 
     try js.js_set_module_export_list(ctx, m, js_std_funcs[0..<24])
-    discard(try js.js_set_module_export(ctx, m, "in".bytes.data, try js_new_std_file(ctx, c.stdin(), false, false)))
-    discard(try js.js_set_module_export(ctx, m, "out".bytes.data, try js_new_std_file(ctx, c.stdout(), false, false)))
-    discard(try js.js_set_module_export(ctx, m, "err".bytes.data, try js_new_std_file(ctx, c.stderr(), false, false)))
+    _ = try js.js_set_module_export(ctx, m, "in".bytes.data, try js_new_std_file(ctx, c.stdin(), false, false))
+    _ = try js.js_set_module_export(ctx, m, "out".bytes.data, try js_new_std_file(ctx, c.stdout(), false, false))
+    _ = try js.js_set_module_export(ctx, m, "err".bytes.data, try js_new_std_file(ctx, c.stderr(), false, false))
 
 ## Register the `std` module under `module_name` (js_init_module_std).
 pub func js_init_module_std(ctx: Context*, module_name: const u8*) -> ModuleDef*!:

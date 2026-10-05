@@ -128,7 +128,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
     var el = head.next else trap("js_create_function: unlinked child list")
     while el != head:
         let el1 = el.next else trap("js_create_function: unlinked child list")
-        let fd1 = (FunctionDef*)((u8*)el - offsetof(FunctionDef, link))
+        let fd1 = (FunctionDef*)((u8*)el - memory.offset_of(FunctionDef, link))
         let cpool_idx = fd1.parent_cpool_idx
         let func_obj = try js_create_function(ctx, fd1)
         # save it in the constant pool
@@ -141,15 +141,15 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
     try resolve_labels(ctx, fd)
     let stack_size = try compute_stack_size(ctx, fd)
 
-    var function_size: usize = sizeof(FunctionBytecode)
+    var function_size: usize = memory.size_of(FunctionBytecode)
     if fd.strip_debug:
-        function_size = offsetof(FunctionBytecode, debug)
+        function_size = memory.offset_of(FunctionBytecode, debug)
     let cpool_offset = function_size
-    function_size += (usize)fd.cpool_count * sizeof(Value)
+    function_size += (usize)fd.cpool_count * memory.size_of(Value)
     let vardefs_offset = function_size
-    function_size += (usize)(fd.arg_count + fd.var_count) * sizeof(BytecodeVarDef)
+    function_size += (usize)(fd.arg_count + fd.var_count) * memory.size_of(BytecodeVarDef)
     let closure_var_offset = function_size
-    function_size += (usize)fd.closure_var_count * sizeof(ClosureVar)
+    function_size += (usize)fd.closure_var_count * memory.size_of(ClosureVar)
     let byte_code_offset = function_size
     function_size += fd.byte_code.size
 
@@ -159,7 +159,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
     b.byte_code_buf = (u8*)b + byte_code_offset
     b.byte_code_len = (i32)fd.byte_code.size
     if let buf = fd.byte_code.buf:
-        discard(cutils.memcpy(b.byte_code_buf, buf, fd.byte_code.size))
+        _ = cutils.memcpy(b.byte_code_buf, buf, fd.byte_code.size)
         js_free(ctx, buf)
     fd.byte_code.buf = none
 
@@ -186,7 +186,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
         let cpool = (Value*)((u8*)b + cpool_offset)
         b.cpool = cpool
         let src = fd.cpool else trap("js_create_function: no constant pool")
-        discard(cutils.memcpy(cpool, src, (usize)b.cpool_count * sizeof(Value)))
+        _ = cutils.memcpy(cpool, src, (usize)b.cpool_count * memory.size_of(Value))
     if let cpool = fd.cpool:
         js_free(ctx, cpool)
     fd.cpool = none
@@ -230,7 +230,7 @@ func js_create_function(ctx: Context*, fd: FunctionDef*) -> Value!:
         let closure_var = (ClosureVar*)((u8*)b + closure_var_offset)
         b.closure_var = closure_var
         let src = fd.closure_var else trap("js_create_function: no closure variables")
-        discard(cutils.memcpy(closure_var, src, (usize)b.closure_var_count * sizeof(ClosureVar)))
+        _ = cutils.memcpy(closure_var, src, (usize)b.closure_var_count * memory.size_of(ClosureVar))
     if let closure_var = fd.closure_var:
         js_free(ctx, closure_var)
     fd.closure_var = none

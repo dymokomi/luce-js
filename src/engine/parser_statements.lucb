@@ -47,10 +47,10 @@ func emit_break(s: ParseState*, name: Atom, is_cont: bool) -> !:
         scope_level = t.scope_level
         if is_cont and t.label_cont != -1 and (name == no_atom or t.label_name == name):
             # continue stays inside the same block
-            discard(emit_goto(s, (i32)Op.goto_, t.label_cont))
+            _ = emit_goto(s, (i32)Op.goto_, t.label_cont)
             return
         if (not is_cont and t.label_break != -1 and ((name == no_atom and not t.is_regular_stmt) or t.label_name == name)):
-            discard(emit_goto(s, (i32)Op.goto_, t.label_break))
+            _ = emit_goto(s, (i32)Op.goto_, t.label_break)
             return
         var i: i32 = 0
         if t.has_iterator:
@@ -62,7 +62,7 @@ func emit_break(s: ParseState*, name: Atom, is_cont: bool) -> !:
         if t.label_finally != -1:
             # must push dummy value to keep same stack depth
             emit_op(s, (u8)Op.undefined)
-            discard(emit_goto(s, (i32)Op.gosub, t.label_finally))
+            _ = emit_goto(s, (i32)Op.gosub, t.label_finally)
             emit_op(s, (u8)Op.drop)
         top = t.prev
     if name == no_atom:
@@ -114,9 +114,9 @@ func emit_return(s: ParseState*, hasval0: bool):
                     emit_op(s, (u8)Op.iterator_check_object)
                     emit_op(s, (u8)Op.await)
                     let label_next2 = emit_goto(s, (i32)Op.goto_, -1)
-                    discard(emit_label(s, label_next))
+                    _ = emit_label(s, label_next)
                     emit_op(s, (u8)Op.drop)
-                    discard(emit_label(s, label_next2))
+                    _ = emit_label(s, label_next2)
                     emit_op(s, (u8)Op.drop)
                 else:
                     emit_op(s, (u8)Op.rot3r)
@@ -125,7 +125,7 @@ func emit_return(s: ParseState*, hasval0: bool):
                     emit_op(s, (u8)Op.iterator_close)
             else:
                 # execute the "finally" block
-                discard(emit_goto(s, (i32)Op.gosub, t.label_finally))
+                _ = emit_goto(s, (i32)Op.gosub, t.label_finally)
         top = t.prev
     if fd.is_derived_class_constructor:
         # 'this' can be uninitialized, so it may be accessed only if the derived class
@@ -141,7 +141,7 @@ func emit_return(s: ParseState*, hasval0: bool):
         emit_atom(s, atom_this)
         emit_u16(s, 0)
 
-        discard(emit_label(s, label_return))
+        _ = emit_label(s, label_return)
         emit_op(s, (u8)Op.return_)
     elif fd.func_kind != js_func_normal:
         emit_op(s, (u8)Op.return_async)
@@ -164,7 +164,7 @@ func js_parse_statement(s: ParseState*) -> !:
 func js_parse_block(s: ParseState*) -> !:
     try js_parse_expect(s, TokenType.lbrace)
     if s.token.val != TokenType.rbrace:
-        discard(try push_scope(s))
+        _ = try push_scope(s)
         while true:
             try js_parse_statement_or_decl(s, decl_mask_all)
             if s.token.val == TokenType.rbrace:
@@ -184,7 +184,7 @@ func js_parse_var_binding(s: ParseState*, name: Atom, parse_flags: i32, tok: Tok
     try js_define_var(s, name, tok)
     if export_flag:
         let m = fd.module else trap("js_parse_var: export outside a module")
-        discard(try add_export_entry(s, m, name, name, ExportType.local_))
+        _ = try add_export_entry(s, m, name, name, ExportType.local_)
 
     if s.token.val == TokenType.assign:
         let source_ptr = s.token.ptr
@@ -244,9 +244,9 @@ func js_parse_var(s: ParseState*, parse_flags: i32, tok: TokenType, export_flag:
             var skip_bits: i32 = 0
             if ((s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace) and (try js_parse_skip_parens_token(s, &skip_bits, false)) == TokenType.assign):
                 emit_op(s, (u8)Op.undefined)
-                discard(try js_parse_destructuring_element(s, tok, false, true,
-                                                           skip_bits & skip_has_ellipsis,
-                                                           true, export_flag))
+                _ = try js_parse_destructuring_element(s, tok, false, true,
+                                                       skip_bits & skip_has_ellipsis,
+                                                       true, export_flag)
             else:
                 try js_parse_error(s, "variable name expected")
         if s.token.val != TokenType.comma:
@@ -264,7 +264,7 @@ func is_let(s: ParseState*, decl_mask: i32) -> bool!:
     var res = false
     if token_is_pseudo_keyword(s, atom_let):
         var pos: ParsePos = ---
-        discard(js_parse_get_pos(s, &pos))
+        _ = js_parse_get_pos(s, &pos)
         let last_token_ptr = s.token.ptr
         var next_ok = true
         next_token(s) catch failure:
@@ -303,8 +303,8 @@ func move_loop_code_to_end(s: ParseState*, pos_start: i32, pos_end: i32, first_l
     if cutils.dbuf_claim(bc, (usize)chunk_size) != 0:
         error(exception, "")
     let buf = bc.buf else trap("move_loop_code_to_end: no bytecode")
-    discard(cutils.dbuf_put(bc, buf + (isize)pos_start, (usize)chunk_size))
-    discard(cutils.memset(buf + (isize)pos_start, (i32)Op.nop, (usize)chunk_size))
+    _ = cutils.dbuf_put(bc, buf + (isize)pos_start, (usize)chunk_size)
+    _ = cutils.memset(buf + (isize)pos_start, (i32)Op.nop, (usize)chunk_size)
     # the moved part ends with a goto
     fd.last_opcode_pos = (i32)bc.size - 5
     # relocate labels
@@ -335,7 +335,7 @@ func js_parse_for_in_of_binding(s: ParseState*, is_async: bool) -> (TokenType, A
 
         if not (s.token.val == TokenType.ident and not s.token.u.ident.is_reserved):
             if s.token.val == TokenType.lbracket or s.token.val == TokenType.lbrace:
-                discard(try js_parse_destructuring_element(s, tok, false, true, -1, false, false))
+                _ = try js_parse_destructuring_element(s, tok, false, true, -1, false, false)
                 return (tok, no_atom, true)
             try js_parse_error(s, "variable name expected")
         let var_name = js_dup_atom(ctx, s.token.u.ident.atom)
@@ -358,8 +358,8 @@ func js_parse_for_in_of_binding(s: ParseState*, is_async: bool) -> (TokenType, A
             let tok1 = try js_parse_skip_parens_token(s, &skip_bits, false)
             is_destructuring = tok1 == TokenType.in_ or tok1 == TokenType.of
         if is_destructuring:
-            discard(try js_parse_destructuring_element(s, (TokenType)0, false, true, skip_bits & skip_has_ellipsis,
-                                                       true, false))
+            _ = try js_parse_destructuring_element(s, (TokenType)0, false, true, skip_bits & skip_has_ellipsis,
+                                                   true, false)
         else:
             var opcode: i32 = 0
             var scope: i32 = 0
@@ -388,7 +388,7 @@ func js_parse_for_in_of(s: ParseState*, label_name: Atom, is_async: bool) -> !:
     # create scope for the lexical variables declared in the enumeration expressions.
     # XXX: Not completely correct because of weird capturing semantics in
     # `for (i of o) a.push(function(){return i})`
-    discard(try push_scope(s))
+    _ = try push_scope(s)
 
     # local for_in scope starts here so individual elements can be closed in statement.
     var break_entry: BlockEnv = ---
@@ -398,13 +398,13 @@ func js_parse_for_in_of(s: ParseState*, label_name: Atom, is_async: bool) -> !:
     let label_expr = emit_goto(s, (i32)Op.goto_, -1)
 
     let pos_next = (i32)fd.byte_code.size
-    discard(emit_label(s, label_next))
+    _ = emit_label(s, label_next)
 
     let (tok, var_name, has_destructuring) = try js_parse_for_in_of_binding(s, is_async)
-    discard(emit_goto(s, (i32)Op.goto_, label_body))
+    _ = emit_goto(s, (i32)Op.goto_, label_body)
 
     let pos_expr = (i32)fd.byte_code.size
-    discard(emit_label(s, label_expr))
+    _ = emit_label(s, label_expr)
     if s.token.val == TokenType.assign:
         # XXX: potential scoping issue if inside `with` statement
         has_initializer = true
@@ -454,19 +454,19 @@ func js_parse_for_in_of(s: ParseState*, label_name: Atom, is_async: bool) -> !:
     else:
         emit_op(s, (u8)Op.for_in_start)
     # on stack: enum_obj
-    discard(emit_goto(s, (i32)Op.goto_, label_cont))
+    _ = emit_goto(s, (i32)Op.goto_, label_cont)
 
     try js_parse_expect(s, TokenType.rparen)
 
     # move the `next` code here
     try move_loop_code_to_end(s, pos_next, pos_expr, label_cont)
 
-    discard(emit_label(s, label_body))
+    _ = emit_label(s, label_body)
     try js_parse_statement(s)
 
     close_scopes(s, s.fd().scope_level, block_scope_level)
 
-    discard(emit_label(s, label_cont))
+    _ = emit_label(s, label_cont)
     if is_for_of:
         if is_async:
             # stack: iter_obj next catch_offset
@@ -482,11 +482,11 @@ func js_parse_for_in_of(s: ParseState*, label_name: Atom, is_async: bool) -> !:
     else:
         emit_op(s, (u8)Op.for_in_next)
     # on stack: enum_rec / enum_obj value bool
-    discard(emit_goto(s, (i32)Op.if_false, label_next))
+    _ = emit_goto(s, (i32)Op.if_false, label_next)
     # drop the undefined value from for_xx_next
     emit_op(s, (u8)Op.drop)
 
-    discard(emit_label(s, label_break))
+    _ = emit_label(s, label_break)
     if is_for_of:
         # close and drop enum_rec
         emit_op(s, (u8)Op.iterator_close)

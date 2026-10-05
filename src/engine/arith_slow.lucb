@@ -48,7 +48,7 @@ func js_unary_arith_float64(op: Op, d0: f64) -> f64:
             let v = 2 * ((i32)op - (i32)Op.dec) - 1
             d += f64(v)
         .plus:
-            discard(0)
+            _ = 0
         .neg:
             d = -d
         _:
@@ -70,7 +70,7 @@ func js_unary_arith_slow1(ctx: Context*, sp: Value*, op: Op) -> !:
                     let v = 2 * ((i32)op - (i32)Op.dec) - 1
                     v64 += v
                 .plus:
-                    discard(0)
+                    _ = 0
                 .neg:
                     if v64 == 0:
                         sp[-1] = js_new_float64_raw(-0.0)

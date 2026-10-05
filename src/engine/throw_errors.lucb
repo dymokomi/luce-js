@@ -25,7 +25,7 @@ func js_throw_error2(ctx: Context*, error_num: ErrorKind, message: fmt,
     var buf: u8[throw_error_buf_size] = ---
     # vsnprintf: the text is cut to the buffer, keeping room for the NUL
     var writer = io.SliceWriter.over(buf[0..<throw_error_buf_size - 1])
-    discard(writer.write(message) catch failure: recover 0)
+    _ = writer.write(message) catch failure: recover 0
     let text = writer.written()
 
     let proto = ctx.native_error_proto[(usize)(i32)error_num]
@@ -37,8 +37,8 @@ func js_throw_error2(ctx: Context*, error_num: ErrorKind, message: fmt,
         # made; the message is left out instead.
         let msg: Value? = (js_new_string_len(ctx, text.data, text.length) catch failure: recover none)
         if let m = msg:
-            discard(js_define_property_value(ctx, obj, atom_message, m,
-                                             prop_writable | prop_configurable) catch failure: recover false)
+            _ = js_define_property_value(ctx, obj, atom_message, m,
+                                         prop_writable | prop_configurable) catch failure: recover false
         if add_backtrace:
             build_backtrace(ctx, obj, none, 0, 0, 0)
     try js_throw(ctx, obj)

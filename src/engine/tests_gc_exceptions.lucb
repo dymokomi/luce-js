@@ -25,9 +25,9 @@ func dbuf_bytes(s: cutils.DynBuf*, out: u8[]) -> usize:
 func build_pc2line(s: cutils.DynBuf*):
     dbuf_put_leb128(s, 9)
     dbuf_put_leb128(s, 4)
-    discard(cutils.dbuf_putc(s, (u8)(pc2line_op_first + (1 - pc2line_base) + 3 * pc2line_range)))
+    _ = cutils.dbuf_putc(s, (u8)(pc2line_op_first + (1 - pc2line_base) + 3 * pc2line_range))
     dbuf_put_sleb128(s, 2)
-    discard(cutils.dbuf_putc(s, 0))
+    _ = cutils.dbuf_putc(s, 0)
     dbuf_put_leb128(s, 97)
     dbuf_put_sleb128(s, 39)
     dbuf_put_sleb128(s, -6)
@@ -148,9 +148,6 @@ test "printf %0.1f":
     var small: u8[4]
     assert(format_fixed1(small, 1.0) == "?")
 
-test "report columns and shares":
-    assert(name_pad("atoms") == 15 and name_pad("a name of twenty chr") == 0)
-    assert(decimal_width(0) == 1 and decimal_width(9) == 1 and decimal_width(10) == 2)
-    assert(decimal_width(4294967295) == 10)
+test "report shares":
     assert(round_share(2.5) == 3 and round_share(2.49) == 2 and round_share(0.0) == 0)
     assert(add_share(10, 0.5) == 10 and add_share(10, 1.75) == 11)

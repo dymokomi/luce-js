@@ -82,7 +82,7 @@ func js_array_pop(ctx: Context*, this_val: Value, argc: i32, argv: Value*, shift
             let p = obj.u.obj
             if shift != 0:
                 res = arrp[0]
-                discard(cutils.memmove(arrp, arrp + 1, (usize)(count32 - 1) * sizeof(Value)))
+                _ = cutils.memmove(arrp, arrp + 1, (usize)(count32 - 1) * memory.size_of(Value))
                 p.u.array.count -= 1
             else:
                 res = arrp[(usize)(count32 - 1)]

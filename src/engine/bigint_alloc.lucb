@@ -17,12 +17,12 @@
 ## The limbs that follow a big integer's header (JSBigInt.tab), least significant first,
 ## in two's complement.
 func js_bigint_tab(a: const BigInt*) -> u32*:
-    return (u32*)((u8*)a + sizeof(BigInt))
+    return (u32*)((u8*)a + memory.size_of(BigInt))
 
 func js_bigint_new(ctx: Context*, len: i32) -> BigInt*!:
     if len > bigint_max_size:
         try js_throw_range_error(ctx, "BigInt is too large to allocate")
-    let r = (BigInt*)(try js_malloc(ctx, sizeof(BigInt) + (usize)len * sizeof(u32)))
+    let r = (BigInt*)(try js_malloc(ctx, memory.size_of(BigInt) + (usize)len * memory.size_of(u32)))
     js_rc(r).ref_count = 1
     r.len = (u32)len
     return r
@@ -104,7 +104,7 @@ func js_bigint_normalize1(ctx: Context*, a: BigInt*, l0: i32) -> BigInt*:
         a.len = (u32)l
         # A failed shrink keeps the block, as in C (the exception js_realloc raised stays
         # pending there too).
-        let a1 = js_realloc(ctx, a, sizeof(BigInt) + (usize)l * sizeof(u32)) catch failure:
+        let a1 = js_realloc(ctx, a, memory.size_of(BigInt) + (usize)l * memory.size_of(u32)) catch failure:
             recover (void*)a
         # js_realloc of a non-zero size never answers none
         return (BigInt*)(a1 else trap("js_realloc answered none"))
@@ -131,7 +131,7 @@ func js_bigint_extend(ctx: Context*, r: BigInt*, op1: u32) -> BigInt*!:
     let n2 = (i32)r.len
     if (op1 != 0 and op1 != 0xffffffff) or (op1 & 1) != js_bigint_tab(r)[n2 - 1] >> 31:
         errdefer js_free(ctx, r)
-        let r1_raw = try js_realloc(ctx, r, sizeof(BigInt) + (usize)(n2 + 1) * sizeof(u32))
+        let r1_raw = try js_realloc(ctx, r, memory.size_of(BigInt) + (usize)(n2 + 1) * memory.size_of(u32))
         # js_realloc of a non-zero size never answers none
         let r1 = (BigInt*)(r1_raw else trap("js_realloc answered none"))
         r1.len = (u32)(n2 + 1)

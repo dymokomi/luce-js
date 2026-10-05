@@ -88,7 +88,7 @@ func iterator_helper_new(ctx: Context*, this_val: Value, argv: Value*, magic: i3
     errdefer js_free_value(ctx, method)
     let obj = try js_new_object_class(ctx, (i32)ClassId.iterator_helper)
     errdefer js_free_value(ctx, obj)
-    let it = (IteratorHelperData*)(try js_malloc(ctx, sizeof(IteratorHelperData)))
+    let it = (IteratorHelperData*)(try js_malloc(ctx, memory.size_of(IteratorHelperData)))
     it.kind = (IteratorHelperKind)magic
     it.obj = js_dup_value(ctx, this_val)
     it.func_ = js_dup_value(ctx, func_)

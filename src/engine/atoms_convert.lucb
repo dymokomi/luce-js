@@ -18,6 +18,8 @@
 
 # An atom interned by `js_new_atom_raw`, or the out of memory exception it could not
 # raise itself.
+import strings
+
 func js_check_new_atom(ctx: Context*, atom: Atom) -> Atom!:
     if atom == no_atom:
         try js_throw_out_of_memory(ctx)
@@ -88,7 +90,7 @@ func js_new_symbol_from_atom(ctx: Context*, descr: Atom, atom_type: u8) -> Value
     assert(not js_atom_is_tagged_int_raw(descr))
     assert(descr < (u32)rt.atom_size)
     let p = atom_array_get(rt, descr)
-    discard(js_dup_value(ctx, js_mkptr(Tag.string, p)))
+    _ = js_dup_value(ctx, js_mkptr(Tag.string, p))
     return try js_new_symbol(ctx, p, atom_type)
 
 # mark: Atoms as text ===========================================================================
@@ -101,7 +103,7 @@ let atom_get_str_buf_size: usize = 64
 # are combined and a lone surrogate becomes U+FFFD where QuickJS writes CESU-8 bytes.
 func js_atom_get_str_rt(rt: Runtime*, buf: u8[], atom: Atom) -> str:
     if js_atom_is_tagged_int_raw(atom):
-        return format(buf, f"{js_atom_to_uint32_raw(atom)}") else ""
+        return strings.format(buf, f"{js_atom_to_uint32_raw(atom)}") else ""
     assert(atom < (u32)rt.atom_size)
     if atom == no_atom:
         return "<null>"
@@ -275,8 +277,8 @@ func js_atom_concat_str(ctx: Context*, name: Atom, str1: str) -> Atom!:
     let len1 = str1.length
     let cstr2 = (u8*)(try js_malloc(ctx, len + len1 + 1))
     defer js_free(ctx, cstr2)
-    discard(cutils.memcpy(cstr2, cstr, len))
-    discard(cutils.memcpy(cstr2 + len, str1.bytes.data, len1))
+    _ = cutils.memcpy(cstr2, cstr, len)
+    _ = cutils.memcpy(cstr2 + len, str1.bytes.data, len1)
     cstr2[len + len1] = 0
     return try js_new_atom_len(ctx, cstr2, len + len1)
 

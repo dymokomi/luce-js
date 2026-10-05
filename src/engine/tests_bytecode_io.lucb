@@ -229,7 +229,7 @@ test "8-bit strings are (len << 1) then their bytes":
     p.len = 3
     p.is_wide_char = false
     let text = b"abc"
-    discard(cutils.memcpy(str8(p), &text[0], 3))
+    _ = cutils.memcpy(str8(p), &text[0], 3)
 
     var s = test_writer()
     defer cutils.dbuf_free(&s.dbuf)

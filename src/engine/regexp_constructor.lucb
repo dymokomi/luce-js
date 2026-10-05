@@ -131,7 +131,7 @@ func js_regexp_compile(ctx: Context*, this_val: Value, argc: i32, argv: Value*) 
     js_regexp_free_program(ctx.rt, re)
     re.pattern = pattern.u.string
     re.program = program
-    discard(try js_set_property(ctx, this_val, atom_lastIndex, js_new_int32(0)))
+    _ = try js_set_property(ctx, this_val, atom_lastIndex, js_new_int32(0))
     return js_dup_value(ctx, this_val)
 
 # mark: source, flags and toString ==============================================================
@@ -192,7 +192,7 @@ func js_regexp_get_source(ctx: Context*, this_val: Value) -> Value!:
                     c = (i32)'\\'
                     c2 = (i32)'/'
             _:
-                discard(0)
+                _ = 0
         string_buffer_putc16(b, (u32)c) catch: recover ()
         if c2 >= 0:
             string_buffer_putc16(b, (u32)c2) catch: recover ()
@@ -309,7 +309,7 @@ func format_hex_escape(buf: u8[], prefix: u8, c: u32, n_digits: usize) -> usize:
 # Append the hex escape of `c` to `b` (see format_hex_escape).
 func string_buffer_put_hex_escape(b: StringBuffer*, prefix: u8, c: u32, n_digits: usize) -> !:
     var s: u8[16] = ---
-    discard(format_hex_escape(s, prefix, c, n_digits))
+    _ = format_hex_escape(s, prefix, c, n_digits)
     try string_buffer_puts8(b, &s[0])
 
 # RegExp.escape(string)

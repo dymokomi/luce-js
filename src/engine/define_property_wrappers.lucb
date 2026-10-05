@@ -107,7 +107,7 @@ func js_object_has_name(ctx: Context*, obj: Value) -> bool:
 # Give the object `obj` the 'name' `name` unless it has a non empty one already.
 func js_define_object_name(ctx: Context*, obj: Value, name: Atom, flags: i32) -> !:
     if name != no_atom and js_is_object(obj) and not js_object_has_name(ctx, obj):
-        discard(try js_define_property_value(ctx, obj, atom_name, try js_atom_to_string(ctx, name), flags))
+        _ = try js_define_property_value(ctx, obj, atom_name, try js_atom_to_string(ctx, name), flags)
 
 # Give the object `obj` the 'name' of the computed key `text` unless it has a non empty
 # one already.
@@ -118,4 +118,4 @@ func js_define_object_name_computed(ctx: Context*, obj: Value, text: Value, flag
             js_free_atom(ctx, prop)
             error(failure.code, failure.message)
         js_free_atom(ctx, prop)
-        discard(try js_define_property_value(ctx, obj, atom_name, name_str, flags))
+        _ = try js_define_property_value(ctx, obj, atom_name, name_str, flags)

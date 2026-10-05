@@ -24,7 +24,7 @@ func js_get_active_function(ctx: Context*) -> Value:
 ## A new detached variable reference holding undefined, or uninitialized when
 ## `is_lexical`.
 func js_create_var_ref(ctx: Context*, is_lexical: bool) -> VarRef*!:
-    let var_ref = (VarRef*)(try js_malloc(ctx, sizeof(VarRef)))
+    let var_ref = (VarRef*)(try js_malloc(ctx, memory.size_of(VarRef)))
     js_rc(var_ref).ref_count = 1
     if is_lexical:
         var_ref.u.value = js_uninitialized()
@@ -40,7 +40,7 @@ func js_create_var_ref(ctx: Context*, is_lexical: bool) -> VarRef*!:
 ## The container of an async function's frame (container_of(sf, JSAsyncFunctionState,
 ## frame)).
 func js_async_function_of_frame(sf: StackFrame*) -> AsyncFunctionState*:
-    return (AsyncFunctionState*)((u8*)sf - offsetof(AsyncFunctionState, frame))
+    return (AsyncFunctionState*)((u8*)sf - memory.offset_of(AsyncFunctionState, frame))
 
 ## A reference to the captured argument (`is_arg`) or local variable `var_idx` of the
 ## frame `sf`: the one the frame already has, or a new attached one.
@@ -70,7 +70,7 @@ func get_var_ref(ctx: Context*, sf: StackFrame*, var_idx: i32, is_arg: bool) -> 
         return existing
 
     # create a new one
-    let var_ref = (VarRef*)(try js_malloc(ctx, sizeof(VarRef)))
+    let var_ref = (VarRef*)(try js_malloc(ctx, memory.size_of(VarRef)))
     js_rc(var_ref).ref_count = 1
     add_gc_object(ctx.rt, &var_ref.header, GCObjectType.var_ref)
     var_ref.is_detached = 0
@@ -269,7 +269,7 @@ func js_closure2(ctx: Context*, func_obj: Value, b: FunctionBytecode*, cur_var_r
     if b.closure_var_count == 0:
         return func_obj
 
-    let var_refs = (VarRef*?*)(try js_mallocz(ctx, sizeof(VarRef*?) * (usize)b.closure_var_count))
+    let var_refs = (VarRef*?*)(try js_mallocz(ctx, memory.size_of(VarRef*?) * (usize)b.closure_var_count))
     p.u.func_.var_refs = var_refs
     let closure_var = b.closure_var else trap("js_closure2: no closure variables")
     if is_eval:
@@ -364,7 +364,7 @@ func js_closure(ctx: Context*, bfunc: Value, cur_var_refs: VarRef*?*?, sf: Stack
         # add the 'prototype' property: delay instantiation to avoid
         # creating cycles for every javascript function. The prototype
         # object is created on the fly when first accessed
-        discard(js_set_constructor_bit(ctx, func_obj, true))
+        _ = js_set_constructor_bit(ctx, func_obj, true)
         js_define_auto_init_property(ctx, func_obj, atom_prototype,
                                      AutoInitId.prototype, none, prop_writable) catch: recover false
     return func_obj
@@ -431,7 +431,7 @@ func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags
     v.bfunc = js_undefined()
     v.ctor = try js_closure2(ctx, ctor, b, cur_var_refs, sf, false, none)
     js_method_set_home_object(ctx, v.ctor, v.proto)
-    discard(js_set_constructor_bit(ctx, v.ctor, true))
+    _ = js_set_constructor_bit(ctx, v.ctor, true)
 
     js_define_property_value(ctx, v.ctor, atom_length,
                              js_new_int32((i32)b.defined_arg_count), prop_configurable) catch: recover false
@@ -443,11 +443,11 @@ func js_op_define_class(ctx: Context*, sp: Value*, class_name: Atom, class_flags
 
     # the constructor property must be first. It can be overriden by
     # computed property names
-    discard(try js_define_property_value(ctx, v.proto, atom_constructor,
-                                         js_dup_value(ctx, v.ctor), prop_configurable | prop_writable | prop_throw))
+    _ = try js_define_property_value(ctx, v.proto, atom_constructor,
+                                     js_dup_value(ctx, v.ctor), prop_configurable | prop_writable | prop_throw)
     # set the prototype property
-    discard(try js_define_property_value(ctx, v.ctor, atom_prototype,
-                                         js_dup_value(ctx, v.proto), prop_throw))
+    _ = try js_define_property_value(ctx, v.ctor, atom_prototype,
+                                     js_dup_value(ctx, v.proto), prop_throw)
     set_cycle_flag(ctx, v.ctor)
     set_cycle_flag(ctx, v.proto)
 

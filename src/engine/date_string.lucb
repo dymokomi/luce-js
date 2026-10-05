@@ -132,7 +132,7 @@ func format_date_fields(buf: u8[], fields: const f64[], date_fmt: i32, part: i32
                     pos = date_put_char(buf, pos, ',')
                     pos = date_put_char(buf, pos, ' ')
             _:
-                discard(0)
+                _ = 0
     if (part & 2) != 0:
         # time part
         match date_fmt:
@@ -175,7 +175,7 @@ func format_date_fields(buf: u8[], fields: const f64[], date_fmt: i32, part: i32
                 pos = date_put_char(buf, pos, 'A' if h < 12 else 'P')
                 pos = date_put_char(buf, pos, 'M')
             _:
-                discard(0)
+                _ = 0
     return pos
 
 ## The Date string methods: `magic` is the format times 0x10 plus the parts.
@@ -203,7 +203,7 @@ func get_date_string(ctx: Context*, this_val: Value, argc: i32, argv: Value*, ma
 # is shared with js_random_init in math.lucb.)
 func date_now() -> i64:
     var ts = TimeSpec(tv_sec = 0, tv_nsec = 0, tv_nsec_high = 0)
-    discard(c_clock_gettime(clock_realtime, &ts))
+    _ = c_clock_gettime(clock_realtime, &ts)
     let nsec = (i64)(u32)ts.tv_nsec
     return ts.tv_sec * 1000 + (nsec // 1000000)
 

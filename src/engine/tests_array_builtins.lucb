@@ -17,7 +17,7 @@
 
 ## A context-sized buffer: the paths under test never read it.
 struct TestR23ContextBuf:
-    var words: u64[sizeof(Context) // 8 + 1]
+    var words: u64[memory.size_of(Context) // 8 + 1]
 
 # The index of the entry named `name` in `tab`, or -1.
 func test_find_entry(tab: const CFunctionListEntry[], name: str) -> i64:
@@ -37,7 +37,7 @@ test "sort: identical values keep their original order (stable tie on the index)
     var slots: ValueSlot[6] = ---
     for i in 0..<order.length:
         slots[i] = ValueSlot(val = js_new_int32(7), str = none, pos = order[i])
-    cutils.rqsort(&slots[0], slots.length, sizeof(ValueSlot), js_array_cmp_generic, &asc)
+    cutils.rqsort(&slots[0], slots.length, memory.size_of(ValueSlot), js_array_cmp_generic, &asc)
     assert(not asc.exception)
     for i in 0..<slots.length:
         assert(slots[i].pos == (i64)i)
@@ -129,8 +129,8 @@ test "the Iterator Concat values follow the state, aligned for values":
     var buf: u64[16] = ---
     let it = (IteratorConcatData*)&buf[0]
     let values = iterator_concat_values(it)
-    assert((usize)values - (usize)it == sizeof(IteratorConcatData))
-    assert(sizeof(IteratorConcatData) % alignof(Value) == 0)
+    assert((usize)values - (usize)it == memory.size_of(IteratorConcatData))
+    assert(memory.size_of(IteratorConcatData) % memory.align_of(Value) == 0)
 
 # mark: Builtins on primitives ==================================================================
 

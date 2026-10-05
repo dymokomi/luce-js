@@ -175,7 +175,7 @@ func xorshift64star(pstate: u64*) -> u64:
 # Seed the context's generator from the wall clock in microseconds (C uses gettimeofday).
 func js_random_init(ctx: Context*):
     var tv = TimeSpec(tv_sec = 0, tv_nsec = 0, tv_nsec_high = 0)
-    discard(c_clock_gettime(clock_realtime, &tv))
+    _ = c_clock_gettime(clock_realtime, &tv)
     ctx.random_state = (u64)((tv.tv_sec * 1000000) + (i64)(tv.tv_nsec // 1000))
     # the state must be non zero
     if ctx.random_state == 0:

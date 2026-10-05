@@ -57,7 +57,7 @@ func gather_available_ancestors(ctx: Context*, module: ModuleDef*, exec_list: Ex
             assert(m.pending_async_dependencies > 0)
             m.pending_async_dependencies -= 1
             if m.pending_async_dependencies == 0:
-                try js_resize_array(ctx, (void*?*)&exec_list.tab, (i32)sizeof(ModuleDef*),
+                try js_resize_array(ctx, (void*?*)&exec_list.tab, (i32)memory.size_of(ModuleDef*),
                                     &exec_list.size, exec_list.count + 1)
                 let tab = exec_list.tab else trap("gather_available_ancestors: no module list")
                 tab[(usize)exec_list.count] = m
@@ -104,7 +104,7 @@ func js_async_module_execution_rejected(ctx: Context*, this_val: Value, argc: i3
     for i in 0..<module.async_parent_modules_count:
         let m = async_parent_module(module, i)
         var m_obj = js_new_module_value(ctx, m)
-        discard(js_async_module_execution_rejected(ctx, js_undefined(), 1, &error_val, 0, &m_obj) catch failure: recover js_exception())
+        _ = js_async_module_execution_rejected(ctx, js_undefined(), 1, &error_val, 0, &m_obj) catch failure: recover js_exception()
         js_free_value(ctx, m_obj)
     return js_undefined()
 
@@ -134,7 +134,7 @@ func js_async_module_execution_fulfilled(ctx: Context*, this_val: Value, argc: i
 
     # sort by increasing async_evaluation timestamp
     if let tab = exec_list.tab:
-        cutils.rqsort(tab, (usize)exec_list.count, sizeof(ModuleDef*), exec_module_list_cmp, none)
+        cutils.rqsort(tab, (usize)exec_list.count, memory.size_of(ModuleDef*), exec_module_list_cmp, none)
 
     for i in 0..<exec_list.count:
         let m = exec_module_list_get(&exec_list, i)
@@ -146,7 +146,7 @@ func js_async_module_execution_fulfilled(ctx: Context*, this_val: Value, argc: i
             var error_val = js_undefined()
             if js_execute_sync_module(ctx, m, &error_val) < 0:
                 var m_obj = js_new_module_value(ctx, m)
-                discard(js_async_module_execution_rejected(ctx, js_undefined(), 1, &error_val, 0, &m_obj) catch failure: recover js_exception())
+                _ = js_async_module_execution_rejected(ctx, js_undefined(), 1, &error_val, 0, &m_obj) catch failure: recover js_exception()
                 js_free_value(ctx, m_obj)
                 js_free_value(ctx, error_val)
             else:
@@ -247,7 +247,7 @@ func js_inner_module_evaluation(ctx: Context*, m: ModuleDef*, index: i32, pstack
                 return -1
         if m1.async_evaluation:
             m.pending_async_dependencies += 1
-            js_resize_array(ctx, (void*?*)&m1.async_parent_modules, (i32)sizeof(ModuleDef*),
+            js_resize_array(ctx, (void*?*)&m1.async_parent_modules, (i32)memory.size_of(ModuleDef*),
                             &m1.async_parent_modules_size, m1.async_parent_modules_count + 1) catch failure:
                 return take_module_exception(ctx, pvalue)
             let parents = m1.async_parent_modules else trap("js_inner_module_evaluation: no parents")

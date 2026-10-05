@@ -158,12 +158,12 @@ func js_os_init(ctx: Context*, m: ModuleDef*) -> !:
     else:
         os_poll_func = js_os_poll
 
-    discard(try js.js_set_module_export(ctx, m, "Worker".bytes.data, try js_worker_init(ctx)))
+    _ = try js.js_set_module_export(ctx, m, "Worker".bytes.data, try js_worker_init(ctx))
 
     try js_os_export_lists(ctx, m, js.js_set_module_export_list)
     let name = os_platform()
-    discard(try js.js_set_module_export(ctx, m, "platform".bytes.data,
-                                        try js.js_new_string_len(ctx, name.bytes.data, name.length)))
+    _ = try js.js_set_module_export(ctx, m, "platform".bytes.data,
+                                    try js.js_new_string_len(ctx, name.bytes.data, name.length))
 
 ## Register the `os` module under `module_name` (js_init_module_os).
 pub func js_init_module_os(ctx: Context*, module_name: const u8*) -> ModuleDef*!:

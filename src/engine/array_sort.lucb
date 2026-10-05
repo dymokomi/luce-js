@@ -52,7 +52,7 @@ func js_array_cmp_slots(psc: ArraySortContext*, ap: ValueSlot*, bp: ValueSlot*) 
     if psc.has_method:
         # custom sort function is specified as returning 0 for identical
         # objects: avoid method call overhead.
-        if cutils.memcmp(&ap.val, &bp.val, sizeof(Value)) == 0:
+        if cutils.memcmp(&ap.val, &bp.val, memory.size_of(Value)) == 0:
             return 0
         var args: Value[2] = [ap.val, bp.val]
         let res = try js_call(ctx, psc.method, js_undefined(), 2, &args[0])
@@ -111,8 +111,8 @@ func js_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
         if pos >= array_size:
             var new_size = (array_size + (array_size >> 1) + 31) & ~(usize)15
             var slack: usize = 0
-            let new_array = try js_realloc2(ctx, array, new_size * sizeof(ValueSlot), &slack)
-            new_size += slack // sizeof(ValueSlot)
+            let new_array = try js_realloc2(ctx, array, new_size * memory.size_of(ValueSlot), &slack)
+            new_size += slack // memory.size_of(ValueSlot)
             array = new_array
             array_size = new_size
         let raw = array else trap("the slot array is allocated")
@@ -127,7 +127,7 @@ func js_array_sort(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> V
         slot.pos = i
         pos += 1
     if let raw = array:
-        cutils.rqsort(raw, pos, sizeof(ValueSlot), js_array_cmp_generic, &asc)
+        cutils.rqsort(raw, pos, memory.size_of(ValueSlot), js_array_cmp_generic, &asc)
     if asc.exception:
         error(exception, "")
 

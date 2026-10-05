@@ -56,11 +56,11 @@ func free_property(rt: Runtime*, pr: Property*, prop_flags: i32):
 ## The shape property of `p`'s own property `atom`, or none.
 func find_own_property1(p: Object*, atom: Atom) -> ShapeProperty*?:
     let sh = p.shape
-    let hash_table = (usize)sh +% sizeof(Shape)
+    let hash_table = (usize)sh +% memory.size_of(Shape)
     var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
-    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
+    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% memory.size_of(ShapeProperty)
     while h != 0:
-        let pr = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
+        let pr = (ShapeProperty*)(prop_base +% (usize)h *% memory.size_of(ShapeProperty))
         if pr.atom == atom:
             return pr
         h = pr.hash_next
@@ -70,11 +70,11 @@ func find_own_property1(p: Object*, atom: Atom) -> ShapeProperty*?:
 ## (none when not found).
 func find_own_property(ppr: Property*?*, p: Object*, atom: Atom) -> ShapeProperty*?:
     let sh = p.shape
-    let hash_table = (usize)sh +% sizeof(Shape)
+    let hash_table = (usize)sh +% memory.size_of(Shape)
     var h = *(u32*)(hash_table +% (usize)(atom & sh.prop_hash_mask) *% 4)
-    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% sizeof(ShapeProperty)
+    let prop_base = hash_table +% (usize)sh.prop_hash_mask *% 4 +% 4 -% memory.size_of(ShapeProperty)
     while h != 0:
-        let pr = (ShapeProperty*)(prop_base +% (usize)h *% sizeof(ShapeProperty))
+        let pr = (ShapeProperty*)(prop_base +% (usize)h *% memory.size_of(ShapeProperty))
         if pr.atom == atom:
             *ppr = p.prop + (usize)(h -% 1)
             # the compiler should be able to assume that pr != NULL here
@@ -104,7 +104,7 @@ func free_var_ref(rt: Runtime*, var_ref: VarRef*?):
                 assert(var_refs[idx] == vr)
                 var_refs[idx] = none
                 if (sf.js_mode & js_mode_async) != 0:
-                    let async_func = (AsyncFunctionState*)((u8*)sf - offsetof(AsyncFunctionState, frame))
+                    let async_func = (AsyncFunctionState*)((u8*)sf - memory.offset_of(AsyncFunctionState, frame))
                     async_func_free(rt, async_func)
             remove_gc_object(&vr.header)
             js_free_rt(rt, vr)
@@ -188,7 +188,7 @@ func js_bytecode_function_mark(rt: Runtime*, val: Value, mark_func: MarkFunc):
 
 ## The bound arguments of a bound function (the C flexible member `argv`).
 func bound_function_argv(bf: BoundFunction*) -> Value*:
-    return (Value*)((u8*)bf + sizeof(BoundFunction))
+    return (Value*)((u8*)bf + memory.size_of(BoundFunction))
 
 ## Finalizer of ClassId.bound_function.
 func js_bound_function_finalizer(rt: Runtime*, val: Value):
@@ -298,7 +298,7 @@ func free_zero_refcount(rt: Runtime*):
         let el = rt.gc_zero_ref_count_list.next else trap("unlinked list")
         if el == &rt.gc_zero_ref_count_list:
             break
-        let p = (GCObjectHeader*)((u8*)el - offsetof(GCObjectHeader, link))
+        let p = (GCObjectHeader*)((u8*)el - memory.offset_of(GCObjectHeader, link))
         assert(js_rc(p).ref_count == 0)
         free_gc_object(rt, p)
     rt.gc_phase = GCPhase.none_

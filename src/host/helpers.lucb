@@ -11,14 +11,16 @@
 
 # mark: Global helpers ==========================================================================
 
+import memory
+
 ## Write the NUL-free bytes `text` to standard output.
 func put_stdout(buf: const u8*, len: usize):
-    discard(fwrite(buf, 1, len, c.stdout()))
+    _ = fwrite(buf, 1, len, c.stdout())
 
 func js_print(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     for i in 0..<(usize)argc:
         if i != 0:
-            discard(fputc((i32)' ', c.stdout()))
+            _ = fputc((i32)' ', c.stdout())
         let v = argv[i]
         if js.js_is_string(v):
             var len: usize = 0
@@ -27,12 +29,12 @@ func js_print(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!
             js.js_free_c_string(ctx, text)
         else:
             js.js_print_value(ctx, js_print_value_write, c.stdout(), v, none)
-    discard(fputc((i32)'\n', c.stdout()))
+    _ = fputc((i32)'\n', c.stdout())
     return js.js_undefined()
 
 func js_console_log(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
     let ret = try js_print(ctx, this_val, argc, argv)
-    discard(fflush(c.stdout()))
+    _ = fflush(c.stdout())
     return ret
 
 ## Define console.log, performance.now, print, __loadScript and, when `args` is given,
@@ -43,40 +45,40 @@ pub func js_std_add_helpers(ctx: Context*, args: const str[]?) -> !:
     defer js.js_free_value(ctx, global_obj)
 
     let console = try js.js_new_object(ctx)
-    discard(try js.js_set_property_str(ctx, console, "log",
-                                       try js.js_new_c_function(ctx, js_console_log, "log".bytes.data, 1)))
-    discard(try js.js_set_property_str(ctx, global_obj, "console", console))
+    _ = try js.js_set_property_str(ctx, console, "log",
+                                   try js.js_new_c_function(ctx, js_console_log, "log".bytes.data, 1))
+    _ = try js.js_set_property_str(ctx, global_obj, "console", console)
 
     let performance = try js.js_new_object(ctx)
-    discard(try js.js_set_property_str(ctx, performance, "now",
-                                       try js.js_new_c_function(ctx, js_os_now, "now".bytes.data, 0)))
-    discard(try js.js_set_property_str(ctx, global_obj, "performance", performance))
+    _ = try js.js_set_property_str(ctx, performance, "now",
+                                   try js.js_new_c_function(ctx, js_os_now, "now".bytes.data, 0))
+    _ = try js.js_set_property_str(ctx, global_obj, "performance", performance)
 
     # same methods as the mozilla JS shell
     if let list = args:
         let arr = try js.js_new_array(ctx)
         for (i, arg) in list.indexed():
-            discard(try js.js_set_property_uint32(ctx, arr, (u32)i,
-                                                  try js.js_new_string_len(ctx, arg.bytes.data, arg.length)))
-        discard(try js.js_set_property_str(ctx, global_obj, "scriptArgs", arr))
+            _ = try js.js_set_property_uint32(ctx, arr, (u32)i,
+                                              try js.js_new_string_len(ctx, arg.bytes.data, arg.length))
+        _ = try js.js_set_property_str(ctx, global_obj, "scriptArgs", arr)
 
-    discard(try js.js_set_property_str(ctx, global_obj, "print",
-                                       try js.js_new_c_function(ctx, js_print, "print".bytes.data, 1)))
-    discard(try js.js_set_property_str(ctx, global_obj, "__loadScript",
-                                       try js.js_new_c_function(ctx, js_load_script, "__loadScript".bytes.data, 1)))
+    _ = try js.js_set_property_str(ctx, global_obj, "print",
+                                   try js.js_new_c_function(ctx, js_print, "print".bytes.data, 1))
+    _ = try js.js_set_property_str(ctx, global_obj, "__loadScript",
+                                   try js.js_new_c_function(ctx, js_load_script, "__loadScript".bytes.data, 1))
 
 # mark: Host state ==============================================================================
 
 ## Install the host state (handlers, timers, rejected promises) as the opaque pointer of `rt`
 ## (js_std_init_handlers).
 pub func js_std_init_handlers(rt: Runtime*):
-    let block = cutils.malloc(sizeof(ThreadState))
+    let block = cutils.malloc(memory.size_of(ThreadState))
     if block == none:
         let text = "Could not allocate memory for the worker"
-        discard(fwrite(text.bytes.data, 1, text.length, c.stderr()))
+        _ = fwrite(text.bytes.data, 1, text.length, c.stderr())
         c_exit(1)
     let ts = (ThreadState*)(block else c_exit(1))
-    discard(cutils.memset(ts, 0, sizeof(ThreadState)))
+    _ = cutils.memset(ts, 0, memory.size_of(ThreadState))
     cutils.init_list_head(&ts.os_rw_handlers)
     cutils.init_list_head(&ts.os_signal_handlers)
     cutils.init_list_head(&ts.os_timers)
@@ -92,7 +94,7 @@ pub func js_std_init_handlers(rt: Runtime*):
 
 ## The rejected-promise entry whose list link is `el`.
 func rejected_promise_of(el: ListHead*) -> RejectedPromiseEntry*:
-    return (RejectedPromiseEntry*)((u8*)el - offsetof(RejectedPromiseEntry, link))
+    return (RejectedPromiseEntry*)((u8*)el - memory.offset_of(RejectedPromiseEntry, link))
 
 ## Free the host state of `rt` and the handlers, timers and promises it holds
 ## (js_std_free_handlers).
@@ -136,7 +138,7 @@ pub func js_std_free_handlers(rt: Runtime*):
 
 func js_std_dump_error1(ctx: Context*, exception_val: Value):
     js.js_print_value(ctx, js_print_value_write, c.stderr(), exception_val, none)
-    discard(fputc((i32)'\n', c.stderr()))
+    _ = fputc((i32)'\n', c.stderr())
 
 ## Print the pending exception of `ctx` to standard error and clear it (js_std_dump_error).
 pub func js_std_dump_error(ctx: Context*):
@@ -163,7 +165,7 @@ pub func js_std_promise_rejection_tracker(ctx: Context*, promise: Value, reason:
     if not is_handled:
         # add a new entry if needed
         if find_rejected_promise(ctx, ts, promise) == none:
-            if let block = cutils.malloc(sizeof(RejectedPromiseEntry)):
+            if let block = cutils.malloc(memory.size_of(RejectedPromiseEntry)):
                 let rp = (RejectedPromiseEntry*)block
                 rp.promise = js.js_dup_value(ctx, promise)
                 rp.reason = js.js_dup_value(ctx, reason)
@@ -187,7 +189,7 @@ func js_std_promise_rejection_check(ctx: Context*):
     while el != &ts.rejected_promise_list:
         let rp = rejected_promise_of(el)
         let text = "Possibly unhandled promise rejection: "
-        discard(fwrite(text.bytes.data, 1, text.length, c.stderr()))
+        _ = fwrite(text.bytes.data, 1, text.length, c.stderr())
         js_std_dump_error1(ctx, rp.reason)
         el = el.next else break
     c_exit(1)
@@ -235,6 +237,6 @@ pub func js_std_await(ctx: Context*, obj: Value) -> Value!:
                 elif not ran:
                     js_std_promise_rejection_check(ctx)
                     if let poll = os_poll_func:
-                        discard(poll(ctx))
+                        _ = poll(ctx)
             _:
                 trap("js_std_await: unknown promise state")

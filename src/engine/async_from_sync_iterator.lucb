@@ -54,7 +54,7 @@ func js_create_async_from_sync_iterator(ctx: Context*, sync_iter: Value) -> Valu
     errdefer js_free_value(ctx, next_method)
     let async_iter = try js_new_object_class(ctx, (i32)(u16)ClassId.async_from_sync_iterator)
     errdefer js_free_value(ctx, async_iter)
-    let s = (AsyncFromSyncIteratorData*)(try js_mallocz(ctx, sizeof(AsyncFromSyncIteratorData)))
+    let s = (AsyncFromSyncIteratorData*)(try js_mallocz(ctx, memory.size_of(AsyncFromSyncIteratorData)))
     s.sync_iter = js_dup_value(ctx, sync_iter)
     s.next_method = next_method
     js_set_opaque(async_iter, s)

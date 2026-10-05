@@ -38,9 +38,9 @@ func js_typed_array_copy_within(ctx: Context*, this_val: Value, argc: i32, argv:
     if count > 0:
         let shift = typed_array_size_log2(p.class_id)
         let data = p.u.array.u.uint8_ptr
-        discard(cutils.memmove(data + (usize)(to << shift),
-                               data + (usize)(from_ << shift),
-                               (usize)(count << shift)))
+        _ = cutils.memmove(data + (usize)(to << shift),
+                           data + (usize)(from_ << shift),
+                           (usize)(count << shift))
     return js_dup_value(ctx, this_val)
 
 func js_typed_array_fill(ctx: Context*, this_val: Value, argc: i32, argv: Value*) -> Value!:
@@ -89,7 +89,7 @@ func js_typed_array_fill(ctx: Context*, this_val: Value, argc: i32, argv: Value*
     match shift:
         0:
             if k < final:
-                discard(cutils.memset(p.u.array.u.uint8_ptr + (usize)k, (i32)(u8)v64, (usize)(final - k)))
+                _ = cutils.memset(p.u.array.u.uint8_ptr + (usize)k, (i32)(u8)v64, (usize)(final - k))
         1:
             while k < final:
                 p.u.array.u.uint16_ptr[(usize)k] = (u16)v64
@@ -113,7 +113,7 @@ func js_typed_array_find(ctx: Context*, this_val: Value, argc: i32, argv: Value*
     let len = try js_typed_array_get_length_unsafe(ctx, this_val)
 
     let func_ = argv[0]
-    discard(try check_function(ctx, func_))
+    _ = try check_function(ctx, func_)
 
     var this_arg = js_undefined()
     if argc > 1:

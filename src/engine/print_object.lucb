@@ -52,7 +52,7 @@ func js_print_typed_array(s: PrintValueState*, p: Object*, pcomma_state: i32*):
             .float64_array:
                 js_print_float64(s, *(const f64*)ptr)
             _:
-                discard(0)
+                _ = 0
     if len1 < p.u.array.count:
         js_print_more_items(s, pcomma_state, p.u.array.count - len1)
 
@@ -65,7 +65,7 @@ func js_print_map(s: PrintValueState*, p: Object*, ms: MapState*, pcomma_state: 
     let head = &ms.records
     var el = head.next else trap("unlinked list")
     while el != head:
-        let mr = (MapRecord*)((u8*)el - offsetof(MapRecord, link))
+        let mr = (MapRecord*)((u8*)el - memory.offset_of(MapRecord, link))
         el = el.next else trap("unlinked list")
         js_print_comma(s, pcomma_state)
         if mr.empty:
@@ -249,7 +249,7 @@ func js_print_stack_index(s: PrintValueState*, p: Object*) -> i32:
 func js_print_raw_bigint(s: PrintValueState*, val: Value):
     let p = val.u.big_int
     # the limbs follow the header (JSBigInt.tab)
-    let tab = (u32*)((u8*)p + sizeof(BigInt))
+    let tab = (u32*)((u8*)p + memory.size_of(BigInt))
     # In order to avoid allocations we just dump the limbs
     let sgn = js_bigint_sign(p)
     if sgn != 0:

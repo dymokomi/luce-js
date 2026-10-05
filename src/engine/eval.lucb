@@ -21,7 +21,7 @@
 ## named `filename` in errors.
 func js_parse_init(ctx: Context*, s: ParseState*, input: const u8*, input_len: usize,
                    filename: const u8*):
-    discard(cutils.memset(s, 0, sizeof(ParseState)))
+    _ = cutils.memset(s, 0, memory.size_of(ParseState))
     s.ctx = ctx
     s.filename = filename
     s.buf_start = input
@@ -101,7 +101,7 @@ func js_eval_parse(ctx: Context*, s: ParseState*, fd: FunctionDef*, eval_type: i
     s.allow_html_comments = not s.is_module
 
     # body scope (C ignores a failure here)
-    discard(push_scope(s) catch failure: recover -1)
+    _ = push_scope(s) catch failure: recover -1
     fd.body_scope = fd.scope_level
 
     try js_parse_program(s)
@@ -229,11 +229,11 @@ pub func js_eval(ctx: Context*, input: const u8*, input_len: usize, filename: co
 pub func js_eval_text(ctx: Context*, source: str, filename: str, eval_flags: i32) -> Value!:
     let input = (u8*)try js_malloc(ctx, source.length + 1)
     defer js_free(ctx, input)
-    discard(cutils.memcpy(input, source.bytes.data, source.length))
+    _ = cutils.memcpy(input, source.bytes.data, source.length)
     input[source.length] = 0
     let name = (u8*)try js_malloc(ctx, filename.length + 1)
     defer js_free(ctx, name)
-    discard(cutils.memcpy(name, filename.bytes.data, filename.length))
+    _ = cutils.memcpy(name, filename.bytes.data, filename.length)
     name[filename.length] = 0
     return try js_eval(ctx, input, source.length, name, eval_flags)
 

@@ -67,7 +67,7 @@ let js_worker_class = ClassDef(class_name = "Worker", finalizer = js_worker_fina
 
 ## Print `text` to standard error and exit.
 func worker_fatal(text: str) -> never:
-    discard(fwrite(text.bytes.data, 1, text.length, c.stderr()))
+    _ = fwrite(text.bytes.data, 1, text.length, c.stderr())
     c_exit(1)
 
 func worker_func(opaque: void*?):
@@ -129,7 +129,7 @@ func js_worker_ctor_internal(ctx: Context*, new_target: Value, recv_pipe: Worker
         error(failure.code, failure.message)
     js.js_free_value(ctx, proto)
     errdefer js.js_free_value(ctx, obj)
-    let s = (WorkerData*)try js.js_mallocz(ctx, sizeof(WorkerData))
+    let s = (WorkerData*)try js.js_mallocz(ctx, memory.size_of(WorkerData))
     s.recv_pipe = js_dup_message_pipe(recv_pipe)
     s.send_pipe = js_dup_message_pipe(send_pipe)
 
@@ -167,9 +167,9 @@ func js_worker_ctor(ctx: Context*, new_target: Value, argc: i32, argv: Value*) -
     let filename = try js.js_to_c_string(ctx, argv[0])
     defer js.js_free_c_string(ctx, filename)
 
-    let block = cutils.malloc(sizeof(WorkerFuncArgs)) else try js.js_throw_out_of_memory(ctx)
+    let block = cutils.malloc(memory.size_of(WorkerFuncArgs)) else try js.js_throw_out_of_memory(ctx)
     let args = (WorkerFuncArgs*)block
-    discard(cutils.memset(args, 0, sizeof(WorkerFuncArgs)))
+    _ = cutils.memset(args, 0, memory.size_of(WorkerFuncArgs))
     errdefer free_worker_func_args(args)
     args.filename = strdup(filename)
     args.basename = strdup(basename)
@@ -206,7 +206,7 @@ func js_worker_post_message(ctx: Context*, this_val: Value, argc: i32, argv: Val
 
     # C answers an exception without throwing when malloc fails; here it is an
     # out-of-memory error.
-    let block = cutils.malloc(sizeof(WorkerMessage)) else try js.js_throw_out_of_memory(ctx)
+    let block = cutils.malloc(memory.size_of(WorkerMessage)) else try js.js_throw_out_of_memory(ctx)
     let msg = (WorkerMessage*)block
     msg.data = none
     msg.sab_tab = none
@@ -215,13 +215,13 @@ func js_worker_post_message(ctx: Context*, this_val: Value, argc: i32, argv: Val
     # must reallocate because the allocator may be different
     let msg_data = cutils.malloc(data_len) else try js.js_throw_out_of_memory(ctx)
     msg.data = (u8*)msg_data
-    discard(cutils.memcpy(msg_data, data, data_len))
+    _ = cutils.memcpy(msg_data, data, data_len)
     msg.data_len = data_len
 
     if sab_tab_len > 0:
-        let tab = cutils.malloc(sizeof(u8*?) * sab_tab_len) else try js.js_throw_out_of_memory(ctx)
+        let tab = cutils.malloc(memory.size_of(u8*?) * sab_tab_len) else try js.js_throw_out_of_memory(ctx)
         msg.sab_tab = (u8*?*)tab
-        discard(cutils.memcpy(tab, sab_tab, sizeof(u8*?) * sab_tab_len))
+        _ = cutils.memcpy(tab, sab_tab, memory.size_of(u8*?) * sab_tab_len)
     msg.sab_tab_len = sab_tab_len
 
     # increment the SAB reference counts
@@ -258,7 +258,7 @@ func js_worker_set_onmessage(ctx: Context*, this_val: Value, func_: Value) -> Va
             try js.js_throw_type_error(ctx, "not a function")
         var port_or_none = worker.msg_handler
         if port_or_none == none:
-            let port = (WorkerMessageHandler*)try js.js_mallocz(ctx, sizeof(WorkerMessageHandler))
+            let port = (WorkerMessageHandler*)try js.js_mallocz(ctx, memory.size_of(WorkerMessageHandler))
             let recv_pipe = worker.recv_pipe else trap("onmessage: worker without pipe")
             port.recv_pipe = js_dup_message_pipe(recv_pipe)
             port.on_message_func = js.js_null()
@@ -295,8 +295,8 @@ func js_worker_init(ctx: Context*) -> Value!:
     let rt = js.js_get_runtime(ctx)
     let ts = thread_state(rt)
     # Worker class
-    discard(js.js_new_class_id(&js_worker_class_id))
-    discard(js.js_new_class(rt, js_worker_class_id, &js_worker_class))
+    _ = js.js_new_class_id(&js_worker_class_id)
+    _ = js.js_new_class(rt, js_worker_class_id, &js_worker_class)
     let proto = try js.js_new_object(ctx)
     try js.js_set_property_function_list(ctx, proto, js_worker_proto_funcs)
 
@@ -310,5 +310,5 @@ func js_worker_init(ctx: Context*) -> Value!:
     if let recv_pipe = ts.recv_pipe:
         if let send_pipe = ts.send_pipe:
             let parent = try js_worker_ctor_internal(ctx, js.js_undefined(), recv_pipe, send_pipe)
-            discard(try js.js_define_property_value_str(ctx, obj, "parent", parent, js.prop_c_w_e))
+            _ = try js.js_define_property_value_str(ctx, obj, "parent", parent, js.prop_c_w_e)
     return obj

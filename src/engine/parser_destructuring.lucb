@@ -53,7 +53,7 @@ func js_parse_destructuring_default(s: ParseState*, opcode: i32, var_name: Atom)
     try js_parse_assign_expr(s)
     if opcode == (i32)TempOp.scope_get_var or opcode == (i32)Op.get_ref_value:
         set_object_name(s, var_name)
-    discard(emit_label(s, label_hasval))
+    _ = emit_label(s, label_hasval)
 
 # mark: Object patterns =========================================================================
 
@@ -66,7 +66,7 @@ func destructuring_property_lvalue(s: ParseState*, computed: bool, popcode: i32*
     if computed:
         match *pdepth:
             0:
-                discard(0)
+                _ = 0
             1:
                 # source prop x -> x source prop
                 emit_op(s, (u8)Op.rot3r)
@@ -83,7 +83,7 @@ func destructuring_property_lvalue(s: ParseState*, computed: bool, popcode: i32*
     else:
         match *pdepth:
             0:
-                discard(0)
+                _ = 0
             1:
                 # source x -> x source
                 emit_op(s, (u8)Op.swap)
@@ -190,8 +190,8 @@ func js_parse_destructuring_property(s: ParseState*, tok: TokenType, is_arg: boo
                         emit_op(s, (u8)Op.get_field2)
                         emit_u32(s, prop_name)
                         prop_name = no_atom
-                    discard(try js_parse_destructuring_element(s, tok, is_arg, true, -1, true,
-                                                               export_flag))
+                    _ = try js_parse_destructuring_element(s, tok, is_arg, true, -1, true,
+                                                           export_flag)
                     return
             if prop_name == no_atom:
                 emit_op(s, (u8)Op.to_propkey)
@@ -284,7 +284,7 @@ func js_parse_destructuring_property(s: ParseState*, tok: TokenType, is_arg: boo
         try js_define_var(s, var_name, tok)
         if export_flag:
             let m = s.fd().module else trap("destructuring: export outside a module")
-            discard(try add_export_entry(s, m, var_name, var_name, ExportType.local_))
+            _ = try add_export_entry(s, m, var_name, var_name, ExportType.local_)
         # XXX: check
         scope = s.fd().scope_level
     if s.token.val == TokenType.assign:
@@ -405,9 +405,9 @@ func js_parse_destructuring_array(s: ParseState*, tok: TokenType, is_arg: bool,
                 emit_op(s, (u8)Op.for_of_next)
                 emit_u8(s, 0)
                 emit_op(s, (u8)Op.drop)
-            discard(try js_parse_destructuring_element(s, tok, is_arg, true,
-                                                       skip_bits & skip_has_ellipsis, true,
-                                                       export_flag))
+            _ = try js_parse_destructuring_element(s, tok, is_arg, true,
+                                                   skip_bits & skip_has_ellipsis, true,
+                                                   export_flag)
         else:
             try js_parse_destructuring_array_element(s, tok, is_arg, has_spread)
         if s.token.val == TokenType.rbracket:
@@ -434,7 +434,7 @@ func js_parse_destructuring_element(s: ParseState*, tok: TokenType, is_arg: bool
     if has_ellipsis < 0:
         # pre-parse destructuration target for spread detection
         var skip_bits: i32 = 0
-        discard(destructuring_skip_parens(s, &skip_bits))
+        _ = destructuring_skip_parens(s, &skip_bits)
         has_ellipsis = skip_bits & skip_has_ellipsis
 
     let label_parse = new_label(s)
@@ -446,11 +446,11 @@ func js_parse_destructuring_element(s: ParseState*, tok: TokenType, is_arg: bool
         emit_op(s, (u8)Op.dup)
         emit_op(s, (u8)Op.undefined)
         emit_op(s, (u8)Op.strict_eq)
-        discard(emit_goto(s, (i32)Op.if_true, label_parse))
-        discard(emit_label(s, label_assign))
+        _ = emit_goto(s, (i32)Op.if_true, label_parse)
+        _ = emit_label(s, label_assign)
     else:
-        discard(emit_goto(s, (i32)Op.goto_, label_parse))
-        discard(emit_label(s, label_assign))
+        _ = emit_goto(s, (i32)Op.goto_, label_parse)
+        _ = emit_label(s, label_assign)
         # leave value on the stack
         emit_op(s, (u8)Op.dup)
     let assign_addr = s.fd().byte_code.size
@@ -463,12 +463,12 @@ func js_parse_destructuring_element(s: ParseState*, tok: TokenType, is_arg: bool
     if s.token.val == TokenType.assign and allow_initializer:
         let label_done = emit_goto(s, (i32)Op.goto_, -1)
         try next_token(s)
-        discard(emit_label(s, label_parse))
+        _ = emit_label(s, label_parse)
         if hasval:
             emit_op(s, (u8)Op.drop)
         try js_parse_assign_expr(s)
-        discard(emit_goto(s, (i32)Op.goto_, label_assign))
-        discard(emit_label(s, label_done))
+        _ = emit_goto(s, (i32)Op.goto_, label_assign)
+        _ = emit_label(s, label_done)
         return true
     # normally hasval is true except if js_parse_skip_parens_token() was wrong in the
     # parsing
@@ -477,7 +477,7 @@ func js_parse_destructuring_element(s: ParseState*, tok: TokenType, is_arg: bool
     # remove test and decrement label ref count
     let fd = s.fd()
     let buf = fd.byte_code.buf else trap("destructuring: no bytecode")
-    discard(cutils.memset(buf + start_addr, (i32)Op.nop, assign_addr - start_addr))
+    _ = cutils.memset(buf + start_addr, (i32)Op.nop, assign_addr - start_addr)
     fd_label(fd, label_parse).ref_count -= 1
     return false
 
@@ -496,5 +496,5 @@ func optional_chain_test(s: ParseState*, poptional_chaining_label: i32*, drop_co
     for i in 0..<drop_count:
         emit_op(s, (u8)Op.drop)
     emit_op(s, (u8)Op.undefined)
-    discard(emit_goto(s, (i32)Op.goto_, *poptional_chaining_label))
-    discard(emit_label(s, label_next))
+    _ = emit_goto(s, (i32)Op.goto_, *poptional_chaining_label)
+    _ = emit_label(s, label_next)

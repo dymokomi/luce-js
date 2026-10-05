@@ -362,5 +362,5 @@ noinline func interp_invalid(st: InterpState*) -> bool:
     # OP_invalid and DEFAULT
     let bad_pc = (i32)(st.pc - st.bc_buf - 1)
     let bad_op = (u8)st.opcode
-    js_throw_internal_error(st.ctx, f"invalid opcode: pc={bad_pc} opcode=0x{hex_byte_prefix(bad_op)}{hex(bad_op)}") catch: return false
+    js_throw_internal_error(st.ctx, f"invalid opcode: pc={bad_pc} opcode=0x{hex_byte_prefix(bad_op)}{bad_op:x}") catch: return false
     return true

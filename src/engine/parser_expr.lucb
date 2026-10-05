@@ -38,11 +38,11 @@ func js_parse_delete(s: ParseState*) -> !:
         emit_op(s, (u8)Op.delete)
         if opt_chain_label >= 0:
             let next_label = emit_goto(s, (i32)Op.goto_, -1)
-            discard(emit_label(s, opt_chain_label))
+            _ = emit_label(s, opt_chain_label)
             # if the optional chain is not taken, return 'true'
             emit_op(s, (u8)Op.drop)
             emit_op(s, (u8)Op.push_true)
-            discard(emit_label(s, next_label))
+            _ = emit_label(s, next_label)
         fd.last_opcode_pos = -1
     elif opcode == (u8)Op.get_array_el:
         fd.byte_code.size = (usize)fd.last_opcode_pos
@@ -53,11 +53,11 @@ func js_parse_delete(s: ParseState*) -> !:
         fd.byte_code.size = (usize)fd.last_opcode_pos
         emit_op(s, (u8)Op.delete)
         let next_label = emit_goto(s, (i32)Op.goto_, -1)
-        discard(emit_label(s, opt_chain_label))
+        _ = emit_label(s, opt_chain_label)
         # if the optional chain is not taken, return 'true'
         emit_op(s, (u8)Op.drop)
         emit_op(s, (u8)Op.push_true)
-        discard(emit_label(s, next_label))
+        _ = emit_label(s, next_label)
         fd.last_opcode_pos = -1
     elif opcode == (u8)TempOp.scope_get_var:
         # 'delete this': this is not a reference
@@ -277,7 +277,7 @@ func js_parse_logical_and_or(s: ParseState*, op: TokenType, parse_flags: i32) ->
             try next_token(s)
             emit_op(s, (u8)Op.dup)
             let jump = (i32)Op.if_false if op == TokenType.land else (i32)Op.if_true
-            discard(emit_goto(s, jump, label1))
+            _ = emit_goto(s, jump, label1)
             emit_op(s, (u8)Op.drop)
 
             if op == TokenType.land:
@@ -289,7 +289,7 @@ func js_parse_logical_and_or(s: ParseState*, op: TokenType, parse_flags: i32) ->
                     try js_parse_error(s, "cannot mix ?? with && or ||")
                 break
 
-        discard(emit_label(s, label1))
+        _ = emit_label(s, label1)
 
 func js_parse_coalesce_expr(s: ParseState*, parse_flags: i32) -> !:
     try js_parse_logical_and_or(s, TokenType.lor, parse_flags)
@@ -300,13 +300,13 @@ func js_parse_coalesce_expr(s: ParseState*, parse_flags: i32) -> !:
 
             emit_op(s, (u8)Op.dup)
             emit_op(s, (u8)Op.is_undefined_or_null)
-            discard(emit_goto(s, (i32)Op.if_false, label1))
+            _ = emit_goto(s, (i32)Op.if_false, label1)
             emit_op(s, (u8)Op.drop)
 
             try js_parse_expr_binary(s, 8, parse_flags)
             if s.token.val != TokenType.double_question_mark:
                 break
-        discard(emit_label(s, label1))
+        _ = emit_label(s, label1)
 
 ## allowed parse_flags: PF_IN_ACCEPTED
 func js_parse_cond_expr(s: ParseState*, parse_flags: i32) -> !:
@@ -320,8 +320,8 @@ func js_parse_cond_expr(s: ParseState*, parse_flags: i32) -> !:
 
         let label2 = emit_goto(s, (i32)Op.goto_, -1)
 
-        discard(emit_label(s, label1))
+        _ = emit_label(s, label1)
 
         try js_parse_assign_expr2(s, parse_flags & pf_in_accepted)
 
-        discard(emit_label(s, label2))
+        _ = emit_label(s, label2)
