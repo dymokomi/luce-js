@@ -29,14 +29,6 @@ func written_bytes(s: BCWriterState*) -> const u8[]:
     let buf = s.dbuf.buf else trap("nothing written")
     return u8[](buf, s.dbuf.size)
 
-func same_bytes(a: const u8[], b: const u8[]) -> bool:
-    if a.length != b.length:
-        return false
-    for i in 0..<a.length:
-        if a[i] != b[i]:
-            return false
-    return true
-
 func reader_over(data: const u8[]) -> BCReaderState:
     return BCReaderState(ctx = placeholder_context(), buf_start = data.data, ptr = data.data,
                          buf_end = data.data + data.length)
@@ -84,9 +76,9 @@ test "leb128 and sleb128 round trip through the writer and the reader":
     for v in signed_values:
         bc_put_sleb128(&s, v)
     let first: u8[4] = [0x00, 0x01, 0x7f, 0x80]
-    assert(same_bytes(written_bytes(&s)[0..<4], first))
+    assert(written_bytes(&s)[0..<4] == first)
     let three_hundred: u8[2] = [0xac, 0x02]
-    assert(same_bytes(written_bytes(&s)[5..<7], three_hundred))
+    assert(written_bytes(&s)[5..<7] == three_hundred)
 
     var r = reader_over(written_bytes(&s))
     for expected in unsigned_values:
@@ -201,7 +193,7 @@ func short_bigint_bytes_are(v: i32, expected: const u8[]) -> bool!:
     defer cutils.dbuf_free(&s.dbuf)
     try js_write_bigint(&s, js_new_short_big_int_raw(v))
     let out = written_bytes(&s)
-    return out[0] == (u8)BCTag.big_int and same_bytes(out[1..], expected)
+    return out[0] == (u8)BCTag.big_int and out[1..] == expected
 
 test "short big integers are their shortest two's complement bytes":
     let zero: u8[1] = [0]
@@ -235,7 +227,7 @@ test "8-bit strings are (len << 1) then their bytes":
     defer cutils.dbuf_free(&s.dbuf)
     js_write_string(&s, p)
     let expected: u8[4] = [6, 'a', 'b', 'c']
-    assert(same_bytes(written_bytes(&s), expected))
+    assert(written_bytes(&s) == expected)
 
 test "bc_byte_swap reverses each multi-byte operand":
     assert(op_info((u8)Op.push_i32, false).size == 5)
@@ -255,6 +247,6 @@ test "bc_byte_swap reverses each multi-byte operand":
         (u8)Op.get_loc, 0x66, 0x55,
         (u8)Op.with_get_var, 4, 3, 2, 1, 8, 7, 6, 5, 9,
     ]
-    assert(same_bytes(code, swapped))
+    assert(code == swapped)
     bc_byte_swap(&code[0], 19)
-    assert(same_bytes(code, original))
+    assert(code == original)
