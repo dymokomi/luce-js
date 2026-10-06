@@ -14,16 +14,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: luce-js
-      - name: Read compiler pin
-        id: pins
-        shell: pwsh
-        run: |
-          "base=$(Get-Content luce-js/bootstrap/BASE)" >> $env:GITHUB_OUTPUT
       - uses: actions/checkout@v7
         with:
           repository: dymokomi/luce-base
-          ref: ${{ steps.pins.outputs.base }}
           path: luce-base
+      # every dependency at main, beside this checkout (luce-base docs/CI.md)
+      - name: Check out dependencies at main
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          python luce-base/tools/checkout_main.py luce-js
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -32,16 +32,6 @@ jobs:
             git
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-python
-      - name: Check out the pinned library packages
-        shell: msys2 {0}
-        run: |
-          while read -r name revision; do
-            revision=${revision%$'\r'}
-            [ -n "$name" ] || continue
-            git init -q "$name"
-            git -C "$name" fetch -q --depth 1 "https://github.com/dymokomi/$name.git" "$revision"
-            git -C "$name" checkout -q --detach FETCH_HEAD
-          done < luce-js/bootstrap/PACKAGES
       - name: Configure native library search
         shell: msys2 {0}
         run: echo "LIBRARY_PATH=$(cygpath -m /ucrt64/lib)" >> "$GITHUB_ENV"
