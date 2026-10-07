@@ -56,8 +56,10 @@ them and `tests/bjson.lucb` (the `bjson` module of `tests/test_bjson.js`), so
 | `luce_js.engine` | `quickjs.c` | ported |
 | `luce_js.host` | `quickjs-libc.c` (POSIX, and Windows as its `_WIN32` branches) | helpers, module loader, event loop (timers, signals, read/write handlers, worker message ports), `std`, `os` with `os.Worker`, registered native modules in place of `.so` |
 
-Run the tests of a module with `luce-base test src/<module>`; `./test.sh` runs every
-module's tests and then QuickJS's own JavaScript tests (`tests/run.py`).
+Run the tests of a module with `luce-base test src/<module>`; `luc test` runs every
+module's tests and three programs: QuickJS's own JavaScript tests (`tests/quickjs`), the
+tools ljs and ljsc (`tests/ljs_tools`) and the whole test262 (`tests/test262_suite`, about
+75 s; its first run clones test262). `tools/check_format.sh` checks the layout.
 
 **test262**: luce-js passes test262 exactly as QuickJS does. `tests/test262.py` clones
 tc39/test262 at the commit QuickJS 2026-06-04 pins (outside the repository), applies

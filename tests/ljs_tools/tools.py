@@ -17,7 +17,7 @@ With QJSC=path/to/qjsc (C QuickJS's compiler), the -c output of the sources with
 expressions is also compared byte for byte with qjsc's: luce-js writes the same bytecode.
 (A regular expression literal differs: its compiled form is luce-regex's, not libregexp's.)
 
-Usage: tests/tools.py [--no-build]
+Run by `luc test` (tests/ljs_tools/main.luc); by hand: tests/ljs_tools/tools.py [--no-build]
 """
 
 import argparse
@@ -28,14 +28,16 @@ import subprocess
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TESTS = os.path.join(ROOT, "tests")
 TOOLS = os.path.join(TESTS, "tools")
 EXAMPLES = os.path.join(ROOT, "examples")
-BUILD = os.path.join(ROOT, "build")
+BUILD = os.path.join(ROOT, "build", "tests", "ljs_tools")
 LJS = os.path.join(BUILD, "ljs")
-LJSC = os.path.join(BUILD, "ljsc")
-WORK = os.path.join(BUILD, "tools-tests")
+# ljsc finds the luce-js tree as its executable's build/.., as qjsc finds libquickjs.a.
+LJSC = os.path.join(ROOT, "build", "ljsc")
+WORK = os.path.join(BUILD, "work")
+LUCE_BASE = os.environ.get("LUCE_BASE", "luce-base")
 
 failures = []
 
@@ -55,9 +57,11 @@ def run(command, cwd=ROOT, stdin=None, timeout=300):
 
 
 def build():
+    os.makedirs(BUILD, exist_ok=True)
+    os.makedirs(os.path.dirname(LJSC), exist_ok=True)
     for source, out in (("tests/ljs.lucb", LJS), ("tests/ljsc", LJSC)):
         print(f"building {os.path.relpath(out, ROOT)} ...", flush=True)
-        if subprocess.run(["luce-base", "build", source, "-o", out], cwd=ROOT).returncode != 0:
+        if subprocess.run([LUCE_BASE, "build", source, "-o", out], cwd=ROOT).returncode != 0:
             sys.exit(f"FAIL: cannot build {source}")
 
 
@@ -224,7 +228,7 @@ def test_ljsc():
                           os.path.join(directory, "test_fib.lucb"), "test_fib.js"], cwd=EXAMPLES)
     exe = os.path.join(directory, "test_fib")
     if code == 0:
-        code, out, err = run(["luce-base", "build", os.path.join(directory, "test_fib.lucb"), "-o", exe])
+        code, out, err = run([LUCE_BASE, "build", os.path.join(directory, "test_fib.lucb"), "-o", exe])
     actual = run([exe]) if code == 0 else (code, out, err)
     expected = ljs_output(["test_fib.js"], EXAMPLES)
     check("ljsc -e -M test_fib (native module)",
@@ -245,7 +249,7 @@ def test_ljsc():
                 "    js.js_free_context(ctx)\n    js.js_free_runtime(rt)\n    return 0\n")
     exe = os.path.join(directory, "main")
     if code == 0:
-        code, out, err = run(["luce-base", "build", os.path.join(directory, "main.lucb"), "-o", exe])
+        code, out, err = run([LUCE_BASE, "build", os.path.join(directory, "main.lucb"), "-o", exe])
     actual = run([exe]) if code == 0 else (code, out, err)
     check("ljsc -c -p (bytecode only)", actual == (0, "Hello World\n", ""), repr(actual))
 
@@ -269,7 +273,7 @@ def test_ljsc():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--no-build", action="store_true", help="use the existing build/ljs and build/ljsc")
+    parser.add_argument("--no-build", action="store_true", help="use the existing build/tests/ljs_tools/ljs and build/ljsc")
     args = parser.parse_args()
     if not args.no_build:
         build()

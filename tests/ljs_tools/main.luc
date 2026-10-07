@@ -1,0 +1,15 @@
+# The tools: ljs's options, exit statuses and REPL against C qjs's pinned outputs, the REPL
+# bytecode ljs embeds against ljsc's output today, and ljsc's executables, Luce files and
+# bytecode against running the sources with ljs. tools.py beside this file does the work
+# (see its description), building into build/tests/ljs_tools.
+from luce_std import process
+
+let failed = ErrorCode.package(1)
+
+pub func main(arguments: list[str]) -> int!:
+    let here = process.variable("LUC_TEST_DIR") else "tests/ljs_tools"
+    let done = process.run("python3", [f"{here}/tools.py"])
+    print(done.output.trim_end())
+    if done.exit_code != 0:
+        error(failed, f"tools.py: exit status {done.exit_code}\n{done.error_output}")
+    return 0

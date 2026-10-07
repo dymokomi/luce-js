@@ -1,0 +1,27 @@
+# The whole test262, split across processes (tests/test262.py, which clones tc39/test262 at
+# the commit QuickJS pins on its first run, outside the repository, and builds the release
+# runner tests/run_test262). luce-js must fail exactly the tests C QuickJS fails, the lines
+# of tests/test262_errors.txt: no new, changed or fixed error and no crash (test262.py's
+# exit status), and its result line must count exactly those errors over 83,558 tests.
+from luce_std import files, process
+
+let failed = ErrorCode.package(1)
+
+let total = 83558
+
+pub func main(arguments: list[str]) -> int!:
+    var known = 0
+    for line in files.read_text("tests/test262_errors.txt").lines():
+        if line.trim().length > 0:
+            known += 1
+    let done = process.run("python3", ["tests/test262.py"])
+    var result = ""
+    for line in done.error_output.replace("\r", "\n").lines():
+        if line.starts_with("Result: "):
+            result = line
+    print(result)
+    if done.exit_code != 0:
+        error(failed, f"test262.py: exit status {done.exit_code}\n{done.output}{done.error_output}")
+    if not result.starts_with(f"Result: {known}/{total} errors (") or "crash" in result:
+        error(failed, f"expected Result: {known}/{total} errors and no crash, got: {result}")
+    return 0

@@ -17,7 +17,7 @@ git clone https://github.com/dymokomi/luce-browser-engine     # or luce-js, luce
 python3 luce-base/tools/checkout_main.py luce-browser-engine  # clones every path dependency at main
 (cd luce-base && ./build.sh)
 export PATH=$PWD/luce-base/build:$PATH
-(cd luce-browser-engine && ./test.sh)
+(cd luce-browser-engine && luc test)
 ```
 
 `checkout_main.py` clones what is missing and uses existing siblings as they are, so `git pull`
@@ -89,7 +89,7 @@ Each browser package has `docs/regions/*.md` (what each region ported, its devia
 ## 5. How the work is done
 
 **luce-js.** Conventions are in `docs/PORTING.md`, speed in `docs/PERFORMANCE.md`. The gate:
-`./test.sh` and `python3 tests/test262.py`, which must print `Result: 58/83558 errors` with
+`luc test`, whose `tests/test262_suite` runs `python3 tests/test262.py`, which must print `Result: 58/83558 errors` with
 0 crashes, exactly C QuickJS's failures.
 
 **The browser.** Work goes in regions: one agent per region in its own worktree on a branch,

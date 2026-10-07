@@ -3,8 +3,8 @@
 The changes the luce-js (QuickJS) and luce-browser (Ladybird) ports need from luce-base, in
 priority order, each with an inline reproduction so it can be worked on from any machine.
 Evidence and profiles for the performance items are in `docs/PERFORMANCE.md` ("What only the
-compiler can close"). The gate for any backend change: luce-js `./test.sh` passes and
-`python3 tests/test262.py` prints `Result: 58/83558 errors` with 0 crashes.
+compiler can close"). The gate for any backend change: luce-js `luc test` passes; its
+`tests/test262_suite` holds `python3 tests/test262.py` to `Result: 58/83558 errors` with 0 crashes.
 
 Status as of 2026-10-01 (Luce 0.8.30). Numbers are stable, so fixed items leave gaps. Bugs are reported to the LUCE_BASE_ONLY_MACHINE session. Every request is fixed; new ones go under Open with an inline reproduction.
 

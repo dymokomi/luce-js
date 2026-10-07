@@ -246,14 +246,16 @@ Engine idioms:
 
 ## Tests
 
-- `./test.sh` runs every module's unit tests and then QuickJS's own JavaScript tests
-  (`tests/run.py`, through the `ljs` runner built in `build/ljs`). A test run must be
+- `luc test` runs every module's unit tests and the programs under `tests/`: QuickJS's
+  own JavaScript tests (`tests/quickjs`, through the `ljs` runner it builds in
+  `build/tests/quickjs`), the tools (`tests/ljs_tools`) and test262 (`tests/test262_suite`,
+  below). `tools/check_format.sh` checks every module's layout. A test run must be
   green before a change is committed; never commit on a pipeline whose exit status is not
   the test's own.
 - Every support module has unit tests in its `tests*.lucb` fragments, driven by the
   upstream behaviour: port the C test tables where upstream has them, otherwise write cases
   that pin the C results (compile the C and compare when in doubt).
-- `tests/tools.py` (run by `./test.sh`) tests ljs's options, exit statuses and REPL
+- `tests/ljs_tools/tools.py` (the program `tests/ljs_tools`) tests ljs's options, exit statuses and REPL
   against the outputs of C qjs, checks that `tests/repl.lucb` is what ljsc generates from
   `tests/repl.js` today (regenerate it with `cd tests && ../build/ljsc -s -c -o repl.lucb
   -m repl.js` after a change of the bytecode format), and compiles QuickJS's examples
@@ -263,7 +265,7 @@ Engine idioms:
   ljsc writes the same bytes as C qjsc (sources without regular expressions: a regular
   expression's compiled form is luce-regex's).
 - `build/ljs --std tests/microbench.js` is upstream's `make microbench`.
-- test262: `python3 tests/test262.py` clones tc39/test262 at the commit QuickJS pins
+- test262: `python3 tests/test262.py`, which `luc test` runs as `tests/test262_suite`, clones tc39/test262 at the commit QuickJS pins
   (outside the repository, `../.test262` or `$LUCE_JS_TEST262`, linked from
   `tests/test262`), applies `tests/test262.patch`, builds `build/run-test262` and runs the
   suite with `tests/test262.conf`. The expected result is QuickJS's own:

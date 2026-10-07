@@ -1,0 +1,96 @@
+# QuickJS's own JavaScript tests through the ljs runner: upstream's tests/*.js (copied into
+# tests/js/, MIT, see tests/js/LICENSE) and examples/*.js, run the way upstream's Makefile
+# `test:` target runs them with qjs: one process per file, from the package root, `--std` for
+# test_builtin.js. A file passes when ljs exits with status 0 and, for the files with an
+# expected output, prints exactly that. Any failure fails the run.
+from luce_std import files, paths, process
+import platform
+
+let failed = ErrorCode.package(1)
+
+## A test file: its path from the package root, the ljs options before it, the script
+## arguments after it, and what it must print (none: anything).
+struct Case:
+    let file: str
+    let options: list[str]
+    let script: list[str]
+    let output: str?
+
+func case(file: str, options: list[str] = [], script: list[str] = [], output: str? = none) -> Case:
+    let path = file if "/" in file else f"tests/js/{file}"
+    return Case(file = path, options = options, script = script, output = output)
+
+## The files, in the order of upstream's Makefile.
+func cases() -> list[Case]:
+    var all: list[Case] = [case("test_closure.js"), case("test_language.js"), case("test_builtin.js", ["--std"]), case("test_loop.js"), case("test_bigint.js"), case("test_cyclic_import.js"), case("test_worker.js")]
+    # Not on Windows, as in upstream's Makefile: its `os` module has no exec, pipe or kill.
+
+    if not platform.windows:
+        all.append(case("test_std.js"))
+        all.append(case("test_rw_handler.js"))
+    # The native modules qjs loads as shared libraries are linked into ljs.
+
+    all.append(case("test_bjson.js"))
+    all.append(case("examples/test_point.js"))
+    # Not upstream: regressions found by test262 (tests/test262.py).
+
+    all.append(case("test_conformance.js"))
+    # Not upstream: Atomics.wait/notify between a worker and the main thread.
+
+    all.append(case("test_worker_atomics.js"))
+    # The other examples (upstream compiles them with qjsc), checked against their output.
+
+    all.append(case("examples/hello.js", output = "Hello World\n"))
+    all.append(case("examples/hello_module.js", output = "Hello World\nfib(10)= 55\nmsg= { x: 1, tab: [ 1, 2, 3 ] }\n"))
+    all.append(case("examples/test_fib.js", output = "Hello World\nfib(10)= 55\n"))
+    let pi = "3.14159265358979323846264338327950288419716939937510" + "58209749445923078164062862089986280348253421170679\n"
+    all.append(case("examples/pi_bigint.js", script = ["100"], output = pi))
+    # Not upstream: both sides of the interpreter's fast paths.
+
+    all.append(case("test_fast_paths.js"))
+    return all
+
+## The first line that says what went wrong: a trap, an exception or an assertion.
+func first_error_line(output: str) -> str:
+    var first = ""
+    for line in output.lines():
+        let text = line.trim()
+        if text.length == 0:
+            continue
+        if first.length == 0:
+            first = text
+        if text.starts_with("trap:") or "Error" in text or "assertion" in text or "exception" in text:
+            return text
+    return first
+
+pub func main(arguments: list[str]) -> int!:
+    let base = process.variable("LUCE_BASE") else "luce-base"
+    let work = paths.join(process.current_directory(), "build/tests/quickjs")
+    files.ensure_directory(work)
+    let ljs = paths.join(work, "ljs.exe" if platform.windows else "ljs")
+    let built = process.run(base, ["build", "tests/ljs.lucb", "-o", ljs])
+    if built.exit_code != 0:
+        error(failed, f"cannot build ljs\n{built.output}{built.error_output}")
+    var failures = 0
+    let all = cases()
+    for item in all:
+        var command: list[str] = []
+        command.extend(item.options)
+        command.append(item.file)
+        command.extend(item.script)
+        let done = process.run(ljs, command)
+        var reason = ""
+        if done.exit_code != 0:
+            reason = f"exit status {done.exit_code}: {first_error_line(done.output + done.error_output)}"
+        elif let expected = item.output:
+            if done.output != expected:
+                reason = f"unexpected output: {done.output}"
+        if reason.length == 0:
+            print(f"PASS   {item.file}")
+        else:
+            print(f"FAIL   {item.file}  {reason}")
+            failures += 1
+    print(f"{all.length} files: {all.length - failures} passed, {failures} failed")
+    if failures > 0:
+        error(failed, f"{failures} QuickJS test files failed")
+    return 0
