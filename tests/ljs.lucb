@@ -153,8 +153,6 @@ func js_trace_malloc_usable_size(ptr: const void*?) -> usize:
         return malloc_size(ptr)
     elif platform.windows:
         return msize(ptr)
-    elif platform.wasm32:
-        return 0
     else:
         return malloc_usable_size(ptr)
 

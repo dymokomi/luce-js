@@ -230,8 +230,6 @@ func js_def_malloc_usable_size(ptr: const void*?) -> usize:
         return malloc_size(ptr)
     elif os.windows:
         return msize((void*?)ptr)
-    elif os.wasm32:
-        return 0
     else:
         return malloc_usable_size((void*?)ptr)
 
